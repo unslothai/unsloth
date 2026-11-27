@@ -1,19 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Answer engine discovery probes with JSON, or with a 404, but never with the app.
-
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
-of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
-``/v1/props``, ``/version``, a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
-``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only, and Open WebUI's llama.cpp model management
-(``GET /models``, ``POST /models/load``, ``POST /models/unload``, #10610). Everything else in llama-server's
-table gets an explicit 404, on its real method as well as GET.
-
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
-and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
-to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
-"""
+"""Engine probes answer JSON or 404, never SPA HTML: /props, /v1/props, /version, owner-only GET
+/metrics, GET /slots, POST /tokenize, POST /detokenize, GET /models, POST /models/load,
+/models/unload; other llama-server routes 404; Ollama /api/tags and /api/show not served."""
 
 from __future__ import annotations
 
@@ -411,12 +401,7 @@ def _same_path(a: Optional[str], b: Optional[str]) -> bool:
 
 
 async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str]:
-    """What /unload must be named to stop this row, or None when nothing of it runs.
-
-    /unload matches the resident or loading identifier, not an alias (LM Studio, scan folder,
-    Ollama tag) nor a path-loaded row's listed id, and on a managed install it releases the
-    caller's shared resident before comparing names, so an unrelated row must never reach it.
-    """
+    """The name /unload must use: the resident or loading id, not an alias; never an unrelated row."""
     from core.inference.openai_auto_download import looks_like_quant, split_model_ref
 
     # Another account's resident is not this caller's to name: answering for it would reveal it.
@@ -474,14 +459,8 @@ async def _unload_target(model_id: str, row: dict, pinned: bool) -> Optional[str
 
 async def _resolve_load_target(model_id: str):
     """``(LoadRequest, listed id)``, from the on-disk copy and saved launch settings auto-switch would use."""
-    from core.inference.local_model_resolver import local_target_is_gguf
     from core.inference.openai_auto_download import split_model_ref
     from models.inference import LoadRequest
-    from utils.openai_auto_switch_settings import (
-        model_override_load_kwargs,
-        resolve_override_for_load,
-        stored_gpu_index_kind,
-    )
 
     public_id, _, pinned = await _catalog_row(model_id)
     resolved = await _resolve_local(public_id)
@@ -492,21 +471,9 @@ async def _resolve_load_target(model_id: str):
         # The row's own id, colon and all (an NPU "lemonade:..." id is not a quant pin).
         return LoadRequest(model_path = public_id), public_id
     model_path, variant, loader_id = resolved[:3]
-    alias = loader_id or split_model_ref(public_id)[0]
-    _, override = resolve_override_for_load(model_path, alias, variant)
-    # Not from the variant: a single-file GGUF or an Ollama tag resolves with no quant to pin.
-    is_gguf = await asyncio.to_thread(local_target_is_gguf, model_path, alias)
-    kwargs = model_override_load_kwargs(override, is_gguf = is_gguf)
-    # A stale pin (GPU removed or renumbered) is dropped, as auto-switch does, rather than 400 the load.
-    if kwargs.get("gpu_ids") and not await _inference()._override_gpu_ids_still_resolve(
-        kwargs["gpu_ids"], stored_gpu_index_kind(override)
-    ):
-        kwargs.pop("gpu_ids", None)
-        kwargs.pop("tensor_split", None)
-    request = LoadRequest(model_path = model_path, gguf_variant = variant, **kwargs)
-    request._override_alias_id = alias
-    request._advertised_id = alias
-    return request, public_id
+    request = LoadRequest(model_path = model_path, gguf_variant = variant)
+    request._override_alias_id = request._advertised_id = loader_id or split_model_ref(public_id)[0]
+    return await _inference()._with_saved_settings(request), public_id
 
 
 async def _lifecycle_answer(work, model_id: str, *, label: str):

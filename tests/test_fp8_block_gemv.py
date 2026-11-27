@@ -15,6 +15,13 @@ from unsloth.kernels import fp8 as F8  # noqa: E402
 if F8._fp8_device_lacks_kernel(torch.device("cuda")):
     pytest.skip("e4m3 Triton kernels need sm89+", allow_module_level = True)
 
+# can_use_fp8_block_gemv refuses ROCm (not validated there), so routing into the GEMV is CUDA-only;
+# the kernel itself is still checked against the oracle on ROCm.
+GEMV_ROUTES = torch.version.hip is None
+cuda_routing = pytest.mark.skipif(
+    not GEMV_ROUTES, reason = "routing into the block GEMV is CUDA-only (refused on ROCm)"
+)
+
 
 @pytest.fixture(autouse = True)
 def _gemv_only(monkeypatch):
@@ -59,7 +66,7 @@ def test_block_gemv_matches_oracle_and_beats_act_quant(dtype, M, NK):
     N, K = NK
     q, s = _quantize(N, K, seed = M)
     X = torch.randn(M, 1, K, device = "cuda", dtype = torch.float32).to(dtype)
-    assert M > 2 or F8.can_use_fp8_block_gemv(X, q, s)
+    assert M > 2 or F8.can_use_fp8_block_gemv(X, q, s) == GEMV_ROUTES
     with torch.no_grad():
         y = F8.fp8_block_gemv(X, q, s)
         y_main = F8.fp8_torch_block_quant_forward(X, q, s)
@@ -88,6 +95,7 @@ def test_split_k_matches_single_pass():
     torch.testing.assert_close(split, single, atol = 0, rtol = 2 * torch.finfo(torch.bfloat16).eps)
 
 
+@cuda_routing
 def test_routing_decode_only(monkeypatch):
     q, s = _quantize(512, 1024)
     calls = []
@@ -115,6 +123,9 @@ def test_routing_decode_only(monkeypatch):
 def test_kill_switch_and_device_gates(monkeypatch):
     q, s = _quantize(256, 512)
     X = torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16)
+    if not GEMV_ROUTES:
+        assert not F8.can_use_fp8_block_gemv(X, q, s)  # the ROCm gate, on a real ROCm device
+        return
     assert F8.can_use_fp8_block_gemv(X, q, s)
     monkeypatch.setattr(F8, "_FP8_BLOCK_GEMV", False)
     assert not F8.can_use_fp8_block_gemv(X, q, s)
@@ -130,6 +141,7 @@ def test_kill_switch_and_device_gates(monkeypatch):
     assert not F8.can_use_fp8_block_gemv(X, _uncached(q), s)
 
 
+@cuda_routing
 def test_weight_decision_cached_per_scale():
     q, s = _quantize(256, 512)
     X = torch.randn(1, 1, 512, device = "cuda", dtype = torch.bfloat16)
@@ -164,7 +176,7 @@ def test_non_128_blocks(block):
     q = (blocks / s[:, None, :, None]).view(N, K).to(torch.float8_e4m3fn).contiguous()
     q.block_size = [bn, bk]
     X = torch.randn(4, 1, K, device = "cuda", generator = g).to(torch.bfloat16)
-    assert F8.can_use_fp8_block_gemv(X, q, s)
+    assert F8.can_use_fp8_block_gemv(X, q, s) == GEMV_ROUTES
     with torch.no_grad():
         y = F8.fp8_block_gemv(X, q, s)
     S = s.double().repeat_interleave(bn, 0).repeat_interleave(bk, 1)
@@ -172,6 +184,7 @@ def test_non_128_blocks(block):
     assert _rel_err(y, ref) <= torch.finfo(torch.bfloat16).eps
 
 
+@cuda_routing
 def test_routes_only_where_never_slower(monkeypatch):
     # Wide outputs (q, gate / up) keep the block GEMM everywhere; on < 100-SM parts big weights do too.
     X = torch.randn(2, 1, 4096, device = "cuda", dtype = torch.bfloat16)
@@ -193,6 +206,8 @@ def test_router_order(monkeypatch, route, expect):
     # 100+ SM parts take the fused kernel here, smaller ones the GEMV.
     if F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton:
         pytest.skip("the fused small-M kernel replaces the Triton block matmul route only")
+    if expect == "gemv" and not GEMV_ROUTES:
+        pytest.skip("routing into the block GEMV is CUDA-only (refused on ROCm)")
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
     fn = (
         F8._fp8_block_small_m_first
@@ -220,6 +235,7 @@ def test_router_order(monkeypatch, route, expect):
     assert "gemv" not in calls and Xg.grad is not None
 
 
+@cuda_routing
 def test_router_small_m_first_falls_back(monkeypatch):
     # Compiled regions (the fused kernel is eager only) and pre-sm89 parts do not take the fused kernel.
     monkeypatch.setattr(F8, "_FP8_BLOCK_SMALL_M", True)
@@ -239,7 +255,7 @@ def test_router_small_m_first_falls_back(monkeypatch):
 
 
 def test_router_binding_follows_sm_count():
-    bound = F8.fp8_block_quant_linear
+    bound = F8.resolve_fp8_block_quant_linear()
     if (
         F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton
         or bound.__wrapped__ is not F8.fp8_torch_block_quant_forward
@@ -249,6 +265,7 @@ def test_router_binding_follows_sm_count():
     assert (bound is F8._fp8_block_small_m_first) == big
 
 
+@cuda_routing
 def test_small_gpu_row_cap(monkeypatch):
     # Below 100 SMs: up to 8 rows, 2 over 8M elements; 100+ SM parts take all 16.
     def rows_ok(sms, N, K, rows):

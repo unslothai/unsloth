@@ -17,12 +17,19 @@ const PREPARATION_PHASES = new Set<TrainingPhase>([
   "configuring",
 ]);
 
+// Mirrors core/training/startup_progress.py; only trainer callbacks emit these.
+export function hasTrainingLoopStarted(message: string): boolean {
+  return /^(?:starting training loop|running first training step|first training step finished|training in progress)\b/i.test(message.trim());
+}
+
 // The worker reports `training` once the trainer is built, with dataset mapping still ahead.
 export function shouldShowPreparationStatus(
   phase: TrainingPhase,
   currentStep: number,
   isStarting: boolean,
+  message = "",
 ): boolean {
+  if (hasTrainingLoopStarted(message)) return false;
   if (isStarting) return true;
   return (
     PREPARATION_PHASES.has(phase) || (phase === "training" && currentStep <= 0)

@@ -4,35 +4,45 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { inventoryPinId } from "../src/features/hub/catalog/inventory-pin.ts";
 import { readSrc } from "./helpers/kit.ts";
 
-const hubPin = readSrc("features/hub/catalog/inventory-pin.ts");
 const hubRows = readSrc("features/hub/catalog/models-catalog-rows.tsx");
 const hubLists = readSrc("features/hub/catalog/models-catalog-lists.tsx");
 
-test("the Model Hub pins a filesystem row by its load id", () => {
-  assert.match(
-    hubPin,
-    /if \(row\.kind === "cache" \|\| row\.source === "hf_cache"\) \{\s*return row\.repoId;\s*\}/,
+type Row = Parameters<typeof inventoryPinId>[0];
+const row = (fields: Record<string, unknown>) => fields as unknown as Row;
+
+test("a cached repo pins by repo id, a filesystem row by its load id", () => {
+  assert.equal(
+    inventoryPinId(row({ kind: "cache", repoId: "unsloth/Qwen3-0.6B", loadId: "/c/snap" })),
+    "unsloth/Qwen3-0.6B",
   );
-  // A "::" id would read back as a repo::quant pin.
-  assert.match(hubPin, /return row\.loadId\.includes\("::"\) \? null : row\.loadId;/);
+  assert.equal(
+    inventoryPinId(
+      row({ kind: "local", source: "hf_cache", repoId: "org/m", loadId: "/hf/org/m" }),
+    ),
+    "org/m",
+  );
+  for (const source of ["custom", "lmstudio", "omlx", "models_dir"]) {
+    assert.equal(
+      inventoryPinId(row({ kind: "local", source, repoId: null, loadId: "/data/models/m" })),
+      "/data/models/m",
+    );
+  }
 });
 
-test("a filesystem row gets a row menu with Pin even when it cannot be deleted", () => {
+test("a load id holding the repo::quant separator is not pinnable", () => {
+  assert.equal(
+    inventoryPinId(row({ kind: "local", source: "custom", repoId: null, loadId: "/m/a::b" })),
+    null,
+  );
+});
+
+test("filesystem rows get a Pin menu and sort with the pinned section", () => {
   assert.match(hubRows, /const pinId = isDataset \? null : inventoryPinId\(row\);/);
   assert.match(hubRows, /const rowMenu =\s*deletableRepoId \|\| pinId \? \(/);
-  assert.match(hubRows, /onToggle: \(\) => togglePinned\(pinId\),/);
-});
-
-test("pinned filesystem rows sort and count with the pinned section", () => {
-  assert.match(
-    hubLists,
-    /const pinId = inventoryPinId\(item\.row\);\s*return pinId \? rank\(pinKey\(pinId\)\) : Number\.MAX_SAFE_INTEGER;/,
-  );
-  assert.match(
-    hubLists,
-    /const pinId = inventoryPinId\(item\.row\);\s*return pinId != null && pinnedSet\.has\(pinKey\(pinId\)\);/,
-  );
-  assert.match(hubLists, /const itemPinId = isDataset \? null : inventoryPinId\(item\.row\);/);
+  assert.match(hubRows, /onToggle: \(\) => toggleRepoPinned\(pinId\),/);
+  assert.match(hubLists, /return pinId \? rank\(pinId\) : Number\.MAX_SAFE_INTEGER;/);
+  assert.match(hubLists, /return pinId != null && pinCoversId\(pinnedIds, pinId\);/);
 });

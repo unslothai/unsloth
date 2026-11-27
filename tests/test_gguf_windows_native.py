@@ -34,7 +34,6 @@ def test_join_really_discards_the_prefix_for_a_drive_bearing_component():
     """The mechanism behind #7897, on the real platform."""
     assert os.path.join(r"C:\exp\_gguf", r"D:\M\X.Q5_K_M.gguf") == r"D:\M\X.Q5_K_M.gguf"
     assert os.path.join(r"C:\exp", r"\\server\share\X.gguf") == r"\\server\share\X.gguf"
-    # A rooted-but-driveless component keeps the drive, drops the directory.
     assert os.path.join(r"C:\exp", r"\Models\X.gguf") == r"C:\Models\X.gguf"
 
 

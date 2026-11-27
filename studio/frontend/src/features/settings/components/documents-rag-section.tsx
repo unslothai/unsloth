@@ -41,6 +41,7 @@ import { useEmbeddingModelStore } from "../stores/embedding-model-store";
 import { useEmbeddingPinsStore } from "../stores/embedding-pins-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { EmbeddingModelPicker } from "./embedding-model-picker";
+import { OfflineDocsRows } from "./offline-docs-rows";
 import { ReembedDocumentsRow } from "./reembed-documents-row";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
@@ -525,6 +526,7 @@ export function DocumentsRagSection(): ReactElement {
           </SelectContent>
         </Select>
       </SettingsRow>
+      <OfflineDocsRows />
     </SettingsSection>
   );
 }

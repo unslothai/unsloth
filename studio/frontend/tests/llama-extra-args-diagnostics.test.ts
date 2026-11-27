@@ -224,6 +224,40 @@ test("a flag that takes a number rejects a value that is not one", () => {
   );
 });
 
+test("GPU layer keywords load and survive stored-argument sanitizing", () => {
+  for (const flag of ["-ngl", "--gpu-layers", "--n-gpu-layers"]) {
+    for (const value of ["auto", "all"]) {
+      const tokens = [flag, value, "--top-k", "20"];
+      for (const manualGpuMemory of [false, true]) {
+        const diagnostics = diagnoseExtraArgs(tokens.join(" "), CATALOG, {
+          manualGpuMemory,
+        });
+        assert.equal(extraArgsAreLoadable(diagnostics), true, JSON.stringify(diagnostics));
+      }
+      assert.deepEqual(sanitizeStoredExtraArgs(tokens, CATALOG.managed), tokens);
+    }
+    for (const value of ["many", "AUTO", "ALL", "-2"]) {
+      const tokens = [flag, value];
+      assert.equal(extraArgsAreLoadable(diagnoseExtraArgs(tokens.join(" "), CATALOG)), false);
+      assert.deepEqual(sanitizeStoredExtraArgs(tokens, CATALOG.managed), []);
+    }
+  }
+  assert.equal(extraArgsAreLoadable(diagnoseExtraArgs("--batch-size all", CATALOG)), false);
+});
+
+test("GPU layer keywords preserve the last override's manual ratio behavior", () => {
+  const ratio = "-ts 1.1754943508222874e-38,1";
+  const error = (layers: string, gpuLayers: number) =>
+    diagnoseExtraArgs(`${layers} ${ratio}`, CATALOG, {
+      manualGpuMemory: true,
+      gpuLayers,
+    }).find((d) => d.level === "error")?.message ?? null;
+  assert.equal(error("-ngl auto", 49), null);
+  assert.equal(error("-ngl all --gpu-layers auto", 49), null);
+  assert.match(error("-ngl all", -1) ?? "", /0 or at least/);
+  assert.match(error("-ngl auto --gpu-layers all", -1) ?? "", /0 or at least/);
+});
+
 test("a control character is an error, as it is at the backend", () => {
   const diagnostics = diagnoseExtraArgs("--grammar a\u001b[0mb", CATALOG);
   assert.equal(diagnostics[0].level, "error");

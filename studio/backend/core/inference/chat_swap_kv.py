@@ -3,7 +3,8 @@
 
 """Keep the chat context when an image or video load takes the GPU from chat.
 
-Before the media acquire (outside every lock) the chat slots' KV is saved to disk, bounded by
+Before the media acquire (outside every lock) the chat KV (llama-server's slots, or the MLX
+worker's prompt cache) is saved to disk, bounded by
 ``SWAP_KV_SAVE_BUDGET_S``. The manifest waits here as "pending" until ``gpu_arbiter._evict_chat``
 unloads that same model; only then does it become the keep-warm stash that the next chat load
 restores. If nothing was evicted, ``SwapSave.close`` drops it and deletes its files.
@@ -111,10 +112,8 @@ def cancel_preparing_loads(
     any_account: bool = False,
     load_token: Optional[str] = None,
 ) -> int:
-    """Cancel ``media`` load POSTs in preflight: ``account``'s own, or all when the unload is not account scoped.
-
-    With ``load_token``, only ``account``'s POSTs that carry that token (an unload naming its load).
-    Returns once each one either stopped or registered, as the token's lock is held until then."""
+    """Cancels media load POSTs in preflight: the account's, or all when unscoped; with load_token
+    only those carrying it; returns once each has stopped or registered."""
     with _lock:
         tokens = [
             t
@@ -142,9 +141,8 @@ def raise_if_load_cancelled(message: str) -> None:
 
 
 def run_unless_load_cancelled(message: str, fn, *args, **kwargs):
-    """``fn(*args, **kwargs)`` under this POST's preflight lock once no unload has cancelled it, so a
-    destructive step (an engine switch, another resident's unload) never runs for a cancelled load:
-    a cancel lands before the check, or waits for ``fn`` to finish."""
+    """Runs fn under the preflight lock unless an unload cancelled the load, so a destructive step
+    never runs for a cancelled load."""
     token = _current_preparing.get()
     if token is None:
         return fn(*args, **kwargs)
@@ -304,11 +302,50 @@ def _chat_account() -> Optional[str]:
         return gpu_arbiter.owner_account()
 
 
-def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -> None:
+def _unload_account() -> Optional[str]:
+    account = _chat_account()
+    if account is not None:
+        return account
+    # A zero-VRAM primary drops its CHAT claim; fall back to the account that loaded it.
+    from core.inference.llama_keepwarm import loaded_account
+    from routes.inference import get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    if not getattr(llama, "holds_no_vram", False):
+        return None
+    return loaded_account(getattr(llama, "_gguf_path", None))
+
+
+def mlx_chat_identity(orchestrator):
+    serves_mlx = getattr(orchestrator, "_serves_mlx", None)
+    if not callable(serves_mlx) or not serves_mlx():
+        return None
+    name = orchestrator.active_model_name
+    return (name, None, getattr(orchestrator, "_openai_advertised_id", None) or name, "mlx")
+
+
+def _chat_saver():
+    from core.inference.llama_keepwarm import _loaded_identity
+    from routes.inference import get_llama_cpp_backend
+
+    llama = get_llama_cpp_backend()
+    identity = _loaded_identity(llama)
+    if identity is not None:
+        if not getattr(llama, "_gguf_path", None):
+            return None
+        return identity, llama.save_slots_for_resume
+    from core.inference.orchestrator import peek_inference_backend
+
+    orchestrator = peek_inference_backend()
+    identity = mlx_chat_identity(orchestrator)
+    return None if identity is None else (identity, orchestrator.save_prompt_cache_for_resume)
+
+
+def _save_in_thread(save, should_abort, abort: threading.Event, loop, future) -> None:
     """Runs the blocking save on its own thread, so neither the budget nor the event loop's
     shutdown waits on it. A result nobody is waiting for any more is deleted right here."""
     try:
-        manifest, error = llama.save_slots_for_resume(should_abort), None
+        manifest, error = save(should_abort), None
     except BaseException as exc:  # noqa: BLE001 - reported to the waiter
         manifest, error = None, exc
     if abort.is_set():
@@ -329,6 +366,46 @@ def _save_in_thread(llama, should_abort, abort: threading.Event, loop, future) -
         _delete(manifest)
 
 
+async def save_chat_kv_before_unload() -> None:
+    from core.inference.llama_keepwarm import stash_unload_kv
+
+    abort = threading.Event()
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    deadline = time.monotonic() + SWAP_KV_SAVE_BUDGET_S
+    try:
+        saver = _chat_saver()
+        if saver is None or saver[0][-1] == "mlx" or not _keep_kv():
+            return
+        if _unload_account() != _account_id() or _chat_busy():
+            return
+        threading.Thread(
+            target = _save_in_thread,
+            args = (
+                saver[1],
+                lambda: abort.is_set() or time.monotonic() >= deadline or _chat_busy(),
+                abort,
+                loop,
+                future,
+            ),
+            name = "chat-kv-unload-save",
+            daemon = True,
+        ).start()
+        manifest = await asyncio.wait_for(asyncio.shield(future), SWAP_KV_SAVE_BUDGET_S)
+        if manifest and _keep_kv():
+            stash_unload_kv(manifest)
+        else:
+            _delete(manifest)
+    except BaseException as exc:  # noqa: BLE001
+        abort.set()
+        if future.done() and not future.cancelled() and future.exception() is None:
+            _delete(future.result())
+        future.cancel()
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.debug("chat KV save before unload failed: %s", exc)
+
+
 async def save_chat_kv_before_swap(
     owner: str,
     media: str,
@@ -338,26 +415,20 @@ async def save_chat_kv_before_swap(
     gpu_ids: Optional[list] = None,
     **_ignored,
 ) -> SwapSave:
-    """Save the chat KV if acquiring ``owner`` will evict the chat model; never raises.
-
-    ``policy``, ``need_mib`` and ``gpu_ids`` are the keywords the route passes to the acquire, so the peek
-    predicts that exact acquire. Off passes none, and the acquire then runs as Off too."""
+    """Save chat KV if acquiring owner evicts the chat model; never raises; keywords match the acquire."""
     global _pending
     try:
         from core.inference import gpu_arbiter
-        from core.inference.llama_keepwarm import _loaded_identity
         from utils.openai_auto_switch_settings import get_auto_unload_keep_kv
 
         if not gpu_arbiter.would_evict(owner, policy = policy, need_mib = need_mib, gpu_ids = gpu_ids):
             return SwapSave()
         if not await asyncio.to_thread(get_auto_unload_keep_kv):
             return SwapSave()
-        from routes.inference import get_llama_cpp_backend
-
-        llama = get_llama_cpp_backend()
-        identity = _loaded_identity(llama)
-        if identity is None or not getattr(llama, "_gguf_path", None):
+        saver = _chat_saver()
+        if saver is None:
             return SwapSave()
+        identity, save = saver
         account = _account_id()
         counted = _request_counted()
         if _chat_account() != account or _chat_busy(counted):
@@ -389,7 +460,7 @@ async def save_chat_kv_before_swap(
     try:
         threading.Thread(
             target = _save_in_thread,
-            args = (llama, should_abort, abort, loop, future),
+            args = (save, should_abort, abort, loop, future),
             name = "chat-kv-swap-save",
             daemon = True,
         ).start()

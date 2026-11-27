@@ -356,7 +356,9 @@ def _installed_llama_bundle() -> tuple[Optional[str], Optional[str]]:
         from utils.prebuilt.llama_backend import marker_backend
 
         marker = read_llama_marker(find_llama_binary()) or {}
-        return marker_backend(marker), marker.get("asset")
+        backend = marker_backend(marker)
+        # No whisper SYCL build: the cpu slim bundle hardlinks every libggml*, libggml-sycl included.
+        return ("cpu" if backend == "sycl" else backend), marker.get("asset")
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("whisper repair: llama pairing lookup failed", error = str(exc))
         return None, None

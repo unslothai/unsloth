@@ -101,8 +101,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
     assert gpu["available"] is False
     assert gpu["backend"] == "cpu"
     assert gpu["index_kind"] == "relative"
-    # The training inventory must not advertise physical pins for a Vulkan
-    # llama.cpp build. Its ordinals live in inference_gpu below.
+    # Training must not advertise physical pins for Vulkan; its ordinals live in inference_gpu.
     assert gpu["gguf_gpu_ids_supported"] is False
     assert gpu["devices"] == []
     assert inference_gpu["backend"] == "vulkan"
@@ -122,9 +121,7 @@ def test_system_gpu_info_preserves_vulkan_visibility_metrics(monkeypatch):
 
 
 def test_system_gpu_info_withholds_gguf_pin_when_the_vulkan_probe_enumerates_nothing(monkeypatch):
-    """A Vulkan build whose probe returns no ordinals has nothing valid to pin,
-    so the picker must be told pins are unsupported rather than offered an empty
-    namespace it would 400 on."""
+    """With no Vulkan ordinals nothing is valid to pin; say pins are unsupported, not an empty namespace."""
     import utils.hardware as hardware
 
     monkeypatch.setattr(
@@ -334,9 +331,7 @@ def test_vulkan_inference_gpu_uses_inventory_fallback_names(monkeypatch):
 
 
 def test_system_gpu_info_keeps_a_reported_free_over_total_minus_used(monkeypatch):
-    """Apple unified memory reports free directly because it is not total - used.
-    Recomputing it here put the overstated figure back on the Resources tab while
-    /api/system/hardware served the honest one."""
+    """Apple unified memory reports free directly; total minus used overstates it on the Resources tab."""
     import utils.hardware as hardware
 
     monkeypatch.setattr(

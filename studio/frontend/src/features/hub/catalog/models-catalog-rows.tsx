@@ -15,6 +15,7 @@ import {
   DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
   deleteLocalModel,
+  deleteUploadedDataset,
   revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
@@ -29,7 +30,7 @@ import {
 } from "@/features/hub";
 import {
   ModelRowMenu,
-  pinKey,
+  pinCoversId,
   usePinnedModelsStore,
 } from "@/features/model-picker";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
@@ -43,12 +44,14 @@ import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  type FocusEvent,
   type ReactNode,
   createContext,
   memo,
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -260,12 +263,27 @@ function CatalogRow({
 }) {
   const [interactive, setInteractive] = useState(COARSE_POINTER);
   const arm = useCallback(() => setInteractive(true), []);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const refocusIndex = useRef<number | null>(null);
+  const armFromFocus = (event: FocusEvent<HTMLDivElement>) => {
+    if (interactive) return;
+    const buttons = Array.from(event.currentTarget.querySelectorAll("button"));
+    refocusIndex.current = buttons.indexOf(event.target as Element as HTMLButtonElement);
+    arm();
+  };
+  // Arming wraps the row in a Tooltip, which remounts it and would drop keyboard focus.
+  useLayoutEffect(() => {
+    if (refocusIndex.current === null) return;
+    rowRef.current?.querySelectorAll("button")[refocusIndex.current]?.focus();
+    refocusIndex.current = null;
+  }, [interactive]);
   const card = variant === "card";
   const button = (
     <div
+      ref={rowRef}
       data-selected={selected || undefined}
       onPointerEnter={arm}
-      onFocusCapture={arm}
+      onFocusCapture={armFromFocus}
       className={cn(
         "group/row relative w-full select-none overflow-hidden text-left",
         card
@@ -313,17 +331,19 @@ function StatusDot({
   tone,
   label,
 }: {
-  tone: "warning" | "danger" | "success" | "downloading";
+  tone: "warning" | "danger" | "success" | "downloading" | "asset";
   label: string;
 }) {
   const toneClass =
-    tone === "warning"
-      ? "bg-status-warning"
-      : tone === "danger"
-        ? "bg-status-danger"
-        : tone === "downloading"
-          ? DOWNLOADING_DOT_CLASS
-          : "bg-status-success";
+    tone === "asset"
+      ? "bg-status-asset"
+      : tone === "warning"
+        ? "bg-status-warning"
+        : tone === "danger"
+          ? "bg-status-danger"
+          : tone === "downloading"
+            ? DOWNLOADING_DOT_CLASS
+            : "bg-status-success";
   return (
     <span
       role="img"
@@ -366,6 +386,7 @@ export function buildRowStatusTooltip({
   isGguf,
   isAdapter,
   isAvailableOnDevice,
+  isSharedAsset,
   partialRepoId,
   downloading = false,
   unsupported,
@@ -375,6 +396,7 @@ export function buildRowStatusTooltip({
   isGguf?: boolean;
   isAdapter?: boolean;
   isAvailableOnDevice?: boolean;
+  isSharedAsset?: boolean;
   partialRepoId?: string;
   downloading?: boolean;
   unsupported?: boolean;
@@ -410,6 +432,12 @@ export function buildRowStatusTooltip({
       <TooltipLegendRow key="partial" toneClass="bg-status-warning">
         Partial download of <span className="font-medium">{partialRepoId}</span>
         . Open it to finish the download.
+      </TooltipLegendRow>,
+    );
+  } else if (isSharedAsset) {
+    lines.push(
+      <TooltipLegendRow key="asset" toneClass="bg-status-asset">
+        Shared assets. Supporting files used by compatible models.
       </TooltipLegendRow>,
     );
   } else if (isAvailableOnDevice) {
@@ -648,6 +676,7 @@ export const InventoryRow = memo(function InventoryRow({
     isGguf: showFormatDot && row.isGguf,
     isAdapter: showFormatDot && row.modelFormat === "adapter",
     isAvailableOnDevice: !row.partial,
+    isSharedAsset: row.companionPrefetch,
     partialRepoId,
     downloading,
     unsupported,
@@ -699,7 +728,9 @@ export const InventoryRow = memo(function InventoryRow({
       )}
       {partialRepoId ? (
         <PartialStatusDot downloading={downloading} />
-      ) : row.companionPrefetch ? null : (
+      ) : row.companionPrefetch ? (
+        <StatusDot tone="asset" label="Shared assets" />
+      ) : (
         <StatusDot tone="success" label="On device" />
       )}
       {unsupported && (
@@ -709,9 +740,13 @@ export const InventoryRow = memo(function InventoryRow({
   );
 
   const compactMarkers =
-    partialRepoId || unsupported ? (
+    partialRepoId || row.companionPrefetch || unsupported ? (
       <span className="flex shrink-0 items-center gap-1">
-        {partialRepoId && <PartialStatusDot downloading={downloading} />}
+        {partialRepoId ? (
+          <PartialStatusDot downloading={downloading} />
+        ) : row.companionPrefetch ? (
+          <StatusDot tone="asset" label="Shared assets" />
+        ) : null}
         {unsupported && (
           <StatusDot tone="danger" label="May not be supported yet" />
         )}
@@ -731,10 +766,10 @@ export const InventoryRow = memo(function InventoryRow({
   );
 
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
-  const togglePinned = usePinnedModelsStore((s) => s.togglePinned);
-  // Filesystem rows pin too, under their load id, so they can be kept at the top of the list.
+  const toggleRepoPinned = usePinnedModelsStore((s) => s.toggleRepoPinned);
+  // Filesystem rows pin under their load id.
   const pinId = isDataset ? null : inventoryPinId(row);
-  const rowPinned = pinId != null && pinnedKeys.includes(pinKey(pinId));
+  const rowPinned = pinId != null && pinCoversId(pinnedKeys, pinId);
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
   const rowMenu =
     deletableRepoId || pinId ? (
@@ -747,7 +782,7 @@ export const InventoryRow = memo(function InventoryRow({
                 pinned: rowPinned,
                 pinLabel: "Pin",
                 unpinLabel: "Unpin",
-                onToggle: () => togglePinned(pinId),
+                onToggle: () => toggleRepoPinned(pinId),
               }
             : undefined
         }
@@ -799,6 +834,24 @@ export const InventoryRow = memo(function InventoryRow({
           },
           onDeleted: onChange,
         } : undefined}
+      />
+    ) : isDataset && row.kind === "local" && row.datasetSource === "upload" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${title}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-6 rounded-full opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        del={{
+          title: "Delete uploaded dataset?",
+          description: (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{title}</span> from
+              disk. Runs that used it cannot be resumed from this file.
+            </>
+          ),
+          successMessage: `Deleted ${title}`,
+          onConfirm: () => deleteUploadedDataset(row.id),
+          onDeleted: onChange,
+        }}
       />
     ) : localActionPath && row.kind === "local" ? (
       <ModelRowMenu

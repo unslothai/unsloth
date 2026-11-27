@@ -47,7 +47,7 @@ class _FakeUnsloth:
 
 
 def _list_models(monkeypatch, llama):
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _FakeUnsloth())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
     return asyncio.run(models_route.list_models(current_subject = "unsloth")).models
 
@@ -87,7 +87,7 @@ def test_plain_repo_ids_are_unchanged(monkeypatch):
     class _Backend(_FakeUnsloth):
         default_models = ["unsloth/Qwen3-4B-Instruct-2507", "Qwen3-4B"]
 
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(None))
 
     entries = asyncio.run(models_route.list_models(current_subject = "unsloth")).models
@@ -136,7 +136,7 @@ def test_a_hub_repo_id_ending_in_gguf_keeps_its_suffix(monkeypatch):
     class _Backend(_FakeUnsloth):
         default_models = ["lex-au/Orpheus-3b-FT-Q8_0.gguf"]
 
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(None))
 
     entries = asyncio.run(models_route.list_models(current_subject = "unsloth")).models

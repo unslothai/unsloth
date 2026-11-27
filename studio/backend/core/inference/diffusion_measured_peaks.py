@@ -1,23 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Learned activation peaks: the real CUDA peak above the resident weights, recorded per
-(family, denoiser quant, speed tier, resolution bucket, frames, GPU name) at a successful render and persisted under
-the Studio cache dir, so later loads of the same model place it from a measurement instead of the flat
-8192 MiB/MP estimate.
-
-The static tables in ``diffusion_memory`` stay the seed: a learned value only RAISES a seeded peak (a local
-measurement above the seed means this machine needs more) and supplies one where no seed exists. It never lowers a
-seed, because one render does not exercise every phase (a prompt-cache hit skips the encoder, a smaller request
-decodes less), and the seed was measured on the worst phase.
-
-Phases: ``pre_decode`` / ``decode`` on the whole-render scale (prefetch window pad included), ``decode_unpadded`` /
-``unpadded`` without it (only the VAE runs at decode; resident weights hold no window). Pre-phase stores place from the
-whole-render peak. ``UNSLOTH_DIFFUSION_PHASE_PEAKS=0`` ignores the phases.
-
-``UNSLOTH_DIFFUSION_LEARNED_PEAKS=0`` turns lookups and recording off; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE``
-names the JSON file (default ``<studio cache>/diffusion_measured_peaks.json``).
-"""
+"""Learned CUDA activation peaks per render setup; they can raise the static seed but never lower it."""
 
 from __future__ import annotations
 
@@ -574,6 +558,27 @@ class PeakProbe:
         self.pre_decode = None
         self.decodes = 0
         self.phase_peaks: dict = {}
+        self.encode_peak = None
+        self.encodes = 0
+
+    def mark_encode(self) -> None:
+        """Prompt-encode peak, without a reset; a second encode (split batch) interleaves phases, so none is reported."""
+        if self.device is None or self.base is None:
+            return
+        self.encodes += 1
+        if self.encodes > 1:
+            self.encode_peak = None
+            return
+        try:
+            import torch
+            peak = (
+                int(torch.cuda.max_memory_allocated(self.device))
+                + _range_peak_bytes(self.device)
+                - self.base
+            )
+        except Exception:  # noqa: BLE001
+            return
+        self.encode_peak = -(-peak // (1024 * 1024)) if peak > 0 else 0
 
     def mark_decode(self) -> None:
         """Read the pre-decode peak without a reset (other measurements share the counters). A second decode (split

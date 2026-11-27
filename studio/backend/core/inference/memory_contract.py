@@ -1,31 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One canonical memory estimate, and the two legacy shapes projected from it.
-
-Studio answers "how much memory would this load take" on two routes:
-
-* ``POST /api/inference/estimate-memory`` -- the Load Model panel
-* ``GET  /api/models/kv-cache-estimate``  -- the Hub memory bar
-
-They already share the ``_gguf_memory_breakdown`` planner, so the arithmetic
-cannot drift. What used to drift is everything around it, and the sharp edge is
-that ``weights_bytes`` exists on both, is an ``int`` on both, and means
-different things: every resident file on the inference route, the quant file
-alone on the models route. Nothing in the type system separates those, so a
-caller reading the wrong one is simply wrong, quietly.
-
-This module is the fix. :func:`build_memory_estimate` turns a planner breakdown
-into the canonical :class:`MemoryEstimate`, whose two unambiguous fields replace
-that one ambiguous one. The two ``project_*`` functions then map the canonical
-model back onto each route's existing wire shape, byte for byte, so no client
-sees a change. The legacy meaning of ``weights_bytes`` is applied in exactly one
-place per route, right here, where the two sit next to each other and the
-difference is impossible to miss.
-
-Everything here is pure: no I/O, no probing, no network. The planner does that
-work; this only renames and reshapes what it returned.
-"""
+"""Canonical memory estimate projected byte for byte onto POST /api/inference/estimate-memory and
+GET /api/models/kv-cache-estimate; no client change; weights_bytes differs by route; pure."""
 
 from __future__ import annotations
 

@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refusals the media model auto-switch answers a generation request with.
-
-Every one of these is an ordinary outcome rather than a fault. The switch never downloads,
-never cuts a running generation short, and never outlives the ~100 second window Unsloth's
-secure-mode tunnel gives an origin response, so where it cannot serve the request it says which
-of those it hit and asks the caller to retry.
-
-Each refusal is rendered in the error shape of the route that raised it: the OpenAI-compatible
-body for ``/v1``, a plain string for the native media routes.
-"""
+"""Ordinary refusals that ask callers to retry; the switch never downloads, never cuts a running
+generation short, never outlives the ~100 s tunnel window; /v1 gets OpenAI error bodies, native
+routes plain strings."""
 
 from __future__ import annotations
 

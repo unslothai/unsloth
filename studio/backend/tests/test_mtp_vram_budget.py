@@ -23,8 +23,7 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 sys.modules.setdefault("structlog", _types.ModuleType("structlog"))
 
-# Only stub httpx when missing; a stub shadows names huggingface_hub.errors imports
-# and leaks via sys.modules for the whole session.
+# Only stub httpx if missing: a stub shadows huggingface_hub.errors and leaks via sys.modules.
 try:
     import httpx as _httpx_real  # noqa: F401
 except ImportError:
@@ -1007,8 +1006,7 @@ class TestExtraArgsMtpDetection:
 
 
 def test_qwen36_class_regression_picks_lower_ctx_with_mtp():
-    """A 24 GB card that auto-picks a high context without MTP must pick a
-    strictly lower one once the MTP draft reserve is accounted for."""
+    """A 24 GB card with MTP must auto-pick a strictly lower context than without it."""
     b = _make_backend()
     b._can_estimate_kv = lambda: True
     b._estimate_kv_cache_bytes = lambda n, _t = None, **_k: 0 if n <= 0 else int(n * 66_000)
@@ -1037,8 +1035,7 @@ class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
 
     @staticmethod
     def _budget_type(cache_type_kv, env):
-        """The cache type load_model resolves for the reserve, via the same
-        precedence chain: extras, then the field, then a heavier inherited env."""
+        """Extras, then the field, then a heavier inherited env decide the reserved cache type."""
         from core.inference.llama_cpp import (
             _VALID_CACHE_TYPES,
             _env_main_cache_type_for_budget,
@@ -1052,15 +1049,13 @@ class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
         return resolved
 
     def test_an_unknown_type_does_not_shadow_a_heavier_inherited_env(self):
-        """q3_K is not emittable, so the child really runs the inherited f32.
-        Budgeting "q3_K" prices it at _kv_bytes_per_elem's 2.0 unknown default --
-        a clean 2x under-reservation, in the one mode with no --fit valve."""
+        """q3_K is not emittable, so the child runs inherited f32; budgeting q3_K prices it at the
+        2.0 unknown default of _kv_bytes_per_elem, a 2x under-reservation with no --fit valve."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
         assert self._budget_type("q3_K", env) == "f32"
 
     def test_an_emittable_type_still_wins_over_the_env(self):
-        """q8_0 IS emitted, so it overrides the env on both axes and must be what
-        the budget prices -- the whole point of #8939."""
+        """Emitted q8_0 overrides the env on both axes, so the budget must price it (#8939)."""
         env = {"LLAMA_ARG_CACHE_TYPE_K": "f32", "LLAMA_ARG_CACHE_TYPE_V": "f32"}
         assert self._budget_type("q8_0", env) == "q8_0"
 
@@ -1068,8 +1063,7 @@ class TestUnemittableCacheTypeFallsBackToTheEnvBudget:
         assert self._budget_type("q3_K", {}) is None
 
     def test_the_loader_applies_the_guard_before_the_env_adoption(self):
-        """Source-pinned: the order is what makes it work. Adopting the env first
-        would leave the unemittable string in place."""
+        """Source-pinned: the guard must precede env adoption, or the unemittable string stays."""
         load = "".join(inspect.getsource(LlamaCppBackend.load_model).split())
         guard = load.find("notin_VALID_CACHE_TYPES")
         adopt = load.find("cache_type_kv=_env_main_cache_type_for_budget()")
@@ -1088,15 +1082,13 @@ class TestAnUnsetInheritedCacheAxisIsStillF16:
 
     @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
     def test_one_quantized_axis_alone_does_not_adopt_a_lighter_scalar(self, var):
-        """The effective pair is (q4_0, f16) either way round, whose heavier axis
-        is f16 -- the f16 default reserve, which is already conservative."""
+        """Either order gives (q4_0, f16), whose heavier axis f16 is already conservative."""
         assert self._budget({var: "q4_0"}) is None
         assert self._budget({var: "q8_0"}) is None
 
     @pytest.mark.parametrize("var", ["LLAMA_ARG_CACHE_TYPE_K", "LLAMA_ARG_CACHE_TYPE_V"])
     def test_one_heavier_axis_alone_is_still_adopted(self, var):
-        """f32 on one axis is heavier than the f16 default on the other, so it
-        must still be budgeted -- the case the helper exists for."""
+        """f32 on one axis outweighs the f16 default on the other, so it must be budgeted."""
         assert self._budget({var: "f32"}) == "f32"
 
     def test_both_axes_quantized_is_adopted(self):
@@ -1126,8 +1118,7 @@ class TestAnUnsetInheritedCacheAxisIsStillF16:
         assert self._budget({"LLAMA_ARG_CACHE_TYPE_K": "f16"}) is None
 
     def test_the_under_reservation_it_prevents(self):
-        """On an arch with key_length > value_length the swap lands the cheap type
-        on the LARGER tensor. Driven through the real estimator."""
+        """When key_length > value_length, the swap puts the cheap type on the larger tensor."""
         from core.inference.llama_cpp import _effective_main_cache_types
 
         env = {"LLAMA_ARG_CACHE_TYPE_V": "q4_0"}

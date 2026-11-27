@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Token preview subprocess: loads only a model's tokenizer and shows how training would tokenize and
-mask a few dataset rows or a typed text.
-
-Runs the same formatting, chat template and completion masking calls as the training worker, so
-what the preview marks as trained is what the run trains on. It never touches a GPU: the parent
-starts it with every accelerator hidden, and it exits on its own once idle.
-"""
+"""Tokenizer-only preview subprocess; same formatting and masking as training, and never uses a GPU."""
 
 from __future__ import annotations
 
@@ -234,9 +228,8 @@ def _preview(tokenizer, config: dict, request: dict) -> dict:
         texts, final_format = [request["text"]], str(request.get("final_format") or "").lower()
         first_text = texts[0]
     else:
-        # Formatting may set a template on the tokenizer it is given; training formats with a throwaway
-        # tokenizer too, and masks with the one the model load returns. The whole pool is formatted so a
-        # raw-text column and the BOS rule are chosen from the dataset's head, as training does.
+        # Format a deep copy: templates mutate the tokenizer; the whole pool decides raw-text and
+        # BOS rules.
         texts, final_format = _format_rows(
             copy.deepcopy(tokenizer), {**config, **request}, request["rows"]
         )
@@ -324,7 +317,11 @@ def run_token_preview_process(*, cmd_queue: Any, resp_queue: Any, config: dict) 
     load_error = None
     try:
         from utils.transformers_version import activate_transformers_for_subprocess
+        from utils.transformers_backports import install as guard_transformers_parsing
+
         activate_transformers_for_subprocess(config["model_name"], config.get("hf_token"))
+        # The unsloth import below comes too late: the tokenizer load parses the repo's config.json.
+        guard_transformers_parsing()
         tokenizer = _load_tokenizer(config)
     except Exception as exc:  # noqa: BLE001 - reported on every request instead
         load_error = f"Could not load the tokenizer for {config['model_name']}: {exc}"

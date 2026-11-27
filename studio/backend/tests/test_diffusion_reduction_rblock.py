@@ -243,12 +243,12 @@ def _filter_reaching_compile(monkeypatch, family):
     return seen["filter_reductions"]
 
 
-def test_only_ltx_opts_into_the_reduction_filter(monkeypatch):
-    # B200: of the video families only LTX-2 opts in
+def test_only_opted_in_video_families_filter_reductions(monkeypatch):
+    # B200: LTX-2 and HunyuanVideo-1.5 opt in, Wan 2.2 keeps inductor's pick
     monkeypatch.setattr(cc, "_device_capability", lambda: (10, 0))
-    assert _filter_reaching_compile(monkeypatch, _family("ltx-2")) is True
-    for name in ("hunyuanvideo-1.5", "wan2.2-ti2v-5b"):
-        assert _filter_reaching_compile(monkeypatch, _family(name)) is False, name
+    for name in ("ltx-2", "hunyuanvideo-1.5"):
+        assert _filter_reaching_compile(monkeypatch, _family(name)) is True, name
+    assert _filter_reaching_compile(monkeypatch, _family("wan2.2-ti2v-5b")) is False
 
 
 def _compiled_kwargs(max_autotune = False, filter_reductions = False):
@@ -276,6 +276,30 @@ def test_opted_in_compile_carries_the_filter_and_leaves_the_process_knob(max_aut
     assert not cc.is_recorded(
         "torch._inductor.config.test_configs", "force_filter_reduction_configs"
     )
+
+
+@_needs_filter
+def test_max_compile_with_the_filter_turns_coordinate_descent_off():
+    kwargs = _compiled_kwargs(True, filter_reductions = True)
+    assert kwargs["options"]["max_autotune"] is True
+    assert kwargs["options"]["coordinate_descent_tuning"] is False
+    assert kwargs["options"][_FILTER] is True
+
+
+@_needs_filter
+@pytest.mark.parametrize("mode", ["max-autotune-no-cudagraphs", "max-autotune"])
+def test_pin_turns_off_coordinate_descent_from_any_mode(mode):
+    kwargs = {"fullgraph": True, "dynamic": None, "mode": mode}
+    assert ds.pin_reduction_configs(kwargs) is True
+    assert "mode" not in kwargs
+    assert kwargs["options"]["coordinate_descent_tuning"] is False
+
+
+@_needs_filter
+def test_pin_without_a_mode_adds_no_coordinate_descent_option():
+    kwargs = {"fullgraph": True, "dynamic": True}
+    assert ds.pin_reduction_configs(kwargs) is True
+    assert kwargs["options"] == {_FILTER: True}
 
 
 @pytest.mark.parametrize("max_autotune", [False, True])

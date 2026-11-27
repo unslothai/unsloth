@@ -80,8 +80,7 @@ def _backend(monkeypatch, calls_seen):
 
 
 def test_an_api_initiated_load_opens_the_cache_and_downloads_nothing(monkeypatch, tmp_path):
-    """The whole promise, end to end: every helper on the load path either stays off the Hub or
-    asks it for a cached file only."""
+    """Every load-path helper stays off the Hub, or asks it only for cached files."""
     calls = _Calls()
     _install_sentinels(monkeypatch, calls, tmp_path, offline = True)
     seen: dict = {}
@@ -178,9 +177,8 @@ def test_load_pipeline_carries_the_flag_into_the_native_path(monkeypatch):
 
 
 def test_an_offline_denoiser_probe_reads_the_cache_instead_of_the_hub(monkeypatch):
-    """Offline the "is there a replacement denoiser?" question is answered from disk. Refusing the
-    load instead would break the one case the flag exists for; answering yes without checking would
-    drop the dense shards a cache that lacks the artifact still needs."""
+    """Offline, the replacement-denoiser probe reads the cache: refusing the load would break the
+    offline case, and a blind yes drops shards the cache still needs."""
     from core.inference.diffusion import DiffusionBackend
 
     fam = detect_video_family("MiniMaxAI/MiniMax-H3")

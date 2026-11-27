@@ -58,10 +58,9 @@ fn adopted_failure_is_a_stall(verified: bool, served_alive: bool, different_owne
     !verified && served_alive && !different_owner
 }
 
-/// Not `alive && inference_active`: a saturated adopted backend fails ownership re-verification,
-/// but its pre-probe busy marker is still evidence that it is generating.
+/// Keep busy stalls when ownership cannot be reverified; any verified live answer wins.
 fn watchdog_confirm_keeps_backend(confirmed: &BackendLiveness) -> bool {
-    confirmed.inference_active && (confirmed.alive || confirmed.probe_timed_out)
+    confirmed.alive || (confirmed.inference_active && confirmed.probe_timed_out)
 }
 
 /// One long last-chance probe before a kill, for a generation that started between probes.
@@ -93,8 +92,12 @@ fn watchdog_failure_budget(inference_active: bool, probe_timed_out: bool) -> u32
     }
 }
 
-async fn managed_install_ready_after_repair() -> bool {
-    crate::preflight::managed_install_ready().await
+async fn managed_install_not_ready_after_repair() -> Option<String> {
+    crate::preflight::managed_install_not_ready_reason().await
+}
+
+fn repair_not_ready_message(reason: &str) -> String {
+    format!("Repair finished, but Unsloth install is still not desktop-ready ({reason}).")
 }
 
 fn should_emit_repair_failed(msg: &str) -> bool {
@@ -344,18 +347,27 @@ pub async fn start_managed_server(
     Ok(())
 }
 
-/// Stop the current desktop-owned backend if this app can safely control it.
+/// Stop the backend this app owns or is attached to, if it can safely control it.
 #[tauri::command]
 pub async fn stop_server(
     state: tauri::State<'_, BackendState>,
     shutdown: tauri::State<'_, ShutdownFlag>,
     diagnostics: tauri::State<'_, DiagnosticsState>,
+    port: Option<u16>,
 ) -> Result<(), String> {
     info!("stop_server command called");
     let state = state.inner().clone();
     let shutdown = shutdown.inner().clone();
     let diagnostics = diagnostics.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let attached_port = state
+            .lock()
+            .ok()
+            .filter(|proc| !proc.has_owned_backend())
+            .and_then(|proc| port.or(proc.port));
+        if let Some(port) = attached_port {
+            process::stop_attached_backend(port)?;
+        }
         process::stop_backend(&state, &shutdown, Some(&diagnostics))
     })
     .await
@@ -944,20 +956,30 @@ pub async fn start_managed_repair(
     };
 
     match update_result {
-        Ok(()) if !force_installer && managed_install_ready_after_repair().await => {
-            info!("Managed repair complete after update");
-            diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
-            let _ = app.emit("repair-complete", ());
-            return Ok(());
-        }
         Ok(()) if force_installer => {}
-        Ok(()) => {
-            warn!("Managed repair update finished, but preflight is still not ready; falling back to installer");
-            let _ = app.emit(
-                "repair-progress",
-                "Update finished, but Unsloth is still not ready. Running bundled installer...",
-            );
-        }
+        Ok(()) => match managed_install_not_ready_after_repair().await {
+            None => {
+                info!("Managed repair complete after update");
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "success",
+                    None,
+                );
+                let _ = app.emit("repair-complete", ());
+                return Ok(());
+            }
+            Some(reason) => {
+                warn!(
+                    "Managed repair update finished, but preflight is still not ready ({}); falling back to installer",
+                    reason
+                );
+                let _ = app.emit(
+                    "repair-progress",
+                    "Update finished, but Unsloth is still not ready. Running bundled installer...",
+                );
+            }
+        },
         Err(msg) => {
             // A stop is the user quitting, not a broken install; running the installer would
             // half-build the venv.
@@ -1039,14 +1061,14 @@ pub async fn start_managed_repair(
         return Err(msg);
     }
 
-    if managed_install_ready_after_repair().await {
+    let Some(reason) = managed_install_not_ready_after_repair().await else {
         info!("Managed repair complete after installer");
         diagnostics::finish_repair_group(&diagnostics_state, &repair_group_id, "success", None);
         let _ = app.emit("repair-complete", ());
         return Ok(());
-    }
+    };
 
-    let msg = "Repair finished, but Unsloth install is still not desktop-ready.".to_string();
+    let msg = repair_not_ready_message(&reason);
     error!("{}", msg);
     diagnostics::finish_repair_group(
         &diagnostics_state,
@@ -1162,6 +1184,14 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("Directory does not exist"));
     }
+    #[test]
+    fn a_repair_that_ends_not_ready_names_the_reason() {
+        assert_eq!(
+            super::repair_not_ready_message("studio_install_incomplete"),
+            "Repair finished, but Unsloth install is still not desktop-ready (studio_install_incomplete)."
+        );
+    }
+
     #[test]
     fn repair_elevation_is_not_a_terminal_repair_failure() {
         assert!(!super::should_emit_repair_failed("NEEDS_ELEVATION"));
@@ -2147,7 +2177,7 @@ mod tests {
             },
             false,
         );
-        assert!(!super::watchdog_confirm_keeps_backend(&idle));
+        assert!(super::watchdog_confirm_keeps_backend(&idle));
 
         let taken_over = super::adopted_backend_liveness(false, &served, true);
         assert!(!super::watchdog_confirm_keeps_backend(&taken_over));
@@ -2276,15 +2306,27 @@ mod tests {
                     .copied()
                     .unwrap_or(Probe::TimedOut);
                 next_confirm += 1;
-                match confirm {
-                    Probe::Answered { busy: true, .. } => {
-                        was_generating = true;
-                        failures = 0;
-                        continue;
+                let confirmed = match confirm {
+                    Probe::Answered { warming, busy } => super::BackendLiveness {
+                        alive: true,
+                        warming_up: warming,
+                        inference_active: busy,
+                        probe_timed_out: false,
+                        answered: true,
+                    },
+                    Probe::TimedOut => {
+                        elapsed += confirm_budget;
+                        super::BackendLiveness {
+                            probe_timed_out: true,
+                            ..Default::default()
+                        }
                     }
-                    Probe::Answered { busy: false, .. } => {}
-                    Probe::TimedOut => elapsed += confirm_budget,
-                    Probe::Refused => {}
+                    Probe::Refused => super::BackendLiveness::default(),
+                };
+                if super::watchdog_confirm_keeps_backend(&confirmed) {
+                    was_generating = confirmed.inference_active;
+                    failures = 0;
+                    continue;
                 }
             }
             if failures >= budget {
@@ -2346,13 +2388,20 @@ mod tests {
             ),
             None
         );
+
+        let mut idle_confirmed = vec![answered(false)];
+        idle_confirmed.extend(vec![Probe::TimedOut; plain * 2]);
+        assert_eq!(
+            simulate_watchdog(&idle_confirmed, &[answered(false), Probe::TimedOut]),
+            Some(interval + (plain * 2) as u64 * stall_cycle + confirm_budget)
+        );
         assert_eq!(
             simulate_watchdog(&started_between_probes, &[Probe::TimedOut]),
             Some(interval + plain as u64 * stall_cycle + confirm_budget)
         );
         assert_eq!(
             simulate_watchdog(&started_between_probes, &[answered(false)]),
-            Some(interval + plain as u64 * stall_cycle)
+            Some(interval + (plain * 2) as u64 * stall_cycle + confirm_budget)
         );
 
         let mut finished = vec![answered(true), answered(false)];
@@ -2640,8 +2689,6 @@ async fn health_watchdog(
                 budget,
                 liveness.probe_timed_out,
             ) {
-                // Before killing, one wider probe; only a backend reporting it is generating gets the
-                // count reset.
                 let confirmed = check_watchdog_health(
                     &state,
                     generation,
@@ -2652,7 +2699,7 @@ async fn health_watchdog(
                 .await;
                 if watchdog_confirm_keeps_backend(&confirmed) {
                     warn!(
-                        "Health watchdog: backend on port {} answered the last-chance probe and is still generating, not declaring it dead",
+                        "Health watchdog: backend on port {} survived the last-chance probe, not declaring it dead",
                         port
                     );
                     has_seen_healthy = watchdog_seen_healthy_after(
@@ -2660,7 +2707,7 @@ async fn health_watchdog(
                         confirmed.alive,
                         confirmed.warming_up,
                     );
-                    was_generating = true;
+                    was_generating = confirmed.inference_active;
                     consecutive_failures = 0;
                     continue;
                 }

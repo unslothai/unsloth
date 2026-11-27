@@ -93,9 +93,8 @@ def _report_clips(
 
 
 def test_a_clip_family_is_not_offered_while_every_listed_dataset_is_stills(client, ds_root):
-    """The bug: H3 was advertised in the Train tab while the only datasets that tab can list are
-    folders of images. Every pick was a dead end -- Start rejected the dataset the picker had
-    just offered for it."""
+    """H3 was advertised in Train while that tab could only list image folders, so every pick was a
+    dead end: Start rejected it."""
     clip_families = _clip_families() & _trainable_here()
     if not clip_families:
         pytest.skip("this install trains no clip family")
@@ -114,9 +113,8 @@ def test_a_clip_family_is_not_offered_while_every_listed_dataset_is_stills(clien
 def test_a_clip_family_is_offered_as_soon_as_a_clip_dataset_is_listable(
     client, ds_root, monkeypatch
 ):
-    """The other half, and the reason the gate reads a count rather than naming a family: nothing
-    below has to be edited for H3 to light up. The dataset layer reporting a clip is the whole
-    trigger."""
+    """The gate reads a clip count rather than naming a family, so H3 lights up once the dataset
+    layer reports a clip; nothing else is edited."""
     clip_families = _clip_families() & _trainable_here()
     if not clip_families:
         pytest.skip("this install trains no clip family")
@@ -132,9 +130,8 @@ def test_a_clip_family_is_offered_as_soon_as_a_clip_dataset_is_listable(
 
 
 def test_a_zero_clip_report_is_not_a_clip_dataset(client, ds_root, monkeypatch):
-    """The layer reporting the field but counting none is the image-only case, not the clip one.
-    Asserted separately because it is the state every existing image dataset will be in once the
-    field exists."""
+    """A clip field reporting zero clips is the image-only case, asserted separately since every
+    existing image dataset will be in it."""
     clip_families = _clip_families() & _trainable_here()
     if not clip_families:
         pytest.skip("this install trains no clip family")
@@ -198,9 +195,8 @@ def test_a_mixed_folder_does_not_advertise_a_clip_family():
 
 
 def test_a_summary_with_an_unreadable_clip_count_is_treated_as_no_clips():
-    """The count is read off whatever the layer hands over, so a junk value must not raise out of
-    the info route. No clips is the safe reading: it withholds an option rather than offering one
-    that cannot run."""
+    """A junk clip count must not raise out of the info route; reading it as no clips withholds the
+    option rather than offering one that cannot run."""
     import routes.training as tr
 
     class _Junk:
@@ -215,9 +211,8 @@ def test_a_summary_with_an_unreadable_clip_count_is_treated_as_no_clips():
 
 
 def test_the_api_still_carries_the_family_the_picker_withholds(client, ds_root):
-    """The review item asked for the routing to be KEPT: only the advertisement changes. So on a
-    stills-only host, where the picker withholds H3, the trainable set the start route resolves
-    against still has it."""
+    """Only the advertisement changes: on a stills-only host the picker withholds H3, but the start
+    route's trainable set still includes it."""
     import routes.training as tr
     from core.training.diffusion_train_common import (
         TRAINABLE_VIDEO_FAMILIES,

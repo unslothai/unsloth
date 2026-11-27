@@ -99,7 +99,7 @@ export function DiffusionCharts({
       : 0;
 
   return (
-    <div className="grid grid-cols-1 gap-4 @min-[720px]:grid-cols-2">
+    <div className="grid grid-cols-1 items-start gap-4 @min-[720px]:grid-cols-2">
       <div className="flex flex-col gap-1">
         <TrainingLossChartCard
           data={lossData}

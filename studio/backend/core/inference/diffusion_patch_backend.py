@@ -1,22 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One vetted path for every diffusion monkey-patch.
-
-Thin wrappers over ``unsloth_zoo.temporary_patches.utils`` ``patch_function`` /
-``restore_original`` so all runtime patching (eager fusions, GGUF accelerators, per-arch rewrites)
-goes through the SAME fingerprint-checked, reversible mechanism:
-
-* ``patch_function`` stashes the live original and, unless ``force=True``, runs
-  ``can_safely_patch`` (a param-name/kind/required fingerprint; ``relaxed`` ignores annotation
-  drift but rejects a real signature change) -- so a changed forward is left unpatched, not
-  miscompiled.
-* ``restore_original`` restores the original -- exact, idempotent uninstall.
-
-``unsloth_zoo`` is imported LAZILY per call: it runs GPU detection at import and raises without an
-accelerator (``UNSLOTH_ALLOW_CPU=1`` bypasses), and the backend must stay importable on CPU-only
-hosts. If the import fails, patching is a best-effort no-op (stock forward runs, correctness kept).
-"""
+"""Diffusion patches via unsloth_zoo patch_function; unsloth_zoo imported lazily, and if that import
+fails patching is a best-effort no-op; changed forward stays unpatched"""
 
 from __future__ import annotations
 

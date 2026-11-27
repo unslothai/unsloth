@@ -25,11 +25,11 @@ test("a card opens its page in a browser tab keyed by the artifact, so reopening
   assert.match(card, /key: artifact\.id,/);
 });
 
-test("a panel dragged shut closes the browser, not left at no width", () => {
+test("a panel dragged shut closes the browser (or floats it while the model works in it), not left at no width", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const remember = page.indexOf("const rememberArtifactPanelWidth");
   assert.ok(remember > 0);
-  const closeAt = page.indexOf("closeBrowser();", remember);
+  const closeAt = page.indexOf("closeOrFloatBrowser();", remember);
   const widthAt = page.indexOf("artifactPanelWidthRef.current = `", remember);
   assert.ok(closeAt > 0 && closeAt < widthAt, "a shut panel still records a width");
 });
@@ -101,7 +101,7 @@ test("a project hosts the browser like a chat, so Browser use and the header tog
   const toggle = read("../src/features/browser/browser-toggle.tsx");
   assert.match(toggle, /hideWhenOpen = true,/);
   assert.match(toggle, /if \(hideWhenOpen && open\) return null;/);
-  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && open\) \}/);
+  assert.match(toggle, /\{ enabled: active && !\(hideWhenOpen && panelOpen\) \}/);
 });
 
 test("a project's modal overlay closes before Request edits or Attach hand off to its composer", () => {

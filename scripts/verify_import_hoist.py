@@ -1,46 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Deterministic, scope-aware verifier for import-hoisting / alias-rename refactors.
-
-The risk when moving `from a import b as _b` (or `import b as _b`) to module top
-and normalizing `_b` -> `b` is twofold:
-
-  1. DANGLING ALIAS  - a `_b` reference is left un-normalized; it now resolves to
-     nothing (NameError) or, worse, to some *other* module-level `_b`.
-  2. RENAME CLASH    - `_b` was an alias on purpose because `b` already meant
-     something else in that scope; normalizing `_b` -> `b` silently re-points the
-     reference at the wrong object (no NameError, no pyflakes warning).
-
-This tool parses BEFORE (a git ref, default origin/main) and AFTER (default HEAD)
-for each file, builds a real LEGB scope model (functions, classes, lambdas,
-comprehensions, global/nonlocal, args, walrus, star-imports), and resolves every
-Name load to its binding. It then compares, PER SCOPE:
-
-  * UNRESOLVED-NEW   : loads that resolve to nothing in AFTER but did in BEFORE
-                       (or are newly present) -> catches dangling aliases.
-  * TARGET-MISSING   : an import *target* (e.g. module `glob`, or
-                       `importlib.metadata.version`) that a function resolved to
-                       in BEFORE but no longer resolves to in AFTER -> catches a
-                       function that lost access to a module it still uses.
-                       Robust to alias renames because it compares the *target*,
-                       not the local name.
-  * TARGET-CHANGED   : a load whose resolved import target differs BEFORE vs
-                       AFTER -> catches a rename that re-points to a different
-                       module (the clash case).
-  * AMBIGUOUS-BIND   : a name bound by BOTH an import and a non-import in the same
-                       scope in AFTER (and not in BEFORE) -> the "alias was on
-                       purpose / now collides" smell.
-  * MODULE-DUP-IMPORT: a module-level name imported and also defined/assigned at
-                       module level (introduced by the change).
-  * NEW-UNUSED-IMPORT: a module-level import added in AFTER that nothing resolves
-                       to (informational; re-exports are a known false positive).
-
-Usage:
-  verify_import_hoist.py [--before REF] [--after REF] <file>...   # compare
-  verify_import_hoist.py --self-test                              # prove it catches bugs
-Exit code 1 if any non-informational finding.
-"""
+"""Scope-aware check for dangling aliases and silent rename clashes in import hoists (_b -> b)."""
 
 from __future__ import annotations
 
@@ -545,7 +506,46 @@ def _is_package_init(path: str) -> bool:
     return PurePosixPath(str(path).replace("\\", "/")).name == "__init__.py"
 
 
-def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]:
+def _from_parts(target: str) -> tuple[str, str] | None:
+    """("module", "name") for a `from:module:name` target id, else None."""
+    if not target.startswith("from:"):
+        return None
+    mod, _, name = target[len("from:") :].rpartition(":")
+    return (mod, name) if mod and name else None
+
+
+def _is_definition_move(lost: set[str], gained: set[str], moved) -> bool:
+    """Every lost `from:old:N` pairs with one gained `from:new:N` that `moved` confirms.
+
+    A function-local `from old import N` re-pointed to `from new import N` after N itself moved to
+    `new` binds the same object; the module-level relocation check above cannot see that because
+    neither import is at module level.
+    """
+    if moved is None or not lost or len(lost) != len(gained):
+        return False
+    gained_by_name: dict[str, list[str]] = {}
+    for target in gained:
+        parts = _from_parts(target)
+        if parts is None:
+            return False
+        gained_by_name.setdefault(parts[1], []).append(target)
+    used: set[str] = set()
+    for target in lost:
+        parts = _from_parts(target)
+        candidates = gained_by_name.get(parts[1], []) if parts else []
+        if len(candidates) != 1 or candidates[0] in used or not moved(target, candidates[0]):
+            return False
+        used.add(candidates[0])
+    # One-to-one: a gained target no lost one paired with is an unexplained re-point.
+    return used == set(gained)
+
+
+def compare(
+    before_src: str,
+    after_src: str,
+    path: str,
+    moved = None,
+) -> list[tuple[str, str]]:
     """Return list of (severity, message). severity in BLOCKER/WARN/INFO.
 
     Blocker signals (precise, no relocation false-positives):
@@ -622,6 +622,15 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             gained = tafter - tbefore
             relocated = lost <= removed_module_targets and gained <= added_module_targets
             if relocated:
+                continue
+            if _is_definition_move(lost, gained, moved):
+                findings.append(
+                    (
+                        "INFO",
+                        f"{path}: MOVED name '{key[1]}' in {key[0]} "
+                        f"{sorted(tbefore)} -> {sorted(tafter)} (definition moved to the new module)",
+                    )
+                )
                 continue
             findings.append(
                 (
@@ -773,6 +782,37 @@ _SELF_TESTS = {
         "    return x\n",
         None,
     ),
+    # A function-local import re-pointed after the definition itself moved binds the same object.
+    "local_import_follows_a_moved_definition": (
+        "def f():\n    from pkg.old import helper\n    return helper()\n",
+        "def f():\n    from pkg.new import helper\n    return helper()\n",
+        None,
+        "<local_import_follows_a_moved_definition>",
+        lambda old, new: (old, new) == ("from:pkg.old:helper", "from:pkg.new:helper"),
+    ),
+    # The same re-point when the definition did not move is still a clash.
+    "local_import_re_pointed_without_a_move_is_blocked": (
+        "def f():\n    from pkg.old import helper\n    return helper()\n",
+        "def f():\n    from pkg.new import helper\n    return helper()\n",
+        "BLOCKER",
+        "<local_import_re_pointed_without_a_move_is_blocked>",
+        lambda old, new: False,
+    ),
+    # A rename (helper -> other_helper's module binding under a new name) is never a move.
+    "local_import_renamed_across_modules_is_blocked": (
+        "def f():\n    from pkg.old import helper\n    return helper()\n",
+        "def f():\n    from pkg.new import other as helper\n    return helper()\n",
+        "BLOCKER",
+        "<local_import_renamed_across_modules_is_blocked>",
+        lambda old, new: True,
+    ),
+    "two_lost_imports_cannot_share_one_gained_target": (
+        "def f(x):\n    if x:\n        from pkg.old1 import helper\n    else:\n        from pkg.old2 import helper\n    return helper()\n",
+        "def f(x):\n    if x:\n        from pkg.shared import helper\n    else:\n        from pkg.other import other as helper\n    return helper()\n",
+        "BLOCKER",
+        "<two_lost_imports_cannot_share_one_gained_target>",
+        lambda old, new: new == "from:pkg.shared:helper",
+    ),
 }
 
 
@@ -781,7 +821,8 @@ def _self_test() -> int:
     for name, case in _SELF_TESTS.items():
         before, after, expect = case[0], case[1], case[2]
         path = case[3] if len(case) > 3 else f"<{name}>"
-        findings = compare(before, after, path)
+        moved = case[4] if len(case) > 4 else None
+        findings = compare(before, after, path, moved = moved)
         blockers = [m for sev, m in findings if sev == "BLOCKER"]
         got = "BLOCKER" if blockers else None
         passed = got == expect
@@ -889,6 +930,227 @@ def _dunder_all_names(src: str) -> set[str]:
     return out
 
 
+def _top_level_binding(src: str | None, name: str):
+    """How a module binds `name` at top level: "def", ("import", module, original_name), None, or "ambiguous"
+    when it is bound more than once (a later binding can shadow the definition) or by a plain `import`."""
+    if src is None:
+        return None
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return None
+    found = []
+
+    def targets(node) -> list[str]:
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return [n for elt in node.elts for n in targets(elt)]
+        if isinstance(node, ast.Starred):
+            return targets(node.value)
+        return []
+
+    def visit(body) -> None:
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name == name:
+                    found.append("def")
+                continue
+            if isinstance(node, ast.Assign):
+                found.extend("def" for t in node.targets if name in targets(t))
+            elif isinstance(node, ast.AnnAssign):
+                # A bare annotation (`helper: int`) declares without binding.
+                if node.value is not None and name in targets(node.target):
+                    found.append("def")
+            elif isinstance(node, ast.AugAssign):
+                if name in targets(node.target):
+                    found.append("ambiguous")
+            elif isinstance(node, ast.Delete):
+                if any(name in targets(t) for t in node.targets):
+                    found.append("ambiguous")
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    # `import *` may rebind any name; its exports are not resolved here.
+                    if alias.name == "*":
+                        found.append("ambiguous")
+                    elif (alias.asname or alias.name) == name:
+                        found.append(
+                            ("import", "." * (node.level or 0) + (node.module or ""), alias.name)
+                        )
+            elif isinstance(node, ast.Import):
+                found.extend(
+                    "ambiguous" for a in node.names if (a.asname or a.name.split(".")[0]) == name
+                )
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
+                for item in getattr(node, "items", []):
+                    if item.optional_vars is not None and name in targets(item.optional_vars):
+                        found.append("ambiguous")
+                if isinstance(node, (ast.For, ast.AsyncFor)) and name in targets(node.target):
+                    found.append("ambiguous")
+            # Conditional and guarded blocks (`if TYPE_CHECKING:`, `try:`) may not bind at runtime.
+            try_like = isinstance(node, ast.Try) or isinstance(node, getattr(ast, "TryStar", ()))
+            if try_like or isinstance(
+                node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.With, ast.AsyncWith)
+            ):
+                for field in ("body", "orelse", "finalbody"):
+                    guarded(getattr(node, field, []) or [])
+            if try_like:
+                for handler in node.handlers:
+                    guarded(handler.body)
+            if isinstance(node, getattr(ast, "Match", ())):
+                for case in node.cases:
+                    guarded(case.body)
+
+    def guarded(body) -> None:
+        start = len(found)
+        visit(body)
+        found[start:] = ["ambiguous"] * (len(found) - start)
+
+    visit(tree.body)
+    if not found:
+        return None
+    # The scan above classifies the common shapes; any second binding site, in whatever form, makes it ambiguous.
+    if len(found) > 1 or _module_binding_sites(tree, name) > 1:
+        return "ambiguous"
+    return found[0]
+
+
+def _module_binding_sites(tree: ast.Module, name: str) -> int:
+    """Every place that binds or unbinds `name` in module scope: assignment / del / for / with / walrus targets,
+    `except ... as`, match captures, imports (and `import *`), def / class, plus `global name` anywhere."""
+    count = 0
+
+    def visit(node) -> None:
+        nonlocal count
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                count += child.name == name
+                # Decorators, defaults, bases and annotations run in module scope; the body does not.
+                for sub in ast.iter_child_nodes(child):
+                    if sub not in child.body:
+                        visit_one(sub)
+                count += sum(isinstance(n, ast.Global) and name in n.names for n in ast.walk(child))
+                continue
+            if isinstance(child, ast.Lambda):
+                # Defaults are evaluated where the lambda is; only its body is a new scope.
+                visit_one(child.args)
+                continue
+            visit_one(child)
+
+    def visit_one(node) -> None:
+        nonlocal count
+        if (
+            isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, (ast.Store, ast.Del))
+        ):
+            count += 1
+        elif isinstance(node, ast.ExceptHandler) and node.name == name:
+            count += 1
+        elif isinstance(node, (ast.ImportFrom, ast.Import)):
+            for alias in node.names:
+                bound = alias.asname or (
+                    alias.name if isinstance(node, ast.ImportFrom) else alias.name.split(".")[0]
+                )
+                count += alias.name == "*" or bound == name
+        elif (
+            type(node).__name__ in ("MatchAs", "MatchStar") and getattr(node, "name", None) == name
+        ):
+            count += 1
+        elif type(node).__name__ == "MatchMapping" and getattr(node, "rest", None) == name:
+            count += 1
+        visit(node)
+
+    visit(tree)
+    return count
+
+
+def _module_paths(module: str, importer: str) -> list[str]:
+    """Candidate repo paths for `module` as imported from the file `importer`."""
+    importer_dir = PurePosixPath(str(importer).replace("\\", "/")).parent
+    if module.startswith("."):
+        level = len(module) - len(module.lstrip("."))
+        base = importer_dir
+        for _ in range(level - 1):
+            base = base.parent
+        # The repo root is not a package: a relative import that reaches it (or climbs past it) cannot resolve.
+        if str(base) in ("", "."):
+            return []
+        rest = module.lstrip(".")
+        stem = base / rest.replace(".", "/") if rest else base
+        return [f"{stem}.py", f"{stem}/__init__.py"]
+    rel = module.replace(".", "/")
+    roots = [importer_dir, *importer_dir.parents]
+    out = []
+    for root in roots:
+        prefix = "" if str(root) in ("", ".") else f"{root}/"
+        out += [f"{prefix}{rel}.py", f"{prefix}{rel}/__init__.py"]
+    return out
+
+
+def _git_moved(before_ref: str, after_ref: str, importer: str):
+    """moved(old_target, new_target): the name's definition left `old` for `new` in this diff."""
+    cache: dict[tuple[str, str], str | None] = {}
+
+    def show(ref: str, path: str) -> str | None:
+        if (ref, path) not in cache:
+            cache[(ref, path)] = _git_show(ref, path)
+        return cache[(ref, path)]
+
+    def locate(module: str, ref: str, near: str) -> str | None:
+        # Only a unique match: which root an absolute import reaches depends on sys.path, not on nearness.
+        found = [p for p in _module_paths(module, near) if show(ref, p) is not None]
+        return found[0] if len(found) == 1 else None
+
+    def origin(
+        ref: str,
+        module: str,
+        name: str,
+        near: str,
+        hops: int = 0,
+    ):
+        """(path, name) of the definition `from module import name` reaches at `ref`, following re-exports."""
+        path = locate(module, ref, near)
+        binding = _top_level_binding(show(ref, path), name) if path else None
+        if binding == "def":
+            return (path, name)
+        if isinstance(binding, tuple) and hops < 8:
+            return origin(ref, binding[1], binding[2], path, hops + 1)
+        return None
+
+    def moved(old_target: str, new_target: str) -> bool:
+        old, new = _from_parts(old_target), _from_parts(new_target)
+        if old is None or new is None or old[1] != new[1]:
+            return False
+        name = old[1]
+        # Both imports reach one definition (the old module and the new one re-export it).
+        before_origin = origin(before_ref, old[0], name, importer)
+        if before_origin is not None and before_origin == origin(after_ref, new[0], name, importer):
+            return True
+        old_path = locate(old[0], before_ref, importer)
+        new_path = locate(new[0], after_ref, importer)
+        if not old_path or not new_path or old_path == new_path:
+            return False
+        # Defined in the new module now, and was defined in the old one before.
+        if _top_level_binding(show(after_ref, new_path), name) != "def":
+            return False
+        if _top_level_binding(show(before_ref, old_path), name) != "def":
+            return False
+        # Arrived with this change: a destination that already had its own `name` is a different object.
+        if _top_level_binding(show(before_ref, new_path), name) is not None:
+            return False
+        # The old module no longer defines it; at most it re-imports it from the new module.
+        left = _top_level_binding(show(after_ref, old_path), name)
+        if left is None:
+            return True
+        if not isinstance(left, tuple):
+            return False
+        _, module, original = left
+        return original == name and locate(module, after_ref, old_path) == new_path
+
+    return moved
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--before", default = "origin/main")
@@ -916,7 +1178,7 @@ def main() -> int:
             continue
         if before is None:
             before = ""
-        findings = compare(before, after, path)
+        findings = compare(before, after, path, moved = _git_moved(args.before, args.after, path))
         blockers = [f for f in findings if f[0] == "BLOCKER"]
         warns = [f for f in findings if f[0] == "WARN"]
         infos = [f for f in findings if f[0] == "INFO"]

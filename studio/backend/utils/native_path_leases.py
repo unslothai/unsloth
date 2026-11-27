@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Verification for Tauri native path signed grants.
-
-Rust signs compact ``base64url(payload_json).base64url(hmac)`` grants. The
-frontend can see and forward the grant, but cannot change it without breaking
-the HMAC. The backend verifies the original payload segment bytes, then
-re-stats the path before any native read.
-"""
+"""Verifies Tauri native path grants: HMAC over the original payload bytes, then re-stats the path."""
 
 from __future__ import annotations
 
@@ -24,6 +18,7 @@ import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Collection, Iterable, Iterator, Mapping
 
@@ -252,9 +247,8 @@ def verify_native_path_lease(
 
 
 def release_native_path_lease(lease: str) -> None:
-    """Make a grant this caller consumed usable again, once it has undone everything it read with
-    it: a batch that failed part way and kept nothing, so its retry is not refused as a replay.
-    Only for a lease the caller verified itself; the grant still expires as signed."""
+    """Makes a consumed grant usable again once the caller undid what it read, so a failed batch's
+    retry is not a replay; only for a self-verified lease; expiry is unchanged."""
     payload = _decode_payload(_split_lease(lease)[0])
     with _REPLAY_LOCK:
         _USED_NONCES.pop(str(payload.get("nonce")), None)
@@ -274,12 +268,22 @@ def is_registered_native_path_label(path_value: str | None, label: str | None) -
         return _NATIVE_PATH_LABELS.get(path_value) == label
 
 
+@lru_cache(maxsize = _MAX_NATIVE_PATH_REDACTIONS)
+def _native_path_log_spellings(path: str) -> tuple[str, ...]:
+    forward = path.replace("\\", "/")
+    spellings = {path, forward, path.replace("/", "\\")}
+    if len(forward) >= 3 and forward[0].isalpha() and forward[1:3] == ":/":
+        # Unsloth's private WSL guest mounts Windows drives under /mnt.
+        spellings.add(f"/mnt/{forward[0].lower()}/{forward[3:]}")
+    return tuple(spellings)
+
+
 def redact_native_paths(value: str) -> str:
     with _REDACTION_LOCK:
         paths = sorted(_NATIVE_PATH_REDACTIONS, key = len, reverse = True)
     redacted = value
     for path in paths:
-        for variant in {path, path.replace("/", "\\"), path.replace("\\", "/")}:
+        for variant in _native_path_log_spellings(path):
             if variant:
                 redacted = redacted.replace(variant, "<native_path>")
     return redacted

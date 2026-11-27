@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermes model inventory: the GGUFs Hermes Desktop's one-click download stages.
-
-Hermes keeps its managed runtime's weights as flat ``.gguf`` files directly in
-``<hermes root>/models``, with vision projectors and speculative-decode drafters
-tucked under a ``models/assets/`` subdirectory so its own router never lists them
-as servable. Which files count is decided by
-``hermes_cli.local_runtime.bootstrap.staged_models``; :func:`staged_gguf_files`
-mirrors that rule, because a file Hermes does not consider servable is one Studio
-must not offer to load either.
-"""
+"""Hermes GGUF inventory; mirrors hermes_cli's staged_models rule, so unservable files stay hidden."""
 
 from __future__ import annotations
 

@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Give FLUX.1's first single block the slice layout of blocks 1..37 so all 38 share one compiled graph.
-
-Block 0 gets two separate tensors; the rest get two slices of one ``[B, text + image, D]`` buffer. Dynamo guards on
-strides, so block 0 otherwise compiles a second graph ("stride mismatch at index 0"). The block concatenates its
-inputs first, so copying them into one buffer is value-identical. ``UNSLOTH_DIFFUSION_BLOCK_RESTRIDE=0`` disables it.
-"""
+"""FLUX.1 block 0 takes the slice layout of blocks 1..37 so one compiled graph serves all 38;
+copying its inputs into one buffer is value-identical; UNSLOTH_DIFFUSION_BLOCK_RESTRIDE=0
+disables"""
 
 from __future__ import annotations
 

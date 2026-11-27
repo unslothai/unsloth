@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""Drive-letter aliases for the session workdir of an isolated cmd Terminal launch.
-
-Inside an MXC AppContainer, Git for Windows cannot resolve its working directory: the drive-letter form
-of GetFinalPathNameByHandleW is denied and the GetLongPathNameW fallback has to list every ancestor.
-From a drive root there is nothing above to resolve, so a launch runs from ``X:\\`` mapped onto the
-canonical workdir with DefineDosDeviceW, the same mapping ``subst`` makes. The mapping only changes how
-the workdir is spelled; MXC still grants the canonical folder and nothing else.
-"""
+"""Drive-root alias of the workdir (DefineDosDeviceW, like subst) so Git can resolve its cwd in MXC;
+it only respells the path, and MXC still grants only the canonical folder."""
 
 from __future__ import annotations
 

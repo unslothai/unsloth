@@ -10,7 +10,8 @@ from core.inference.llama_cpp import LlamaCppBackend
 from core.inference.orchestrator import InferenceOrchestrator
 from core.inference.passthrough_healing import nudge_enabled
 from core.inference.safetensors_agentic import run_safetensors_tool_loop
-from core.inference.studio_tool_loop import ToolLoopPolicy, stream_with_studio_tools
+from core.inference import studio_tool_loop
+from core.inference.studio_tool_loop import ToolLoopPolicy
 
 
 _CHAT_ADAPTER_SOURCE = (
@@ -62,7 +63,8 @@ def test_delegating_backends_forward_the_flag_to_the_shared_loop():
 def test_gguf_and_external_loops_use_the_shared_nudge_normalizer():
     gguf_src = inspect.getsource(LlamaCppBackend.generate_chat_completion_with_tools)
     assert "_nudge_enabled(nudge_tool_calls)" in gguf_src
-    external_src = inspect.getsource(stream_with_studio_tools)
+    # The public generator wraps the loop body, which is where the nudge is read.
+    external_src = inspect.getsource(studio_tool_loop._stream_with_studio_tools)
     assert "nudge_enabled(policy.nudge_tool_calls)" in external_src
     assert "nudge_tool_calls" in ToolLoopPolicy.__dataclass_fields__
 
@@ -118,12 +120,10 @@ def test_studio_external_adapter_disables_the_nudge_on_the_external_loop():
     src = _CHAT_ADAPTER_SOURCE.read_text(encoding = "utf-8")
     external_body = _external_request_body(src)
 
-    # false, not omitted (#9686); chat-adapter.ts carries the why. A browser-use turn is the one
-    # exception: a step announced and not taken ends the task there.
-    assert (
-        "nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false"
-        in external_body
-    )
+    # false, not omitted (#9686); chat-adapter.ts carries the why. A browser-use or computer-use
+    # turn is the exception: a step announced and not taken ends the task there.
+    assert "nudge_tool_calls: stepwiseTools ? runtime.nudgeToolCalls : false" in external_body
+    assert "const stepwiseTools = browserTools.length > 0 || computerTools.length > 0;" in src
     assert "nudge_tool_calls: runtime.nudgeToolCalls" not in external_body
 
     local_src = src.replace(external_body, "")

@@ -402,9 +402,8 @@ def test_skip_env_warning_escapes_workflow_command_injection(tmp_path):
     fixture = FIXTURES / "clean_lockfile.json"
 
     def _physical_lines_starting_with_double_colon(stderr: str) -> list[str]:
-        # GH Actions parses workflow commands per physical line.
-        # Only lines that START with `::` after any leading whitespace count as a new annotation.
-        # Any such line BEYOND the first warning is an injected command.
+        # GitHub Actions parses workflow commands per physical line; only lines starting with ::
+        # after leading whitespace count as annotations, so any extra one is injected.
         return [ln for ln in stderr.splitlines() if ln.lstrip().startswith("::")]
 
     injected_bad = "%inject\n::error::bad"
@@ -487,7 +486,7 @@ def test_audit_runs_before_npm_install_in_consumer_workflows():
     install_re = re.compile(r"\bnpm\s+(?:install|ci)\b")
 
     workflows_dir = REPO_ROOT / ".github" / "workflows"
-    for wf_name in ("studio-tauri-smoke.yml", "release-desktop.yml"):
+    for wf_name in ("studio-tauri-smoke.yml", "studio-tauri-native-ci.yml", "release-desktop.yml"):
         wf = workflows_dir / wf_name
         assert wf.is_file(), f"missing workflow: {wf}"
         doc = yaml.safe_load(wf.read_text(encoding = "utf-8"))

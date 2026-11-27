@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Run torch's flash kernels as FA4 / FA3 while a packed / padding-free trainer trains.
-
-torch (2.11+) swaps the flash impl process-wide, and FA4 raises (not falls back) on dropout and missing
-head dims and costs ~0.2 ms per launch, so it is on only inside ``trainer.train()``, with no dropout,
-supported head dims, and a probe matching torch's bundled flash.
-UNSLOTH_FLASH_ATTENTION_IMPL = auto (default: FA4 on sm100; on sm90 FA3 then FA4, only for models with
-hidden_size >= _HOPPER_AUTO_MIN_HIDDEN) | fa4 | fa3 | off.
-"""
+"""FA4/FA3 flash only inside trainer.train(), with no dropout, supported head dims and a probe
+matching torch flash (FA4 raises, not falls back); UNSLOTH_FLASH_ATTENTION_IMPL selects."""
 
 import contextlib
 import functools
@@ -22,6 +16,7 @@ __all__ = [
     "deactivate_flash_attention_impl",
     "scope_flash_attention_impl_to_train",
     "flash_impl_allows",
+    "active_flash_impl",
     "FLASH_IMPL_STATE",
 ]
 
@@ -72,6 +67,14 @@ def _log_once(message, level = logging.INFO):
     if message not in FLASH_IMPL_STATE["logged"]:
         FLASH_IMPL_STATE["logged"].add(message)
         _logger.log(level, message)
+
+
+def _warn_explicit(requested):
+    if requested not in (None, "auto"):
+        _log_once(
+            f"Unsloth: {_ENV}={requested.lower()} not used: {FLASH_IMPL_STATE['reason']}",
+            logging.WARNING,
+        )
 
 
 def _registry():
@@ -162,6 +165,13 @@ try:
     from torch.nn.attention import _registry as _TORCH_FLASH_REGISTRY
 except Exception:
     _TORCH_FLASH_REGISTRY = None
+
+
+def active_flash_impl():
+    """ "FA4" / "FA3" while one is swapped in behind torch's flash op, else None. A plain attribute read:
+    traced code guards on the name, so activating or restoring an impl retraces instead of reusing a graph."""
+    active = getattr(_TORCH_FLASH_REGISTRY, "_FLASH_ATTENTION_ACTIVE", None)
+    return None if active is None else active[0]
 
 
 def flash_impl_allows(head_dim, window, device) -> bool:
@@ -320,7 +330,11 @@ def _run_case(case, device):
         gqa, k_in, v_in = {"enable_gqa": True}, k, v
     else:
         gqa, k_in, v_in = {}, k.repeat_interleave(ratio, dim = 1), v.repeat_interleave(ratio, dim = 1)
-    with torch.enable_grad():
+    # torch 2.15's varlen_attn takes cuDNN first wherever it is eligible (sm90 / sm100), and no impl
+    # replaces cuDNN: pin flash so the probe runs the op FA4 / FA3 take over (and the bundled reference).
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with torch.enable_grad(), sdpa_kernel(SDPBackend.FLASH_ATTENTION):
         out = varlen_attn(
             q,
             k_in,
@@ -409,6 +423,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
         FLASH_IMPL_STATE["reason"] = (
             "off" if requested is None else "torch has no flash attention impl registry (< 2.11)"
         )
+        _warn_explicit(requested)
         return None
     if torch.compiler.is_compiling():
         return FLASH_IMPL_STATE["active"]
@@ -422,6 +437,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
     if not candidates:
         FLASH_IMPL_STATE["reason"] = f"no supported impl for devices sm{sorted(majors or [])}"
         deactivate_flash_attention_impl()
+        _warn_explicit(requested)
         return None
     major = next(iter(majors))
     if requested == "auto" and major == 9:
@@ -472,8 +488,7 @@ def maybe_activate_flash_attention_impl(model = None, mean_document_length = Non
     if error is not None:
         FLASH_IMPL_STATE["reason"] = error
         deactivate_flash_attention_impl()
-        if requested != "auto":
-            _log_once(f"Unsloth: {_ENV}={requested.lower()} not used: {error}", logging.WARNING)
+        _warn_explicit(requested)
         return None
     FLASH_IMPL_STATE["active"] = impl
     FLASH_IMPL_STATE["reason"] = f"{impl} active"
@@ -550,7 +565,9 @@ def scope_flash_attention_impl_to_train(
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
-    if _requested() is None or _registry() is None:
+    requested = _requested()
+    # Explicit fa3 / fa4 still wraps without a registry so train() reports the fallback.
+    if requested is None or (requested == "auto" and _registry() is None):
         return
     original = getattr(trainer, "train", None)
     if not callable(original):

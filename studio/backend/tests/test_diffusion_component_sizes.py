@@ -748,6 +748,137 @@ def test_hub_result_with_a_failed_header_is_rejected(monkeypatch):
     assert dcs.hub_component_sizes("o/r") is None
 
 
+def _sharded(n):
+    files = ["text_encoder/model.safetensors", "vae/diffusion_pytorch_model.safetensors"]
+    files += [f"transformer/s-{i:05d}.safetensors" for i in range(n)]
+    return files
+
+
+def _shard_header(f):
+    # every shard different; shard i also repeats shard i - 1's key with a different width, so the first-seen
+    # precedence makes the totals depend on the order the accumulator sees the shards in
+    i = int(f.rsplit("-", 1)[1].split(".")[0]) if "/s-" in f else 0
+    width = 10 * (i + 1)
+    header = {f"w{i}": {"dtype": "BF16", "shape": [width], "data_offsets": [0, 2 * width]}}
+    if i:
+        header[f"w{i - 1}"] = {"dtype": "F32", "shape": [7 * i], "data_offsets": [0, 28 * i]}
+    return header
+
+
+def test_hub_headers_read_concurrently_bounded_and_in_order(monkeypatch):
+    import random
+    import threading
+    import time
+
+    files = _sharded(9)
+    _hub_with(monkeypatch, files, _shard_header)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 1)
+    serial = dcs.hub_component_sizes("o/r")
+    assert serial is not None
+
+    lock = threading.Lock()
+    live, peak = [0], [0]
+
+    def slow(f):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(random.uniform(0.01, 0.05))  # finish out of submission order
+        with lock:
+            live[0] -= 1
+        return _shard_header(f)
+
+    _hub_with(monkeypatch, files, slow)
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+    pooled = dcs.hub_component_sizes("o/r")
+    assert peak[0] == 4  # overlapped, never past the bound
+    assert pooled.components == serial.components
+    assert pooled.get("transformer").files == tuple(f"s-{i:05d}.safetensors" for i in range(9))
+    # the order matters: a swapped pair of later shards would credit the duplicated key to the wrong shard
+    assert pooled.get("transformer").stored_bytes == sum(20 * (i + 1) for i in range(9))
+
+
+def test_hub_headers_stream_through_a_bounded_window(monkeypatch):
+    """Parsed headers are handed to the accumulator in order as they arrive, never all held at once."""
+    import threading
+
+    files = _sharded(24)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+    lock = threading.Lock()
+    started = []
+    consumed = [0]
+    ahead = [0]
+    real_accumulate = dcs._accumulate
+
+    def counting_accumulate(name, headers):
+        def gen():
+            for item in headers:
+                consumed[0] += 1
+                with lock:
+                    ahead[0] = max(ahead[0], len(started) - consumed[0])
+                yield item
+
+        return real_accumulate(name, gen())
+
+    def record(f):
+        with lock:
+            started.append(f)
+        return _shard_header(f)
+
+    _hub_with(monkeypatch, files, record)
+    monkeypatch.setattr(dcs, "_accumulate", counting_accumulate)
+    assert dcs.hub_component_sizes("o/r") is not None
+    assert consumed[0] == len(files)
+    assert ahead[0] <= 2 * 4  # never more than the window of reads ahead of the accumulator
+
+
+def test_a_later_shard_failure_returns_before_earlier_slow_reads(monkeypatch):
+    import time
+
+    files = _sharded(6)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+
+    def slow_first(f):
+        if f.startswith("text_encoder/"):
+            time.sleep(2.0)
+        return None if f.endswith("s-00000.safetensors") else _shard_header(f)
+
+    _hub_with(monkeypatch, files, slow_first)
+    start = time.monotonic()
+    assert dcs.hub_component_sizes("o/r", timeout_seconds = 10.0) is None
+    assert time.monotonic() - start < 1.5
+
+
+def test_hub_concurrent_header_failure_or_deadline_voids_the_answer(monkeypatch):
+    import time
+
+    files = _sharded(6)
+    monkeypatch.setattr(dcs, "_pick_files", lambda names, _read, folder: sorted(names))
+    monkeypatch.setattr(dcs, "HUB_HEADER_WORKERS", 4)
+    _hub_with(
+        monkeypatch,
+        files,
+        lambda f: None if f.endswith("s-00004.safetensors") else _shard_header(f),
+    )
+    assert dcs.hub_component_sizes("o/r") is None
+    assert not dcs._HUB_SHA_CACHE
+
+    # one shard that never answers: the shared deadline still bounds the whole read
+    def hang(f):
+        if f.endswith("s-00002.safetensors"):
+            time.sleep(3.0)
+        return _shard_header(f)
+
+    _hub_with(monkeypatch, files, hang)
+    start = time.monotonic()
+    assert dcs.hub_component_sizes("o/r", timeout_seconds = 0.5) is None
+    assert time.monotonic() - start < 2.0
+    assert not dcs._HUB_SHA_CACHE
+
+
 class _Resp:
     def __init__(
         self,
@@ -841,8 +972,7 @@ def test_tagged_module_reads_only_its_own_mode(monkeypatch):
     assert vsr._measured_extra_mib(module, 1000) is None
     module._unsloth_video_calibration_key = t2v
     assert vsr._measured_extra_mib(module, 1000) == 3000
-    # a fresh module after a reload, tagged before the fit, finds the process-wide peak (arm_request reads the
-    # device through torch)
+    # Reloaded module, tagged before the fit, still finds the process-wide peak via torch.
     pytest.importorskip("torch")
     reloaded = _Pipe()
     assert vsr.arm_request(

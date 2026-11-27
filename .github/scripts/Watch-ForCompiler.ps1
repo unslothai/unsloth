@@ -542,11 +542,19 @@ function Invoke-WithCompilerWatch {
     A hashtable with Compilers and TempLibraries, each an array of strings, plus
     the exit state of the action. Evidence is written under $EvidenceRoot even when
     the action fails, which is exactly when the trace is wanted.
+    .PARAMETER Attempts
+    How many times to measure when a run is void only because a file watcher raised an
+    error (a burst of creations can overflow its buffer). Each attempt is a complete
+    measurement with its own evidence; a void run is never scored as clean, and a
+    compiler or compiler artefact either detector recorded is reported as a hit even
+    when the watcher failed.
     #>
     param(
         [Parameter(Mandatory = $true)][string]$Name,
         [Parameter(Mandatory = $true)][scriptblock]$Action,
-        [Parameter(Mandatory = $true)][string]$EvidenceRoot
+        [Parameter(Mandatory = $true)][string]$EvidenceRoot,
+        [ValidateRange(1, 5)][int]$Attempts = 1,
+        [int]$Attempt = 1
     )
 
     New-Item -ItemType Directory -Force -Path $EvidenceRoot | Out-Null
@@ -619,7 +627,7 @@ function Invoke-WithCompilerWatch {
     }
     $newLibraries = @(Select-StudioCompilerLibraries -Artifacts ([string[]]$newArtifacts))
 
-    $stem = Join-Path $EvidenceRoot $Name
+    $stem = Join-Path $EvidenceRoot $(if ($Attempt -gt 1) { "$Name-attempt$Attempt" } else { $Name })
     $compilers | Out-File -FilePath "$stem-compilers.txt" -Encoding utf8
     $newArtifacts | Out-File -FilePath "$stem-temp-artifacts.txt" -Encoding utf8
     # Written even when empty, so absence of the file means a crash.
@@ -644,8 +652,17 @@ function Invoke-WithCompilerWatch {
                         "file watcher is attached to the root containing it, so the listing is " +
                         "the only evidence here and it is incomplete")
     }
-    if ($incomplete.Count -gt 0) {
-        throw (($incomplete -join '; ') + ". This run cannot say whether a compiler ran.")
+    # Either detector firing is a hit whatever the watcher dropped: report it, never retry it away.
+    if ($incomplete.Count -gt 0 -and $compilers.Count -eq 0 -and $newLibraries.Count -eq 0) {
+        $verdict = ($incomplete -join '; ') + ". This run cannot say whether a compiler ran."
+        if ($uncovered.Count -eq 0 -and $Attempt -lt $Attempts) {
+            Write-Host ("::warning::{0} (attempt {1} of {2}): {3} Measuring again." -f `
+                $Name, $Attempt, $Attempts, $verdict)
+            return Invoke-WithCompilerWatch -Name $Name `
+                -Action $Action -EvidenceRoot $EvidenceRoot -Attempts $Attempts `
+                -Attempt ($Attempt + 1)
+        }
+        throw $verdict
     }
 
     return @{

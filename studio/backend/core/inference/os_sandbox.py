@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from dataclasses import dataclass, field
@@ -31,23 +32,62 @@ PUBLIC_TOOL_EXECUTION_MODES = ("auto", "required")
 
 PROFILE_VERSION = "unsloth-sandbox-v1"
 
-# tools.py re-adds this only to an UNISOLATED launch, and only if it already exists.
 SESSION_PACKAGES_RELPATH = ".unsloth-packages"
 
 
+def _pip_prefix_dirs() -> "tuple[tuple[str, ...], str]":
+    if sys.version_info >= (3, 10):
+        scheme = sysconfig.get_preferred_scheme("prefix")
+        # pip's own remap: the framework scheme's purelib is absolute, never under a --prefix.
+        if scheme == "osx_framework_library":
+            scheme = "posix_prefix"
+    else:
+        scheme = "nt" if os.name == "nt" else "posix_prefix"
+    # A bare separator base turns nt's "{base}/Lib" into a UNC path that relpath rejects.
+    base = os.path.join(os.path.abspath(os.sep), "prefix")
+    paths = sysconfig.get_paths(scheme, vars = {"base": base, "platbase": base})
+    # Only these: nt's stdlib/include sit on the install drive, where relpath raises.
+    purelib, platlib, scripts = (
+        os.path.relpath(paths[key], base) for key in ("purelib", "platlib", "scripts")
+    )
+    return tuple(dict.fromkeys((purelib, platlib))), scripts
+
+
+_PIP_PREFIX_LIB_DIRS, _PIP_PREFIX_SCRIPTS_DIR = _pip_prefix_dirs()
+
+
+def session_package_paths(packages: str) -> list[str]:
+    # The bare folder keeps packages from chats that installed with pip --target importable.
+    return [*(os.path.join(packages, path) for path in _PIP_PREFIX_LIB_DIRS), packages]
+
+
+def session_script_dirs(packages: str) -> list[str]:
+    # Debian's posix_local scheme puts scripts in local/bin; the bare folder serves pip --target chats.
+    legacy = "Scripts" if os.name == "nt" else "bin"
+    return list(
+        dict.fromkeys(os.path.join(packages, path) for path in (_PIP_PREFIX_SCRIPTS_DIR, legacy))
+    )
+
+
+def studio_pip_prefix(packages: str) -> dict:
+    return {
+        "_UNSLOTH_PIP_PREFIX": packages,
+        "_UNSLOTH_PIP_PREFIX_FOR": sys.prefix,
+        "_UNSLOTH_PIP_PREFIX_PY": "%d.%d" % sys.version_info[:2],
+    }
+
+
 def with_session_packages(env: dict, workdir: str) -> dict:
-    """Reuse existing session packages without letting their binaries shadow PATH."""
+    """Session packages for an unisolated launch, their binaries never shadowing PATH."""
     packages = os.path.join(workdir, SESSION_PACKAGES_RELPATH)
-    if not os.path.isdir(packages):
-        return env
-    updated = dict(env)
-    # Block a planted usercustomize.py; in safe mode the trusted sitecustomize shim stays first on PYTHONPATH.
-    updated["PYTHONNOUSERSITE"] = "1"
-    # pip --target puts console scripts in Scripts on Windows and bin elsewhere.
-    scripts = "Scripts" if os.name == "nt" else "bin"
+    # sitecustomize sets PIP_PREFIX only in Studio's own interpreter: a project venv's pip keeps installing there.
+    updated = {**env, **studio_pip_prefix(packages)}
+    if os.path.isdir(packages):
+        # Block a planted usercustomize.py; a fresh chat keeps pip --user usable.
+        updated["PYTHONNOUSERSITE"] = "1"
     for key, value in (
-        ("PYTHONPATH", packages),
-        ("PATH", os.path.join(packages, scripts)),
+        ("PYTHONPATH", os.pathsep.join(session_package_paths(packages))),
+        ("PATH", os.pathsep.join(session_script_dirs(packages))),
     ):
         updated[key] = os.pathsep.join(part for part in (updated.get(key, ""), value) if part)
     return updated
@@ -166,6 +206,8 @@ class ToolLaunchPlan:
     # Set by the trusted tool owner, never inferred from model args.
     execution_kind: Literal["python", "terminal"] | None = None
     cancel_event: Any = None
+    # Network only through a per-call proxy that refuses metadata and local addresses; unhonoured if unsupported.
+    egress_proxy: bool = False
 
 
 @dataclass
@@ -186,6 +228,8 @@ class PreparedSandboxLaunch:
     cleanup_diagnostics: list[str] = field(default_factory = list)
     spawn_callback: Callable | None = None
     launch_limitations: tuple[str, ...] = ()
+    # The proxy URL when the launch honoured ToolLaunchPlan.egress_proxy.
+    egress_proxy: str | None = None
 
     def cleanup(self) -> None:
         while self.cleanup_callbacks:
@@ -298,12 +342,25 @@ def _walk_for_host_channels(
     # Only an unaccounted hard link leads outside; cp -al, git clone --local and pip make nlink > 1.
     links: dict[tuple[int, int], list] = {}
     unreadable: list[str] = []
+    # POSIX: each directory's stat as its parent saw it (the root via stat, as scandir follows it). While still current
+    # when walked, it stands in for the path/.. stat ismount reads; a missing or swapped one takes the ismount calls.
+    listed: dict[str, os.stat_result] = {}
+    if not _NT_PATHS:
+        try:
+            listed[root] = os.stat(root)
+        except OSError:
+            pass
 
     for base, dirs, names in os.walk(
         root, followlinks = False, onerror = lambda exc: unreadable.append(exc.filename or root)
     ):
+        parent = listed.pop(base, None)
+        signature = directory_signature(base) if witness is not None or parent is not None else None
+        if parent is not None and signature[1:3] != (parent.st_dev, parent.st_ino):
+            # Swapped since its parent listed it.
+            parent = None
         if witness is not None:
-            witness.append(directory_signature(base))
+            witness.append(signature)
         if unreadable:
             return f"{unreadable[0]} cannot be fully inspected"
         for name in (*dirs, *names):
@@ -326,8 +383,16 @@ def _walk_for_host_channels(
             if stat.S_ISDIR(info.st_mode):
                 # Misses a same-filesystem bind mount; Linux also asks the mount table. A Windows mounted folder is a
                 # reparse point, refused above, and ntpath.ismount calls a directory named nul the \\.\nul device root.
-                if not _NT_PATHS and os.path.ismount(path):
-                    return f"contains a nested host mount: {path}"
+                if not _NT_PATHS:
+                    # path/.. is this parent: same device and another inode is exactly where ismount says no.
+                    if (
+                        parent is None
+                        or info.st_dev != parent.st_dev
+                        or info.st_ino == parent.st_ino
+                    ):
+                        if os.path.ismount(path):
+                            return f"contains a nested host mount: {path}"
+                    listed[path] = info
                 continue
             if not stat.S_ISREG(info.st_mode):
                 return f"contains a device or IPC node: {path}"
@@ -649,7 +714,7 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders the approval gate reads silently; NOT the whole read-silent set, which has /etc."""
+    """Model and trusted tool folders, read silently; not the whole read-silent set (/etc)."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -658,7 +723,130 @@ def model_library_roots() -> tuple[str, ...]:
             *well_known_model_dirs(),
         )
     except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
+        candidates = ()
+    kept = list(_grantable_read_roots(candidates))
+    kept.extend(root for root in trusted_tool_folder_roots() if root not in kept)
+    return tuple(kept)
+
+
+def trusted_tool_folder_roots() -> tuple[str, ...]:
+    """Filtered as a model folder is, so the gate never silences a folder the jails would refuse to grant."""
+    try:
+        from utils.trusted_tool_folders_settings import trusted_tool_folders_for_caller
+        return grantable_trusted_roots(trusted_tool_folders_for_caller())
+    except Exception:  # noqa: BLE001 - never fail a launch over a stored setting
         return ()
+
+
+_TRUSTED_FOLDER_SCAN_LIMIT = 5000
+
+
+def grantable_trusted_roots(candidates) -> tuple[str, ...]:
+    """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    from storage.studio_db import is_denied_system_path
+
+    # Saved as real paths: one that now resolves elsewhere was swapped for a link since.
+    stable = tuple(
+        path
+        for path in candidates
+        if path and os.path.realpath(path) == path and not is_denied_system_path(path)
+    )
+    state = studio_state_roots()
+    return tuple(
+        root
+        for root in _grantable_read_roots(stable)
+        if not overlaps_studio_state(root, state) and not _holds_a_nested_credential(root)
+    )
+
+
+def overlaps_studio_state(path: str, state = None) -> bool:
+    """Case-insensitive where the volume is: macOS realpath keeps the spelling it was given."""
+    return any(
+        _is_within(path, root) or _is_within(root, path)
+        for root in (studio_state_roots() if state is None else state)
+    )
+
+
+# folder -> (fingerprint, verdict): the path-text checks dominate every launch's rescan.
+_nested_credential_verdicts: dict[str, tuple[tuple, bool]] = {}
+
+
+def _tree_fingerprint(folder: str) -> "tuple | None":
+    """Path, link target and link count of every entry; None past the cap or where the tree cannot be fully
+    read. scandir, not walk: walk lists a whole directory before the cap could stop it."""
+    rows = []
+    pending = [folder]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:  # an execute-only directory still opens its files by name
+            return None
+        with entries:
+            for entry in entries:
+                if len(rows) >= _TRUSTED_FOLDER_SCAN_LIMIT:
+                    return None
+                target = nlink = None
+                try:
+                    # is_symlink() misses a junction, and 3.11 has no DirEntry.is_junction.
+                    linked = entry.is_symlink() or getattr(entry, "is_junction", lambda: False)()
+                    is_dir = entry.is_dir(follow_symlinks = False)
+                    if linked or (is_dir and os.name == "nt"):
+                        target = os.path.realpath(entry.path)
+                    if is_dir:
+                        pending.append(entry.path)
+                    elif not linked:
+                        # Not entry.stat (st_nlink 0 on Windows); extended path, or a file named `nul` is the device.
+                        info = os.lstat(_entry_path(entry.path))
+                        # A socket, FIFO or device stays a host channel under a read-only bind.
+                        if not stat.S_ISREG(info.st_mode):
+                            return None
+                        nlink = info.st_nlink
+                except OSError:
+                    return None
+                rows.append((entry.path, entry.name, target, nlink))
+    return tuple(rows)
+
+
+def _holds_a_nested_credential(folder: str) -> bool:
+    """A tree too large to check, a hard-linked file or a link out of it counts as holding one."""
+    from . import tools
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    from .tool_path_approval import (
+        _credential_under_silent_root,
+        _normalized_fs_text,
+        _references_sensitive_path,
+    )
+
+    rows = _tree_fingerprint(folder)
+    if rows is None:
+        return True
+    # Casefolded: a case-insensitive volume opens TOKEN as token.
+    names = frozenset(name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names))
+    fingerprint = (rows, names, repr(tools._studio_auth_dir_markers()))
+    cached = _nested_credential_verdicts.get(folder)
+    if cached is not None and cached[0] == fingerprint:
+        return cached[1]
+    verdict = any(
+        name.casefold() in names
+        # Separator-unified: the gate's patterns spell `.config/gh` with `/` inside.
+        or _references_sensitive_path(path.replace("\\", "/"))
+        # What the gate still asks for under a silent root, folded as the gate folds it.
+        or _credential_under_silent_root(_normalized_fs_text(path))
+        # A link or junction out of the folder reads its target unchecked.
+        or (target is not None and not _is_within(target, folder))
+        # A second name can alias a credential anywhere on the volume.
+        or (nlink is not None and nlink > 1)
+        for path, name, target, nlink in rows
+    )
+    if len(_nested_credential_verdicts) > 64:  # folders dropped from the setting
+        _nested_credential_verdicts.clear()
+    _nested_credential_verdicts[folder] = (fingerprint, verdict)
+    return verdict
+
+
+def _grantable_read_roots(candidates) -> tuple[str, ...]:
+    from . import tool_path_approval
+
     state = studio_state_roots()
     forbidden = _never_a_model_library()
     hf_homes = _hf_home_roots()
@@ -688,7 +876,31 @@ def model_library_roots() -> tuple[str, ...]:
 _CREDENTIAL_BASENAMES = (".env",)  # plus the approval gate's own list, read at call time
 
 
+def _per_launch(name: str, compute, *env_names: str):
+    try:
+        from utils.scan_memo import memoized
+    except ImportError:  # probe child / installer: no memo
+        return compute()
+    return memoized((name, *(os.environ.get(env) for env in env_names)), compute)
+
+
+_HOME_ENV = ("HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH")
+
+
 def _hf_home_roots() -> tuple[str, ...]:
+    return _per_launch(
+        "os_sandbox._hf_home_roots",
+        _hf_home_roots_uncached,
+        "HF_TOKEN_PATH",
+        "HF_HOME",
+        "HF_HUB_CACHE",
+        "HUGGINGFACE_HUB_CACHE",
+        "XDG_CACHE_HOME",
+        *_HOME_ENV,
+    )
+
+
+def _hf_home_roots_uncached() -> tuple[str, ...]:
     homes: list[str] = []
     try:
         from utils.hf_cache_settings import known_hf_cache_homes
@@ -759,6 +971,15 @@ _WINDOWS_SYSTEM_VARS = (
 
 def _never_a_model_library() -> frozenset[str]:
     """Normcased real paths no registered folder may grant, root included."""
+    return _per_launch(
+        "os_sandbox._never_a_model_library",
+        _never_a_model_library_uncached,
+        *_HOME_ENV,
+        *_WINDOWS_SYSTEM_VARS,
+    )
+
+
+def _never_a_model_library_uncached() -> frozenset[str]:
     paths = list(_NEVER_A_MODEL_LIBRARY)
     try:
         home = os.path.realpath(os.path.expanduser("~"))
@@ -784,6 +1005,16 @@ def _paths_overlap(first: str, second: str) -> bool:
 
 def studio_state_roots() -> tuple[str, ...]:
     """Studio's persisted-state home (auth.db); denied because it may sit under a granted root such as Docker's /opt."""
+    return _per_launch(
+        "os_sandbox.studio_state_roots",
+        _studio_state_roots_uncached,
+        "UNSLOTH_STUDIO_HOME",
+        "STUDIO_HOME",
+        *_HOME_ENV,
+    )
+
+
+def _studio_state_roots_uncached() -> tuple[str, ...]:
     roots: list[str] = []
     try:
         from utils.paths.storage_roots import studio_root
@@ -1261,6 +1492,16 @@ def _software_launch(plan: ToolLaunchPlan, record: ToolExecutionRecord) -> Prepa
 
 def prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     """Unavailable hosts fall back in auto; unsafe workdirs and build failures refuse."""
+    try:
+        from utils.scan_memo import scan_memo
+    except ImportError:  # outside the backend (probe child, installer) there is no memo
+        return _prepare_tool_launch(plan)
+    # One scope per launch: the grant-root checks re-read HF homes and scan folders; nothing carries over.
+    with scan_memo():
+        return _prepare_tool_launch(plan)
+
+
+def _prepare_tool_launch(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
     if plan.cancel_event is not None and plan.cancel_event.is_set():
         raise SandboxBuildError("execution cancelled before sandbox preparation")
     if plan.requested_mode not in TOOL_EXECUTION_MODES:

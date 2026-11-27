@@ -991,8 +991,7 @@ def test_an_unrelated_incomplete_blob_does_not_condemn_a_complete_snapshot(hf_ca
 
 
 def test_a_snapshot_linking_to_an_unfinished_blob_is_still_pending(hf_cache):
-    """The narrowing above must not lose the case it was guarding: a link this
-    snapshot owns whose blob has not been finalized."""
+    """Narrowing must still treat a link to an unfinished blob in this snapshot as pending."""
     snapshot = Path(
         _make_cache(hf_cache, "org/dangling", {"config.json": "{}", "model.safetensors": "x"})
     )
@@ -1028,8 +1027,7 @@ def test_get_online_loads_the_snapshot_settings_called_cached(hf_cache, monkeypa
 
 
 def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
-    """The pin above must not turn a first-ever load into a failure: with nothing
-    cached there is no snapshot to prefer, so the repo id still goes to the Hub."""
+    """An uncached model still loads by repo id, since there is no snapshot to prefer."""
     from core.rag import embeddings
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -1050,8 +1048,7 @@ def test_an_uncached_model_online_still_loads_by_repo_id(monkeypatch):
 
 
 def test_a_module_declared_but_absent_makes_the_snapshot_incomplete(monkeypatch, tmp_path):
-    """Only module roots already carrying weights were validated, so a snapshot
-    missing 0_Transformer entirely passed on a complete 2_Dense."""
+    """Declared modules without weights went unvalidated, so a missing 0_Transformer passed."""
     import utils.utils as utils
 
     from utils import utils
@@ -1152,9 +1149,7 @@ def test_a_gguf_only_cache_does_not_retire_the_pending_st_marker(monkeypatch, tm
 
 
 def test_a_partial_st_transfer_keeps_the_pending_marker(monkeypatch, tmp_path):
-    """ST weights alone are satisfied by the first finalized shard of a transfer
-    still in flight. Clearing the marker there and loading the partial snapshot
-    means a later cancel plus eviction leaves the next attempt free to download."""
+    """One finalized shard satisfies ST weights mid-transfer, so the pending marker must stay."""
     from core.rag import embeddings
     import utils.embedding_model_settings as ems
     import utils.utils as utils

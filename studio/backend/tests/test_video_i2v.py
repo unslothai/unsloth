@@ -352,9 +352,7 @@ def test_class_swap_is_a_noop_without_a_class():
 
 
 def test_from_pipe_would_upcast_which_is_why_it_is_not_used():
-    """Pins the reason video_i2v does not call DiffusionPipeline.from_pipe: without torch_dtype it
-    casts every shared module to float32, an extra copy of the weights and a different numeric
-    path. If diffusers changes that, the swap is still correct; this test only documents it."""
+    """from_pipe would upcast shared modules to float32 unless torch_dtype is passed, so it is not used."""
     torch, pipe = _tiny_wan_pipe()
     import diffusers
 

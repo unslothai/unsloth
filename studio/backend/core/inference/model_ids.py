@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Public model identifiers for the OpenAI-compatible API.
-
-The exposed API must report a stable, clean model id rather than the absolute
-on-disk path of a local GGUF. The internal identifier for a direct local load is
-the absolute ``.gguf`` path, which leaks the host filesystem layout and is
-awkward for clients to round-trip. ``public_model_id`` maps such an internal
-identifier to a clean name while leaving Hugging Face repo ids (``org/model``)
-and already-clean names untouched.
-"""
+"""Keeps host paths out of API model ids: public_model_id maps absolute .gguf paths, leaves repo ids."""
 
 from __future__ import annotations
 
@@ -65,8 +57,7 @@ def public_model_id(identifier: Optional[str]) -> Optional[str]:
 
 
 def _is_hub_repo_id(identifier: str) -> bool:
-    """``org/name``, including Hub repos named ``org/name.gguf``. A file reference
-    carries a repo id plus a filename, so two or more slashes."""
+    """org/name with one slash, including repos named org/name.gguf; a file has more slashes."""
     if identifier.count("/") != 1:
         return False
     stem = (

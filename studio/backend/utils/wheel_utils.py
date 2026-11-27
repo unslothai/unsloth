@@ -52,15 +52,51 @@ def wheel_platform_tag() -> str | None:
     return None
 
 
+def _loaded_torch_wheel_env() -> dict[str, str] | None:
+    """The probe child's fields from the already imported torch, or None. Keep in step with the child below."""
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        import re
+        import sysconfig
+
+        parts = torch.__version__.split("+", 1)[0].split(".")[:2]
+        minor = re.sub(r"[^0-9].*", "", parts[1]) if len(parts) > 1 else "0"
+        cuda = torch.version.cuda
+        hip = getattr(torch.version, "hip", None)
+        py_tag = f"cp{sys.version_info.major}{sys.version_info.minor}"
+        return {
+            "python_tag": py_tag,
+            "abi_tag": py_tag + ("t" if sysconfig.get_config_var("Py_GIL_DISABLED") else ""),
+            "torch_mm": parts[0] + "." + minor,
+            "torch_version": str(torch.__version__),
+            "cuda_version": str(cuda) if cuda else "",
+            "cuda_major": str(int(str(cuda).split(".", 1)[0])) if cuda else "",
+            "hip_version": str(hip) if hip else "",
+            "cxx11abi": str(torch._C._GLIBCXX_USE_CXX11_ABI).upper(),
+        }
+    except Exception:
+        return None
+
+
 def probe_torch_wheel_env(
-    *, timeout: int | None = None, include_windows: bool = False
+    *,
+    timeout: int | None = None,
+    include_windows: bool = False,
+    reuse_loaded_torch: bool = False,
 ) -> dict[str, str] | None:
-    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset."""
+    """Describe the resident torch build for wheel-URL resolution, or None. Windows is opt-in via ``include_windows``, for callers whose every Windows URL names a published asset. ``reuse_loaded_torch`` reads an already imported torch instead of a 1-3 s child import."""
     platform_tag = wheel_platform_tag()
     if platform_tag is None:
         return None
     if platform_tag.startswith("win_") and not include_windows:
         return None
+    if reuse_loaded_torch:
+        env = _loaded_torch_wheel_env()
+        if env is not None:
+            env["platform_tag"] = platform_tag
+            return env
 
     try:
         probe = subprocess.run(
@@ -133,6 +169,30 @@ MAMBA_SSM_PURE_VERSION = "2.3.2.post1"
 MAMBA_SSM_PURE_WHEEL = f"mamba_ssm-{MAMBA_SSM_PURE_VERSION}-py3-none-any.whl"
 
 
+# studio/native_kernels/int8_gemm: C ABI + static cudart, so one py3-none wheel per platform fits every torch and CUDA 12/13.
+I8GEMM_DISTRIBUTION = "unsloth-studio-i8gemm"
+I8GEMM_VERSION = "1.0.0"
+_I8GEMM_PLATFORMS = {"linux_x86_64": "manylinux_2_28_x86_64", "win_amd64": "win_amd64"}
+
+
+def int8_gemm_platform_supported() -> bool:
+    """Whether an int8 GEMM wheel exists for this platform, without importing torch."""
+    return wheel_platform_tag() in _I8GEMM_PLATFORMS
+
+
+def int8_gemm_wheel_url(env: dict[str, str] | None) -> str | None:
+    """The prebuilt int8 GEMM wheel for an NVIDIA CUDA torch on x86_64 Linux / Windows, else None."""
+    if env is None or env.get("hip_version") or not env.get("cuda_major"):
+        return None
+    platform = _I8GEMM_PLATFORMS.get(str(env.get("platform_tag") or ""))
+    if platform is None:
+        return None
+    return (
+        f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/"
+        f"unsloth_studio_i8gemm-{I8GEMM_VERSION}-py3-none-{platform}.whl"
+    )
+
+
 def mamba_ssm_pure_wheel_url(env: dict[str, str] | None = None) -> str:
     """The extension-free mamba_ssm wheel (the same file for every environment)."""
     return (
@@ -171,15 +231,14 @@ _UNSLOTH_PREBUILT_EXTRA_CELLS: dict[tuple[str, str], frozenset[str]] = {
     ("linux_aarch64", "2.12"): frozenset({"cp311", "cp312", "cp313"}),
 }
 
-# Extra cells that carry only some packages. On Linux torch 2.10 to 2.12 ours replace upstream's
-# causal-conv1d / mamba-ssm (205 / 351 MB, every arch and -lineinfo); upstream flash-attn 2.8.1 is
-# already smaller there than ours, so it keeps resolving upstream.
+# Extra cells carrying only some packages: on Linux torch 2.10 to 2.12 ours replace upstream
+# causal-conv1d and mamba-ssm; upstream flash-attn 2.8.1 is smaller than ours, so it stays upstream.
 _UNSLOTH_PREBUILT_EXTRA_CELL_PREFIXES: dict[str, frozenset[str]] = {
     "linux_x86_64": frozenset({"causal_conv1d", "mamba_ssm"}),
     "linux_aarch64": frozenset({"causal_conv1d", "mamba_ssm"}),
 }
 
-# Windows on ARM has one CUDA torch, NVIDIA's 2.14.0+cu134 (CUDA 13.4, the first with a Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there.
+# Windows on ARM CUDA torch is NVIDIA's (2.14.0+cu134 first, CUDA 13.4 being the first Windows ARM64 nvcc), and NVIDIA publishes flash-attn for it, so only these two are ours there, built for torch 2.14 only.
 _UNSLOTH_WIN_ARM64_PREFIXES = frozenset({"causal_conv1d", "mamba_ssm"})
 _WIN_ARM64_TORCH_MM = "2.14"
 _WIN_ARM64_MIN_CUDA = (13, 4)
@@ -193,7 +252,7 @@ def _cuda_at_least(env: dict[str, str], floor: tuple[int, int]) -> bool:
     return (major, minor) >= floor
 
 
-# NVIDIA's flash-attn for Windows on ARM, built for the torch 2.14.0+cu134 the WoA installer takes. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
+# NVIDIA's flash-attn for Windows on ARM, one release per torch minor the WoA installer can take. Not ours to sign: each file is pinned by GitHub's asset sha256 via a #sha256= fragment, which uv and pip both enforce.
 NVIDIA_WOA_FLASH_ATTN_RELEASE_URL = (
     "https://github.com/NVIDIA/pytorch-windows-ci/releases/download/Flash-Attention-for-WoA"
 )
@@ -206,6 +265,25 @@ NVIDIA_WOA_FLASH_ATTN_SHA256 = {
     "cp314": "b016989f1d30a01edc9fff9ba5643170174c27cc12968fdaa33ca1c055eb17aa",
     "cp314t": "c5269dc146c61a35e95df34aea81f35b85d7449d912325e4af00640f63cfcd5a",
 }
+# torch minor -> (release URL, abi tag -> sha256). Exact minor: a wheel built for one torch does not load on another.
+NVIDIA_WOA_FLASH_ATTN_RELEASES: dict[str, tuple[str, dict[str, str]]] = {
+    NVIDIA_WOA_FLASH_ATTN_TORCH_MM: (
+        NVIDIA_WOA_FLASH_ATTN_RELEASE_URL,
+        NVIDIA_WOA_FLASH_ATTN_SHA256,
+    ),
+    "2.15": (
+        f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}-torch2.15",
+        {
+            "cp311": "aea522334852454885af363360da7a38471a29c229ef14dd1dae2e27faa87fed",
+            "cp312": "52d7c6d05b6857384336a1356504f34ec7022ec51dffaa822f09b4564fbc35f4",
+            "cp313": "a108a9f39c622d21d35a4d94ec7c3095d89718bda7878616ec31534d00e826eb",
+            "cp314": "51b34de575067b1fe6044cb924a37ff9c4e05ce60a3fb88914ad4cb2ad1fb7b8",
+            "cp314t": "f78dfbbe84e7016da1028480f4b216ec58c274f80f00639e91e2ce78d538cad7",
+            "cp315": "90b90880e663289ef935cc1bd959578d18607c9214947a818be0ba82cc706314",
+            "cp315t": "37794b35f1c32edf5c5e074b2391fc678f433390589b5efc4761426a137d7d02",
+        },
+    ),
+}
 
 
 def is_windows_wheel_env(env: dict[str, str] | None) -> bool:
@@ -217,20 +295,21 @@ def nvidia_woa_flash_attn_wheel_url(env: dict[str, str] | None) -> str | None:
     """NVIDIA's win_arm64 flash-attn for this env, with its pinned #sha256= fragment, else None."""
     if env is None or env.get("platform_tag") != "win_arm64":
         return None
-    if env.get("torch_mm") != NVIDIA_WOA_FLASH_ATTN_TORCH_MM or not _cuda_at_least(
-        env, _WIN_ARM64_MIN_CUDA
-    ):
+    torch_mm = str(env.get("torch_mm") or "")
+    release = NVIDIA_WOA_FLASH_ATTN_RELEASES.get(torch_mm)
+    if release is None or not _cuda_at_least(env, _WIN_ARM64_MIN_CUDA):
         return None
+    release_url, digests = release
     python_tag = env.get("python_tag") or ""
     abi_tag = env.get("abi_tag") or python_tag
-    digest = NVIDIA_WOA_FLASH_ATTN_SHA256.get(abi_tag)
+    digest = digests.get(abi_tag)
     if not python_tag or digest is None or not abi_tag.startswith(python_tag):
         return None
     filename = (
-        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{NVIDIA_WOA_FLASH_ATTN_TORCH_MM}"
+        f"flash_attn-{NVIDIA_WOA_FLASH_ATTN_VERSION}+cu13torch{torch_mm}"
         f"-{python_tag}-{abi_tag}-win_arm64.whl"
     )
-    return f"{NVIDIA_WOA_FLASH_ATTN_RELEASE_URL}/{filename}#sha256={digest}"
+    return f"{release_url}/{filename}#sha256={digest}"
 
 
 def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | None) -> str | None:
@@ -286,11 +365,9 @@ def unsloth_prebuilt_wheel_url(*, filename_prefix: str, env: dict[str, str] | No
     return f"{UNSLOTH_PREBUILT_RELEASE_BASE_URL}/{UNSLOTH_PREBUILT_RELEASE_TAG}/{filename}"
 
 
-# The cells the pinned upstream releases publish (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1,
-# identical for both): (platform, CUDA major, cxx11abi) -> torch minors, each for cp310-cp313.
-# Read from the two release asset lists; anything else (CUDA 13 before torch 2.9, aarch64 before
-# 2.7, an abiFALSE torch after 2.6, any interpreter outside cp310-cp313) is a URL that 404s in
-# front of the source fallback, so it resolves to nothing instead.
+# Cells the pinned releases (causal-conv1d v1.6.1.post4, mamba-ssm v2.3.1) publish for cp310-cp313;
+# anything else (CUDA 13 before torch 2.9, aarch64 before 2.7, abiFALSE torch after 2.6) would 404
+# ahead of the source fallback, so it resolves to nothing.
 _UPSTREAM_SSM_PINS = {
     "causal_conv1d": CAUSAL_CONV1D_PACKAGE_VERSION,
     "mamba_ssm": MAMBA_SSM_PACKAGE_VERSION,

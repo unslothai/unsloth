@@ -43,6 +43,9 @@ export async function confirmRemoteCodeIfNeeded({
       throw error;
     }
     scan = {
+      blockCause: null,
+      blockSource: "Hugging Face",
+      blockTarget: null,
       requiresTrustRemoteCode: Boolean(requiresTrustRemoteCode),
       approvable: true,
       maxSeverity: null,

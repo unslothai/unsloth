@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Browser actions the chat tab runs for a tool loop, and the results it posts back.
-
-The browser lives in the tab (a proxied frame or a desktop native view), the loop in this process.
-A browser tool registers a slot, asks the tab through the chat stream (a ``tool_output`` event
-carrying ``browser_action``), and blocks here until ``POST /api/inference/browser-action-result``
-answers with the same unguessable id. Shaped like ``tool_approvals``: registered before it is
-announced, first answer wins, scoped to the session and account that asked.
-"""
+"""Browser tool slots answered by POST /api/inference/browser-action-result; first answer wins;
+registered before announced; scoped to session and account"""
 
 from __future__ import annotations
 
@@ -49,8 +43,7 @@ def wait_browser_action(
     cancel_event = None,
     timeout: Optional[float] = None,
 ) -> tuple[str, Optional[dict]]:
-    """Block until the tab answers. Returns ``("answered", result)``, ``("cancelled", None)`` or
-    ``("expired", None)``; always removes its own slot."""
+    """Blocks until answered, cancelled or expired; always removes its own slot."""
     waited = 0.0
     try:
         while not slot["event"].wait(timeout = 0.25):

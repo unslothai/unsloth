@@ -12,13 +12,24 @@ type Status = Pick<
   | "in_model_load"
   | "message"
   | "preparation"
+  | "download_progress"
+  | "model_load_stage"
+  | "model_load_progress"
 >;
+
+const QUANTIZATION_NOTE =
+  "Downloaded files are reused; 4-bit conversion runs in memory each time.";
 
 const PHASE_MESSAGE =
   /^(?:Loading base model\.\.\.|Training\.\.\.|Preparing \(.*\)\.\.\.)$/;
 const TERMINAL_STATUSES = new Set(["completed", "stopped", "error"]);
 // Older backends only carry the preparation counts in the status text.
 const LEGACY_PREPARING = /Preparing \(([^()]+?) (\d+)\/(\d+)\)/;
+
+// The heading renders this as-is: "stopped" -> "Stopped".
+function capitalize(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
 
 function backendNote(message: string | null | undefined): string | null {
   return message && !PHASE_MESSAGE.test(message) ? message : null;
@@ -72,6 +83,30 @@ export function diffusionTrainingProgress(status: Status | null) {
           : null,
       };
     }
+    const load = status?.model_load_progress;
+    const stage = status?.model_load_stage;
+    // A retained tensor count is stale while the download manager shows a transfer.
+    const downloading = status?.download_progress != null;
+    const measured = status?.in_model_load && !downloading && load &&
+      Number.isFinite(load.done) && Number.isFinite(load.total) &&
+      load.done >= 0 && load.total > 0 && load.done <= load.total;
+    if (status?.in_model_load && !downloading && (measured || stage)) {
+      return {
+        preparing: true,
+        title: stage === "quantizing" ? "Loading model and converting to 4-bit"
+          : stage === "conditioning" ? "Loading text encoders and image encoder"
+          : "Loading training model weights",
+        detail: note ?? (measured
+          ? stage === "quantizing"
+            ? `${load.done.toLocaleString()} of ${load.total.toLocaleString()} ${load.unit === "tensors" ? "weight tensors" : load.unit} processed. ${QUANTIZATION_NOTE}`
+            : `${load.label} · ${load.done.toLocaleString()} / ${load.total.toLocaleString()} ${load.unit} loaded.`
+          : stage === "quantizing"
+            ? QUANTIZATION_NOTE
+            : "Waiting for the model loader to report progress. Training has not started yet."),
+        count: measured ? `${Math.floor(load.done / load.total * 100)}%` : null,
+        percent: measured ? load.done / load.total * 100 : null,
+      };
+    }
     return {
       preparing: true,
       title: status?.in_model_load
@@ -93,7 +128,7 @@ export function diffusionTrainingProgress(status: Status | null) {
         ? "Training complete"
         : running && !terminal
           ? "Training"
-          : (status?.status ?? ""),
+          : capitalize(status?.status ?? ""),
     detail: status?.message ?? null,
     count:
       status && status.total_steps > 0

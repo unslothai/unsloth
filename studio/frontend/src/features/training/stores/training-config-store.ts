@@ -7,7 +7,7 @@ import {
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
 } from "@/config/training";
-import { getHfToken } from "@/features/hub";
+import { getHfToken } from "@/features/hub/stores/hf-token-store";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";
@@ -70,6 +70,8 @@ import {
   hasSeparateStreamingEvalSplit,
   initialTrainingConfigState,
   resolveDeferredTrainOnCompletionsDefault,
+  resolveTrainingToggleDefaults,
+  trainingToggleDefaults,
   streamingCompatiblePatch,
 } from "./training-config-policy";
 import { selectTrainingMethodForHardware } from "./training-method-hardware-policy";
@@ -84,6 +86,47 @@ let _datasetCheckController: AbortController | null = null;
 
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
+
+// Request behind the last applied defaults; in memory only, so a page reload asks again.
+type ModelDefaultsRequestKey = {
+  modelName: string;
+  knownCached: boolean;
+  localPath: string | null;
+  asDecision: boolean;
+  hfToken: string;
+};
+let _appliedModelDefaultsKey: ModelDefaultsRequestKey | null = null;
+
+function modelDefaultsRequestKey(
+  state: Pick<
+    TrainingConfigState,
+    "selectedModel" | "modelKnownCached" | "modelLocalPath" | "trainAsDecision"
+  >,
+  modelName: string,
+): ModelDefaultsRequestKey {
+  const selected = state.selectedModel === modelName;
+  return {
+    modelName,
+    knownCached: selected && state.modelKnownCached,
+    localPath: selected ? state.modelLocalPath : null,
+    asDecision: state.trainAsDecision,
+    hfToken: getHfToken(),
+  };
+}
+
+function modelDefaultsRequestKeysEqual(
+  a: ModelDefaultsRequestKey | null,
+  b: ModelDefaultsRequestKey,
+): boolean {
+  return (
+    a !== null &&
+    a.modelName === b.modelName &&
+    a.knownCached === b.knownCached &&
+    a.localPath === b.localPath &&
+    a.asDecision === b.asDecision &&
+    a.hfToken === b.hfToken
+  );
+}
 
 let _trainOnCompletionsManuallySet = false;
 // Model whose completions value the user set (toggle or import); CPT entry captures it even while
@@ -228,9 +271,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       ) => {
         const applyTrainingDefaults = options?.applyTrainingDefaults ?? true;
         _modelConfigController?.abort();
+        _appliedModelDefaultsKey = null;
         const controller = new AbortController();
         const trainingMethodEditGeneration = _trainingMethodEditGeneration;
         const requestState = get();
+        const requestKey = modelDefaultsRequestKey(requestState, modelName);
         const requestedModelDefaultsEditGeneration =
           _modelDefaultsEditGeneration;
         const requestedTargetModulesEditGeneration =
@@ -249,14 +294,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           requestedSelectionOwnsLoraSnapshot && _modelDefaultsEditBaseline
             ? { ..._modelDefaultsEditBaseline.loraParamEditGenerations }
             : { ..._loraParamEditGenerations };
-        const requestedKnownCached =
-          requestState.selectedModel === modelName &&
-          requestState.modelKnownCached;
-        const requestedLocalPath =
-          requestState.selectedModel === modelName
-            ? requestState.modelLocalPath
-            : null;
-        const requestedAsDecision = requestState.trainAsDecision;
+        const {
+          knownCached: requestedKnownCached,
+          localPath: requestedLocalPath,
+          asDecision: requestedAsDecision,
+        } = requestKey;
         const canApplyTrainingDefaults = () =>
           applyTrainingDefaults &&
           _modelDefaultsEditGeneration === requestedModelDefaultsEditGeneration;
@@ -280,7 +322,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         void getModelConfig(
           modelName,
           controller.signal,
-          getHfToken() || undefined,
+          requestKey.hfToken || undefined,
           {
             preferLocalCache,
             localPath: preferLocalCache ? requestedLocalPath : null,
@@ -292,6 +334,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             if (!requestMatchesSelection()) return;
             // Answered for the other side of the decision switch.
             if (get().trainAsDecision !== requestedAsDecision) return;
+            // A probe that could not read the repo (gated, offline) is asked again on the next visit.
+            if (modelDetails.audio_type_known !== false) {
+              _appliedModelDefaultsKey = requestKey;
+            }
 
             const isDecision = modelDetails.model_type === "decision";
             const settingsBeforeDecision = get().settingsBeforeDecision;
@@ -408,7 +454,6 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const modelDefaultsPatch = mapBackendModelConfigToTrainingPatch(
               modelDetails.config,
             );
-            const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
 
             // A model-config LR is authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
@@ -423,18 +468,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 : LR_DEFAULT_FULL;
             }
 
-            if (modelDetails.is_vision && get().isDatasetImage === true) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-
             const isAudio = !!modelDetails.is_audio;
-            if (isAudio && !modelDetails.is_vision) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-            if (isAudio && modelDetails.is_vision && get().isDatasetAudio) {
-              modelDefaultsPatch.trainOnCompletions = false;
-            }
-
             const isEmbedding = !!modelDetails.is_embedding;
             const inferredModelType = resolveTrainingModelType({
               modelType: modelDetails.model_type,
@@ -443,6 +477,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               isVision: modelDetails.is_vision,
               isAudio: modelDetails.is_audio,
             });
+            const toggleState = {
+              ...get(),
+              isVisionModel: modelDetails.is_vision,
+              isAudioModel: isAudio,
+              isEmbeddingModel: isEmbedding,
+              modelType: inferredModelType,
+            };
+            // Shipped model recipes are recommendations, not an explicit user opting out.
+            Object.assign(modelDefaultsPatch, trainingToggleDefaults({
+              ...toggleState, trainingMethod: "qlora", datasetFormat: "auto", datasetStreaming: false,
+            }));
+            const patch: ModelDefaultsPatch = shouldApplyTrainingDefaults ? {
+              ...modelDefaultsPatch,
+              ...resolveTrainingToggleDefaults(toggleState),
+            } : {};
             const decisionCheckpoints = isDecision
               ? (modelDetails.decision_checkpoints ?? null)
               : null;
@@ -601,6 +650,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                     ...streamingCompatiblePatch(nextStreamingState),
                     datasetStreaming: true,
                     isDatasetImage: null,
+                    datasetTotalRows: null,
                     isDatasetAudio: false,
                     datasetCheckFailed: false,
                   }
@@ -805,19 +855,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             const updates: Partial<TrainingConfigState> = {
               isDatasetImage: isImage,
               isDatasetAudio: isAudio,
+              datasetTotalRows:
+                typeof res.total_rows === "number" && res.total_rows > 0
+                  ? res.total_rows
+                  : null,
               isCheckingDataset: false,
               datasetCheckFailed: false,
               ...(streamingDisabled ? { datasetStreaming: false } : {}),
             };
             if (!_trainOnCompletionsManuallySet) {
               const { isVisionModel, isAudioModel } = current;
-              if (isVisionModel && isImage) {
-                updates.trainOnCompletions = false;
-              }
               if (isAudioModel && !isVisionModel) {
-                updates.trainOnCompletions = false;
-              }
-              if (isAudioModel && isVisionModel && isAudio) {
                 updates.trainOnCompletions = false;
               }
               if (updates.trainOnCompletions === false) {
@@ -827,6 +875,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 };
               }
             }
+            Object.assign(updates, resolveTrainingToggleDefaults({ ...current, ...updates }));
             set(updates);
             if (streamingDisabled) {
               toast.info(
@@ -920,6 +969,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             set({
               isDatasetImage: null,
+              datasetTotalRows: null,
               isDatasetAudio: false,
               isCheckingDataset: false,
               datasetCheckFailed: true,
@@ -955,6 +1005,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         datasetSliceEnd: null,
         uploadedEvalFile: null,
         isDatasetImage: null,
+        datasetTotalRows: null,
         isDatasetAudio: false,
         isCheckingDataset: false,
         datasetCheckFailed: false,
@@ -1085,6 +1136,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           modelDefaultsAppliedFor?: string | null;
           advancedSettingsBaseline?: null;
           trainOnCompletionsDefaultPendingFor?: null;
+          trainingToggleChoices?: TrainingConfigState["trainingToggleChoices"];
+          packing?: boolean;
+          trainOnCompletions?: boolean;
           trainingMethodProvenance?: TrainingConfigState["trainingMethodProvenance"];
         } = {
           selectedModel,
@@ -1099,6 +1153,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           patch.modelType = effectiveModelType;
         }
         if (selectionChanged) {
+          patch.trainingToggleChoices = selectedModel !== previousModel ? {} : currentState.trainingToggleChoices;
           patch.visionImageSize = DEFAULT_HYPERPARAMS.visionImageSize;
           patch.trustRemoteCode = false;
           patch.approvedRemoteCodeFingerprint = null;
@@ -1117,6 +1172,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             trainOnCompletionsBeforeCpt: null,
           };
         }
+        if (selectionChanged) Object.assign(patch, resolveTrainingToggleDefaults({ ...currentState, ...patch }));
         setUserEdit(patch);
 
         if (!selectedModel) {
@@ -1235,6 +1291,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ...(cacheReferenceChanged && !state.datasetStreaming
               ? {
                   isDatasetImage: null,
+                  datasetTotalRows: null,
                   isDatasetAudio: false,
                   datasetCheckFailed: false,
                 }
@@ -1248,6 +1305,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           const state = get();
           if (!state.selectedModel) return;
           if (state.isLoadingModelDefaults) return;
+          if (
+            state.modelDefaultsAppliedFor === state.selectedModel &&
+            state.modelDefaultsError === null &&
+            modelDefaultsRequestKeysEqual(
+              _appliedModelDefaultsKey,
+              modelDefaultsRequestKey(state, state.selectedModel),
+            )
+          ) {
+            return;
+          }
           const defaultsAlreadyApplied =
             state.modelDefaultsAppliedFor === state.selectedModel;
           void loadAndApplyModelDefaults(state.selectedModel, {
@@ -1318,7 +1385,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               datasetFormat,
               trainOnCompletions: isRawTextDatasetFormat(datasetFormat)
                 ? false
-                : state.trainOnCompletions,
+                : resolveTrainingToggleDefaults({ ...state, datasetFormat }).trainOnCompletions,
               ...(isRawTextDatasetFormat(datasetFormat)
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),
@@ -1346,6 +1413,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSliceStart: null,
             datasetSliceEnd: null,
             isDatasetImage: null,
+            datasetTotalRows: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
             datasetCheckFailed: false,
@@ -1372,6 +1440,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             manualDatasetOptionsValid: true,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
+            datasetTotalRows: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
           });
@@ -1387,6 +1456,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             datasetSplit,
             datasetManualMapping: emptyManualMapping(),
             isDatasetImage: null,
+            datasetTotalRows: null,
             isDatasetAudio: false,
             isCheckingDataset: false,
             ...streamingPatch,
@@ -1451,9 +1521,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             setUserEdit({
               datasetStreaming: false,
+              ...resolveTrainingToggleDefaults({ ...state, datasetStreaming: false }),
               ...(changed
                 ? {
                     isDatasetImage: null,
+                    datasetTotalRows: null,
                     isDatasetAudio: false,
                     datasetCheckFailed: false,
                   }
@@ -1486,6 +1558,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             trainOnCompletionsDefaultPendingFor: null,
             evalSteps: dropsEval ? 0 : state.evalSteps,
             isDatasetImage: null,
+            datasetTotalRows: null,
             isDatasetAudio: false,
             datasetCheckFailed: false,
           });
@@ -1613,12 +1686,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({ drafterDraftSteps }),
         setDrafterCapability: (drafterCapability) =>
           set({ drafterCapability }),
-        setPacking: (packing) => setUserEdit({ packing }),
+        setPacking: (packing) => setUserEdit((state) => ({
+          packing,
+          trainingToggleChoices: { ...state.trainingToggleChoices, packing },
+        })),
         setTrainOnCompletions: (trainOnCompletions) => {
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = get().selectedModel;
           setUserEdit({
             trainOnCompletions,
+            trainingToggleChoices: { ...get().trainingToggleChoices, trainOnCompletions },
             trainOnCompletionsDefaultPendingFor: null,
             ...(trainOnCompletions ? { datasetStreaming: false } : {}),
           });
@@ -1670,6 +1747,10 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainOnCompletionsExplicitModel = selections.selectedModel;
           setUserEdit({
             ...hyperparameters,
+            trainingToggleChoices: {
+              ...(typeof config.packing === "boolean" ? { packing: config.packing } : {}),
+              ...(typeof config.train_on_completions === "boolean" ? { trainOnCompletions: config.train_on_completions } : {}),
+            },
             ...selections,
             earlyStoppingPatience: earlyStoppingPatienceFrom(
               config.early_stopping_patience,
@@ -1692,6 +1773,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             _loraParamEditGenerations[key] += 1;
           }
           _modelDefaultsEditBaseline = null;
+          _appliedModelDefaultsKey = null;
           setUserEdit(initialTrainingConfigState);
         },
         resetToModelDefaults: () => {
@@ -1700,6 +1782,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           setUserEdit({
             modelDefaultsAppliedFor: null,
             advancedSettingsBaseline: null,
+            trainingToggleChoices: {},
             visionImageSize: DEFAULT_HYPERPARAMS.visionImageSize,
           });
           loadAndApplyModelDefaults(selectedModel, {
@@ -1728,6 +1811,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
+              ...(patch.packing !== undefined || patch.trainOnCompletions !== undefined
+                ? {
+                    trainingToggleChoices: {
+                      ...state.trainingToggleChoices,
+                      ...(patch.packing !== undefined ? { packing: patch.packing } : {}),
+                      ...(patch.trainOnCompletions !== undefined ? { trainOnCompletions: patch.trainOnCompletions } : {}),
+                    },
+                  }
+                : {}),
               ...(importsPatience
                 ? {
                     earlyStoppingPatience: earlyStoppingPatienceFrom(

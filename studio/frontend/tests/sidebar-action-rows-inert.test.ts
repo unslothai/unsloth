@@ -58,9 +58,16 @@ test("custom titlebar branding centers on the chat header's model picker", async
   );
 });
 
-test("desktop branding keeps an 11px gap above New chat", async () => {
+test("the smaller logo and shared-size Search are web Studio only; desktop keeps its header", async () => {
+  const header = APP_SIDEBAR.split("<SidebarHeader")[1].split("</SidebarHeader>")[0];
+  assert.match(header, /usesDesktopTitlebar\s*\?\s*"h-\[calc\(22px\+0\.5rem\*var\(--ui-font-scale,1\)\)\] w-\[calc\(22px\+0\.5rem\*var\(--ui-font-scale,1\)\)\]"\s*:\s*"h-\[calc\(20\.5px/);
+  assert.match(header, /usesDesktopTitlebar && "relative top-px"/);
+  assert.match(header, /className=\{usesDesktopTitlebar \? "size-4" : "size-icon"\}/);
+});
+
+test("New chat sits 11px below desktop branding and 5px below web branding", async () => {
   const source = APP_SIDEBAR;
-  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[7px\]"/);
+  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[5px\]"/);
 });
 
 test("footer profile sits 11px above the sidebar edge", async () => {

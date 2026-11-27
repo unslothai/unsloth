@@ -75,15 +75,11 @@ test("the endpoint is always the origin plus /mcp/", () => {
   assert.equal(buildMcpSnippet("claude", "not a url", "unix"), null);
 });
 
-test("Claude Code reads the key from the shell it runs in", () => {
-  assert.equal(
-    snippet("claude", "unix").text,
-    'claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $UNSLOTH_API_KEY"',
-  );
-  assert.equal(
-    snippet("claude", "windows").text,
-    'claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header "Authorization: Bearer $env:UNSLOTH_API_KEY"',
-  );
+test("Claude Code adds the server for every project and reads the key when it starts", () => {
+  const expected =
+    "claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:8888/mcp/ --header 'Authorization: Bearer ${UNSLOTH_API_KEY}'";
+  assert.equal(snippet("claude", "unix").text, expected);
+  assert.equal(snippet("claude", "windows").text, expected);
   assert.equal(snippet("claude").readsKeyEnv, true);
 });
 
@@ -91,7 +87,7 @@ test("Claude Code quotes a real key for each shell", () => {
   const unix = snippet("claude", "unix", KEY);
   assert.equal(
     unix.text,
-    `claude mcp add --transport http unsloth-studio http://127.0.0.1:8888/mcp/ --header 'Authorization: Bearer ${KEY}'`,
+    `claude mcp add --transport http --scope user unsloth-studio http://127.0.0.1:8888/mcp/ --header 'Authorization: Bearer ${KEY}'`,
   );
   assert.equal(unix.readsKeyEnv, false);
   assert.ok(

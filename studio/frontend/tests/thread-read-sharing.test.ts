@@ -36,6 +36,7 @@ function harness() {
         new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
         {},
       ),
+      "@/lib/sse-framing": loadWithStubs(new URL("../src/lib/sse-framing.ts", import.meta.url), {}),
       "@/features/auth": {
         getAuthSessionEpoch: () => auth.epoch,
         authFetch: (url: string, init?: RequestInit) =>
@@ -65,6 +66,7 @@ function harness() {
         publishChatHistoryRevision: () => {},
         CHAT_HISTORY_REVISION_KEY: "unsloth_chat_history_revision",
       },
+      "../utils/openapi-support": { readAdvertisedPatchGuards: () => null },
       "../utils/load-warning-toast": { showLoadWarning: () => {} },
       "../lib/load-request": {},
       "./generation-length.ts": {},

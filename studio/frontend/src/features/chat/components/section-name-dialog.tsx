@@ -113,7 +113,7 @@ function SectionNameForm({
         <Button type="button" variant="ghost" onClick={onCancel}>
           {t("common.cancel")}
         </Button>
-        <Button variant="secondary" type="button" onClick={submit} disabled={!clean || unchanged}>
+        <Button variant="dark" type="button" onClick={submit} disabled={!clean || unchanged}>
           <HugeiconsIcon icon={PlusSignIcon} data-icon="inline-start" />
           {mode === "create" ? t("shell.sections.create") : t("common.save")}
         </Button>

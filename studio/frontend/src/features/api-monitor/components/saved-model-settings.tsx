@@ -12,7 +12,7 @@ import {
   putModelOverride,
 } from "@/features/model-picker/api/model-overrides";
 import { forgetPerModelConfigsForOverrideKeys } from "@/features/model-picker/model-config/saved-run-settings";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -195,9 +195,8 @@ export function SavedModelSettingsPanel(): ReactElement {
           Saved load settings
         </h2>
         <p className="text-sm text-muted-foreground">
-          A request that names one of these models loads it with the settings
-          saved in its Run settings. Other models load with app defaults.
-          Forgetting an entry also clears it from the picker.
+          Requests naming these models load them with their saved Run settings.
+          Forgetting one also removes it from the picker.
         </p>
       </div>
 
@@ -257,7 +256,7 @@ export function SavedModelSettingsPanel(): ReactElement {
                   {forgetting.has(modelId) ? (
                     <Spinner label="Forgetting" />
                   ) : (
-                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} />
+                    <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} />
                   )}
                 </Button>
               </li>

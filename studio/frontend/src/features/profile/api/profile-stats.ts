@@ -91,10 +91,9 @@ export type ProfileStats = {
   };
 };
 
-// Bucket days and hours in this browser's timezone, which is not the server's
-// when Unsloth is reached over the network. The IANA name is what gives each
-// historical date its own daylight-saving offset; the current offset only
-// covers callers whose host cannot resolve the name.
+// Bucket days and hours in this browser's timezone, not the server's when Unsloth is reached over
+// the network; the IANA name gives each historical date its own DST offset; the current offset only
+// covers hosts that cannot resolve the name.
 function timezoneQuery(): URLSearchParams {
   return new URLSearchParams({
     tz_offset_minutes: String(new Date().getTimezoneOffset()),

@@ -13,16 +13,22 @@ import { TooltipIconButton } from "./tooltip-icon-button";
 import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-const BAR_COUNT = 84;
-// Peak height multiple (dot is 4px); stays under the 40px pill.
-const MAX_SCALE = 8;
-const PUSH_INTERVAL_MS = 165;
+const BAR_COUNT = 48;
+// The peak stays inside the 40px pill.
+const MIN_HEIGHT = 4;
+const MAX_HEIGHT = 26;
+const PUSH_INTERVAL_MS = 120;
 // No mic level for this long (e.g. no Web Audio): fall back to an idle shimmer.
 const IDLE_AFTER_MS = 450;
 const WAVE_BAR_IDS = Array.from(
   { length: BAR_COUNT },
   (_, index) => `wave-bar-${index}`,
 );
+
+function barHeight(level: number): string {
+  const px = MIN_HEIGHT + level * (MAX_HEIGHT - MIN_HEIGHT);
+  return `calc(${px.toFixed(2)}px * var(--ui-space-scale, 1))`;
+}
 
 function formatElapsed(ms: number): string {
   const total = Math.floor(ms / 1000);
@@ -61,10 +67,10 @@ export const ChatDictationBar: FC<{
           (el): el is HTMLElement => el instanceof HTMLElement,
         )
       : [];
-    // Painted imperatively so React never overwrites these transforms on a timer re-render.
+    // Painted imperatively so React never overwrites these heights on a timer re-render.
     for (const el of barEls) {
-      el.style.transform = "scaleY(1)";
-      el.style.opacity = "0.62";
+      el.style.height = barHeight(0);
+      el.style.opacity = "0.45";
     }
 
     const commitSample = () => {
@@ -121,8 +127,9 @@ export const ChatDictationBar: FC<{
         const a = bars[i] ?? 0;
         const b = bars[i + 1] ?? a;
         const v = a + (b - a) * phase;
-        barEls[i].style.transform = `scaleY(${1 + v * (MAX_SCALE - 1)})`;
-        barEls[i].style.opacity = `${0.62 + v * 0.38}`;
+        // Height, not scaleY, so the rounded caps stay round at every level.
+        barEls[i].style.height = barHeight(v);
+        barEls[i].style.opacity = `${0.45 + v * 0.55}`;
       }
 
       const elapsedMs = Date.now() - startedAt;
@@ -199,21 +206,29 @@ export const ChatDictationBar: FC<{
       <div
         ref={rowRef}
         aria-hidden="true"
-        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2"
+        className="unsloth-dictation-wave grid h-10 min-w-0 flex-1 items-center overflow-hidden pl-4 pr-2 [mask-image:linear-gradient(to_right,transparent,#000_28%)]"
         style={{
-          gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(1px, 3px))`,
+          gridTemplateColumns: `repeat(${BAR_COUNT}, minmax(2px, 3px))`,
           justifyContent: "space-between",
         }}
       >
         {WAVE_BAR_IDS.map((barId) => (
           <span
             key={barId}
-            className="h-1 w-full origin-center rounded-full bg-foreground opacity-[0.62] will-change-transform"
+            className="h-1 w-full rounded-full bg-foreground opacity-45"
           />
         ))}
       </div>
       {/* Classed so narrow panes can tighten these: both are shrink-0 and set the bar's floor. */}
-      <span className="unsloth-dictation-timer mr-4 shrink-0 tabular-nums text-sm text-muted-foreground">
+      <span className="unsloth-dictation-timer mr-4 flex shrink-0 items-center gap-1.5 tabular-nums text-sm text-muted-foreground">
+        <span
+          aria-hidden="true"
+          className={
+            transcribing === null
+              ? "size-1.5 animate-pulse rounded-full bg-destructive"
+              : "size-1.5 rounded-full bg-muted-foreground/50"
+          }
+        />
         {formatElapsed(elapsed)}
       </span>
       <div className="unsloth-dictation-actions flex shrink-0 items-center gap-2.5">

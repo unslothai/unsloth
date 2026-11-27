@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { FormatFilterModelFormat } from "../lib/format-filters";
+import {
+  type FormatFilterModelFormat,
+  namedOrTaggedMlx,
+} from "../lib/format-filters";
 import type { CachedInventoryRow, LocalInventoryRow } from "../types";
 
 export type InventoryItem =
@@ -16,17 +19,22 @@ export function inventoryItemSize(item: InventoryItem): number {
   return item.variant === "cached" ? item.row.bytes : (item.row.bytes ?? 0);
 }
 
-/** The scan never reports "mlx"; an MLX folder says so in its library, tags or oMLX source. */
+/** The scan never reports "mlx"; an MLX folder says so in its name, library, tags or oMLX source. */
 export function inventoryRowFormat(
   row: CachedInventoryRow | LocalInventoryRow,
 ): FormatFilterModelFormat {
   if (row.modelFormat === "gguf") {
     return "gguf";
   }
-  const mlx =
-    row.libraryName?.toLowerCase() === "mlx" ||
-    (row.tags ?? []).some((tag) => tag.toLowerCase() === "mlx") ||
-    (row.kind === "local" && row.source === "omlx");
+  const mlx = namedOrTaggedMlx({
+    names:
+      row.kind === "local"
+        ? [row.path, row.title, row.modelId ?? ""]
+        : [row.repoId],
+    tags: row.tags,
+    libraryName: row.libraryName,
+    omlx: row.kind === "local" && row.source === "omlx",
+  });
   return mlx ? "mlx" : row.modelFormat;
 }
 

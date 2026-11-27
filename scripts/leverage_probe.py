@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Probe two candidate levers from the optimization research, on the real GGUF path:
-
-  * `coordinate_descent_tuning` (Inductor) -- lossless extra kernel autotuning.
-  * FirstBlockCache (diffusers `apply_first_block_cache`) -- step-skip cache, lossy,
-    evaluated at a low (8) step count where its ceiling is lower.
-
-Each config is a fresh pipeline load (so Inductor config / compile artifacts don't
-cross-contaminate). Reports latency + PSNR vs the eager reference. Run on one CUDA GPU.
-"""
+"""Probes coordinate_descent_tuning (lossless) and FirstBlockCache (lossy, 8 steps) vs eager PSNR."""
 
 from __future__ import annotations
 

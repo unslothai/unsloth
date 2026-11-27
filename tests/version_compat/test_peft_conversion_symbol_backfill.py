@@ -720,8 +720,7 @@ def test_a_placeholder_can_still_be_subclassed():
 
 
 def test_the_import_only_symbols_still_come_from_the_stub(fake_modules):
-    """`ConversionOps` is subclassed by peft at module top and never asked
-    about instances, so it stays a real usable class."""
+    """peft subclasses ConversionOps and never asks about instances, so it stays a real class."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
 
@@ -749,15 +748,13 @@ def test_every_runtime_symbol_is_one_we_backfill():
 
 
 def test_a_class_body_import_is_seen():
-    """`ast.walk` descends into everything, so an import inside a module-level
-    class body -- which executes at import time -- is covered."""
+    """ast.walk descends everywhere, so an import in a module-level class body is covered."""
     src = "class Converter:\n    from transformers.core_model_loading import Concatenate\n"
     assert _transformers_imports(src) == {"transformers.core_model_loading": {"Concatenate"}}
 
 
 def test_a_package_split_still_reads_the_implementation(tmp_path, monkeypatch):
-    """A converter package whose `__init__.py` only re-exports must not hide
-    the child module's transformers imports, which are the ones that fail."""
+    """Re-exporting __init__ must not hide children, whose transformers imports are what fail."""
     import importlib
     import sys
     import types
@@ -932,8 +929,7 @@ def test_a_moe_named_model_that_is_not_fused_still_loads():
 
 
 def test_a_not_fused_class_name_alias_loads_in_its_own_case():
-    """Upstream keys the Qwen3-Omni MoE thinker aliases by class name, mapped to the dense
-    Qwen2.5-Omni thinker. Matching the carve-out only in lowercase refused them on the "moe" hint."""
+    """Class-name aliases (Qwen3-Omni MoE thinkers) must load; lowercase matching refused them."""
     stand_in = F._UnavailableConversionPatternMap()
     for alias in ("Qwen3OmniMoeThinkerModel", "Qwen3OmniMoeThinkerForConditionalGeneration"):
         assert alias in F._PEFT_MOE_NAMED_NOT_FUSED, alias
@@ -958,8 +954,7 @@ def test_a_fused_class_name_alias_is_refused_in_its_own_case():
 
 
 def test_an_unknown_moe_name_is_still_refused():
-    """The hint stays for a fused type added after the snapshot: silently
-    returning the default there mis-converts the adapter."""
+    """Unknown MoE-named types must still raise; a silent default mis-converts the adapter."""
     stand_in = F._UnavailableConversionPatternMap()
     with pytest.raises(RuntimeError):
         stand_in.get("some_future_moe_model")
@@ -984,9 +979,8 @@ def test_the_not_fused_list_matches_upstream():
 
 
 def _fetch_conversion_mapping_source():
-    """The upstream map, over the network, so the canary runs in the job that
-    installs only pytest -- where `transformers` is absent and every comparison
-    against the installed copy silently skips."""
+    """Fetches the upstream conversion map over the network so the canary also runs in the
+    pytest-only job, where transformers is absent and local comparisons skip."""
     import os
     import urllib.error
     import urllib.request
@@ -1007,9 +1001,7 @@ def _fetch_conversion_mapping_source():
 
 
 def test_the_fused_snapshot_matches_upstream():
-    """The other half of the same canary: a fused MoE alias added upstream and
-    missing here falls through the stand-in silently if its name says nothing
-    about MoE. Runs off the network, so the dependency-free job exercises it."""
+    """A fused alias missing from the snapshot falls through silently unless its name has MoE."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")
@@ -1077,9 +1069,7 @@ def test_an_unrelated_absolute_import_is_not_queued():
 
 
 def test_an_import_in_a_module_level_match_case_is_collected():
-    """The selected case runs at import time, so an import inside one can raise
-    the startup error this guard exists to catch. `ast.Match` keeps its
-    statements under `cases`, which the walk did not descend into."""
+    """A match case at module level runs at import; ast.Match keeps its statements under cases."""
     src = (
         "import sys\n"
         "match sys.version_info[0]:\n"
@@ -1118,18 +1108,15 @@ def test_the_two_base_patterns_are_in_the_snapshot():
 
 @pytest.mark.parametrize("model_type", sorted(F._PEFT_MOE_NAMED_NOT_CONVERTED))
 def test_a_moe_named_type_outside_the_map_is_not_refused(model_type):
-    """peft answers `None` for a type the map does not hold and skips the target
-    rewrite, so refusing breaks an ordinary adapter load. `qwen3_vl_moe` and
-    `lfm2_moe` are both supported models the substring hint was catching."""
+    """peft answers None for a type the map does not hold and skips the target rewrite, so refusing
+    breaks an ordinary load; the substring hint wrongly refused qwen3_vl_moe and lfm2_moe."""
     stand_in = F._UnavailableConversionPatternMap()
     assert stand_in.get(model_type) is None
     assert stand_in.get(model_type, "fallback") == "fallback"
 
 
 def test_the_unconverted_list_is_still_outside_the_upstream_map():
-    """The canary for the other half. A name that gains a conversion pattern
-    upstream becomes fused, and answering `None` for it is the silent
-    mis-conversion the refusal exists to prevent."""
+    """Unconverted names must stay unmapped upstream, else None silently mis-converts them."""
     src = _fetch_conversion_mapping_source()
     if src is None:
         pytest.skip("upstream conversion map unavailable")
@@ -1151,8 +1138,7 @@ def test_the_moe_aware_map_wins_over_the_inert_donor():
 
 
 def test_the_general_pass_does_not_overwrite_an_installed_stand_in():
-    """Even in the right order it must stay additive: a second pass that
-    re-donated would undo the first."""
+    """The general pass must stay additive: a second pass re-donating would undo the first."""
     donor = F._PEFT_STUB_BUILDERS["transformers.conversion_mapping"]()
     assert isinstance(getattr(donor, "_MODEL_TO_CONVERSION_PATTERN", None), dict)
     src = inspect.getsource(F._backfill_missing_peft_symbols)

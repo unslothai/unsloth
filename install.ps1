@@ -150,6 +150,7 @@ function Install-UnslothStudio {
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
 
+    $script:StudioMuteLines = $false
     # Resolved once: it picks the sink in Write-StudioLine. Same probe as studio/setup.ps1.
     $script:StudioStdoutRedirected = $false
     try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
@@ -159,6 +160,7 @@ function Install-UnslothStudio {
     # Defined before the first write.
     function Write-StudioLine {
         param([string]$Message = "", [string]$ForegroundColor)
+        if ($script:StudioMuteLines) { return }
         if ($script:StudioStdoutRedirected) {
             try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
             return
@@ -1237,9 +1239,132 @@ function Install-UnslothStudio {
         return $tag
     }
 
+    # One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
+    # failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
+    function Invoke-WoaHttpBytes {
+        param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
+        if (-not $Uri) { return $null }
+        $response = $null
+        try {
+            $req = [System.Net.WebRequest]::Create($Uri)
+            $req.UserAgent = 'unsloth-installer'
+            $req.Timeout = 20000
+            $req.ReadWriteTimeout = 20000
+            $ranged = $false
+            if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
+            elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
+            $response = $req.GetResponse()
+            $status = [int]$response.StatusCode
+            if ($ranged -and $status -ne 206) { return $null }
+            if (-not $ranged -and $status -ne 200) { return $null }
+            $total = -1
+            $contentRange = [string]$response.Headers['Content-Range']
+            if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
+            $stream = $response.GetResponseStream()
+            $buffer = New-Object System.IO.MemoryStream
+            $chunk = New-Object byte[] 65536
+            while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
+                $buffer.Write($chunk, 0, $read)
+                if ($buffer.Length -gt $MaxBytes) { return $null }
+            }
+            return @{ Bytes = $buffer.ToArray(); Total = $total }
+        } catch {
+            return $null
+        } finally {
+            if ($response) { try { $response.Close() } catch {} }
+        }
+    }
+
+    # The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
+    function Get-WoaMetadataTorchRequirement {
+        param([string]$Metadata)
+        if (-not $Metadata) { return "" }
+        $clauses = @()
+        foreach ($line in ($Metadata -split "`r?`n")) {
+            if ($line -eq "") { break }
+            if ($line -notmatch '^Requires-Dist:\s*(.+)$') { continue }
+            $req = $Matches[1].Trim()
+            if ($req -match ';') { continue }
+            if ($req -notmatch '^(?i)torch(?![A-Za-z0-9_.-])\s*(\[[^\]]*\])?\s*\(?\s*([^()]*?)\s*\)?\s*$') { continue }
+            if ($Matches[2]) { $clauses += $Matches[2] }
+        }
+        return ($clauses -join ',')
+    }
+
+    # The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
+    # else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+    function Get-WoaWheelTorchRequirement {
+        param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
+        if (-not $WheelUrl) { return "" }
+        if ($null -eq $script:WoaWheelTorchRequirementCache) { $script:WoaWheelTorchRequirementCache = @{} }
+        if ($script:WoaWheelTorchRequirementCache.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCache[$WheelUrl] }
+        $answer = ""
+        try {
+            $metadata = $null
+            if ($HasCoreMetadata) {
+                $got = Invoke-WoaHttpBytes -Uri "$WheelUrl.metadata"
+                if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+            }
+            if ($null -eq $metadata) {
+                $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
+                $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
+                $tail = Invoke-WoaHttpBytes -Uri $WheelUrl -Suffix 65558
+                if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
+                $t = $tail.Bytes
+                $eocd = -1
+                for ($i = $t.Length - 22; $i -ge 0; $i--) {
+                    if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
+                }
+                if ($eocd -lt 0) { throw "no end of central directory" }
+                $cdSize = & $u32 $t ($eocd + 12)
+                $cdOffset = & $u32 $t ($eocd + 16)
+                # Zip64 or an implausible directory: not worth parsing for one line.
+                if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
+                $tailStart = $tail.Total - $t.Length
+                if ($cdOffset -ge $tailStart) {
+                    $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
+                } else {
+                    $got = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
+                    if (-not $got) { throw "no directory" }
+                    $cd = $got.Bytes
+                }
+                $entry = $null
+                $p = 0
+                while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
+                    $nameLen = & $u16 $cd ($p + 28)
+                    $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
+                    if ($name -match '^[^/]+\.dist-info/METADATA$') {
+                        $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
+                        break
+                    }
+                    $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
+                }
+                if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
+                $head = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $entry.Offset -Length 30
+                if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
+                $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
+                $body = Invoke-WoaHttpBytes -Uri $WheelUrl -Offset $start -Length $entry.Size
+                if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
+                if ($entry.Method -eq 0) {
+                    $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
+                } else {
+                    $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
+                    $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                    try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                }
+            }
+            $answer = Get-WoaMetadataTorchRequirement -Metadata $metadata
+        } catch {
+            $answer = ""
+        }
+        $script:WoaWheelTorchRequirementCache[$WheelUrl] = $answer
+        return $answer
+    }
+
     # CUDA is established POSITIVELY by requiring +cuNNN: PyPI's own win_arm64 torch carries no local version, and the stamp and +cuXXX tag identify the torch BUILD a companion belongs to.
+    # -TorchRequirement is the companion wheel's own torch specifier from its METADATA; "" when it could not be read.
     function Test-WoaWheelPairsWithTorch {
-        param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
+        param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision", [string]$TorchRequirement = "")
         if (-not $TorchVersion -or -not $OtherVersion) { return $false }
         $stamp = {
             param($v)
@@ -1254,7 +1379,55 @@ function Install-UnslothStudio {
         if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
         if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
         if (& $stamp $TorchVersion) { return $true }
-        # Stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
+        # A stable companion pairs with what its own torch requirement admits; $null (a clause this cannot read) falls through.
+        $admits = {
+            param([string]$v, [string]$spec)
+            $public = ($v -split '\+', 2)[0]
+            if ($public -notmatch '^\d+(\.\d+)*$') { return $null }
+            $have = @($public -split '\.' | ForEach-Object { [long]$_ })
+            $order = {
+                param($a, $b)
+                for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+                    $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+                    $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+                    if ($x -ne $y) { return [Math]::Sign($x - $y) }
+                }
+                return 0
+            }
+            foreach ($clause in ($spec -split ',')) {
+                $c = $clause.Trim()
+                if (-not $c) { continue }
+                if ($c -notmatch '^(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?$') { return $null }
+                $op = $Matches[1]; $want = @($Matches[2] -split '\.' | ForEach-Object { [long]$_ }); $wild = [bool]$Matches[3]
+                if ($wild -and $op -notin @('==', '!=')) { return $null }
+                if ($wild) {
+                    $prefix = ($want.Count -le $have.Count) -and ((& $order @($have[0..($want.Count - 1)]) $want) -eq 0)
+                    if (($op -eq '==') -ne $prefix) { return $false }
+                    continue
+                }
+                $cmp = & $order $have $want
+                $ok = switch ($op) {
+                    '==' { $cmp -eq 0 }
+                    '!=' { $cmp -ne 0 }
+                    '<=' { $cmp -le 0 }
+                    '>=' { $cmp -ge 0 }
+                    '<'  { $cmp -lt 0 }
+                    '>'  { $cmp -gt 0 }
+                    '~=' {
+                        if ($want.Count -lt 2) { $null }
+                        else { ($cmp -ge 0) -and ((& $order @($have[0..($want.Count - 2)]) @($want[0..($want.Count - 2)])) -eq 0) }
+                    }
+                }
+                if ($null -eq $ok) { return $null }
+                if (-not $ok) { return $false }
+            }
+            return $true
+        }
+        if ($TorchRequirement) {
+            $verdict = & $admits $TorchVersion $TorchRequirement
+            if ($null -ne $verdict) { return [bool]$verdict }
+        }
+        # Unread metadata: stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
         $rel = {
             param($v)
             $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -1271,7 +1444,7 @@ function Install-UnslothStudio {
 
     function Get-WoaCudaWheelVersion {
         param([string]$IndexUrl, [string]$PythonMinor, [string]$Project = "torch", [string]$AbiTag = "",
-              [string]$PairWith = "", [string]$Below = "")
+              [string]$PairWith = "", [string]$Below = "", [string]$MaxCuda = "")
         if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PythonMinor)) { return $null }
         $tag = "cp" + ($PythonMinor -replace '\.', '')
         if (-not $AbiTag) { $AbiTag = $tag }
@@ -1282,6 +1455,28 @@ function Install-UnslothStudio {
             return $null
         }
         if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+        # Each wheel's link, so a stable companion's own torch requirement can be read (PEP 658 when the index serves it).
+        $links = @{}
+        foreach ($anchor in [regex]::Matches($body, '(?i)<a\s[^>]*>')) {
+            $href = [regex]::Match($anchor.Value, '(?i)\bhref\s*=\s*["'']([^"'']+)["'']')
+            if (-not $href.Success) { continue }
+            $target = ($href.Groups[1].Value -split '[#?]', 2)[0]
+            $file = ($target -split '/')[-1]
+            try { $file = [System.Uri]::UnescapeDataString($file) } catch {}
+            $core = [regex]::Match($anchor.Value, '(?i)\bdata-(?:core|dist-info)-metadata\s*=\s*["'']([^"'']*)["'']')
+            $links[$file.ToLowerInvariant()] = @{ Href = $target; Core = ($core.Success -and $core.Groups[1].Value -ne 'false') }
+        }
+        # Same release twice (+cu134 and +cu135): the newest CUDA build the driver runs, else the newest.
+        $driverCu = $null
+        if ($MaxCuda -match '^(\d+)\.(\d+)') { $driverCu = [int]$Matches[1] * 10 + [int]$Matches[2] }
+        $cudaRank = {
+            param([string]$v)
+            if ($v -notmatch '\+cu(\d+)') { return @(0, 0) }
+            $cu = [int]$Matches[1]
+            return @($(if ($null -eq $driverCu -or $cu -le $driverCu) { 1 } else { 0 }), $cu)
+        }
+        $readRequirement = [bool]($PairWith -and ($PairWith -notmatch '(?i)\.dev\d') -and
+            (($Project -replace '[-_.]+', '-').ToLowerInvariant() -eq "torchvision"))
         $best = $null
         $bestKey = $null
         # PEP 440 order within one numeric release: dev < a < b < rc < final, then by number.
@@ -1302,10 +1497,21 @@ function Install-UnslothStudio {
         foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
             $name = $match.Value
             try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-            if (-not (Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag)) { continue }
+            # torch is built per interpreter; a companion may be interpreter-agnostic (torchvision 0.29.2 is py3-none).
+            $tagsOk = if ($Project -eq "torch") { Test-WoaWheelTags -Name $name -PyTag $tag -AbiTag $AbiTag }
+                      else { Test-WoaWheelTagsUsable -Name $name -PyTag $tag -AbiTag $AbiTag }
+            if (-not $tagsOk) { continue }
             if ($name -notmatch '\+cu[0-9]+') { continue }
             $version = ($name -split '-')[1]
-            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
+            $requirement = ""
+            if ($readRequirement -and (($PairWith -split '\+', 2)[-1] -eq ($version -split '\+', 2)[-1]) -and $links.ContainsKey($name.ToLowerInvariant())) {
+                $link = $links[$name.ToLowerInvariant()]
+                try {
+                    $wheelUrl = ([System.Uri]::new([System.Uri]$projectUrl, $link.Href)).AbsoluteUri
+                    $requirement = Get-WoaWheelTorchRequirement -WheelUrl $wheelUrl -HasCoreMetadata $link.Core
+                } catch { $requirement = "" }
+            }
+            if ($PairWith -and -not (Test-WoaWheelPairsWithTorch -TorchVersion $PairWith -OtherVersion $version -Project $Project -TorchRequirement $requirement)) { continue }
             # Numeric release only: a .dev suffix must not make a newer line look older.
             $release = ($version -split '\+', 2)[0]
             $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
@@ -1323,6 +1529,10 @@ function Install-UnslothStudio {
             } elseif ($key -eq $bestKey) {
                 $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
                 if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
+                elseif (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -eq $rankBest[1])) {
+                    $cuNew = & $cudaRank $version; $cuBest = & $cudaRank $best
+                    if (($cuNew[0] -gt $cuBest[0]) -or (($cuNew[0] -eq $cuBest[0]) -and ($cuNew[1] -gt $cuBest[1]))) { $best = $version }
+                }
             }
         }
         return $best
@@ -1381,9 +1591,12 @@ function Install-UnslothStudio {
         $_woaTorchVersion = $null
         $_woaVisionVersion = $null
         $_woaUnpairedIndex = $null
+        # Ties between CUDA builds of one release go to the newest this driver runs.
+        $_woaDriverCap = Get-WoaDriverCudaVersion
+        $_woaMaxCuda = if ($_woaDriverCap) { "$($_woaDriverCap[0]).$($_woaDriverCap[1])" } else { "" }
         foreach ($candidate in $candidates) {
             if (-not (Test-WoaCudaWheel -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Project "torch")) { continue }
-            $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag
+            $_woaTorchVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -MaxCuda $_woaMaxCuda
             # An index qualifies only with a torchvision build PAIRED to that torch, or a lagging nightly or partial mirror leaves torchvision resolving against a torch it was not built for.
             # The newest torch is not the only candidate: a nightly torchvision lags by days, so the newest COMPLETE pair is searched for, a few versions deep.
             $_woaVisionVersion = $null
@@ -1391,7 +1604,7 @@ function Install-UnslothStudio {
             while ($_woaTorchVersion) {
                 $_woaVisionVersion = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -Project "torchvision" -AbiTag $_woaAbiTag -PairWith $_woaTorchVersion
                 if ($_woaVisionVersion -or $_woaBacktracks -ge 5) { break }
-                $_woaOlderTorch = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Below $_woaTorchVersion
+                $_woaOlderTorch = Get-WoaCudaWheelVersion -IndexUrl $candidate -PythonMinor $PythonMinor -AbiTag $_woaAbiTag -Below $_woaTorchVersion -MaxCuda $_woaMaxCuda
                 if (-not $_woaOlderTorch) { break }
                 substep "windows on arm: $(Remove-IndexUrlCredentials $candidate) publishes torch $_woaTorchVersion but no torchvision paired with it; trying torch $_woaOlderTorch." "Yellow"
                 $_woaTorchVersion = $_woaOlderTorch
@@ -1858,7 +2071,7 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # Always a uv-managed CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
+    # Request a specific CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
     $PythonExplicitRequest = if ($null -ne $PythonRequestArg) { $PythonRequestArg.Trim() } elseif ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON.Trim() } else { "" }
     if (($null -ne $PythonRequestArg -or $PythonExplicitRequest) -and $PythonExplicitRequest -notmatch '^3\.1[1-3](\.\d+)?$') {
         Write-StudioLine "[ERROR] Unsupported Python request '$PythonExplicitRequest': use 3.11, 3.12 or 3.13 (optionally with a patch, e.g. 3.13.9)." -ForegroundColor Red
@@ -1913,6 +2126,62 @@ function Install-UnslothStudio {
         Write-StudioLine ""
     }
 
+    # The process arch, not the machine's: an x64 shell on Windows on ARM runs emulated.
+    function Get-ShellProcessArch {
+        $a = ""
+        try { $a = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() } catch { $a = "" }
+        if ([string]::IsNullOrWhiteSpace($a)) { $a = [string]$env:PROCESSOR_ARCHITECTURE }
+        switch ($a.ToLowerInvariant()) {
+            "arm64" { return "arm64" }
+            "x64" { return "x86_64" }
+            "amd64" { return "x86_64" }
+            "x86" { return "x86" }
+        }
+        return "unknown"
+    }
+
+    # ARM64X shells inherit an emulated/elevated parent; explorer.exe relaunches native + non-elevated.
+    function Write-Arm64ShellNotice {
+        param(
+            [Parameter(Mandatory = $true)][string]$HostArch,
+            [Parameter(Mandatory = $true)][string]$ProcessArch,
+            [Parameter(Mandatory = $true)][string]$Elevated
+        )
+        if ($HostArch -ne "arm64") { return }
+        $emulated = ($ProcessArch -ne "arm64" -and $ProcessArch -ne "unknown")
+        if (-not $emulated -and $Elevated -ne "true") { return }
+        if ($emulated) {
+            Write-StudioLine "  [WARNING] This PowerShell runs as an emulated $ProcessArch process on Windows on ARM." -ForegroundColor Yellow
+            Write-StudioLine "            Programs it starts inherit the emulation." -ForegroundColor Yellow
+        } else {
+            Write-StudioLine "  [WARNING] Windows on ARM: this PowerShell is elevated." -ForegroundColor Yellow
+        }
+        Write-StudioLine "            To install natively as your normal user, run this here, then paste the" -ForegroundColor Yellow
+        Write-StudioLine "            install command into the new window:" -ForegroundColor Yellow
+        Write-StudioLine "              explorer.exe `"$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe`"" -ForegroundColor Cyan
+        Write-StudioLine "            (or open Windows PowerShell from the Start menu, not 'Run as administrator')." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+
+    # An unanswerable UAC prompt blocks forever. UNSLOTH_NONINTERACTIVE=0 forces prompting.
+    function Test-InstallUacUnanswerable {
+        param([switch]$Tauri, [string]$Elevated = "unknown")
+        if ($Tauri -or $Elevated -eq "true") { return $false }
+        $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+        if ($opt -in @("1", "true", "yes")) { return $true }
+        if ($opt -in @("0", "false", "no")) { return $false }
+        $ci = "$env:CI".Trim().ToLowerInvariant()
+        if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+        if (-not [Environment]::UserInteractive) { return $true }
+        try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+        try {
+            foreach ($_arg in [Environment]::GetCommandLineArgs()) {
+                if ("$_arg" -match '^[-/]noni') { return $true }
+            }
+        } catch { }
+        return $false
+    }
+
     function Get-CanonicalRootPath {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
         if ([string]::IsNullOrWhiteSpace($Path)) { return "" }
@@ -1957,6 +2226,11 @@ function Install-UnslothStudio {
         $ElevationRoot = $UnslothRoot
     }
     Write-ElevationNotice -State (Get-ElevationState) -Root $ElevationRoot -Tauri:$TauriMode
+    $script:InstallElevationState = Get-ElevationState
+    try {
+        Write-Arm64ShellNotice -HostArch (Get-HostMachineArch) -ProcessArch (Get-ShellProcessArch) -Elevated $script:InstallElevationState
+    } catch { }
+    $script:InstallUacUnanswerable = Test-InstallUacUnanswerable -Tauri:$TauriMode -Elevated $script:InstallElevationState
 
     # Whitespace-only == unset (matches the Python resolvers' .strip()).
     $envOverrideVar = $null
@@ -4495,18 +4769,11 @@ function Install-UnslothStudio {
             if ($script:UnslothVerbose) {
                 # Merge stderr into stdout without flipping $? (5.1 treats stderr records as errors).
                 # Redact per record, verbose mode included.
-                if ($NoMirror -or -not $env:_UNSLOTH_MIRROR_SPARE) {
-                    & $Command 2>&1 | ForEach-Object {
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                } else {
-                    & $Command 2>&1 | ForEach-Object {
-                        [void]$collected.AppendLine("$_")
-                        Write-UvDownloadMarker "$_"
-                        Redact-InstallOutput "$_"
-                    } | Out-Host
-                }
+                & $Command 2>&1 | ForEach-Object {
+                    [void]$collected.AppendLine("$_")
+                    Write-UvDownloadMarker "$_"
+                    Redact-InstallOutput "$_"
+                } | Out-Host
             } else {
                 # Streamed, not collected, so a marker reaches the app mid-download.
                 & $Command 2>&1 | ForEach-Object {
@@ -4520,6 +4787,7 @@ function Install-UnslothStudio {
                 }
             }
             $exitCode = [int]$LASTEXITCODE
+            $script:LastInstallOutput = if ($exitCode -eq 0) { "" } else { $collected.ToString() }
             if ($exitCode -eq 0) {
                 Clear-TauriInstallError "$Label recovered"
             } else {
@@ -4562,6 +4830,27 @@ function Install-UnslothStudio {
         return $code
     }
 
+    # uv reuses a damaged cached wheel on every run, --refresh included (#17375).
+    function Repair-UvDamagedWheels {
+        param([string]$Output, [hashtable]$Cleaned)
+        $names = @(foreach ($m in [regex]::Matches("$Output", '(?m)Failed to install: \S+ \(([A-Za-z0-9][A-Za-z0-9._-]*)(?:==| @ )[^\r\n]*\r?\n\s*(?:cause|Caused by): The wheel is invalid')) {
+            $n = $m.Groups[1].Value.ToLowerInvariant()
+            if (-not $Cleaned.ContainsKey($n) -and $Cleaned.Count -lt 50) { $Cleaned[$n] = $true; $n }
+        })
+        if (-not $names) { return $false }
+        substep "clearing damaged uv cache entries for $($names -join ', ')..." "Yellow"
+        # Another uv process may hold the cache lock.
+        $prevLock = $env:UV_LOCK_TIMEOUT
+        if (-not $prevLock) { $env:UV_LOCK_TIMEOUT = "60" }
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try { & $script:UvExe cache clean @names 2>&1 | Out-Null } finally {
+            $ErrorActionPreference = $prevEap
+            $env:UV_LOCK_TIMEOUT = $prevLock
+        }
+        return ($LASTEXITCODE -eq 0)
+    }
+
     function Invoke-InstallCommandRetry {
         param(
             [Parameter(Mandatory = $true, Position = 0)][ScriptBlock]$Command,
@@ -4578,9 +4867,13 @@ function Install-UnslothStudio {
             $delay = $parsedDelay
         }
         $attempt = 1
+        $cleaned = @{}
         while ($true) {
+            $script:LastInstallOutput = ""
             $code = Invoke-InstallCommand -Command $Command -Label $Label -NoMirror:($attempt -lt $maxAttempts)
             if ($code -eq 0) { return 0 }
+            # Not an attempt: uv names one damaged package per run.
+            if (Repair-UvDamagedWheels -Output $script:LastInstallOutput -Cleaned $cleaned) { continue }
             if ($attempt -ge $maxAttempts) { return $code }
             substep ("retrying ""$Label"" after transient failure (attempt $($attempt + 1)/$maxAttempts, waiting ${delay}s)...") "Yellow"
             Start-Sleep -Seconds $delay
@@ -6222,7 +6515,7 @@ exit 0
         }
     }
     $PythonRequestLabel = if ($PythonPatchRequest) { $PythonPatchRequest } else { $PythonVersion }
-    step "python" "uv will provide Python $PythonRequestLabel ($PythonArch); a Python already on this machine is not used"
+    step "python" "requesting managed Python $PythonRequestLabel ($PythonArch)"
     $DetectedPython = $null
 
     $DiagPythonVersion = $PythonVersion
@@ -6547,14 +6840,19 @@ exit 0
             substep "installing uv package manager..."
         }
         if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
-            if (-not (Test-UvVersionOk)) {
-                try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+            # winget's VC++ dependency raises UAC; the release zip does not.
+            if ($script:InstallUacUnanswerable) {
+                substep "unattended run: installing uv from its release archive (winget would wait on a UAC prompt)"
+            } else {
+                $prevEAP = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                if (-not (Test-UvVersionOk)) {
+                    try { & $script:WingetExe install --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
+                }
+                $ErrorActionPreference = $prevEAP
+                Refresh-SessionPath
             }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
         }
         # winget unavailable or it didn't put uv on PATH: install the pinned
         # release directly (ARM64 runners, machines without the Store). A stale private uv is
@@ -6620,10 +6918,209 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
+    # A blocked uv child reports an OS code in stderr, a blocked exe throws; LASTEXITCODE shows neither.
+    function Invoke-PythonSelectionProbe {
+        param([string]$Executable, [string[]]$Arguments)
+        $ErrorActionPreference = "Continue"
+        $PSNativeCommandUseErrorActionPreference = $false
+        $global:LASTEXITCODE = 0
+        $output = @()
+        $blocked = $false
+        $failed = $false
+        try {
+            $output = @(& $Executable @Arguments 2>&1)
+            $code = $global:LASTEXITCODE
+        } catch {
+            $output += $_
+            $code = 1
+            $failed = $true
+        }
+        foreach ($item in $output) {
+            if ($item -is [System.Management.Automation.ErrorRecord]) {
+                if (Test-ApplicationControlBlock $item) { $blocked = $true }
+                if ($item.FullyQualifiedErrorId -notlike 'NativeCommandError*') { $failed = $true }
+            }
+        }
+        $diagnostic = ($output | ForEach-Object { "$_" }) -join "`n"
+        $ok = ($code -eq 0 -and -not $failed -and -not $blocked)
+        if (-not $ok -and $diagnostic -match '(?i)\b(?:os error|WinError)\s+(?:4551|1260)\b') {
+            $blocked = $true
+        }
+        # A blocked extension module surfaces only as ImportError text, in the user's language.
+        if (-not $ok -and -not $blocked) {
+            foreach ($policyCode in @(4551, 1260)) {
+                $policyText = ([System.ComponentModel.Win32Exception]::new($policyCode)).Message.Trim()
+                if ($policyText -and $diagnostic.Contains($policyText)) { $blocked = $true }
+            }
+        }
+        $stdout = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] })
+        return @{ Success = $ok; Blocked = $blocked; Code = $code; Output = $stdout; Diagnostic = $diagnostic }
+    }
+
+    # PSF-signed NuGet build (https://docs.python.org/3.13/using/windows.html#the-nuget-org-packages), whole archive pinned.
+    function Get-SignedPythonPackage {
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $version = '3.13.17'
+        if ($Minor -ne '3.13' -or ($Patch -and $Patch -ne $version) -or $PythonSkip -contains $version) { return $null }
+        $packages = @{
+            x86_64 = @{ Name = 'python'; Sha256 = 'dce409744b088f94c6e37ba41f8100c384c27e029e843237364c602d30d475e5' }
+            arm64 = @{ Name = 'pythonarm64'; Sha256 = 'aaa8c60c0adffde214ebd13e19bd79289aedb6452b4883eb08a59592c008456b' }
+        }
+        if (-not $packages.ContainsKey($Arch)) { return $null }
+        $package = $packages[$Arch]
+        return @{
+            Version = $version; Minor = $Minor; Arch = $Arch; Sha256 = $package.Sha256
+            Url = "https://api.nuget.org/v3-flatcontainer/$($package.Name)/$version/$($package.Name).$version.nupkg"
+        }
+    }
+
+    function Test-SignedPythonRuntime {
+        param([string]$Root, $Package)
+        $digits = $Package.Minor.Replace('.', '')
+        foreach ($required in @('python.exe', 'pythonw.exe', 'python3.dll', "python$digits.dll",
+                               'Lib\venv\scripts\nt\venvlauncher.exe', 'Lib\venv\scripts\nt\venvwlauncher.exe')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $Root $required) -PathType Leaf)) { return $null }
+        }
+        # pip's six distlib launcher templates are unsigned and never run here; exempt nothing else.
+        foreach ($file in @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force -ErrorAction Stop |
+                           Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') })) {
+            $relative = $file.FullName.Substring($Root.TrimEnd('\', '/').Length + 1)
+            if ($relative -match '^Lib\\site-packages\\pip\\_vendor\\distlib\\[tw](32|64|64-arm)\.exe$') { continue }
+            $sig = Get-AuthenticodeSignature -LiteralPath $file.FullName -ErrorAction Stop
+            if ($sig.Status -ne 'Valid') {
+                substep "Signed Python validation failed: $relative ($($sig.Status))." "Yellow"
+                return $null
+            }
+            if ($relative -eq 'python.exe' -and
+                $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) -ne 'Python Software Foundation') {
+                return $null
+            }
+        }
+        $exe = Join-Path $Root 'python.exe'
+        $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-I', '-S', '-c',
+            "import sys, sysconfig, ssl, sqlite3, ctypes, venv; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))")
+        if (-not $probe.Success) {
+            substep "Signed Python could not start: $(Redact-InstallOutput $probe.Diagnostic)" "Yellow"
+            return $null
+        }
+        $wantTag = if ($Package.Arch -eq 'arm64') { 'win-arm64' } else { 'win-amd64' }
+        if (($probe.Output -join "`n").Trim() -ne "$($Package.Version) $wantTag 0") { return $null }
+        return @{ Version = $Package.Minor; Full = $Package.Version; Path = $exe; Arch = $Package.Arch; Source = 'signed-managed' }
+    }
+
+    function Test-SignedPythonDownloadAllowed {
+        # --show-settings applies uv's own config precedence without installing or touching the network.
+        $settings = Invoke-PythonSelectionProbe -Executable $script:UvExe -Arguments @('python', 'install', '--show-settings', '--color', 'never')
+        $text = $settings.Output -join "`n"
+        $blocks = [regex]::Matches($text, '(?ms)^GlobalSettings \{\r?\n(?<body>.*?)^\}\r?$')
+        $body = if ($blocks.Count -eq 1) { $blocks[0].Groups['body'].Value } else { '' }
+        $connectivity = [regex]::Matches($body, '(?m)^[ \t]+connectivity: ([^\r\n]*)\r?$')
+        $downloads = [regex]::Matches($body, '(?m)^[ \t]+python_downloads: ([^\r\n]*)\r?$')
+        # A warning or unrecognized output must not authorize a download.
+        if (-not $settings.Success -or $blocks.Count -ne 1 -or
+            $connectivity.Count -ne 1 -or $downloads.Count -ne 1 -or
+            $settings.Diagnostic -match '(?im)^\s*(warning|error):' -or
+            $connectivity[0].Groups[1].Value -cnotin @('Online,', 'Offline,') -or
+            $downloads[0].Groups[1].Value -cnotin @('Automatic,', 'Manual,', 'Never,')) {
+            substep "Could not determine uv's Python download policy; signed Python will not be downloaded." "Yellow"
+            return $false
+        }
+        if ($connectivity[0].Groups[1].Value -ceq 'Offline,' -or $downloads[0].Groups[1].Value -ceq 'Never,') {
+            substep "Signed Python is not cached and Python downloads are disabled." "Yellow"
+            return $false
+        }
+        return $true
+    }
+
+    function Resolve-SignedManagedPython {
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64", [switch]$CacheOnly)
+        $package = Get-SignedPythonPackage -Minor $Minor -Patch $Patch -Arch $Arch
+        if (-not $package) {
+            substep "No pinned signed Python build matches the requested version and architecture." "Yellow"
+            return $null
+        }
+        $parent = [System.IO.Path]::GetFullPath((Join-Path $StudioHome 'python-signed'))
+        $name = "cpython-$($package.Version)-$Arch-$($package.Sha256.Substring(0, 12))"
+        $destination = Join-Path $parent $name
+        $work = $null
+        try {
+            if (Test-Path -LiteralPath $parent -PathType Container) {
+                $shape = '^' + [regex]::Escape($name) + '(-[0-9a-f]{32})?$'
+                foreach ($candidate in @(Get-ChildItem -LiteralPath $parent -Directory -Force -ErrorAction Stop |
+                                         Where-Object { $_.Name -match $shape -and -not ($_.Attributes -band [System.IO.FileAttributes]::ReparsePoint) })) {
+                    $cached = $null
+                    try { $cached = Test-SignedPythonRuntime -Root $candidate.FullName -Package $package }
+                    catch { substep "Signed Python validation failed: $(Redact-InstallOutput $_.Exception.Message)" "Yellow" }
+                    if ($cached) { return $cached }
+                    substep "Leaving the invalid signed Python runtime unchanged at $($candidate.FullName)." "Yellow"
+                }
+            }
+            if ($CacheOnly) { return $null }
+            if (-not (Test-SignedPythonDownloadAllowed)) { return $null }
+            # A damaged base may still back a live or rollback venv: publish the replacement beside it.
+            if (Test-Path -LiteralPath $destination) {
+                $destination = Join-Path $parent ($name + '-' + [guid]::NewGuid().ToString('N'))
+            }
+            [System.IO.Directory]::CreateDirectory($parent) | Out-Null
+            $work = Join-Path $parent ('.stage-' + [guid]::NewGuid().ToString('N'))
+            [System.IO.Directory]::CreateDirectory($work) | Out-Null
+            # .zip extension is needed by Expand-Archive in Windows PowerShell 5.1.
+            $archive = Join-Path $work 'python.zip'
+            substep "Windows blocked uv's Python; downloading signed Python $($package.Version) ($Arch) for Unsloth." "Yellow"
+            Invoke-WebRequest -UseBasicParsing -Uri $package.Url -OutFile $archive -TimeoutSec 180 -ErrorAction Stop
+            if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $package.Sha256) {
+                throw 'The signed Python package failed checksum verification.'
+            }
+            $unpacked = Join-Path $work 'unpacked'
+            Expand-Archive -LiteralPath $archive -DestinationPath $unpacked -ErrorAction Stop
+            $staged = Join-Path $unpacked 'tools'
+            if (-not (Test-SignedPythonRuntime -Root $staged -Package $package)) {
+                throw 'The signed Python package failed runtime validation.'
+            }
+            for ($attempt = 0; ; $attempt++) {
+                try {
+                    [System.IO.Directory]::Move($staged, $destination)
+                    break
+                } catch [System.IO.IOException], [System.UnauthorizedAccessException] {
+                    $code = $_.Exception.GetBaseException().HResult -band 0xffff
+                    if ($attempt -ge 3 -or $code -notin @(5, 32, 33)) { throw }
+                    Start-Sleep -Milliseconds (500 * [math]::Pow(2, $attempt))
+                }
+            }
+            return (Test-SignedPythonRuntime -Root $destination -Package $package)
+        } catch {
+            substep "Could not prepare signed Python: $(Redact-InstallOutput $_.Exception.Message)" "Yellow"
+            return $null
+        } finally {
+            if ($work -and (Test-Path -LiteralPath $work)) {
+                $full = [System.IO.Path]::GetFullPath($work)
+                if ([System.IO.Path]::GetDirectoryName($full) -eq $parent -and
+                    [System.IO.Path]::GetFileName($full) -match '^\.stage-[0-9a-f]{32}$' -and
+                    -not ((Get-Item -LiteralPath $work -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+                    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    # uv's per-venv python.exe is an unsigned trampoline Windows can refuse on its own (#17735).
+    function Repair-BlockedVenvLauncher {
+        param([string]$VenvDir, [string]$VenvPython, $Python, [string]$Patch)
+        if (-not (Invoke-PythonSelectionProbe -Executable $VenvPython -Arguments @('-I', '-S', '-c', 'pass')).Blocked) { return $null }
+        $script:PythonPolicyBlocked = $true
+        $signed = Resolve-SignedManagedPython -Minor $Python.Version -Patch $Patch -Arch $Python.Arch
+        if (-not $signed) { return $null }
+        substep "Windows blocked the environment's Python launcher; rebuilding it on signed Python $($signed.Full)." "Yellow"
+        # Only uv's output: the directory was absent or empty before uv venv ran.
+        Remove-Item -LiteralPath $VenvDir -Recurse -Force -ErrorAction Stop
+        return $signed
+    }
+
     # --no-bin / --no-registry leave PATH and the py launcher alone; --system skips an active venv;
     # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
         param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $script:PythonPolicyBlocked = $false
         $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
         $wantTag = if ($Arch -eq "arm64") { "win-arm64" } else { "win-amd64" }
         # Arch-qualified keys take no range: past a skipped patch try the next, then an older (cached) one.
@@ -6640,16 +7137,23 @@ exit 0
                 & $script:UvExe python install --no-bin --no-registry $key
             }
             # Asked even when the install failed: a runtime installed earlier serves an offline machine.
-            $exe = ""
-            try {
-                $exe = (& $script:UvExe python find --system --managed-python $key 2>$null | Select-Object -First 1)
-            } catch {}
-            $exe = "$exe".Trim()
+            $find = Invoke-PythonSelectionProbe -Executable $script:UvExe -Arguments @('python', 'find', '--system', '--managed-python', $key)
+            if ($find.Blocked) { $script:PythonPolicyBlocked = $true }
+            if (-not $find.Success) {
+                if ($find.Diagnostic) { Write-StudioLine "        Python discovery failed: $(Redact-InstallOutput $find.Diagnostic)" -ForegroundColor Yellow }
+                continue
+            }
+            $exe = "$($find.Output | Select-Object -Last 1)".Trim()
             if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
-            $facts = ""
-            try {
-                $facts = (& $exe -S -I -c "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))" 2>$null | Select-Object -First 1)
-            } catch {}
+            # Exit 3 = a stdlib extension failed to load (#17735: _socket.pyd); only a policy message refuses.
+            $probe = Invoke-PythonSelectionProbe -Executable $exe -Arguments @('-S', '-I', '-c',
+                "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))), flush=True); M = ('_socket', '_ssl', '_ctypes', '_sqlite3', 'select', '_overlapped', '_asyncio', '_hashlib', '_queue', '_multiprocessing', '_uuid', '_lzma', '_bz2', '_decimal', '_elementtree', 'pyexpat', 'unicodedata', '_zoneinfo'); exec('b = 0\nfor m in M:\n try: __import__(m)\n except ImportError as x: b = 3; print(x, file=sys.stderr)\nsys.exit(b)')")
+            if ($probe.Blocked) { $script:PythonPolicyBlocked = $true }
+            if ($probe.Blocked -or (-not $probe.Success -and $probe.Code -ne 3)) {
+                if ($probe.Diagnostic) { Write-StudioLine "        Python probe failed: $(Redact-InstallOutput $probe.Diagnostic)" -ForegroundColor Yellow }
+                return $null
+            }
+            $facts = $probe.Output -join "`n"
             $parts = @("$facts".Trim() -split '\s+')
             if ($parts.Count -ne 3) { return $null }
             $full = $parts[0]
@@ -6671,7 +7175,7 @@ exit 0
     function Test-LegacyVenvReusable {
         param([Parameter(Mandatory = $true)][string]$VenvDir, $Python, [bool]$Exact = $false)
         $cfg = Join-Path $VenvDir "pyvenv.cfg"
-        if (-not $Python -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
+        if (-not $Python -or $Python.Source -eq 'signed-managed' -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
         $venvHome = $null
         $venvVersion = $null
         # uv writes pyvenv.cfg as UTF-8 without a BOM; Windows PowerShell 5.1 would read it as ANSI.
@@ -6705,23 +7209,41 @@ exit 0
         $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
     }
     $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    if (-not $DetectedPython) {
+        $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch -CacheOnly:(-not $script:PythonPolicyBlocked)
+    }
     if (-not $DetectedPython -and $PythonArch -eq "arm64" -and -not (Test-Arm64PythonOptOut)) {
         substep "could not get a native ARM64 Python; falling back to the x64 stack." "Yellow"
         $script:WoaNativeCudaTorch = $false
         $script:WoaTorchIndexUrl = $null
         $PythonArch = "x86_64"
         $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+        if (-not $DetectedPython) {
+            $DetectedPython = Resolve-SignedManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch -CacheOnly:(-not $script:PythonPolicyBlocked)
+        }
     }
     if (-not $DetectedPython) {
+        if ($script:PythonPolicyBlocked) {
+            Write-StudioLine "[ERROR] Windows Application Control blocked the Python runtime needed by Unsloth." -ForegroundColor Red
+            Write-StudioLine "        A signed managed runtime could not be prepared for Python $PythonRequestLabel ($PythonArch)." -ForegroundColor Yellow
+            Write-StudioLine "        Keep your security settings enabled. See the signed Python details above and share Copy Diagnostics with Unsloth support." -ForegroundColor Yellow
+            Write-StudioLine "        Your existing environment was not changed." -ForegroundColor Yellow
+            return (Exit-InstallFailure "Windows Application Control blocked Python $PythonRequestLabel ($PythonArch); no compatible signed Python was found")
+        }
         $_uvArchKey = if ($PythonArch -eq "arm64") { "aarch64" } else { "x86_64" }
         Write-StudioLine "[ERROR] uv could not provide Python $PythonRequestLabel ($PythonArch)." -ForegroundColor Red
-        Write-StudioLine "        Unsloth Studio always runs on its own uv-managed Python, never one already installed." -ForegroundColor Yellow
+        Write-StudioLine "        Unsloth uses its own managed Python; a system Python installation is not used." -ForegroundColor Yellow
         Write-StudioLine "        Offline, or downloads blocked: point UV_PYTHON_INSTALL_MIRROR at a python-build-standalone" -ForegroundColor Yellow
         Write-StudioLine "        mirror, or run 'uv python install cpython-$PythonRequestLabel-windows-$_uvArchKey-none' once while online," -ForegroundColor Yellow
         Write-StudioLine "        then re-run this installer. Your existing environment was not changed." -ForegroundColor Yellow
         return (Exit-InstallFailure "uv could not provide Python $PythonRequestLabel ($PythonArch)")
     }
-    step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+    if ($DetectedPython.Source -eq 'signed-managed') {
+        step "python" "using signed managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+        substep "Unsloth owns this signed Python runtime; Windows security settings are unchanged." "Yellow"
+    } else {
+        step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
+    }
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
@@ -6999,6 +7521,54 @@ exit 0
         }
     }
 
+    # Hands the 30-40 s delete to a hidden process. The tree is parked as rollback.<stamp>.<deleter PID>,
+    # so the sweep skips it while the deleter lives and removes leftovers once it is gone. Started via
+    # the shell so no inherited handle holds a caller's output pipe. $false = nothing changed, delete here.
+    function Start-StudioVenvRollbackBackgroundDelete {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if ($env:OS -ne 'Windows_NT') { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer) { return $false }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $parent = [System.IO.Path]::GetDirectoryName($item.FullName)
+            if (-not $parent) { return $false }
+            $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (-not (Test-Path -LiteralPath $shell -PathType Leaf)) { return $false }
+        } catch {
+            return $false
+        }
+        $stamp = Get-Date -Format "yyyyMMddHHmmss"
+        $parentLiteral = $parent.Replace("'", "''")
+        # Single quotes only: the command travels as one double-quoted argument.
+        $deleteCommand = @(
+            "`$ErrorActionPreference = 'SilentlyContinue'",
+            "`$p = Join-Path '$parentLiteral' ('unsloth_studio.rollback.$stamp.' + `$PID)",
+            "for (`$i = 0; (`$i -lt 600) -and -not (Test-Path -LiteralPath `$p); `$i++) { Start-Sleep -Milliseconds 100 }",
+            "if (Test-Path -LiteralPath `$p) { try { [System.IO.Directory]::Delete(`$p, `$true) } catch { } }",
+            "if (Test-Path -LiteralPath `$p) { Remove-Item -LiteralPath `$p -Recurse -Force }"
+        ) -join '; '
+        $deleter = $null
+        try {
+            $deleter = Start-Process -FilePath $shell `
+                -ArgumentList "-NoProfile -NonInteractive -Command `"$deleteCommand`"" `
+                -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            return $false
+        }
+        if ($null -eq $deleter) { return $false }
+        $parked = Join-Path $parent "unsloth_studio.rollback.$stamp.$($deleter.Id)"
+        try {
+            if (Test-StudioPathPresent -Path $parked) { throw "$parked already exists" }
+            [System.IO.Directory]::Move($item.FullName, $parked)
+        } catch {
+            try { Stop-Process -Id $deleter.Id -Force -ErrorAction SilentlyContinue } catch { }
+            return $false
+        }
+        try { $deleter.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+        return $true
+    }
+
     function Merge-StudioVenvRollbackTree {
         # Moves every entry of $Source into $Destination without ever overwriting or
         # deleting what is already there. Returns $true only when $Source ends up
@@ -7137,6 +7707,8 @@ exit 0
                 return
             }
         }
+        # Restoration is disarmed above, so nothing reads $backup again.
+        if (Start-StudioVenvRollbackBackgroundDelete -Path $backup) { return }
         Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
 
@@ -7407,7 +7979,16 @@ exit 0
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         step "venv" "creating Python $($DetectedPython.Version) virtual environment"
         substep "$VenvDir"
-        $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
+        if ($DetectedPython.Source -eq 'signed-managed') {
+            # CPython copies its signed venv launchers; uv creates a new unsigned trampoline.
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
+        } else {
+            $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $script:UvExe venv $VenvDir --python "$($DetectedPython.Path)" }
+            if ($venvExit -eq 0 -and ($signedPython = Repair-BlockedVenvLauncher -VenvDir $VenvDir -VenvPython $VenvPython -Python $DetectedPython -Patch $PythonPatchRequest)) {
+                $DetectedPython = $signedPython
+                $venvExit = Invoke-InstallCommand -Label "create virtual environment" { & $DetectedPython.Path -I -m venv --without-pip $VenvDir }
+            }
+        }
         if ($venvExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to create virtual environment (exit code $venvExit)" -ForegroundColor Red
             return (Exit-InstallFailure "Failed to create virtual environment (exit code $venvExit)" $venvExit)
@@ -7728,7 +8309,7 @@ exit 0
             }
             $WoaOverrideLines += "$candidate ; platform_machine == `"AMD64`""
         }
-        # Released unsloth metadata caps torch below the only win_arm64 CUDA build (a 2.15 nightly).
+        # Released unsloth metadata caps torch below the win_arm64 CUDA builds (2.14.0+cu134 on the GA index, 2.16 dev on the nightly one).
         $WoaOverrideLines += 'torch>=2.4'
         $WoaOverrideLines += 'torchvision>=0.19'
         # Without this uv takes the newest pyarrow on PyPI, an sdist here. For the PyPI route too.
@@ -8559,13 +9140,72 @@ main()
             }
         } catch {}
     }
+    # "" or -1 hides every NVIDIA device (install.sh _cvd_hides_nvidia).
+    function Test-CudaMaskHidesNvidia {
+        if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
+        $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
+        return ($mask -eq '' -or $mask -eq '-1')
+    }
+    function Test-RocmTorchExplicitlyRequested {
+        return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
+    }
+    # install.sh get_torch_index_url on an NVIDIA host; "cuda-forced" = flag set but no AMD wheels.
+    function Get-MixedHostTorchRoute {
+        param([bool]$AmdHasGpuWheels, [bool]$ForceRocm, [bool]$CudaMaskHidesNvidia, [AllowNull()][string]$NoticeArch)
+        if ($AmdHasGpuWheels -and ($ForceRocm -or $CudaMaskHidesNvidia)) { return "rocm" }
+        if ($ForceRocm) { return "cuda-forced" }
+        if ($NoticeArch) { return "cuda-notice" }
+        return "cuda"
+    }
+    # setup.ps1 Resolve-ShadowingGfxPick, so both scripts install for the same card.
+    function Resolve-MixedHostShadowingArch {
+        param([AllowNull()][string]$Picked, [AllowNull()][string[]]$Arches)
+        $shadowing = @("gfx90c", "gfx1013", "gfx1033", "gfx1035", "gfx1036", "gfx1103", "gfx1153")
+        if ($Picked -and $shadowing -notcontains $Picked) { return $Picked }
+        foreach ($mask in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+            if ($null -ne $mask) { return $Picked }
+        }
+        foreach ($arch in @($Arches | Where-Object { $_ })) {
+            if ($shadowing -notcontains $arch -and ($archFamilyMap.ContainsKey($arch) -or $multiArchGfx -contains $arch)) { return $arch }
+        }
+        return $Picked
+    }
+    # First wheel-backed non-iGPU arch (setup.ps1 ShadowingIntegratedGfx plus Strix).
+    function Get-MixedHostNoticeArch {
+        param([AllowNull()][string[]]$Arches)
+        $integrated = @("gfx90c", "gfx1013", "gfx1033", "gfx1035", "gfx1036", "gfx1103", "gfx1150", "gfx1151", "gfx1152", "gfx1153")
+        foreach ($arch in @($Arches | Where-Object { $_ })) {
+            if (($archFamilyMap.ContainsKey($arch) -or $multiArchGfx -contains $arch) -and $integrated -notcontains $arch) { return $arch }
+        }
+        return $null
+    }
+    function Write-CudaMaskHidesAmdWarning {
+        Write-StudioLine ""
+        Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
+        Write-StudioLine "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" -ForegroundColor Yellow
+        Write-StudioLine "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" -ForegroundColor Yellow
+        Write-StudioLine "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" -ForegroundColor Yellow
+        Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." -ForegroundColor Yellow
+        Write-StudioLine ""
+    }
+    # install.sh _notice_if_cuda_skipped_amd.
+    function Write-MixedHostCudaNotice {
+        param([string]$Arch)
+        Write-StudioLine ""
+        Write-StudioLine "[INFO] An AMD GPU ($Arch) was also found. CUDA PyTorch was installed for the NVIDIA GPU," -ForegroundColor Cyan
+        Write-StudioLine "[INFO] so training will not use the AMD GPU (one torch install serves one vendor)." -ForegroundColor Cyan
+        Write-StudioLine '[INFO] To train on the AMD GPU instead, re-run this installer with $env:UNSLOTH_FORCE_ROCM_TORCH = "1";' -ForegroundColor Cyan
+        Write-StudioLine "[INFO] the NVIDIA GPU then drops out of training until it is unset and the installer re-run." -ForegroundColor Cyan
+        if ($null -ne $env:HIP_VISIBLE_DEVICES -or $null -ne $env:ROCR_VISIBLE_DEVICES) {
+            Write-StudioLine "[INFO] HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES only choose among AMD GPUs; they do not" -ForegroundColor Cyan
+            Write-StudioLine "[INFO] select ROCm PyTorch, so UNSLOTH_FORCE_ROCM_TORCH=1 is needed as well." -ForegroundColor Cyan
+        }
+        Write-StudioLine "[INFO] GGUF chat can already run on the AMD GPU: Settings > System > GGUF inference engine > Compute backend." -ForegroundColor Cyan
+        Write-StudioLine ""
+    }
     # Name the card in the banner (name, compute_cap, driver in one query), honouring the
     # visible-device mask. A mask of "" or -1 hides every device: keep vendor-only wording.
-    $nvMaskHidesAll = $false
-    if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
-        $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
-        $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
-    }
+    $nvMaskHidesAll = Test-CudaMaskHidesNvidia
     if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
         try {
             # Bounded runner; -StdoutOnly so stderr warnings cannot corrupt the CSV.
@@ -8658,7 +9298,15 @@ main()
     # Declared with its neighbours, not inside the block below: the arms that read
     # it are outside that gate, so an NVIDIA host would leave it undefined.
     $ROCmUnsupportedGfxArch = $null
-    if (-not $HasNvidiaSmi) {
+    $_hipAllArches = @(); $_smiGfxTokens = @(); $_asicGfxTokens = @(); $amdAdapters = @()
+    # Mixed hosts are probed too (flag, mask, notice); a pin skips it, as in install.sh.
+    $ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not $SkipTorch -and
+        [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL) -and
+        [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY)
+    # Beside NVIDIA with neither flag nor hiding mask CUDA always wins: probe silently, for the notice only.
+    $script:StudioMuteLines = $ProbeAmdBesideNvidia -and -not $nvMaskHidesAll -and -not (Test-RocmTorchExplicitlyRequested)
+    try {
+    if (-not $HasNvidiaSmi -or $ProbeAmdBesideNvidia) {
         # Ignore the venv hipInfo.exe: an AMD wheel, not a HIP SDK, so amd-smi still auto-elevates.
         function Test-HipinfoIsVenvInternal {
             param([AllowNull()][string]$HipinfoPath)
@@ -8721,7 +9369,8 @@ main()
                 Write-StudioLine "         https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" -ForegroundColor Yellow
             }
         }
-        if ($hipinfoExe) {
+        # The notice-only probe runs no HIP tool: an unbounded hipinfo must not hold up an install that keeps CUDA.
+        if ($hipinfoExe -and -not $script:StudioMuteLines) {
             $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
             try {
                 $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
@@ -8758,7 +9407,8 @@ main()
         }
         # amd-smi pops an unsuppressable UAC prompt without HIP, so probe only with a SDK or opt-in.
         $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-        $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
+        # Not for the notice-only probe: amd-smi can raise UAC, and hipinfo / WMI name the card.
+        $amdSmiAllowed = (-not $amdSmiOptOut) -and -not $script:StudioMuteLines -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
         if (-not $HasROCm -and $amdSmiAllowed) {
             $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
             if ($amdSmiExe) {
@@ -8767,7 +9417,8 @@ main()
                     if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
                         $HasROCm = $true
                         # gfx tokens in enumeration order, picked via HIP_VISIBLE_DEVICES.
-                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                        # Beside NVIDIA (a ROCm route) HIP applies a CUDA mask too, as setup.ps1's Resolve-VisibleGpuIndex reads it.
+                        $_smiVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($ProbeAmdBesideNvidia -and $env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                         # Attempt 1: newer amd-smi versions embed the gfx arch in list output.
                         $_smiGfxTokens = @([regex]::Matches($smiOut, "(?i)\b(gfx\d+[a-z]?)\b") | ForEach-Object { $_.Groups[1].Value.ToLower() })
                         # Market names, when this amd-smi prints them, indexed like the gfx
@@ -8822,10 +9473,15 @@ main()
                 # routine on a muxless laptop with a parked dGPU, and there is no healthy peer
                 # to prefer. @() wraps the WHOLE if so a one-element branch stays indexable.
                 $amdWmiErr = $null
-                $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
-                    Where-Object { $_.Name -match "AMD|Radeon" })
+                if ($ProbeAmdBesideNvidia) {
+                    # Beside NVIDIA the bounded, cached scan: a stalled WMI provider must not hang an install that keeps CUDA.
+                    $amdAdapters = @((Invoke-BoundedVideoControllerScan).Adapters | Where-Object { $_.Name -match "AMD|Radeon" })
+                } else {
+                    $amdAdapters = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue -ErrorVariable amdWmiErr |
+                        Where-Object { $_.Name -match "AMD|Radeon" })
+                }
                 # A scan that reported an error may be partial: the peer scan then asks again, as before.
-                $amdWmiScanned = (-not $amdWmiErr)
+                $amdWmiScanned = $ProbeAmdBesideNvidia -or (-not $amdWmiErr)
                 $healthyAdapters = @($amdAdapters | Where-Object {
                     ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
                 $wmiGpu = @(if ($healthyAdapters.Count -gt 0) { $healthyAdapters } else { $amdAdapters })[0]
@@ -8863,18 +9519,21 @@ main()
             }
             elseif ($ROCmGpuLabel) {
                 $nameArchTable = @(
-                    @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
-                    @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: RX 9060 XT / 9060)
+                    @{ P = "9070|9080|R9700|R9600D";                              A = "gfx1201" }  # RDNA 4 (Navi 48: RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
+                    @{ P = "9060|RX 9050";                                        A = "gfx1200" }  # RDNA 4 (Navi 44: RX 9060 XT / 9060)
                     @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-                    @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-                    @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+                    @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+                    @{ P = "820M|Krackan Point 2|Krackan Point2|KrackanPoint 2|KrackanPoint2|Krackan 2|Krackan2|AI 5 PRO 330|AI 5 330"; A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
+                    @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
                     @{ P = "RX 7900|PRO W7900|PRO W7800";                         A = "gfx1100" }  # RDNA 3 desktop/workstation (Navi 31)
                     @{ P = "RX 7800|RX 7700(?!S)|PRO W7700|PRO V710";             A = "gfx1101" }  # RDNA 3 (Navi 32)
-                    @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500";        A = "gfx1102" }  # RDNA 3 (Navi 33)
-                    @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
-                    @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
-                    @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
-                    @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                    @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|RX 7400|RX 7300|PRO W7400|Steam Machine"; A = "gfx1102" }  # RDNA 3 (Navi 33)
+                    @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme";        A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
+                    # RDNA 2: Windows installs one device pack per exact arch, so Navi 23 laptop parts (6700S / 6800S) go first.
+                    @{ P = "RX 6750 GRE 10|RX 6800S|RX 6700S|RX 6650|RX 6600|PRO W6600|PRO W6650"; A = "gfx1032" }  # RDNA 2 (Navi 23)
+                    @{ P = "RX 6850|RX 6800M|RX 6750|RX 6700";                     A = "gfx1031" }  # RDNA 2 (Navi 22)
+                    @{ P = "RX 6950|RX 6900|RX 6800|PRO W6800|PRO W6900|PRO V620"; A = "gfx1030" }  # RDNA 2 (Navi 21)
+                    @{ P = "6550S|RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300"; A = "gfx1034" }  # RDNA 2 (Navi 24)
                     @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
                     @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
                     @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
@@ -8958,6 +9617,7 @@ main()
             }
         }
     }
+    } finally { $script:StudioMuteLines = $false }
 
     # ── WSL2 needs AMD Adrenalin >= 26.2.2; AMD referrer-gates it, so only link their page. ──
     function Show-AmdWslDriverHint {
@@ -9020,6 +9680,58 @@ main()
     $MultiArchTorchaudioVersion = "2.11.0"
     # "AMD gets GPU wheels here", not "AMD GPU present": unmapped arches install CPU torch.
     $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
+
+    # "rocm": from here on this is an AMD host, and Get-TorchIndexUrl returns /cpu so the AMD route runs.
+    $RocmTorchOverNvidia = $false
+    $MixedHostRoute = $null
+    $MixedHostAmdArch = $null
+    if ($ProbeAmdBesideNvidia) {
+        $_mixedArches = @(@($_hipAllArches) + @($_smiGfxTokens) + @($_asicGfxTokens) | Where-Object { $_ })
+        if ($_mixedArches.Count -eq 0 -and $wmiAmdNames -and $nameArchTable -and -not $env:UNSLOTH_ROCM_GFX_ARCH) {
+            # WMI-only: every adapter's inferred arch ("" when unmapped, so indexes line up), as setup.ps1 scores them.
+            $_wmiArchAt = @(foreach ($n in $wmiAmdNames) { $a = ""; foreach ($row in $nameArchTable) { if ($n -match $row.P) { $a = $row.A; break } }; $a })
+            $_mixedArches = @($_wmiArchAt | Where-Object { $_ })
+            # A mask picks its adapter, as setup.ps1's Resolve-VisibleGpuIndex; the CUDA one only on a ROCm request.
+            $_masks = @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES)
+            if ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll) { $_masks += $env:CUDA_VISIBLE_DEVICES }
+            foreach ($m in $_masks) {
+                if ($null -eq $m) { continue }
+                [int]$_idx = -1
+                if ([int]::TryParse(($m.Trim() -split ',')[0].Trim(), [ref]$_idx) -and $_idx -ge 0 -and $_idx -lt $_wmiArchAt.Count) {
+                    $ROCmGfxArch = if ($_wmiArchAt[$_idx]) { $_wmiArchAt[$_idx] } else { $null }
+                    $AmdHasGpuWheels = [bool]($ROCmGfxArch -and ($archFamilyMap.ContainsKey($ROCmGfxArch) -or $multiArchGfx -contains $ROCmGfxArch))
+                    $ROCmGpuName = $wmiAmdNames[$_idx]
+                    if ($ROCmGfxArch) { $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)" }
+                }
+                break
+            }
+        }
+        $_mixedPicked = Resolve-MixedHostShadowingArch -Picked $ROCmGfxArch -Arches $_mixedArches
+        if ($_mixedPicked -and $_mixedPicked -ne $ROCmGfxArch) {
+            $ROCmGfxArch = $_mixedPicked; $ROCmGpuLabel = "AMD ROCm ($ROCmGfxArch)"; $ROCmGpuName = $null
+            $AmdHasGpuWheels = $true
+        }
+        # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+        $_amdSeen = $HasROCm -or @($amdAdapters).Count -gt 0 -or @($_hipAllArches + $_smiGfxTokens + $_asicGfxTokens).Count -gt 0
+        $MixedHostRoute = Get-MixedHostTorchRoute -AmdHasGpuWheels ($AmdHasGpuWheels -and $_amdSeen) `
+            -ForceRocm (Test-RocmTorchExplicitlyRequested) -CudaMaskHidesNvidia $nvMaskHidesAll `
+            -NoticeArch $(if ($_amdSeen) { Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)) })
+        if ($MixedHostRoute -eq "rocm") {
+            $RocmTorchOverNvidia = $true
+            $HasNvidiaSmi = $false
+            if (Test-RocmTorchExplicitlyRequested) {
+                Write-StudioLine "[INFO] UNSLOTH_FORCE_ROCM_TORCH is set and an AMD GPU is present -- selecting ROCm PyTorch over CUDA." -ForegroundColor Cyan
+                Write-StudioLine "[INFO] One torch install serves one vendor: the NVIDIA card will not be available to training until this is unset and the installer re-run." -ForegroundColor Cyan
+            }
+            if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES) { Write-CudaMaskHidesAmdWarning }
+        } else {
+            if ($MixedHostRoute -eq "cuda-notice") { $MixedHostAmdArch = Get-MixedHostNoticeArch -Arches (@($ROCmGfxArch) + @($_mixedArches)) }
+            # NVIDIA keeps torch: forget the AMD probe.
+            $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
+            $ROCmVersion = $null; $ROCmVersionFull = $null; $ROCmGfxArch = $null; $ROCmUnsupportedGfxArch = $null
+            $AmdHasGpuWheels = $false
+        }
+    }
 
     # ── Intel GPU detection (Arc / Data Center GPU Max / Flex) ──
     # Before the report chain: a WMI-named-only AMD adapter would otherwise hide a discrete Arc.
@@ -9231,6 +9943,7 @@ main()
         if ($script:WoaNativeCudaTorch -and $script:WoaTorchIndexUrl) {
             return $script:WoaTorchIndexUrl
         }
+        if ($RocmTorchOverNvidia) { return "$baseUrl/cpu" }
         $major = $null; $minor = $null; $caps = @()
         if ($NvidiaSmiExe) {
             try {
@@ -9608,6 +10321,12 @@ main()
     $TorchIndexPinned = (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_URL)) -or `
                         (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_TORCH_INDEX_FAMILY))
     $TorchIndexUrl = Get-TorchIndexUrl
+    if ($MixedHostRoute -eq "cuda-forced") {
+        Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host." -ForegroundColor Yellow
+        Write-StudioLine "[WARN] Keeping the CUDA build rather than installing CPU PyTorch on a machine with a working NVIDIA GPU." -ForegroundColor Yellow
+    } elseif ($MixedHostAmdArch -and (Get-TorchIndexLeafName $TorchIndexUrl) -match '^cu\d') {
+        Write-MixedHostCudaNotice -Arch $MixedHostAmdArch
+    }
 
     # Must run AFTER Get-TorchIndexUrl above, which would overwrite it. A pin still wins.
     if ($script:IsIntelXpu -and -not $TorchIndexPinned -and -not $SkipTorch) {
@@ -9894,14 +10613,124 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.9" }
-    $_unslothZooInstallSpec = "unsloth-zoo>=2026.10.9"
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.11.12" }
+    $_unslothZooInstallSpec = "unsloth-zoo>=2026.11.12"
+    # typer 0.29 imports pydantic, so `unsloth studio setup` would hold pydantic_core's .pyd open while
+    # the Studio requirements re-pin pydantic, and Windows refuses to replace a loaded .pyd.
+    $_typerCapSpec = "typer<0.29"
 
     # Twin of install.sh's _relax_unsloth_floors_to_index (#14031).
+    function Resolve-NoTorchPair {
+        param([string]$ReleaseSpec, [string]$ZooSpec)
+        $pairCode = @'
+def _no_torch_pair(unsloth_spec, zoo_spec, use_uv=True, uv_executable="uv", install_env=None):
+    """Resolve the pair from wheel metadata without resolving training dependencies."""
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from importlib.metadata import distributions
+
+    cache = {}
+
+    def metadata(name, requirements):
+        key = (name, tuple(requirements))
+        if key in cache:
+            return cache[key]
+        with tempfile.TemporaryDirectory(prefix="unsloth-pair-") as target:
+            cmd = (
+                [uv_executable, "pip", "install", "--python", sys.executable, "--resolution", "highest"]
+                if use_uv
+                else [sys.executable, "-m", "pip", "install", "--upgrade"]
+            )
+            cmd += ["--no-deps", "--quiet", "--target", target, *requirements]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    env=install_env,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=120,
+                    **(
+                        {"creationflags": subprocess.CREATE_NO_WINDOW}
+                        if sys.platform == "win32"
+                        else {}
+                    ),
+                )
+                dist = (
+                    next(
+                        d
+                        for d in distributions(path=[target])
+                        if re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower() == name
+                    )
+                    if result.returncode == 0
+                    else None
+                )
+                value = (dist.version, dist.requires or []) if dist else None
+            except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
+                value = None
+        cache[key] = value
+        return value
+
+    if metadata("unsloth-zoo", [zoo_spec]) is None:
+        zoo_spec = "unsloth-zoo"
+    request, cap, seen = unsloth_spec, [], set()
+    while True:
+        unsloth = metadata("unsloth", [request, *cap])
+        if unsloth is None:
+            if request != "unsloth":
+                request = "unsloth"
+                continue
+            return None
+        version, requires = unsloth
+        if version in seen or not re.fullmatch(r"[0-9][0-9A-Za-z.+!-]*", version):
+            return None
+        seen.add(version)
+        zoo_requires = [r for r in requires if re.match(r"(?i)^unsloth[-_.]zoo\b", r)]
+        zoo = metadata("unsloth-zoo", [zoo_spec, *zoo_requires])
+        if zoo is not None:
+            return version, zoo[0], int(request != unsloth_spec)
+        cap = [f"unsloth<{version}"]
+
+import sys
+pair = _no_torch_pair(sys.argv[1], sys.argv[2], uv_executable=sys.argv[3])
+if pair is None:
+    raise SystemExit(1)
+print(*pair)
+'@
+        $pairScript = [System.IO.Path]::GetTempFileName()
+        try {
+            [System.IO.File]::WriteAllText($pairScript, $pairCode, (New-Object System.Text.UTF8Encoding($false)))
+            & $VenvPython -I $pairScript $ReleaseSpec $ZooSpec $script:UvExe
+        } finally {
+            Remove-Item -LiteralPath $pairScript -ErrorAction SilentlyContinue
+        }
+    }
+
     function Resolve-UnslothFloorsForIndex {
-        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker)
+        param([string]$ReleaseSpec, [string]$ZooSpec, [string]$DesktopVersion, [string]$Marker, [bool]$NoTorch = $false)
         $result = @{ Release = $ReleaseSpec; Zoo = $ZooSpec; Available = $null }
         Remove-Item -LiteralPath $Marker -Force -ErrorAction SilentlyContinue
+        if ($NoTorch) {
+            $pair = Resolve-NoTorchPair $ReleaseSpec $ZooSpec
+            if ($LASTEXITCODE -ne 0 -or -not $pair) {
+                throw "Could not resolve a compatible unsloth / unsloth-zoo pair for no-torch mode"
+            }
+            $parts = ([string]$pair).Split(' ')
+            $result.Release = "unsloth==$($parts[0])"
+            $result.Zoo = "unsloth-zoo==$($parts[1])"
+            if ($parts[2] -eq "1") {
+                $result.Available = $parts[0]
+                if ($DesktopVersion) {
+                    substep "[WARN] your package index cannot meet $ReleaseSpec; installing unsloth $($parts[0]) + unsloth-zoo $($parts[1])" "Yellow"
+                    try {
+                        $json = @{ requested = $DesktopVersion; available = $parts[0] } | ConvertTo-Json -Compress
+                        [System.IO.File]::WriteAllText($Marker, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))
+                    } catch { }
+                }
+            }
+            return $result
+        }
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
         try {
@@ -9939,7 +10768,7 @@ main()
         return $result
     }
     $_floors = Resolve-UnslothFloorsForIndex -ReleaseSpec $_unslothReleaseInstallSpec -ZooSpec $_unslothZooInstallSpec `
-        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json")
+        -DesktopVersion $_desktopMinVer -Marker (Join-Path $VenvDir "unsloth_feed_ceiling.json") -NoTorch ($SkipTorch -and $PackageName -eq "unsloth")
     $_unslothReleaseInstallSpec = $_floors.Release
     $_unslothZooInstallSpec = $_floors.Zoo
     if ($_floors.Available -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec = $_unslothReleaseInstallSpec }
@@ -9975,7 +10804,7 @@ main()
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             $_migOverrides = @()
             if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
             if ($script:TorchOverridesFile) {
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
@@ -10254,21 +11083,21 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "$_unslothZooInstallSpec" "$_typerCapSpec" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile -- "$_unslothPkg" "$_typerCapSpec" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth -- "$_unslothPkg" "$_typerCapSpec" }
             }
         }
         if ($baseInstallExit -ne 0) {
@@ -10295,7 +11124,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "$_unslothZooInstallSpec" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "$_unslothZooInstallSpec" "$_unslothReleaseInstallSpec" "$_typerCapSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10314,7 +11143,7 @@ main()
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython --torch-backend=auto -- "$_unslothPkg" "$_typerCapSpec" }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -10693,7 +11522,14 @@ sys.exit(2 if conflict else (0 if installed else 1))
             # Clear an inherited value: nothing here detected it.
             Remove-Item Env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF -ErrorAction SilentlyContinue
         }
-        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        # setup.ps1 cannot see this shell's -NonInteractive.
+        $_hadNonInteractive = Test-Path Env:UNSLOTH_NONINTERACTIVE
+        if ($script:InstallUacUnanswerable -and -not $_hadNonInteractive) { $env:UNSLOTH_NONINTERACTIVE = "1" }
+        try {
+            Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs
+        } finally {
+            if (-not $_hadNonInteractive) { Remove-Item Env:UNSLOTH_NONINTERACTIVE -ErrorAction SilentlyContinue }
+        }
         $setupExit = $script:ManagedUnslothCliExit
     } finally {
         if ($hadPreviousUnslothStudioHome) {

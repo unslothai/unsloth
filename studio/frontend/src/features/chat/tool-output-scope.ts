@@ -6,6 +6,8 @@
 import { useAuiState } from "@assistant-ui/react";
 import { createContext, useContext } from "react";
 
+import { useChatRuntimeStore } from "./stores/chat-runtime-store";
+
 import type { ModelType } from "./types";
 
 /** Local GGUF tool ids repeat per response and panes stream concurrently, so keys need a pane scope. */
@@ -30,18 +32,25 @@ export function useUnresolvedToolPaneScope(): string {
   return toolThreadScope(useContext(ToolPaneScopeContext), undefined);
 }
 
-export function useToolOutputFor(
-  map: Record<string, string>,
-  paneScope: string,
+/** Selects only this card's keys, not the whole map, so another tool's write leaves it alone. */
+export function useToolOutput(
+  field: "toolFullOutput" | "toolLiveOutput",
   toolCallId: string,
 ): string {
+  const paneScope = useToolPaneScope();
   const unresolvedScope = useUnresolvedToolPaneScope();
-  // Only a running thread may fall back; local ids repeat, so others would show its stdout.
-  const isRunning = useAuiState(({ thread }) => thread.isRunning);
-  const own = map[toolOutputKey(paneScope, toolCallId)];
-  if (own !== undefined) return own;
-  if (!isRunning) return "";
-  return map[toolOutputKey(unresolvedScope, toolCallId)] ?? "";
+  const own = useChatRuntimeStore(
+    (s) => s[field][toolOutputKey(paneScope, toolCallId)],
+  );
+  const unresolved = useChatRuntimeStore(
+    (s) => s[field][toolOutputKey(unresolvedScope, toolCallId)],
+  );
+  // Only a running thread may fall back (local ids repeat). Select the string, not isRunning,
+  // so a run starting or ending does not re-render every tool card in the history.
+  const fallback = useAuiState(({ thread }) =>
+    own === undefined && thread.isRunning ? (unresolved ?? "") : "",
+  );
+  return own ?? fallback;
 }
 
 export function toolOutputKey(paneScope: string, toolCallId: string): string {

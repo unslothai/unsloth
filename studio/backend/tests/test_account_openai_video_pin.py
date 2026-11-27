@@ -114,6 +114,7 @@ def test_openai_video_resident_replaced_after_authorization(monkeypatch):
         generation_snapshot = generation_snapshot,
         begin_generate = begin_generate,
         generate_progress = lambda: {"active": False},
+        loading_repo_ids = lambda: (),
     )
     monkeypatch.setattr(video_module, "get_video_backend", lambda: backend)
     body, content_type = _multipart({"prompt": "a sloth", "size": "320x320"})

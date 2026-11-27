@@ -14,13 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Native Transformers/Diffusers audio generation backends.
-
-This module intentionally has no ML imports at module import time. The worker uses
-``is_native_audio_model`` before choosing its MLX or Unsloth runtime, including on
-Apple Silicon, and imports torch/transformers only after the normal version and
-remote-code security gates have run.
-"""
+"""No ML imports at load; torch/transformers load only after version and remote-code security gates."""
 
 from __future__ import annotations
 
@@ -1168,7 +1162,10 @@ class NativeAudioBackend:
 
         token_kwargs = self._token_kwargs(hf_token)
         pipeline = ModularPipeline.from_pretrained(source, trust_remote_code = False, **token_kwargs)
-        pipeline.load_components(
+        from .diffusion_component_fetch import load_components_strict
+
+        load_components_strict(
+            pipeline,
             pretrained_model_name_or_path = source,
             dtype = self._dtype(),
             **token_kwargs,

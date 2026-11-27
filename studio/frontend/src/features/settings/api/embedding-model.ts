@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { bumpInventoryVersion } from "@/features/hub";
+import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
 // Leaf module, not the barrel: tests stub the barrel down to the cache bump.
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
@@ -138,7 +138,7 @@ export async function updateEmbeddingDevice(
 /** What saving a model would need fetched, and whether it is already on disk. */
 export type EmbeddingModelResolution = {
   embeddingModel: string;
-  backend: "llama" | "sentence-transformers";
+  backend: "llama" | "sentence-transformers" | "connection";
   downloadRepo: string | null;
   files: string[] | null;
   cached: boolean;
@@ -149,7 +149,7 @@ export type EmbeddingModelResolution = {
 type ApiEmbeddingModelResolution = {
   // biome-ignore lint/style/useNamingConvention: API schema
   embedding_model: string;
-  backend: "llama" | "sentence-transformers";
+  backend: "llama" | "sentence-transformers" | "connection";
   // biome-ignore lint/style/useNamingConvention: API schema
   download_repo: string | null;
   files: string[] | null;

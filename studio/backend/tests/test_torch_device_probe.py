@@ -16,8 +16,7 @@ import pytest
 from utils import process_lifetime, torch_device_probe
 
 
-# Mark the child non-dumpable so its SIGSEGV writes no core (a piped core_pattern
-# ignores RLIMIT_CORE). prctl is Linux-only.
+# prctl PR_SET_DUMPABLE stops a SIGSEGV core; a piped core_pattern ignores RLIMIT_CORE.
 _SUPPRESS_CORE = (
     "import ctypes\n"
     "try:\n"

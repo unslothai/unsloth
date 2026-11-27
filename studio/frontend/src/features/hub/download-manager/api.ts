@@ -63,6 +63,7 @@ export interface DownloadStartResult {
 }
 
 export interface ActiveModelDownload {
+  owner?: string | null;
   repo_id?: string;
   variant: string | null;
   transport?: TransportMode | null;
@@ -72,6 +73,8 @@ export interface ActiveModelDownload {
   generation?: number;
   // Scoped jobs only: lets an adopting client tell its transfer from a sibling's in the same slot.
   files?: string[] | null;
+  // The standalone Engram table the job fetches instead of the quant's own; null for its own.
+  engram_precision?: string | null;
 }
 
 export interface ActiveDatasetDownload {
@@ -118,6 +121,7 @@ export interface TransportStatus {
 }
 
 export interface DownloadProgressResponse {
+  progress_scope?: "active_files" | null;
   downloaded_bytes: number;
   completed_bytes: number;
   complete_on_disk: boolean;
@@ -138,6 +142,8 @@ export type DownloadProgressOptions = {
 
 export type GgufDownloadProgressOptions = DownloadProgressOptions & {
   variant: string;
+  /** Measures the swapped plan: this standalone table instead of the quant's own table shard. */
+  engramPrecision?: string | null;
 };
 
 export type {
@@ -158,6 +164,14 @@ let downloadTransportCapabilitiesCache: {
 } | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
   null;
+let downloadTransportCapabilitiesGeneration = 0;
+
+/** Xet availability depends on the model source (ModelScope has none), so a source switch drops the verdict. */
+export function clearDownloadTransportCapabilitiesCache(): void {
+  downloadTransportCapabilitiesGeneration += 1;
+  downloadTransportCapabilitiesCache = null;
+  downloadTransportCapabilitiesInFlight = null;
+}
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
@@ -175,12 +189,16 @@ export async function getDownloadTransportCapabilities(options: {
   if (!options.force && !options.probe && downloadTransportCapabilitiesInFlight) {
     return downloadTransportCapabilitiesInFlight;
   }
+  const generation = downloadTransportCapabilitiesGeneration;
   const request = authFetch(
     `/api/studio/download-transport-capabilities${options.probe ? "?probe=1" : ""}`,
   )
     .then(parseJsonOrThrow<unknown>)
     .then(normalizeDownloadTransportCapabilities)
     .then((capabilities) => {
+      if (generation !== downloadTransportCapabilitiesGeneration) {
+        return capabilities;
+      }
       downloadTransportCapabilitiesCache = {
         expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
         capabilities,
@@ -206,6 +224,7 @@ export async function startModelDownload(payload: {
   files?: string[];
   transport_mode?: "auto" | "xet" | "http";
   download_dir?: string;
+  engram_precision?: string;
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;
   const headers = {
@@ -400,12 +419,13 @@ export async function getGgufDownloadProgress(
   repoId: string,
   options: GgufDownloadProgressOptions,
 ): Promise<DownloadProgressResponse> {
-  const { expectedBytes = 0, hfToken, signal, variant } = options;
+  const { expectedBytes = 0, hfToken, signal, variant, engramPrecision } = options;
   const params = new URLSearchParams({
     repo_id: repoId,
     variant,
     expected_bytes: String(expectedBytes),
   });
+  if (engramPrecision) params.set("engram_precision", engramPrecision);
   const response = await authFetch(`/api/hub/gguf-download-progress?${params}`, {
     headers: hubTokenHeader(hfToken),
     signal,

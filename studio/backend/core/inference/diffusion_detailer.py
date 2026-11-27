@@ -524,14 +524,18 @@ def _take_generation_slot(stop: Optional[Callable[[], bool]] = None) -> Any:
     """Acquire the active engine's generation lock (None if it has none); cancellable while waiting."""
     try:
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
-        lock = getattr(get_active_diffusion_engine(), "_generate_lock", None)
+        engine = get_active_diffusion_engine()
+        lock = getattr(engine, "_generate_lock", None)
     except Exception:  # noqa: BLE001 -- no engine: no render to collide with
         return None
     if lock is None or not hasattr(lock, "acquire"):
         return None
-    while not lock.acquire(timeout = 0.1):
-        if stop is not None and stop():
-            raise DetailerCancelled("cancelled")
+    # A follow-up pass: goes before requests waiting in line.
+    jump = getattr(engine, "jump_slot_queue", None)
+    with jump() if callable(jump) else contextlib.nullcontext():
+        while not lock.acquire(timeout = 0.1):
+            if stop is not None and stop():
+                raise DetailerCancelled("cancelled")
     return lock
 
 
@@ -643,7 +647,11 @@ def detail_result(
     if not images:
         return
     renders = list(images)
+    placement = result.get("denoiser_offload")
     stop_event = threading.Event()
+    from core.inference.generation_ticket import bind_generation_cancel
+
+    bind_generation_cancel(stop_event)
     with _active_lock:
         _active[stop_event] = account
     finished = False
@@ -668,6 +676,7 @@ def detail_result(
             stopped = stop_event.is_set()
     if finished and stopped:
         result["images"] = renders
+        result["denoiser_offload"] = placement
         result["detailer"] = [
             record
             if record and record.get("error")
@@ -690,9 +699,12 @@ def _detail_images(
     generate_kwargs: dict,
 ) -> None:
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_memory import agreed_placement
 
     seeds = result.get("seeds") or []
     records: list[Optional[dict]] = [None] * len(images)
+    # crop inpaints skip the per-request whole tier, so a kept crop can stream where the base ran resident
+    placements = [result.get("denoiser_offload")]
     try:
         found, info = detect(images, settings, stop = stop_event.is_set)
     except Exception as exc:  # noqa: BLE001 -- the render stands; the recipe says why it was not detailed
@@ -716,6 +728,7 @@ def _detail_images(
             continue
 
         inherited: dict = {}
+        crop_placements: list = []
 
         def _inpaint(crop, mask, seed, det_prompt, det_negative):
             from core.inference import diffusion_bg_compile
@@ -738,6 +751,7 @@ def _detail_images(
                 )
             if not same_build(result, out):
                 raise ValueError("the model changed")
+            crop_placements.append(out.get("denoiser_offload"))
             if det_negative and out.get("negative_prompt") and not result.get("negative_prompt"):
                 # Negative prompt engaged only at the Detailer's CFG: record it.
                 if not settings.negative_prompt:
@@ -770,6 +784,7 @@ def _detail_images(
             }
             continue
         images[index] = detailed.image
+        placements.extend(crop_placements)
         records[index] = {
             **detailed.record,
             **inherited,
@@ -788,6 +803,7 @@ def _detail_images(
             records[index]["detect_ms"] = info.get("detect_ms")
     result["images"] = images
     result["detailer"] = records
+    result["denoiser_offload"] = agreed_placement(placements)
 
 
 __all__ = [

@@ -4,7 +4,7 @@
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import type { ReactNode } from "react";
 
-import { Settings02Icon } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 
 import { cn } from "@/lib/utils";
@@ -19,22 +19,34 @@ export function AdvancedDisclosure({
     </>
   ),
   children,
+  flush = false,
+  classNames,
 }: {
+  flush?: boolean;
+  classNames?: { root?: string; body?: string; description?: string };
   open: boolean;
   onOpenChange: (open: boolean) => void;
   description?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <div className="mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4">
+    <div
+      className={cn(
+        "mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4",
+        classNames?.root,
+      )}
+    >
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        className="flex items-center gap-2 rounded-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          "flex items-center gap-2 rounded-full px-3 py-1.5 text-left transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+          flush && "-mx-3",
+        )}
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           className="size-3.5 shrink-0 text-muted-foreground"
         />
         <span className="min-w-0 flex-1 text-ui-13 font-medium leading-[1.25] tracking-nav text-foreground">
@@ -49,8 +61,8 @@ export function AdvancedDisclosure({
         />
       </button>
       {open && (
-        <div className="flex flex-col gap-3">
-          <p className="text-ui-11 leading-snug text-muted-foreground">
+        <div className={cn("flex flex-col gap-3", classNames?.body)}>
+          <p className={cn("text-ui-11 leading-snug text-muted-foreground", classNames?.description)}>
             {description}
           </p>
           {children}

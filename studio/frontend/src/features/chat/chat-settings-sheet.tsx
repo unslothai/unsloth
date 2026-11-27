@@ -66,9 +66,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, PanelRightIcon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
+import { BracesIcon, Edit03Icon, LinkSquare02Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -101,6 +100,7 @@ import {
   getOrderedPresets,
   getPresetSaveState,
   getPresetSource,
+  editedSamplingKey,
   isSamePresetConfig,
   MAX_TOKENS_MIN,
   localMaxTokensCeiling,
@@ -114,6 +114,7 @@ import {
 } from "./presets/preset-load-config";
 import {
   type ProviderCapabilities,
+  externalMaxTokensUnboundedAtMax,
   getExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   modelCatalogVersion,
@@ -124,6 +125,7 @@ import {
 } from "./provider-capabilities";
 import {
   isLocalModelPath,
+  UNLIMITED_TOOL_CALLS,
   useChatRuntimeStore,
 } from "./stores/chat-runtime-store";
 import {
@@ -138,6 +140,9 @@ import { mlxSpecFallbackMessage } from "./lib/mlx-spec-fallback";
 import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 
 const SamplingFooter = lazy(() => import("./components/sampling-footer"));
+const CHAT_SETTINGS_TOP =
+  "var(--chat-settings-top, var(--studio-custom-titlebar-height, 0px))";
+const CHAT_SETTINGS_DOCKED_WIDTH_VAR = "--studio-chat-settings-docked-width";
 
 export { defaultInferenceParams, type Preset } from "./presets/preset-policy";
 export type { InferenceParams } from "./types/runtime";
@@ -421,6 +426,8 @@ interface ChatSettingsPanelProps {
   open: boolean;
   onOpenChange?: (open: boolean) => void;
   modelConfig?: ReactNode;
+  /** Rendered last, collapsed by default. */
+  modelInfo?: ReactNode;
   isExternalModel?: boolean;
   providerCapabilities?: ProviderCapabilities | null;
   activeExternalProvider?: ExternalProviderConfig | null;
@@ -447,9 +454,9 @@ function specFallbackMessage({
       return "With MTP on, part of this model would have to run on the CPU, where MTP's extra state costs more than the drafting wins back, so Auto turned it off for this load. Give the GPU room for every layer to get it back, or choose MTP in Settings to force it.";
     case "drafter_no_vram":
       // Only the drafter is off: the backend substitutes zero-VRAM ngram-mod where available.
-      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context length and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
+      return `This model fits in VRAM but its ${drafter} drafter does not, so Auto kept your context window and turned ${drafter} off for this load. Choose ${drafter} in Settings to force it, at a smaller context.`;
     case "runtime_error":
-      return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+      return `${drafter} could not start for this model, so it is running without speculative decoding. Lowering the context length or Parallel Slots can give it room.`;
     case "drafter_unloadable":
       // The file is present but unloadable as a draft, so neither placement nor network is the remedy.
       return "This model's MTP drafter file cannot be loaded as a draft model, so it is running without MTP. The sidecar beside the model is a head-only file that llama.cpp cannot open on its own. Replace it with a self-contained mtp-*.gguf, then reload the model.";
@@ -478,6 +485,7 @@ export function ChatSettingsPanel({
   open,
   onOpenChange,
   modelConfig = null,
+  modelInfo = null,
   isExternalModel = false,
   providerCapabilities = null,
   activeExternalProvider = null,
@@ -523,6 +531,38 @@ export function ChatSettingsPanel({
       uiSpaceScale,
     );
   }, [open, isCompact, settingsWidth, settingsScale, uiSpaceScale]);
+  useEffect(() => {
+    const panel = asideRef.current;
+    if (!open || isCompact || !panel) return;
+    // On the strip, not <html>: an inherited root var restyles the thread every drag frame.
+    let frame: HTMLElement | null = null;
+    const apply = () => {
+      const next = document.querySelector<HTMLElement>(
+        '[data-slot="sidebar-container"][data-windows-glass-frame]',
+      );
+      if (frame && frame !== next) {
+        frame.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+      }
+      frame = next;
+      // Unrounded: offsetWidth leaves a sub-pixel seam.
+      frame?.style.setProperty(
+        CHAT_SETTINGS_DOCKED_WIDTH_VAR,
+        `${panel.getBoundingClientRect().width}px`,
+      );
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(panel);
+    const pinObserver = new MutationObserver(apply);
+    pinObserver.observe(document.documentElement, {
+      attributeFilter: ["data-sidebar-glass-frame"],
+    });
+    return () => {
+      observer.disconnect();
+      pinObserver.disconnect();
+      frame?.style.removeProperty(CHAT_SETTINGS_DOCKED_WIDTH_VAR);
+    };
+  }, [open, isCompact]);
   const currentCheckpoint = params.checkpoint;
   const activeModelIsLocal = useChatRuntimeStore(
     (s) => s.activeModelIsLocal,
@@ -537,16 +577,19 @@ export function ChatSettingsPanel({
   const activeModel = useChatRuntimeStore(
     (s) => s.models.find((m) => m.id === currentCheckpoint) ?? null,
   );
+  const loadedEngine = useChatRuntimeStore((s) => s.loadedEngine);
   // Same call the request body makes, so the panel cannot offer a seed the body drops.
-  const showSeed = modelReadsSamplingSeed(activeModel);
+  const showSeed = modelReadsSamplingSeed(activeModel, loadedEngine);
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   // Unified memory, not just Darwin: an Intel Mac spills to system RAM like a PC.
   const isUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const loadSettingNames = presetLoadSettingNames(
     isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   // The backend's own classification: the native token survives a switch to a remote GGUF, and
   // org/name.gguf is a repo id, not a file.
@@ -835,6 +878,13 @@ export function ChatSettingsPanel({
         activeExternalProvider?.maxOutputTokens,
       )
     : localMaxTokensCeiling(baseContext, params.maxSeqLength);
+  const maxTokensUnboundedAtMax =
+    isExternalModel &&
+    externalMaxTokensUnboundedAtMax(
+      externalProviderType,
+      externalSelection?.modelId,
+      activeExternalProvider?.maxOutputTokens,
+    );
   const showOpenAICodeExecSection =
     activeExternalProvider != null &&
     providerSupportsBuiltinCodeExecution(
@@ -865,7 +915,7 @@ export function ChatSettingsPanel({
       const nextSource = isSamePresetConfig(activePresetBaseline, nextParams)
         ? getPresetSource(activePreset)
         : "modified";
-      setActivePresetSource(nextSource);
+      setActivePresetSource(nextSource, editedSamplingKey(key));
       setParams(nextParams, {
         minPChoiceEdited: key === "minP" || key === "minPMode",
       });
@@ -924,6 +974,7 @@ export function ChatSettingsPanel({
       setParams(applyPresetParamsWithinCurrentLimits(p), {
         minPChoiceEdited: true,
         fromPreset: true,
+        pinsSampling: getPresetSource(name) === "custom",
       });
       if (p.loadConfig) {
         applyPresetLoadConfig(p.loadConfig);
@@ -954,15 +1005,20 @@ export function ChatSettingsPanel({
       : trimmed;
     const next = customPresets.filter((p) => p.name !== saveName);
     const loadConfig = capturePresetLoadConfig();
+    // Live, as set() does: a number box this click blurred is not in this render's `params` yet.
+    const live = useChatRuntimeStore.getState().params;
+    const saved = seedDraft === null ? live : { ...live, seed: committedSeed };
     const merged = [
       ...next,
       {
         name: saveName,
-        params: toPresetParams(paramsWithCommittedSeed),
+        params: toPresetParams(saved),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
     setCustomPresets(merged);
+    // As a pick does: drop the hand edits filed under the loaded model, or Default replays them.
+    setParams(saved, { fromPreset: true, pinsSampling: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);
@@ -1175,7 +1231,7 @@ export function ChatSettingsPanel({
                 <p className="text-ui-11 text-amber-500">
                   {isUnifiedMemory ? (
                     <>
-                      Context length is above Unsloth&apos;s free-memory estimate
+                      Context window is above Unsloth&apos;s free-memory estimate
                       ({maxContextLength?.toLocaleString()} tokens). It may
                       still load, but macOS may have to compress or swap other
                       apps and generation may slow down. Lower the context,
@@ -1183,7 +1239,7 @@ export function ChatSettingsPanel({
                     </>
                   ) : (
                     <>
-                      Context length exceeds the estimated VRAM capacity (
+                      Context window exceeds the estimated VRAM capacity (
                       {maxContextLength?.toLocaleString()} tokens). The
                       model may use system RAM.
                     </>
@@ -1345,7 +1401,7 @@ export function ChatSettingsPanel({
                 </InfoHint>
               </div>
               <Switch
-                className="panel-switch shrink-0"
+                className="shrink-0"
                 checked={promptCachingEnabled}
                 onCheckedChange={(checked) => {
                   onExternalProviderChange?.({
@@ -1412,7 +1468,7 @@ export function ChatSettingsPanel({
                   </InfoHint>
                 </div>
                 <Switch
-                  className="panel-switch shrink-0"
+                  className="shrink-0"
                   checked={Boolean(params.fastMode)}
                   onCheckedChange={set("fastMode")}
                   aria-label="Fast mode"
@@ -1607,7 +1663,10 @@ export function ChatSettingsPanel({
               step={64}
               onChange={set("maxTokens")}
               format={(v) =>
-                !isExternalModel && v >= maxTokensMax ? "Max" : undefined
+                (!isExternalModel || maxTokensUnboundedAtMax) &&
+                v >= maxTokensMax
+                  ? "Max"
+                  : undefined
               }
               info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
             />
@@ -1698,6 +1757,10 @@ export function ChatSettingsPanel({
           </CollapsibleSection>
             )}
 
+        {modelInfo && (
+          <CollapsibleSection label="Information">{modelInfo}</CollapsibleSection>
+        )}
+
       </div>
       </div>
       </div>
@@ -1727,7 +1790,7 @@ export function ChatSettingsPanel({
                   className="h-7 gap-1.5 rounded-full px-2.5 text-ui-11 text-muted-foreground"
                   aria-expanded={systemVariablesOpen}
                 >
-                  <Braces className="size-3.5" />
+                  <HugeiconsIcon icon={BracesIcon} className="size-3.5" />
                   Variables
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
@@ -1854,12 +1917,13 @@ export function ChatSettingsPanel({
   if (isCompact) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
+        <SheetContent side="right" data-chat-settings-sheet="" className="w-[min(calc(18rem*var(--ui-space-scale,1)),100vw)] p-0 font-heading">
           <SheetHeader className="sr-only">
             <SheetTitle>Run settings</SheetTitle>
             <SheetDescription>Chat inference settings</SheetDescription>
           </SheetHeader>
-          <div data-tour="chat-settings" className="flex h-full flex-col">
+          {/* The docked panel's slot, so the sheet gets its glass. */}
+          <div data-tour="chat-settings" data-slot="chat-settings-panel" className="relative flex h-full flex-col">
             {settingsContent}
           </div>
         </SheetContent>
@@ -1880,8 +1944,8 @@ export function ChatSettingsPanel({
       style={
         {
           "--chat-settings-width": `${settingsWidth * settingsScale}px`,
-          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
-          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+          height: `calc(100% - ${CHAT_SETTINGS_TOP})`,
+          marginTop: CHAT_SETTINGS_TOP,
         } as CSSProperties
       }
     >
@@ -1910,6 +1974,7 @@ export function ChatSettingsPanel({
       />
       ) : null}
       <div
+        data-chat-settings-content=""
         className={cn(
           "h-full w-full overflow-hidden",
           open && "border-l border-panel-edge",
@@ -1927,19 +1992,20 @@ function MaxToolCallsSlider() {
     (s) => s.setMaxToolCallsPerMessage,
   );
 
-  // Slider range 0-41; 41 maps to 9999 ("Max")
-  const sliderValue = maxToolCalls >= 9999 ? 41 : Math.min(maxToolCalls, 40);
+  // Slider range 0-51; 51 maps to UNLIMITED_TOOL_CALLS ("Max")
+  const sliderValue =
+    maxToolCalls >= UNLIMITED_TOOL_CALLS ? 51 : Math.min(maxToolCalls, 50);
 
   return (
     <ParamSlider
       label="Max Tool Calls Per Message"
       value={sliderValue}
       min={0}
-      max={41}
+      max={51}
       step={1}
-      onChange={(v) => setMaxToolCalls(v >= 41 ? 9999 : v)}
-      format={(v) => (v >= 41 ? "Max" : v === 0 ? "Off" : undefined)}
-      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap."
+      onChange={(v) => setMaxToolCalls(v >= 51 ? UNLIMITED_TOOL_CALLS : v)}
+      format={(v) => (v >= 51 ? "Max" : v === 0 ? "Off" : undefined)}
+      info="Cap on tool/function calls the model may invoke within a single response. 0 disables tool use; Max removes the cap. Turning on MCP sets it to Max."
     />
   );
 }
@@ -1986,7 +2052,7 @@ function AutoHealToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
       />
@@ -2010,7 +2076,7 @@ function NudgeToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
       />
@@ -2039,7 +2105,7 @@ function DeduplicateToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={deduplicateToolCalls}
         onCheckedChange={setDeduplicateToolCalls}
       />
@@ -2082,7 +2148,7 @@ function ConfirmToolCallsToggle() {
       <Switch
         // Cap top of the 13px title at leading 1.25 (Inter: 0.26em).
         className={cn(
-          "panel-switch shrink-0",
+          "shrink-0",
           permissionMode === "full" && "mt-[calc(var(--text-ui-13)*0.26)]",
         )}
         checked={permissionMode === "ask"}

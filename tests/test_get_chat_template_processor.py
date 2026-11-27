@@ -122,6 +122,7 @@ def _reattach(processor, tokenizer):
         tokenizer = tokenizer,
         chat_template = "TEMPLATE",
         ollama_modelfile = "MODELFILE",
+        ollama_system_message = None,
     )
 
 

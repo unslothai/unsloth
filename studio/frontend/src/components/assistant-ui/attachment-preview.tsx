@@ -50,6 +50,7 @@ import {
 } from "@/features/library";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
+import { urlToBlob } from "@/lib/native-files";
 import { asPng } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -73,8 +74,6 @@ type TextPreviewState =
 
 // Not .xhtml: the composer sends the backend parser's text for it, which must not render as markup.
 const WEB_PAGE_NAME = /\.html?$/i;
-
-const fetchBlob = (src: string): Promise<Blob> => fetch(src).then((response) => response.blob());
 
 const Zoomed: FC<{ scale: number; children: ReactNode }> = ({ scale, children }) => (
   <div className="size-full overflow-hidden">
@@ -131,7 +130,7 @@ const useObjectUrl = (file: File | undefined): string | undefined => {
 };
 
 const loadGalleryImage = (image: GalleryImage): Promise<Blob> =>
-  image.file ? Promise.resolve(image.file) : fetchBlob(image.image ?? "");
+  image.file ? Promise.resolve(image.file) : urlToBlob(image.image ?? "");
 
 const copyImage = (image: GalleryImage, t: ReturnType<typeof useT>): void => {
   if (typeof ClipboardItem === "undefined" || !navigator.clipboard?.write) {
@@ -624,7 +623,7 @@ const AttachmentAudioDialog: FC<
         file
           ? () => Promise.resolve(file)
           : src || audio
-            ? () => fetchBlob(src ?? attachmentAudioSrc(audio!, source.contentType, source.name))
+            ? () => urlToBlob(src ?? attachmentAudioSrc(audio!, source.contentType, source.name))
             : undefined
       }
     >
@@ -670,7 +669,7 @@ const AttachmentVideoDialog: FC<
         file
           ? () => Promise.resolve(file)
           : src || video
-            ? () => fetchBlob(src ?? attachmentVideoSrc(video!))
+            ? () => urlToBlob(src ?? attachmentVideoSrc(video!))
             : undefined
       }
     >

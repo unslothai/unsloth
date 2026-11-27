@@ -13,7 +13,7 @@ import struct
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +444,9 @@ def hub_disabled() -> bool:
         "no",
     ):
         return True
-    return (os.environ.get("HF_HUB_OFFLINE") or "").strip().lower() in ("1", "on", "true", "yes")
+    from utils.utils import hf_env_offline
+
+    return hf_env_offline()
 
 
 def _hub_header(
@@ -475,6 +477,71 @@ def _hub_header(
         return header if isinstance(header, dict) else None
     except Exception:  # noqa: BLE001
         return None
+
+
+HUB_HEADER_WORKERS = 4
+
+
+def _iter_headers(
+    repo_id: str, wanted: list, revision: Optional[str], token: Any, deadline: float
+) -> Iterator[Optional[dict]]:
+    """``_hub_header`` per ``(filename, size)``, yielded in order, at most ``HUB_HEADER_WORKERS`` reads in flight and a
+    2x window parsed ahead (bounded host memory). Yields None and stops on any failure or the shared ``deadline``:
+    all-or-nothing."""
+    import time
+
+    workers = max(1, min(int(HUB_HEADER_WORKERS), len(wanted)))
+    if workers <= 1:
+        for filename, size in wanted:
+            header = _hub_header(repo_id, filename, revision, token, size, deadline)
+            yield header
+            if header is None:
+                return
+        return
+    from collections import deque
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    window = 2 * workers
+    todo = iter(wanted)
+    pending: deque = deque()
+    pool = ThreadPoolExecutor(max_workers = workers, thread_name_prefix = "component-sizes-header")
+
+    def failed(future: Any) -> bool:
+        return future.exception() is not None or future.result() is None
+
+    try:
+        while True:
+            while len(pending) < window:
+                item = next(todo, None)
+                if item is None:
+                    break
+                pending.append(
+                    pool.submit(_hub_header, repo_id, item[0], revision, token, item[1], deadline)
+                )
+            if not pending:
+                return
+            head = pending[0]
+            while True:
+                # a later shard's failure ends the read now, not after every earlier shard answers
+                if any(f.done() and failed(f) for f in pending):
+                    yield None
+                    return
+                if head.done():
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    yield None
+                    return
+                wait(
+                    [f for f in pending if not f.done()],
+                    timeout = remaining,
+                    return_when = FIRST_COMPLETED,
+                )
+            pending.popleft()
+            yield head.result()
+    finally:
+        # every read is itself bounded by ``deadline``; never block the caller on stragglers
+        pool.shutdown(wait = False, cancel_futures = True)
 
 
 MAX_INDEX_BYTES = 64 * 1024 * 1024
@@ -700,6 +767,7 @@ def _read_hub_sizes(
     out: dict[str, ComponentSize] = {}
     unknown: set = set()
     unknown_bytes: dict = {}
+    planned: list[tuple[str, list, dict]] = []
     try:
         for folder, files in sorted(by_folder.items()):
             if (
@@ -731,22 +799,29 @@ def _read_hub_sizes(
                     )  # a loaded .bin component: its term is unknown, never smaller
                     unknown_bytes[folder] = sum(b for n, b in files.items() if _is_weight_file(n))
                 continue
-            size = _accumulate(
-                folder,
-                (
-                    (
-                        f,
-                        _hub_header(
-                            repo_id, f"{folder}/{f}", commit, token, files.get(f, 0), deadline
-                        ),
-                    )
-                    for f in picked
-                ),
-            )
-            if size is None:
-                # any failed header of a loaded folder voids the answer: a partial one would be cached smaller
-                return None
-            out[folder] = size
+            planned.append((folder, list(picked), files))
+        from itertools import islice
+
+        headers = _iter_headers(
+            repo_id,
+            [
+                (f"{folder}/{f}", files.get(f, 0))
+                for folder, picked, files in planned
+                for f in picked
+            ],
+            commit,
+            token,
+            deadline,
+        )
+        try:
+            for folder, picked, _files in planned:
+                size = _accumulate(folder, zip(picked, islice(headers, len(picked))))
+                if size is None:
+                    # any failed header of a loaded folder voids the answer: a partial one would be cached smaller
+                    return None
+                out[folder] = size
+        finally:
+            headers.close()
     except Exception:  # noqa: BLE001
         return None
     if not out:
@@ -770,9 +845,8 @@ def component_sizes(
     required: Any = None,
     token: Any = None,
 ) -> Optional[ComponentSizes]:
-    """Local headers, then Hub. ``required``: the folders a complete local answer must hold, or a callable of the
-    local sizes returning them (so the snapshot's own manifest can add loaded roles); others never send a cached
-    model to the Hub."""
+    """Local headers, then Hub; required is the folders a complete local answer must hold (or a
+    callable of local sizes returning them), and others never send a cached model to the Hub."""
     if repo_or_dir is None:
         return None
     path = Path(str(repo_or_dir)).expanduser()

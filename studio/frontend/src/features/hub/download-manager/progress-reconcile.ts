@@ -47,6 +47,19 @@ export function resolveProgressUpdate(
   fraction: number;
   madeProgress: boolean;
 } {
+  if (progressResp.progress_scope === "active_files") {
+    // Current Xet files, not a repo plan: batches reset counters (even to zero).
+    const expected = Math.max(0, finiteReading(progressResp.expected_bytes));
+    const downloadedBytes = expected > 0
+      ? Math.min(expected, Math.max(0, finiteReading(progressResp.downloaded_bytes)))
+      : 0;
+    return {
+      expected, downloadedBytes, measuredTransfer: expected > 0,
+      completedBytes: 0, completeOnDisk: false,
+      fraction: expected > 0 ? Math.min(MAX_PROGRESS_FRACTION, downloadedBytes / expected) : 0,
+      madeProgress: expected !== job.expectedBytes || downloadedBytes !== job.downloadedBytes,
+    };
+  }
   const reported = finiteReading(progressResp.expected_bytes);
   const isGgufVariantJob =
     job.kind === DOWNLOAD_KIND.MODEL && job.variant !== null;

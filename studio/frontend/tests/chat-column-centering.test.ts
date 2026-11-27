@@ -34,7 +34,10 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
   assert.match(chatPage, /pl-5 pr-5 md:px-\[30px\]/);
 
   // The dock's padding is measured off the message column, so it has no fixed inset to drift.
-  assert.match(thread, /ref=\{dockInnerRef\} className="unsloth-composer-dock-inner relative pb-2"/);
+  assert.match(
+    thread,
+    /ref=\{dockInnerRef\}\s+className="unsloth-composer-dock-inner relative pb-\[1rem\]"/,
+  );
 
   assert.match(thread, DOCK_INSETS);
   assert.doesNotMatch(thread, DOCK_ONE_SIDED);

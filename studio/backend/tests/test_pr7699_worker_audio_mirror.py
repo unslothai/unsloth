@@ -22,9 +22,7 @@ class _Q:
 
 
 def _mlx_entry_for(mc):
-    """The entry MLXInferenceBackend.load_model records for a non-vision
-    checkpoint, built from the real classifier rather than a hand-written
-    expectation."""
+    """Expected from the real classifier, not hand-written: what MLXInferenceBackend.load_model records."""
     resolved = _classify_mlx_audio_type(
         SimpleNamespace(),
         None,
@@ -88,9 +86,7 @@ def _mc(audio_type, is_audio, has_audio_input):
 
 @pytest.mark.parametrize("codec", ["snac", "csm", "bicodec", "dac"])
 def test_tts_classification_survives_the_mlx_post_load_mirror(monkeypatch, codec):
-    """A TTS checkpoint is never a vision model, so the audio_vlm probe never
-    ran. Mirroring its silence over the config would drop the TTS redirect and
-    serve raw codec tokens as chat text."""
+    """A TTS checkpoint is never a vision model, so mirroring the probe's silence drops the TTS redirect."""
     info = _drive_handle_load(monkeypatch, _mc(codec, is_audio = True, has_audio_input = False))
 
     assert info["audio_type"] == codec, (
@@ -153,17 +149,24 @@ def test_a_classified_load_failure_crosses_the_worker_and_the_parent(monkeypatch
 
 
 @pytest.mark.parametrize(
-    "device, served_as_vision, published",
-    [("mlx", False, False), ("mlx", True, True), ("cuda", False, True)],
+    "device, config_vision, served_as_vision, published",
+    [
+        ("mlx", True, False, False),
+        ("mlx", True, True, True),
+        ("cuda", True, False, True),
+        ("mlx", False, True, True),
+        ("cuda", False, True, False),
+    ],
 )
 def test_an_mlx_vision_config_served_as_text_stops_accepting_images(
-    monkeypatch, device, served_as_vision, published
+    monkeypatch, device, config_vision, served_as_vision, published
 ):
-    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images."""
+    """MLX serves a vision config mlx-lm built (Muse Spark) as text: the parent must not offer images.
+    And a tower only mlx-vlm knows (OXR's vit_config) reads them although the config detector said no."""
     from core.inference.orchestrator import _mirrored_model_entry
 
     mc = _mc(None, is_audio = False, has_audio_input = False)
-    mc.is_vision = True
+    mc.is_vision = config_vision
     entry = {"is_audio": False, "audio_type": None, "has_audio_input": False}
     entry["is_vision"] = served_as_vision
     info = _drive_handle_load(monkeypatch, mc, entry, device = device)

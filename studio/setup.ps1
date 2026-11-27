@@ -31,6 +31,10 @@ $PackageDir = Split-Path -Parent $ScriptDir
 $script:SetupSelfPath = $MyInvocation.MyCommand.Path
 $script:SetupSelfAtStart = $null
 try { $script:SetupSelfAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { }
+# Node is provisioned before the dependency pass can install a newer pin.
+$script:SetupNodePinsPath = Join-Path $ScriptDir 'node_prebuilt_pins.json'
+$script:SetupNodePinsAtStart = $null
+try { $script:SetupNodePinsAtStart = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
 $script:SetupArgs = @($args)
 $script:SetupStartEnv = $null
 try { $script:SetupStartEnv = [System.Environment]::GetEnvironmentVariables() } catch { }
@@ -100,8 +104,11 @@ try { $script:StudioStdoutRedirected = [Console]::IsOutputRedirected } catch { }
 
 # 5.1's Write-Host uses the OEM code page even when redirected, so use one sink:
 # the console handle when redirected, Write-Host (colorized) when interactive.
+# Only install.ps1 mutes; set here for Set-StrictMode callers.
+$script:StudioMuteLines = $false
 function Write-StudioLine {
     param([string]$Message = "", [string]$ForegroundColor)
+    if ($script:StudioMuteLines) { return }
     if ($script:StudioStdoutRedirected) {
         try { [Console]::Out.WriteLine($Message); [Console]::Out.Flush() } catch {}
         return
@@ -154,6 +161,7 @@ $script:NvidiaLibraryInventoryProbed = $false
 $script:NvidiaLibraryInventory = $null
 # Initialised for Set-StrictMode and for a dot-sourced rerun in the same session.
 $script:OfflineFastPath = $false
+$script:SetupVenvChanged = $false
 $script:CudaToolkitReady = $false
 $script:NvccPath = $null
 $script:CudaToolkitRoot = $null
@@ -329,7 +337,10 @@ function Complete-FrontendBuildBackground {
 function Test-SetupScriptReplaced {
     if ($env:UNSLOTH_SETUP_RERUN -eq '1' -or -not $script:SetupSelfAtStart) { return $false }
     try { $now = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupSelfPath)) } catch { return $false }
-    return ($now -cne $script:SetupSelfAtStart)
+    if ($now -cne $script:SetupSelfAtStart) { return $true }
+    $nowPins = $null
+    try { $nowPins = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($script:SetupNodePinsPath)) } catch { }
+    return ($nowPins -cne $script:SetupNodePinsAtStart)
 }
 
 function Restore-SetupStartEnvironment {
@@ -2384,6 +2395,29 @@ function Get-RocmPinStaleTags {
     }
 }
 
+# UNSLOTH_HNSW_PREFETCH=1 only: by default the backend fetches the pair when a knowledge base needs
+# it. A skipped (current) Python stack leaves it unchecked; --check-only is offline.
+function Invoke-HnswBackfill {
+    $_hnswInstaller = Join-Path $PSScriptRoot "install_hnsw_prebuilt.py"
+    if (@('1', 'true', 'yes', 'on') -notcontains "$env:UNSLOTH_HNSW_PREFETCH".Trim().ToLower() -or
+        @('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or
+        -not (Test-Path -LiteralPath $_hnswInstaller)) {
+        return
+    }
+    $_hnswStatus = ""
+    try {
+        $_hnswStatus = ((& python $_hnswInstaller --check-only --json 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+    } catch {}
+    if ($_hnswStatus -and @('already', 'disabled', 'unsupported', 'offline') -notcontains $_hnswStatus) {
+        $_hnswResult = "failed"
+        try {
+            $_hnswResult = ((& python $_hnswInstaller --json --timeout 300 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+        } catch {}
+        if ($_hnswResult -eq "ready") { step "HNSW search" "ready" } else { step "HNSW search" "$_hnswResult" "Yellow" }
+    }
+    $global:LASTEXITCODE = 0
+}
+
 # Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
 # Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
 function Invoke-BoundedPythonProbe {
@@ -2840,6 +2874,39 @@ function Test-SetupConsoleHeadless {
     return (-not [Environment]::UserInteractive) -or [Console]::IsInputRedirected -or [Console]::IsOutputRedirected
 }
 
+# Windows on ARM installs NVIDIA's pinned win_arm64 build (e.g. +cu134), not the $CuTag leaf.
+function Get-CudaTorchInstallLabel {
+    param([string]$CuTag, [bool]$WinArm64Venv, [string]$WinArm64TorchSpec)
+    if ($WinArm64Venv) {
+        if ("$WinArm64TorchSpec" -match '\+(cu\d+)') { return $Matches[1] }
+        return "win_arm64 CUDA build"
+    }
+    return $CuTag
+}
+
+# Whether this process already runs elevated (an elevated run is never shown a UAC prompt). Its own
+# function so the unattended-UAC tests can pin it: GitHub's Windows runners are elevated.
+function Test-SetupProcessElevated {
+    try {
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return [bool]$_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+# An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
+function Test-SetupUacUnanswerable {
+    if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
+    if (Test-SetupProcessElevated) { return $false }
+    $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
+    if ($opt -in @("1", "true", "yes")) { return $true }
+    if ($opt -in @("0", "false", "no")) { return $false }
+    $ci = "$env:CI".Trim().ToLowerInvariant()
+    if ($ci -and $ci -notin @("0", "false", "no")) { return $true }
+    if (-not [Environment]::UserInteractive) { return $true }
+    try { if ([Console]::IsInputRedirected) { return $true } } catch { }
+    return $false
+}
+
 # A failed prebuilt is not consent to a multi-GB toolchain. No prompt (#8040): headless runs
 # outside Desktop keep installing; a terminal or Desktop opts in via UNSLOTH_INSTALL_BUILD_TOOLS.
 function Test-LlamaBuildToolsInstallAllowed {
@@ -2944,6 +3011,13 @@ function Ensure-VCRedist {
     if ($env:UNSLOTH_SETUP_RERUN -eq '1') {
         step "vcredist" "missing; already tried earlier in this update" "Yellow"
         substep "https://aka.ms/vs/17/release/vc_redist.x64.exe" "Yellow"
+        return
+    }
+    if (Test-SetupUacUnanswerable) {
+        step "vcredist" "missing; not installed (needs admin approval, and this run is unattended)" "Yellow"
+        substep "torch and the prebuilt llama.cpp need it. Run this once in an Admin terminal:" "Yellow"
+        substep "winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-package-agreements --accept-source-agreements" "Yellow"
+        substep "(or install https://aka.ms/vs/17/release/vc_redist.x64.exe)" "Yellow"
         return
     }
     Write-StudioLine "Microsoft Visual C++ Redistributable (2015-2022) is missing; the prebuilt llama.cpp and PyTorch need it. Installing the runtime..." -ForegroundColor Yellow
@@ -3212,6 +3286,21 @@ function Invoke-NpmMirrorRetry {
     Set-MirrorEnv $pairs
     $script:NpmRegistryArgs = @('--registry', $registry)
     return $true
+}
+
+# install-stamp.mjs check/write; any doubt returns $false so setup runs `npm ci`.
+function Invoke-OxcInstallStamp {
+    param([Parameter(Mandatory = $true)][ValidateSet("check", "write")][string]$Mode)
+    $helper = Join-Path $OxcValidatorDir "install-stamp.mjs"
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { return $false }
+    # Resolved first: a lookup failure must never read an earlier command's exit code as a pass.
+    $node = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $node) { return $false }
+    try {
+        $global:LASTEXITCODE = 1
+        & $node.Source $helper $Mode *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch { return $false }
 }
 
 function Show-NpmRegistryHint {
@@ -3976,11 +4065,25 @@ $HasNvidiaDriverEvidence = $HasNvidiaSmi -and -not $script:NvidiaPresenceOnly
 $NvidiaGpuName = $null
 $NvidiaSmArch = $null
 $NvidiaDriverVersion = $null
-$nvMaskHidesAll = $false
-if ($null -ne $env:CUDA_VISIBLE_DEVICES) {
-    $nvMask = ($env:CUDA_VISIBLE_DEVICES -replace '\s', '')
-    $nvMaskHidesAll = ($nvMask -eq '' -or $nvMask -eq '-1')
+function Test-CudaMaskHidesNvidia {
+    if ($null -eq $env:CUDA_VISIBLE_DEVICES) { return $false }
+    $mask = $env:CUDA_VISIBLE_DEVICES -replace '\s', ''
+    return ($mask -eq '' -or $mask -eq '-1')
 }
+function Test-RocmTorchExplicitlyRequested {
+    return ("$env:UNSLOTH_FORCE_ROCM_TORCH".Trim() -match '^(?i)(1|true|yes|on)$')
+}
+# install.sh _warn_if_cuda_mask_hides_amd: HIP reads the mask too.
+function Write-CudaMaskHidesAmdWarning {
+    Write-StudioLine ""
+    Write-StudioLine "[WARN] CUDA_VISIBLE_DEVICES=`"$env:CUDA_VISIBLE_DEVICES`" hid the NVIDIA GPU, so ROCm torch was selected." -ForegroundColor Yellow
+    Write-StudioLine "[WARN] ROCm reads CUDA_VISIBLE_DEVICES too: left set, it also hides the AMD GPU and" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] Unsloth Studio / Desktop will run CPU-only. Unset it before launching" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] (HIP_VISIBLE_DEVICES=0 picks the AMD card), and reinstall with" -ForegroundColor Yellow
+    Write-StudioLine "[WARN] UNSLOTH_FORCE_ROCM_TORCH=1 rather than the mask to ask for ROCm torch." -ForegroundColor Yellow
+    Write-StudioLine ""
+}
+$nvMaskHidesAll = Test-CudaMaskHidesNvidia
 if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not $nvMaskHidesAll) {
     try {
         # -StdoutOnly: driver warnings on stderr would corrupt the CSV.
@@ -4200,7 +4303,10 @@ function Resolve-ShadowingGfxPick {
     substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
-if (-not $HasNvidiaSmi) {
+# Only the flag or a hiding mask probes AMD beside NVIDIA, so a plain update keeps CUDA.
+$script:ProbeAmdBesideNvidia = $HasNvidiaSmi -and -not (Get-PinnedTorchIndexUrl) -and
+    ((Test-RocmTorchExplicitlyRequested) -or $nvMaskHidesAll)
+if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
     # The venv hipInfo.exe comes from an AMD wheel, not a HIP SDK.
     function Test-HipinfoIsVenvInternal {
         param([AllowNull()][string]$HipinfoPath)
@@ -4404,18 +4510,21 @@ if (-not $HasNvidiaSmi) {
         # Name -> arch, most-specific first; unknown names fall back to CPU.
         elseif ($ROCmGpuLabel) {
             $nameArchTable = @(
-                @{ P = "9070|9080|R9700";                                     A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
-                @{ P = "9060";                                                A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
+                @{ P = "9070|9080|R9700|R9600D";                              A = "gfx1201" }  # RDNA 4 (Navi 48: Radeon RX 9070 XT / 9070 GRE / 9070 / 9080, Radeon AI PRO R9700)
+                @{ P = "9060|RX 9050";                                        A = "gfx1200" }  # RDNA 4 (Navi 44: Radeon RX 9060 XT / 9060)
                 @{ P = "8065S|8060S|8050S|8040S|Strix Halo|Ryzen AI Max|AI Max"; A = "gfx1151" }  # RDNA 3.5 (Strix Halo + Gorgon Halo: Radeon 8065S/8060S/8050S/8040S iGPU, Ryzen AI Max / Max+)
-                @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
-                @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35|AI 5 33"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
+                @{ P = "890M|880M|Strix Point|HX 37[05]|AI 9 HX|AI 9 36[05]|Z2 Extreme"; A = "gfx1150" }  # RDNA 3.5 (Strix Point: Radeon 890M/880M, Ryzen AI 9 HX 370/375)
+                @{ P = "820M|Krackan Point 2|Krackan Point2|KrackanPoint 2|KrackanPoint2|Krackan 2|Krackan2|AI 5 PRO 330|AI 5 330"; A = "gfx1153" }  # RDNA 3.5 (Krackan Point 2: Radeon 820M)
+                @{ P = "860M|840M|Krackan|AI 7 35[05]|AI 5 34[05]|AI 7 PRO 35"; A = "gfx1152" }  # RDNA 3.5 (Krackan Point: Radeon 860M/840M, Ryzen AI 7 350 / AI 5 340)
                 @{ P = "RX 7900|PRO W7900|PRO W7800";                         A = "gfx1100" }  # RDNA 3 desktop / workstation (Navi 31)
                 @{ P = "RX 7800|RX 7700(?!S)|PRO W7700|PRO V710";             A = "gfx1101" }  # RDNA 3 (Navi 32)
-                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500";        A = "gfx1102" }  # RDNA 3 (Navi 33)
-                @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme|Z2 Extreme"; A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
-                @{ P = "RX 6950|RX 6900|RX 6850|RX 6800|RX 6750|RX 6700|PRO W6800|PRO W6900"; A = "gfx1030" }  # RDNA 2 (Navi 21) -- gfx103X family
-                @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
-                @{ P = "RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300";  A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
+                @{ P = "RX 7600|RX 7700S|RX 7650|PRO W7600|PRO W7500|RX 7400|RX 7300|PRO W7400|Steam Machine"; A = "gfx1102" }  # RDNA 3 (Navi 33)
+                @{ P = "780M|760M|740M|Phoenix|Hawk Point|Z1 Extreme";        A = "gfx1103" }  # RDNA 3 iGPU (Phoenix / Hawk Point)
+                # RDNA 2: Windows installs one device pack per exact arch, so Navi 23 laptop parts (6700S / 6800S) go first.
+                @{ P = "RX 6750 GRE 10|RX 6800S|RX 6700S|RX 6650|RX 6600|PRO W6600|PRO W6650"; A = "gfx1032" }  # RDNA 2 (Navi 23)
+                @{ P = "RX 6850|RX 6800M|RX 6750|RX 6700";                     A = "gfx1031" }  # RDNA 2 (Navi 22)
+                @{ P = "RX 6950|RX 6900|RX 6800|PRO W6800|PRO W6900|PRO V620"; A = "gfx1030" }  # RDNA 2 (Navi 21)
+                @{ P = "6550S|RX 6550|RX 6500|RX 6450|RX 6400|RX 6300|PRO W6400|PRO W6500|PRO W6300"; A = "gfx1034" }  # RDNA 2 (Navi 24)
                 @{ P = "Radeon Pro V520|Radeon Pro 5600M"; A = "gfx1011" }  # RDNA 1 (Navi 12) -- multi-arch index
                 @{ P = "RX 5700|RX 5600|Radeon Pro 5600 XT|Radeon Pro 5700|Radeon Pro W5700"; A = "gfx1010" }  # RDNA 1 (Navi 10) -- multi-arch index
                 @{ P = "RX 5500|RX 5300|Radeon Pro W5500|Radeon Pro W5300"; A = "gfx1012" }  # RDNA 1 (Navi 14) -- multi-arch index
@@ -4552,6 +4661,27 @@ $_rocmWheelArches = @(
 )
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+if ($script:ProbeAmdBesideNvidia) {
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
+        # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
+        $HasNvidiaSmi = $false
+        $_rocmWhy = if (Test-RocmTorchExplicitlyRequested) { "UNSLOTH_FORCE_ROCM_TORCH is set" } else { "CUDA_VISIBLE_DEVICES hides the NVIDIA GPU" }
+        substep "$_rocmWhy -- ROCm PyTorch for the AMD GPU ($script:ROCmGfxArch), not CUDA" "Cyan"
+        # install.ps1 (SKIP_STUDIO_BASE=1) already warned.
+        if ($nvMaskHidesAll -and $null -eq $env:HIP_VISIBLE_DEVICES -and $env:SKIP_STUDIO_BASE -ne "1") {
+            Write-CudaMaskHidesAmdWarning
+        }
+    } else {
+        if ((Test-RocmTorchExplicitlyRequested) -and $env:SKIP_STUDIO_BASE -ne "1") {
+            substep "[WARN] UNSLOTH_FORCE_ROCM_TORCH is set, but no ROCm wheel index could be selected for this host; keeping CUDA." "Yellow"
+        }
+        # NVIDIA keeps torch: forget the AMD probe.
+        $HasROCm = $false; $HipSdkInstalled = $false; $ROCmGpuLabel = $null; $ROCmGpuName = $null
+        $script:ROCmGpuLabels = @(); $script:ROCmPeerLabels = @(); $script:ROCmGfxArch = $null
+        $script:ROCmUnsupportedGfxArch = $null; $script:ROCmVersion = $null; $script:ROCmVersionFull = $null
+    }
+}
 
 # Mirrors install.ps1's Intel scan; self-contained since `studio update` runs setup.ps1 standalone.
 $script:IsIntelXpu = $false
@@ -4700,6 +4830,10 @@ if ($LongPathsEnabled) {
     step "long paths" "disabled; skipped at your request" "Yellow"
     substep "torch.compile / Triton may fail on very long paths. To enable later, in an Admin terminal:" "Yellow"
     substep 'reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' "Yellow"
+} elseif (Test-SetupUacUnanswerable) {
+    step "long paths" "could not enable (unattended run; UAC not requested)" "Yellow"
+    Write-StudioLine "       torch.compile / Triton may fail on very long paths. Run this manually in an Admin terminal:" -ForegroundColor Yellow
+    Write-StudioLine '       reg add "HKLM\SYSTEM\CurrentControlSet\Control\FileSystem" /v LongPathsEnabled /t REG_DWORD /d 1 /f' -ForegroundColor Cyan
 } else {
     Write-StudioLine "Windows Long Paths not enabled (required for Triton compilation and deep dependency paths)." -ForegroundColor Yellow
     Write-StudioLine "   This turns on LongPathsEnabled under HKLM, a machine-wide setting, so Windows asks for admin approval." -ForegroundColor Yellow
@@ -5093,8 +5227,11 @@ function Get-NodeDecision {
     param(
         [string]$NodeVersion,    # `node -v` output, e.g. v22.17.1 (or empty)
         [string]$NpmVersion,     # `npm -v`  output, e.g. 10.9.2  (or empty)
-        [string]$SkipInstall     # "1" => never auto-install
+        [string]$SkipInstall,    # "1" => never auto-install
+        [bool]$ManagedOnPath = $false
     )
+    # An inherited managed Node must go through the pin check, even when compatible.
+    if ($ManagedOnPath -and $SkipInstall -ne "1") { return "bundled" }
     $node = ($NodeVersion -replace '^v', '').Trim()
     $npm = "$NpmVersion".Trim()
     if ($node -match '^\d+\.\d+' -and $npm -match '^\d+') {
@@ -5108,6 +5245,15 @@ function Get-NodeDecision {
     }
     if ($SkipInstall -eq "1") { return "skip" }
     return "bundled"
+}
+
+
+function Test-ManagedNodeOnPath {
+    # Only installer metadata marks it managed (wherever NodeDir is); a bare path match may be a user's link.
+    $command = Get-Command node -ErrorAction SilentlyContinue
+    if (-not $command -or -not $command.Path) { return $false }
+    $parent = Split-Path -Parent $command.Path
+    return (Test-Path -LiteralPath (Join-Path $parent "UNSLOTH_NODE_PREBUILT_INFO.json") -PathType Leaf)
 }
 
 
@@ -5127,6 +5273,7 @@ $NodeDir = $null
 $SysNodeVersion = ""
 $SysNpmVersion = ""
 $NodeSource = $null
+$NodeOnPathIsManaged = $false
 
 if (-not $IsPipInstall) {
     $_masterRoot = Get-MasterRootOverride
@@ -5167,7 +5314,9 @@ if (-not $IsPipInstall) {
     # Under Stop a bare `node -v` throws past 2>$null.
     $SysNodeVersion = try { if (Get-Command node -ErrorAction SilentlyContinue) { (node -v 2>$null) } else { "" } } catch { "" }
     $SysNpmVersion = try { if (Get-Command npm -ErrorAction SilentlyContinue) { (npm -v 2>$null) } else { "" } } catch { "" }
-    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)"
+    $NodeOnPathIsManaged = Test-ManagedNodeOnPath
+    $NodeSource = Get-NodeDecision -NodeVersion "$SysNodeVersion" -NpmVersion "$SysNpmVersion" `
+        -SkipInstall "$($env:UNSLOTH_SKIP_NODE_INSTALL)" -ManagedOnPath $NodeOnPathIsManaged
 }
 
 if ($IsPipInstall) {
@@ -5177,6 +5326,8 @@ if ($IsPipInstall) {
 } else {
     if ($NodeSource -eq "system") {
         substep "Node $SysNodeVersion and npm $SysNpmVersion already meet requirements (system)."
+    } elseif ($NodeSource -eq "bundled" -and $NodeOnPathIsManaged) {
+        substep "Checking the isolated Node against the configured version (system Node/npm left untouched)."
     } elseif ($NodeSource -eq "bundled") {
         substep "Node='$SysNodeVersion' npm='$SysNpmVersion' unsuitable; will use an isolated Node (system left untouched)."
     } else {
@@ -5464,7 +5615,8 @@ if ($NeedNodeForSetup) {
         Remove-Item Env:NODE_PATH -ErrorAction SilentlyContinue
         step "node" "$(node -v) | npm $(npm -v) (isolated)"
 
-        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        # Only the frontend build uses bun (as in setup.sh); OXC-only Node (Desktop) skips it.
+        if (-not (Test-Path (Join-Path $FrontendDir "package-lock.json")) -and -not (Get-Command bun -ErrorAction SilentlyContinue) -and $NeedFrontendBuild) {
             substep "installing bun (faster frontend package installs)..."
             $prevEAP_bun = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
@@ -5599,18 +5751,27 @@ if ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip" -and (Get-Command n
     $ErrorActionPreference = "Continue"
     Push-Location $OxcValidatorDir
     $NpmInstallVerb = if (Test-Path "package-lock.json") { "ci" } else { "install" }
-    $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
-    if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
-    if ($oxcInstallExit -ne 0) {
+    if ($NpmInstallVerb -eq "ci" -and (Invoke-OxcInstallStamp -Mode check)) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_oxc
-        Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
-        Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
-        Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        step "oxc runtime" "up to date"
+    } else {
+        # Gone before npm touches the tree, so an interrupted install is never trusted.
+        Remove-Item -LiteralPath (Join-Path $OxcValidatorDir "node_modules\.unsloth-install-stamp.json") -Force -ErrorAction SilentlyContinue
+        $oxcInstallExit = Invoke-SetupCommand { npm $NpmInstallVerb @NpmRegistryArgs }
+        if ($oxcInstallExit -ne 0 -and (Invoke-NpmMirrorRetry)) { $oxcInstallExit = 0 }
+        if ($oxcInstallExit -ne 0) {
+            Pop-Location
+            $ErrorActionPreference = $prevEAP_oxc
+            Write-StudioLine "[ERROR] OXC validator npm $NpmInstallVerb failed (exit code $oxcInstallExit)" -ForegroundColor Red
+            Show-NpmRegistryHint -FailureOutput $script:SetupCommandOutput
+            Exit-SetupFailure "OXC validator dependency installation failed (exit code $oxcInstallExit)"
+        }
+        if ($NpmInstallVerb -eq "ci") { $null = Invoke-OxcInstallStamp -Mode write }
+        Pop-Location
+        $ErrorActionPreference = $prevEAP_oxc
+        step "oxc runtime" "installed"
     }
-    Pop-Location
-    $ErrorActionPreference = $prevEAP_oxc
-    step "oxc runtime" "installed"
 } elseif ((Test-Path $OxcValidatorDir) -and $NodeSource -ne "skip") {
     substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "Yellow"
 }
@@ -5834,8 +5995,159 @@ function Test-WoaWheelTagsParity {
     return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
 }
 
+# Exact tags, or a wheel that does not care (cp38-abi3, py3-none). Free-threaded has no abi3.
+function Test-WoaWheelTagsUsableParity {
+    param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
+    if (-not $AbiTag) { $AbiTag = $PyTag }
+    if (Test-WoaWheelTagsParity -Name $Name -PyTag $PyTag -AbiTag $AbiTag) { return $true }
+    $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
+    if ($fields.Count -lt 5) { return $false }
+    # Free-threaded CPython has no stable ABI (CPython #111506), so abi3 is not an option there.
+    if ($AbiTag -like "*t") { return $false }
+    $abiTags = $fields[$fields.Count - 2] -split '\.'
+    $minor = 0
+    if ($PyTag -match '^cp3(\d+)$') { $minor = [int]$Matches[1] }
+    foreach ($pyTag in ($fields[$fields.Count - 3] -split '\.')) {
+        # abi3 is forward compatible only from what it was built against: cp314-abi3 fails on cp313.
+        if (($abiTags -contains "abi3") -and ($pyTag -match '^cp3(\d+)$')) {
+            if ([int]$Matches[1] -le $minor) { return $true }
+        }
+        if ($abiTags -contains "none") {
+            if ($pyTag -match '^py3(\d*)$') {
+                if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $minor)) { return $true }
+            }
+            if ($pyTag -match '^cp3(\d+)$') {
+                if ([int]$Matches[1] -le $minor) { return $true }
+            }
+        }
+    }
+    return $false
+}
+
+# One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
+# failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
+function Invoke-WoaHttpBytesParity {
+    param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
+    if (-not $Uri) { return $null }
+    $response = $null
+    try {
+        $req = [System.Net.WebRequest]::Create($Uri)
+        $req.UserAgent = 'unsloth-installer'
+        $req.Timeout = 20000
+        $req.ReadWriteTimeout = 20000
+        $ranged = $false
+        if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
+        elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
+        $response = $req.GetResponse()
+        $status = [int]$response.StatusCode
+        if ($ranged -and $status -ne 206) { return $null }
+        if (-not $ranged -and $status -ne 200) { return $null }
+        $total = -1
+        $contentRange = [string]$response.Headers['Content-Range']
+        if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object System.IO.MemoryStream
+        $chunk = New-Object byte[] 65536
+        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
+            $buffer.Write($chunk, 0, $read)
+            if ($buffer.Length -gt $MaxBytes) { return $null }
+        }
+        return @{ Bytes = $buffer.ToArray(); Total = $total }
+    } catch {
+        return $null
+    } finally {
+        if ($response) { try { $response.Close() } catch {} }
+    }
+}
+
+# The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
+function Get-WoaMetadataTorchRequirementParity {
+    param([string]$Metadata)
+    if (-not $Metadata) { return "" }
+    $clauses = @()
+    foreach ($line in ($Metadata -split "`r?`n")) {
+        if ($line -eq "") { break }
+        if ($line -notmatch '^Requires-Dist:\s*(.+)$') { continue }
+        $req = $Matches[1].Trim()
+        if ($req -match ';') { continue }
+        if ($req -notmatch '^(?i)torch(?![A-Za-z0-9_.-])\s*(\[[^\]]*\])?\s*\(?\s*([^()]*?)\s*\)?\s*$') { continue }
+        if ($Matches[2]) { $clauses += $Matches[2] }
+    }
+    return ($clauses -join ',')
+}
+
+# The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
+# else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+function Get-WoaWheelTorchRequirementParity {
+    param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
+    if (-not $WheelUrl) { return "" }
+    if ($null -eq $script:WoaWheelTorchRequirementCacheParity) { $script:WoaWheelTorchRequirementCacheParity = @{} }
+    if ($script:WoaWheelTorchRequirementCacheParity.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] }
+    $answer = ""
+    try {
+        $metadata = $null
+        if ($HasCoreMetadata) {
+            $got = Invoke-WoaHttpBytesParity -Uri "$WheelUrl.metadata"
+            if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+        }
+        if ($null -eq $metadata) {
+            $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
+            $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
+            $tail = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Suffix 65558
+            if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
+            $t = $tail.Bytes
+            $eocd = -1
+            for ($i = $t.Length - 22; $i -ge 0; $i--) {
+                if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
+            }
+            if ($eocd -lt 0) { throw "no end of central directory" }
+            $cdSize = & $u32 $t ($eocd + 12)
+            $cdOffset = & $u32 $t ($eocd + 16)
+            # Zip64 or an implausible directory: not worth parsing for one line.
+            if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
+            $tailStart = $tail.Total - $t.Length
+            if ($cdOffset -ge $tailStart) {
+                $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
+            } else {
+                $got = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
+                if (-not $got) { throw "no directory" }
+                $cd = $got.Bytes
+            }
+            $entry = $null
+            $p = 0
+            while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
+                $nameLen = & $u16 $cd ($p + 28)
+                $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
+                if ($name -match '^[^/]+\.dist-info/METADATA$') {
+                    $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
+                    break
+                }
+                $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
+            }
+            if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
+            $head = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $entry.Offset -Length 30
+            if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
+            $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
+            $body = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $start -Length $entry.Size
+            if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
+            if ($entry.Method -eq 0) {
+                $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
+            } else {
+                $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
+                $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            }
+        }
+        $answer = Get-WoaMetadataTorchRequirementParity -Metadata $metadata
+    } catch {
+        $answer = ""
+    }
+    $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] = $answer
+    return $answer
+}
+
 function Test-WoaPairsWithTorchParity {
-    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
+    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision", [string]$TorchRequirement = "")
     if (-not $TorchVersion -or -not $OtherVersion) { return $false }
     $stamp = {
         param($v)
@@ -5850,7 +6162,55 @@ function Test-WoaPairsWithTorchParity {
     if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
     if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
     if (& $stamp $TorchVersion) { return $true }
-    # Stable releases pair by offset: torchvision 0.(M+15) with torch 2.M.
+    # A stable companion pairs with what its own torch requirement admits; $null (a clause this cannot read) falls through.
+    $admits = {
+        param([string]$v, [string]$spec)
+        $public = ($v -split '\+', 2)[0]
+        if ($public -notmatch '^\d+(\.\d+)*$') { return $null }
+        $have = @($public -split '\.' | ForEach-Object { [long]$_ })
+        $order = {
+            param($a, $b)
+            for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+                $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+                $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+                if ($x -ne $y) { return [Math]::Sign($x - $y) }
+            }
+            return 0
+        }
+        foreach ($clause in ($spec -split ',')) {
+            $c = $clause.Trim()
+            if (-not $c) { continue }
+            if ($c -notmatch '^(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?$') { return $null }
+            $op = $Matches[1]; $want = @($Matches[2] -split '\.' | ForEach-Object { [long]$_ }); $wild = [bool]$Matches[3]
+            if ($wild -and $op -notin @('==', '!=')) { return $null }
+            if ($wild) {
+                $prefix = ($want.Count -le $have.Count) -and ((& $order @($have[0..($want.Count - 1)]) $want) -eq 0)
+                if (($op -eq '==') -ne $prefix) { return $false }
+                continue
+            }
+            $cmp = & $order $have $want
+            $ok = switch ($op) {
+                '==' { $cmp -eq 0 }
+                '!=' { $cmp -ne 0 }
+                '<=' { $cmp -le 0 }
+                '>=' { $cmp -ge 0 }
+                '<'  { $cmp -lt 0 }
+                '>'  { $cmp -gt 0 }
+                '~=' {
+                    if ($want.Count -lt 2) { $null }
+                    else { ($cmp -ge 0) -and ((& $order @($have[0..($want.Count - 2)]) @($want[0..($want.Count - 2)])) -eq 0) }
+                }
+            }
+            if ($null -eq $ok) { return $null }
+            if (-not $ok) { return $false }
+        }
+        return $true
+    }
+    if ($TorchRequirement) {
+        $verdict = & $admits $TorchVersion $TorchRequirement
+        if ($null -ne $verdict) { return [bool]$verdict }
+    }
+    # Unread metadata: stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
     $rel = {
         param($v)
         $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -6203,7 +6563,7 @@ function Test-WoaAudioMatchesTorchParity {
 
 function Get-WoaCudaWheelVersionParity {
     param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
-          [string]$PairWith = "", [string]$Below = "")
+          [string]$PairWith = "", [string]$Below = "", [string]$MaxCuda = "")
     if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PyTag)) { return $null }
     if (-not $AbiTag) { $AbiTag = $PyTag }
     $base = ($IndexUrl -split '[?#]', 2)[0].TrimEnd('/')
@@ -6212,6 +6572,29 @@ function Get-WoaCudaWheelVersionParity {
         $body = [string](Invoke-RestMethod -Uri "$base/$Project/$tail" -UseBasicParsing -TimeoutSec 20)
     } catch { return $null }
     if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+    $projectUrl = "$base/$Project/"
+    # Each wheel's link, so a stable companion's own torch requirement can be read (PEP 658 when the index serves it).
+    $links = @{}
+    foreach ($anchor in [regex]::Matches($body, '(?i)<a\s[^>]*>')) {
+        $href = [regex]::Match($anchor.Value, '(?i)\bhref\s*=\s*["'']([^"'']+)["'']')
+        if (-not $href.Success) { continue }
+        $target = ($href.Groups[1].Value -split '[#?]', 2)[0]
+        $file = ($target -split '/')[-1]
+        try { $file = [System.Uri]::UnescapeDataString($file) } catch {}
+        $core = [regex]::Match($anchor.Value, '(?i)\bdata-(?:core|dist-info)-metadata\s*=\s*["'']([^"'']*)["'']')
+        $links[$file.ToLowerInvariant()] = @{ Href = $target; Core = ($core.Success -and $core.Groups[1].Value -ne 'false') }
+    }
+    # Same release twice (+cu134 and +cu135): the newest CUDA build the driver runs, else the newest.
+    $driverCu = $null
+    if ($MaxCuda -match '^(\d+)\.(\d+)') { $driverCu = [int]$Matches[1] * 10 + [int]$Matches[2] }
+    $cudaRank = {
+        param([string]$v)
+        if ($v -notmatch '\+cu(\d+)') { return @(0, 0) }
+        $cu = [int]$Matches[1]
+        return @($(if ($null -eq $driverCu -or $cu -le $driverCu) { 1 } else { 0 }), $cu)
+    }
+    $readRequirement = [bool]($PairWith -and ($PairWith -notmatch '(?i)\.dev\d') -and
+        (($Project -replace '[-_.]+', '-').ToLowerInvariant() -eq "torchvision"))
     $best = $null
     $bestKey = $null
     # PEP 440 order within one release: dev < a < b < rc < final.
@@ -6231,10 +6614,21 @@ function Get-WoaCudaWheelVersionParity {
     foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
         $name = $match.Value
         try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-        if (-not (Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag)) { continue }
+        # torch is built per interpreter; a companion may be interpreter-agnostic (torchvision 0.29.2 is py3-none).
+        $tagsOk = if ($Project -eq "torch") { Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+                  else { Test-WoaWheelTagsUsableParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+        if (-not $tagsOk) { continue }
         if ($name -notmatch '\+cu[0-9]+') { continue }
         $version = ($name -split '-')[1]
-        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
+        $requirement = ""
+        if ($readRequirement -and (($PairWith -split '\+', 2)[-1] -eq ($version -split '\+', 2)[-1]) -and $links.ContainsKey($name.ToLowerInvariant())) {
+            $link = $links[$name.ToLowerInvariant()]
+            try {
+                $wheelUrl = ([System.Uri]::new([System.Uri]$projectUrl, $link.Href)).AbsoluteUri
+                $requirement = Get-WoaWheelTorchRequirementParity -WheelUrl $wheelUrl -HasCoreMetadata $link.Core
+            } catch { $requirement = "" }
+        }
+        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project -TorchRequirement $requirement)) { continue }
         $release = ($version -split '\+', 2)[0]
         $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
         $key = $null
@@ -6250,6 +6644,10 @@ function Get-WoaCudaWheelVersionParity {
         elseif ($key -eq $bestKey) {
             $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
             if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
+            elseif (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -eq $rankBest[1])) {
+                $cuNew = & $cudaRank $version; $cuBest = & $cudaRank $best
+                if (($cuNew[0] -gt $cuBest[0]) -or (($cuNew[0] -eq $cuBest[0]) -and ($cuNew[1] -gt $cuBest[1]))) { $best = $version }
+            }
         }
     }
     return $best
@@ -7508,11 +7906,10 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
     }
     # An explicit xpu pin can leave IsIntelXpu false, so check the installed wheel too.
     if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
+        # Name lookups exclude pip's interrupted-replacement backups.
         $_xpuDepsCode = "import importlib.metadata as m; " +
-            "print('BNB=' + next((d.version for d in m.distributions() " +
-            "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
-            "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
-            "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+            "print('BNB=' + next(((d.version or '') for d in m.distributions(name='bitsandbytes')), '')); " +
+            "print('TRITONWIN=' + next(((d.version or '?') for d in m.distributions(name='triton-windows')), ''))"
         $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
         if (-not $_xpuDeps.Ok) {
             substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
@@ -7526,8 +7923,19 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
                 try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
             }
             $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
-            if ($_bnbStale -or $_tritonWinPresent) {
-                substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
+            $_xpuTritonRepair = $false
+            if (-not $_bnbStale -and -not $_tritonWinPresent) {
+                $_xpuTritonNow = Get-XpuTritonState
+                $_xpuTritonRepair = (-not $_xpuTritonNow.Known) -or ($_xpuTritonNow.XpuSpec -match '(?i)xpu' -and
+                    (-not $_xpuTritonNow.XpuOk -or -not (Get-TritonRuntimeState).Healthy))
+            }
+            $_xpuDepsWhy = if ($_bnbStale -or $_tritonWinPresent) { "Intel XPU dependencies are stale" }
+                elseif ($_xpuTritonRepair) { "torch's Intel XPU triton is missing, the wrong version or does not import" }
+                else { "" }
+            if ($_xpuDepsWhy -and -not $_bnbStale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+                substep "$_xpuDepsWhy but UV_OFFLINE is set -- left for the next online update" "Yellow"
+            } elseif ($_xpuDepsWhy) {
+                substep "$_xpuDepsWhy -- running the dependency pass" "Cyan"
                 $SkipPythonDeps = $false
             }
         }
@@ -7535,6 +7943,210 @@ sys.exit(0 if installed is not None and required is not None and installed >= re
 
     $script:SkipPythonDeps = $SkipPythonDeps
 }
+
+# AMD ROCm: triton-windows paired with torch. The stack resolves unsloth's unpinned triton-windows. 3.9 removed the
+# block pointers that torch 2.11 / 2.12's flex_decoding template builds: the first decode fails to compile and flex
+# attention then runs unfused for the rest of the process (gpt-oss 4k prefill 0.1 -> 6.7 GB on gfx1151). 3.6 has no
+# HIP headers; 3.8 is the verified build. Used by the fast-path escape and the post-stack repair.
+function Get-TritonWindowsRocmSpec {
+    param([string]$TorchVersion)
+    if ($TorchVersion -match '^2\.(\d+)\.' -and @(11, 12) -contains [int]$Matches[1]) { return "triton-windows>=3.8,<3.9" }
+    return $null
+}
+
+# Defined before the fast path, which reads it too.
+function Get-TritonWindowsSpec {
+    param([string]$TorchVersion, [bool]$WinArm64 = $false)
+    if ($WinArm64) {
+        # Same per-torch-minor upper bound as x64 (a triton-windows built for a newer torch does not pair with
+        # this one), floored at the first win_arm64 wheel. Torch below 2.14 has no win_arm64 pairing, and a minor
+        # the x64 table does not name yet (2.16 dev from the nightly index) keeps the open floor too.
+        $x64Spec = Get-TritonWindowsSpec -TorchVersion $TorchVersion
+        if ($x64Spec -match '^triton-windows>=3\.(\d+),<(\S+)$' -and [int]$Matches[1] -ge 8) {
+            $woaFloor = if ([int]$Matches[1] -eq 8) { "3.8.0.post28" } else { "3.$($Matches[1])" }
+            return "triton-windows>=$woaFloor,<$($Matches[2])"
+        }
+        return "triton-windows>=3.8.0.post28"
+    }
+    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
+        switch ([int]$Matches[1]) {
+            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
+            13 { return "triton-windows>=3.7,<3.8" }
+            14 { return "triton-windows>=3.8,<3.9" }
+            15 { return "triton-windows>=3.9,<3.10" }
+        }
+    }
+    return "triton-windows<3.7"
+}
+
+# 4 release parts + post number (-1 = none); dev/rc forms are $null.
+function Get-TritonWindowsVersionKey {
+    param([string]$Version)
+    if ("$Version".Trim() -notmatch '^(\d+(?:\.\d+){0,3})(?:\.post(\d+))?(?:\+[\w.]+)?$') { return $null }
+    $key = [System.Collections.Generic.List[long]]::new()
+    foreach ($part in $Matches[1].Split('.')) { $key.Add([long]$part) }
+    while ($key.Count -lt 4) { $key.Add(0) }
+    $key.Add($(if ($Matches[2]) { [long]$Matches[2] } else { -1 }))
+    return ,$key.ToArray()
+}
+
+function Test-TritonWindowsVersionInSpec {
+    param([string]$Version, [string]$Spec)
+    $have = Get-TritonWindowsVersionKey $Version
+    if ($null -eq $have) { return $null }
+    $clauses = @("$Spec" -replace '^\s*triton-windows\s*', '' -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($clauses.Count -eq 0) { return $null }
+    foreach ($clause in $clauses) {
+        if ($clause -notmatch '^(>=|<=|==|<|>)\s*(\S+)$') { return $null }
+        $op = $Matches[1]
+        $want = Get-TritonWindowsVersionKey $Matches[2]
+        if ($null -eq $want) { return $null }
+        $cmp = 0
+        for ($i = 0; $i -lt $have.Count -and $cmp -eq 0; $i++) { $cmp = $have[$i].CompareTo($want[$i]) }
+        $ok = switch ($op) { '>=' { $cmp -ge 0 } '<=' { $cmp -le 0 } '==' { $cmp -eq 0 } '<' { $cmp -lt 0 } '>' { $cmp -gt 0 } }
+        if (-not $ok) { return $false }
+    }
+    return $true
+}
+
+function Get-TritonWindowsPairing {
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them. Only CUDA torch is judged (the pass repairs only
+    # that branch); zero or several triton-windows records are unknown, else a wheel-less install forces every run.
+    $code = "import importlib.metadata as m; print('TORCH=' + m.version('torch')); " +
+        "vs = [d.version for d in m.distributions(name='triton-windows') if d.version]; " +
+        "print('TRITONWIN=' + (vs[0] if len(vs) == 1 else ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = $null
+    $inSpec = $null
+    if ($torch -match '\+cu\d+' -and $triton) {
+        $spec = Get-TritonWindowsSpec -TorchVersion $torch -WinArm64 ([bool](Test-WinArm64Venv))
+        $inSpec = Test-TritonWindowsVersionInSpec -Version $triton -Spec $spec
+    }
+    return @{ Torch = $torch; Triton = $triton; Spec = $spec; Stale = [bool]($null -ne $inSpec -and -not $inSpec) }
+}
+
+function Test-TritonWindowsPairingNeedsPass {
+    $pair = Get-TritonWindowsPairing
+    if (-not $pair.Stale) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows $($pair.Triton) does not pair with torch $($pair.Torch) ($($pair.Spec)) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+
+function Get-TritonRuntimeState {
+    # Judged by the imported runtime, not metadata: a dist-info can say 3.8 while the files are 3.9 or half removed.
+    # Healthy = triton and a real (non-namespace) triton.language import with their core API, whatever the version.
+    # Paired = healthy, a final 3.8.x release (no dev / rc) and make_block_ptr present, not 3.9's raise-only stub
+    # (its message is a constant of the function body; a docstring that mentions the removal does not count).
+    # A failing import exits non-zero, which reads as neither. No double quotes: the probe helper wraps $Code in them.
+    $code = "import importlib, inspect, re; t = importlib.import_module('triton'); tl = importlib.import_module('triton.language'); " +
+        "v = getattr(t, '__version__', '') or ''; " +
+        "h = getattr(tl, '__file__', None) is not None and callable(getattr(t, 'jit', None)) and callable(getattr(tl, 'program_id', None)); " +
+        "f = getattr(tl, 'make_block_ptr', None); c = getattr(inspect.unwrap(f), '__code__', None) if callable(f) else None; " +
+        "d = getattr(inspect.unwrap(f), '__doc__', None) if callable(f) else None; " +
+        "bp = c is not None and not any(isinstance(k, str) and k != d and 'have been removed' in k for k in c.co_consts); " +
+        "print('TRITONVER=' + v); print('HEALTHY=' + str(int(bool(h)))); " +
+        "print('PAIRED=' + str(int(bool(h and bp and re.fullmatch(r'3\.8\.\d+(\.post\d+)?(\+[\w.]+)?', v)))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    return @{
+        Healthy = [bool]($probe.Ok -and $probe.Output -match '(?m)^HEALTHY=1\s*$')
+        Paired = [bool]($probe.Ok -and $probe.Output -match '(?m)^PAIRED=1\s*$')
+    }
+}
+
+function Get-RocmTritonPairing {
+    # Reads the venv as it is now; nothing cached from before the install decides. No double quotes:
+    # Invoke-BoundedPythonProbe wraps $Code in them. ROCm = torch.version.hip, read from torch/version.py without
+    # importing torch (an untagged ROCm build has no +rocm). The name lookup skips the ~riton_windows-* backup an
+    # interrupted pip replacement leaves. Triton is only what the metadata reports (a 3.8 record wins over a
+    # leftover one, a record without Version is skipped); whether the pair is stale comes from the runtime.
+    $code = "import importlib.metadata as m, importlib.util as u, os, re; " +
+        "print('TORCH=' + m.version('torch')); " +
+        "ds = list(m.distributions(name='triton-windows')); vs = [d.version for d in ds if d.version]; " +
+        "print('TRITONWIN=' + next((x for x in vs if x.startswith('3.8')), vs[0] if vs else '')); " +
+        "print('TRITONDISTS=' + str(len(ds))); " +
+        "s = u.find_spec('torch'); p = os.path.join(os.path.dirname(s.origin), 'version.py') if s and s.origin else ''; " +
+        "t = open(p, encoding='utf-8').read() if p and os.path.isfile(p) else ''; " +
+        "h = re.search(r'^hip\b[^=\n]*=\s*.([0-9][^\x27\x22\n]*)', t, re.M); " +
+        "print('HIP=' + (h.group(1) if h else ''))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $torch = if ($probe.Ok -and $probe.Output -match '(?m)^TORCH=(\S+)\s*$') { $Matches[1] } else { "" }
+    $triton = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $dists = if ($probe.Ok -and $probe.Output -match '(?m)^TRITONDISTS=(\d+)\s*$') { [int]$Matches[1] } else { 0 }
+    $hip = if ($probe.Ok -and $probe.Output -match '(?m)^HIP=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = if ($hip -or $torch -match '\+rocm') { Get-TritonWindowsRocmSpec -TorchVersion $torch } else { $null }
+    $runtime = if ($spec) { Get-TritonRuntimeState } else { @{ Healthy = $false; Paired = $false } }
+    # Known is false when the probe itself failed: nothing about the venv was read, so nothing is verified.
+    return @{ Torch = $torch; Triton = $triton; Dists = $dists; Spec = $spec; Stale = [bool]($spec -and -not $runtime.Paired);
+              Healthy = $runtime.Healthy; Known = [bool]$probe.Ok }
+}
+
+function Test-RocmTritonPairingNeedsPass {
+    # The same probe as the post-stack repair, so the two never disagree. Only a ROCm torch 2.11 / 2.12 is stale,
+    # which the pass repairs, so the check cannot re-fire on CUDA, CPU or XPU.
+    $pair = Get-RocmTritonPairing
+    if (-not $pair.Stale) { return $false }
+    if ($script:OfflineFastPath -or (Test-UvOfflineRequested)) {
+        substep "triton-windows does not pair with torch $($pair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+        return $false
+    }
+    substep "triton-windows does not pair with torch $($pair.Torch) -- forcing dependency pass to repair..." "Cyan"
+    return $true
+}
+
+function Enter-TritonInstallEnv {
+    $saved = @{}
+    foreach ($n in 'UV_OVERRIDE', 'UV_EXCLUDE', 'UV_CONSTRAINT', 'PIP_CONSTRAINT', 'UV_REQUIRE_HASHES', 'PIP_REQUIRE_HASHES') {
+        $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+        Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+    }
+    $env:PIP_REQUIRE_HASHES = "0"
+    return $saved
+}
+
+function Exit-TritonInstallEnv {
+    param([hashtable]$Saved)
+    foreach ($n in $Saved.Keys) {
+        if ($null -ne $Saved[$n]) { Set-Item "Env:$n" $Saved[$n] }
+        else { Remove-Item "Env:$n" -ErrorAction SilentlyContinue }
+    }
+}
+
+function Get-XpuTritonState {
+    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
+    $code = "import importlib, importlib.metadata as m, importlib.util as u, re; " +
+        "print('TRITONWIN=' + next(((d.version or '?') for d in m.distributions(name='triton-windows')), '')); " +
+        "q = next((r.split(';')[0].strip() for r in (m.requires('torch') or []) if 'triton' in r.lower()), ''); " +
+        "print('TRITONXPU=' + q); n = re.match(r'[A-Za-z0-9._-]+', q); " +
+        "v = next(((d.version or '') for d in m.distributions(name=n.group(0))), None) if n else None; " +
+        "print('XPUDIST=' + ('' if v is None else (v or '?'))); " +
+        "exec('''def accepted(q, v):\n for p in ('packaging', 'pip._vendor.packaging'):\n  try:\n   rq = importlib.import_module(p + '.requirements'); vm = importlib.import_module(p + '.version')\n  except Exception:\n   continue\n  try:\n   return bool(re.fullmatch(vm.VERSION_PATTERN, v, re.VERBOSE | re.IGNORECASE)) and rq.Requirement(q).specifier.contains(v, prereleases=True)\n  except Exception:\n   return False\n return q.partition('==')[2].strip().split('+')[0] == v.split('+')[0]'''); " +
+        "ok = bool(v) and accepted(q, v); " +
+        "print('XPUOK=' + str(int(bool(ok))))"
+    $probe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $code
+    $win = if ($probe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $spec = if ($probe.Output -match '(?m)^TRITONXPU=([^\r\n]+)') { $Matches[1].Trim() } else { "" }
+    $dist = if ($probe.Output -match '(?m)^XPUDIST=(\S+)\s*$') { $Matches[1] } else { "" }
+    $ok = [bool]($probe.Ok -and $probe.Output -match '(?m)^XPUOK=1\s*$')
+    if ($ok) {
+        # Generic triton can share Intel's version; verify backend registration without activating a device.
+        $base = ($dist -split '\+')[0] -replace '[^0-9A-Za-z._-]', ''
+        $rt = Invoke-BoundedPythonProbe -PythonExe "python" -Code ("import importlib; t = importlib.import_module('triton'); " +
+            "from triton.backends import backends; from triton.backends.compiler import GPUTarget; " +
+            "target = GPUTarget('xpu', {}, 32); " +
+            "xpu = any(b.compiler.supports_target(target) and callable(b.driver) for b in backends.values()); " +
+            "v = (getattr(t, '__version__', '') or '').split('+')[0]; " +
+            "print('XPURT=' + str(int(v == '$base' and xpu)))")
+        $ok = [bool]($rt.Ok -and $rt.Output -match '(?m)^XPURT=1\s*$')
+    }
+    return @{ TritonWin = $win; XpuSpec = $spec; XpuDist = $dist; XpuOk = $ok; Known = [bool]$probe.Ok }
+}
+# End of the AMD ROCm triton-windows pairing helpers.
 
 $_PkgName = if ($env:STUDIO_PACKAGE_NAME) { $env:STUDIO_PACKAGE_NAME } else { "unsloth" }
 $SkipPythonDeps = $false
@@ -7608,6 +8220,14 @@ sys.exit(2 if conflict else (0 if version else 1))
                 } catch {}
             }
         }
+        # A verified install skips the post-stack pairing. Outside the gfx checks: a pinned ROCm index or a hybrid host
+        # can hold a ROCm torch with no detected gfx.
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-RocmTritonPairingNeedsPass)) {
+            $SkipPythonDeps = $false
+        }
+        if ($SkipPythonDeps -and -not $NoTorchMode -and (Test-TritonWindowsPairingNeedsPass)) {
+            $SkipPythonDeps = $false
+        }
     }
 }
 
@@ -7626,6 +8246,19 @@ function Test-UnparseableManagedTorchCache {
     if ($trimmed -notmatch '[\s'']') { return $false }
     # Only clear the exact value this installer would have written.
     return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
+}
+
+# USER value is account-wide: a custom-home run must not repoint it at its own tree.
+function Test-TorchCacheMayPersist {
+    param([string]$Value, [string]$Persisted, [string]$StudioRoot, [bool]$HomeIsCustom)
+    if (-not $HomeIsCustom) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Persisted)) { return $true }
+    $norm = { param($p) [Environment]::ExpandEnvironmentVariables($p).Trim().Replace('/', '\').TrimEnd('\') }
+    $p = & $norm $Persisted
+    if ($p -ieq (& $norm $Value)) { return $true }
+    $h = & $norm $StudioRoot
+    # StartsWith, not -like: a home holding [ or ] would read as a wildcard pattern.
+    return ([bool]$h -and ($p -ieq $h -or $p.StartsWith("$h\", [StringComparison]::OrdinalIgnoreCase)))
 }
 
 function Clear-UnparseableTorchCacheEnv {
@@ -7732,7 +8365,12 @@ if ($TorchCacheDir) {
     if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
     $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
     if (-not $StageRoot) {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        $_persistedTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (Test-TorchCacheMayPersist $TorchCacheDir $_persistedTorchCache $StudioHome $StudioHomeIsCustom) {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        } else {
+            substep "kept the account's TORCHINDUCTOR_CACHE_DIR ($_persistedTorchCache): it belongs to another install, so $TorchCacheDir is used for this run only"
+        }
     }
     substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 }
@@ -7909,13 +8547,16 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
     } catch { $_woaTags = "" }
     if ($_woaTags -match '^(cp\d+)\|(cp\d+t?)$') {
         $_woaPyTag = $Matches[1]; $_woaAbi = $Matches[2]
-        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
+        # Ties between CUDA builds of one release go to the newest this driver runs, as in install.ps1.
+        $_woaMaxCuda = ""
+        try { $_woaMaxCuda = [string](Get-LlamaDriverMaxCuda) } catch { $_woaMaxCuda = "" }
+        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -MaxCuda $_woaMaxCuda
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
             $_woaBacktracks = 0
             while (-not $_woaVisionV -and $_woaBacktracks -lt 5) {
-                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV
+                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV -MaxCuda $_woaMaxCuda
                 if (-not $_woaOlderTorch) { break }
                 substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; trying torch $_woaOlderTorch" "Yellow"
                 $_woaTorchV = $_woaOlderTorch
@@ -7929,11 +8570,12 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
                 # Keep the installed pair rather than pin a torch whose torchvision would resolve wrong.
                 $_woaInstalledPair = ""
                 try {
-                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m; print(m.version('torch') + '|' + m.version('torchvision'))" 2>$null | Out-String).Trim()
+                    # The installed torchvision's own torch requirement as well, read from its METADATA the way the probe reads the index's.
+                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m, re; r = [re.sub(r'^torch\s*\(?\s*([^()]*?)\s*\)?\s*$', r'\1', q.strip()) for q in (m.requires('torchvision') or []) if ';' not in q and re.match(r'(?i)torch(?![A-Za-z0-9_.-])', q.strip())]; print(m.version('torch') + '|' + m.version('torchvision') + '|' + ','.join(x.replace(' ', '') for x in r if x))" 2>$null | Out-String).Trim()
                 } catch { $_woaInstalledPair = "" }
-                $_woaKeptTorch = ""; $_woaKeptVision = ""
-                if ($_woaInstalledPair -match '^(\S+)\|(\S+)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2] }
-                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision")) {
+                $_woaKeptTorch = ""; $_woaKeptVision = ""; $_woaKeptRequirement = ""
+                if ($_woaInstalledPair -match '^(\S+)\|(\S+)\|(\S*)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2]; $_woaKeptRequirement = $Matches[3] }
+                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision" -TorchRequirement $_woaKeptRequirement)) {
                     substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; keeping the installed torch $_woaKeptTorch and torchvision $_woaKeptVision" "Yellow"
                     $_woaTorchV = $_woaKeptTorch
                     $WinArm64TorchSpec = "torch==$_woaKeptTorch"
@@ -7954,21 +8596,8 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
         }
     }
 }
-# win_arm64's first triton-windows wheel is 3.8.0.post28.
-$_tritonSpec = if ($WinArm64Venv) { "triton-windows>=3.8.0.post28" } else { "triton-windows<3.7" }
-# triton-windows follows the Triton each torch pins: 2.12 and 2.13 -> 3.7 (2.12.0 -> 3.7.0), 2.14 -> 3.8, older keeps <3.7.
-function Get-TritonWindowsSpec {
-    param([string]$TorchVersion, [bool]$WinArm64 = $false)
-    if ($WinArm64) { return "triton-windows>=3.8.0.post28" }
-    if ($TorchVersion -match '^2\.(\d+)\.(\d+)') {
-        switch ([int]$Matches[1]) {
-            12 { if ([int]$Matches[2] -eq 0) { return "triton-windows>=3.7,<3.7.1" } return "triton-windows>=3.7,<3.8" }
-            13 { return "triton-windows>=3.7,<3.8" }
-            14 { return "triton-windows>=3.8,<3.9" }
-        }
-    }
-    return "triton-windows<3.7"
-}
+# Until torch is read below: win_arm64's first triton-windows wheel is 3.8.0.post28.
+$_tritonSpec = Get-TritonWindowsSpec -TorchVersion "" -WinArm64 ([bool]$WinArm64Venv)
 # The win_arm64 index publishes only the trio, so a dependency index rides beside it (the caller's configured one, public PyPI by default). Not gated on $UseUv: pip needs the extra index too.
 $WinArm64IndexArgs = if ($WinArm64Venv) {
     $_woaResolver = if ($UseUv) { "uv" } else { "pip" }
@@ -8071,10 +8700,28 @@ if ($ROCmIndexUrl) {
         $_rocmKeptActive = $false
     }
     if ($torchInstallExit -ne 0) {
-        Write-StudioLine "[WARN] AMD ROCm PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
-        Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Yellow
-        $ROCmIndexUrl = $null
-        $ROCmCpuFallback = $true
+        $_rocmReason = (@((Redact-InstallOutput $output) -split '\r?\n' |
+            Where-Object { $_.Trim() }) | Select-Object -Last 6) -join " | "
+        if (-not $_rocmReason) { $_rocmReason = "installer output was streamed above, not captured" }
+        $_rocmWanted = (@($_rocmTrio) -join " ")
+        Write-StudioLine ""
+        Write-StudioLine "[ERROR] AMD ROCm PyTorch could not be installed for $ROCmGfxArch (exit code $torchInstallExit)." -ForegroundColor Red
+        Write-StudioLine "        index:  $(Get-IndexIdentity $ROCmIndexUrl)" -ForegroundColor Red
+        Write-StudioLine "        wanted: $_rocmWanted" -ForegroundColor Red
+        Write-StudioLine "        reason: $_rocmReason" -ForegroundColor Red
+        if ($output) { Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red }
+        if (@("1", "true", "yes", "on") -contains "$($env:UNSLOTH_ALLOW_CPU_TORCH_FALLBACK)".Trim().ToLowerInvariant()) {
+            Write-StudioLine "[WARN] UNSLOTH_ALLOW_CPU_TORCH_FALLBACK is set: installing CPU-only PyTorch instead." -ForegroundColor Red
+            Write-StudioLine "       This is NOT a GPU install: training and GPU inference will run on CPU, not on $ROCmGfxArch." -ForegroundColor Red
+            $ROCmIndexUrl = $null
+            $ROCmCpuFallback = $true
+        } else {
+            Write-StudioLine "        This machine needs ROCm PyTorch, so setup stops here instead of installing a CPU build." -ForegroundColor Red
+            Write-StudioLine "        Check the network or proxy for the index above and re-run the installer." -ForegroundColor Red
+            Write-StudioLine "        To accept CPU-only PyTorch anyway, set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 and re-run." -ForegroundColor Red
+            # Desktop shows only this line, so it carries the opt-in too.
+            Exit-SetupFailure "AMD ROCm PyTorch install failed for $ROCmGfxArch (exit code $torchInstallExit): $_rocmReason. Re-run once the index is reachable, or set UNSLOTH_ALLOW_CPU_TORCH_FALLBACK=1 to accept CPU-only PyTorch."
+        }
     } else {
         $env:UNSLOTH_ROCM_TORCH_INSTALLED = "1"
         try {
@@ -8137,7 +8784,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
     }
-    if ($XpuCpuFallback) {
+    # A GPU-route fallback keeps the supported window, like install.ps1's own CPU base, not the newest CPU torch.
+    if ($XpuCpuFallback -or $ROCmCpuFallback) {
         $cpuTorchSpec  = "torch>=2.4,<2.12.0"
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
@@ -8174,7 +8822,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
 } elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
-    substep "installing PyTorch with CUDA support ($CuTag)..."
+    substep "installing PyTorch with CUDA support ($(Get-CudaTorchInstallLabel -CuTag $CuTag -WinArm64Venv ([bool]$WinArm64Venv) -WinArm64TorchSpec $WinArm64TorchSpec))..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     # PEP 440 ignores +cuXXX, so a cu126 -> cu128 change needs --force-reinstall.
     $cudaForce = @()
@@ -8207,6 +8855,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
         # Only a release this index publishes, so a CUDA family change never pins an unservable one.
         # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        # cu130 tops out at the minor below install.ps1 $Cu130TorchCeiling (exclusive, "2.15.0"), so both keep
+        # the same releases; raise them together once a 2.15 cu130 win_amd64 wheel is published.
         $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
         if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
                 [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {
@@ -8370,6 +9020,86 @@ if (-not $NoTorchMode) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+$script:SetupVenvChanged = $true
+
+# AMD ROCm: pair triton-windows with torch (Get-RocmTritonPairing, defined before the fast path). Decided from the
+# venv the stack left, whatever index or earlier tag produced it.
+if ($stackExit -eq 0 -and -not $NoTorchMode) {
+    $_rocmPair = Get-RocmTritonPairing
+    $_rocmTritonFrom = if ($_rocmPair.Triton) { "triton-windows $($_rocmPair.Triton)" } else { "no triton-windows" }
+    if ($_rocmPair.Stale -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+        # As on the fast path: the repair needs the index, so an offline run leaves it for the next online update.
+        substep "$_rocmTritonFrom does not pair with torch $($_rocmPair.Torch) but UV_OFFLINE is set -- left for the next online update" "Yellow"
+    } elseif ($_rocmPair.Stale) {
+        substep "pairing Triton for Windows with torch $($_rocmPair.Torch) ($_rocmTritonFrom -> $($_rocmPair.Spec))..." "Cyan"
+        $_rocmImportedBefore = $_rocmPair.Healthy
+        # Set the manifest aside so an interrupted replacement is never certified complete. As in the XPU swap, a
+        # manifest that cannot be moved stays valid, so nothing is installed then.
+        $_rocmManifest = Join-Path $VenvDir "unsloth_install_manifest.json"
+        $_rocmHeld = "$_rocmManifest.triton-pending"
+        $_rocmHasHeld = $false
+        $_rocmBlocked = $false
+        if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+            try {
+                Move-Item -LiteralPath $_rocmManifest -Destination $_rocmHeld -Force -ErrorAction Stop
+                $_rocmHasHeld = $true
+            } catch {
+                $_rocmBlocked = $true
+            }
+            # A move can report success while the original remains; confirm it is gone.
+            if (Test-Path -LiteralPath $_rocmManifest -PathType Leaf) {
+                if ($_rocmHasHeld) { Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue }
+                $_rocmHasHeld = $false
+                $_rocmBlocked = $true
+            }
+        }
+        if ($_rocmBlocked) {
+            substep "[WARN] could not set the install manifest aside; $_rocmTritonFrom left in place -- flex attention decode may run unfused." "Yellow"
+        } else {
+            # Inherited uv / pip inputs that would drop or replace the pin while still reporting success, and
+            # require-hashes, which the unhashed pin can only fail.
+            $_rocmSavedEnv = Enter-TritonInstallEnv
+            # A broken 3.8, or a record with no version, already satisfies the pin as far as the installer can
+            # tell, so only a forced reinstall restores its files.
+            $_rocmArgs = @($_rocmPair.Spec)
+            if ($_rocmPair.Triton -match '^3\.8(\.|$)' -or ($_rocmPair.Dists -gt 0 -and -not $_rocmPair.Triton)) {
+                $_rocmArgs = @('--force-reinstall', '--no-deps') + $_rocmArgs
+            }
+            try {
+                $_rocmTritonOut = Fast-Install @_rocmArgs | Out-String
+                $_rocmTritonExit = $LASTEXITCODE
+            } finally {
+                Exit-TritonInstallEnv -Saved $_rocmSavedEnv
+            }
+            # Exit 0 is not enough: an override-dependencies entry in a uv config keeps the old version, and a
+            # probe that could not read the venv verifies nothing.
+            $_rocmAfter = Get-RocmTritonPairing
+            if (-not ($_rocmAfter.Known -and $_rocmAfter.Spec -and -not $_rocmAfter.Stale)) {
+                $_rocmHave = if (-not $_rocmAfter.Known) { "the venv could not be read" } elseif ($_rocmAfter.Triton) { "triton-windows $($_rocmAfter.Triton) installed" } else { "no triton-windows installed" }
+                substep "[WARN] could not pair $($_rocmPair.Spec) (exit $_rocmTritonExit, $_rocmHave); flex attention decode may run unfused. Check uv override-dependencies / constraints if this repeats." "Yellow"
+                Write-StudioLine (Redact-InstallOutput $_rocmTritonOut) -ForegroundColor Yellow
+                if ($_rocmImportedBefore -and -not (Get-TritonRuntimeState).Healthy) {
+                    Write-StudioLine "[ERROR] the Triton replacement failed part way and triton no longer works -- torch.compile is broken." -ForegroundColor Red
+                    Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps `"$($_rocmPair.Spec)`"" -ForegroundColor Red
+                    # Fail, or install.ps1 commits this venv over its rollback copy.
+                    $stackExit = if ($_rocmTritonExit -ne 0) { $_rocmTritonExit } else { 1 }
+                }
+            }
+            # A pairing that only warns leaves triton no worse than before, and Test-RocmTritonPairingNeedsPass retries it
+            # next update. Dropping the manifest here left Desktop stuck on studio_install_incomplete after every repair.
+            if ($_rocmHasHeld -and $stackExit -eq 0) {
+                try {
+                    Move-Item -LiteralPath $_rocmHeld -Destination $_rocmManifest -Force -ErrorAction Stop
+                } catch {
+                    Write-StudioLine "[ERROR] could not restore the install manifest: $($_.Exception.Message)" -ForegroundColor Red
+                    $stackExit = 1
+                }
+            } elseif ($_rocmHasHeld) {
+                Remove-Item -LiteralPath $_rocmHeld -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
 
 # ── Intel XPU: bitsandbytes must carry XPU kernels ──
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
@@ -8394,22 +9124,39 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
 # Both own the `triton` package. Run after the stack (it reinstalls triton-windows); always
 # pair the uninstall with a reinstall.
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
-    # No double quotes: Invoke-BoundedPythonProbe wraps $Code in them.
-    $_tritonCode = "import importlib.metadata as m; " +
-        "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
-        "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), '')); " +
-        "print('TRITONXPU=' + next((r.split(';')[0].strip() " +
-        "for r in (m.requires('torch') or []) if 'triton' in r.lower()), ''))"
-    $_tritonProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_tritonCode
-    $_tritonWinVer = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
-    $_tritonXpuSpec = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
-    # Anything but an XPU triton spec means torch is not the +xpu wheel.
-    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
-        substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+    $_tritonProbe = Get-XpuTritonState
+    $_tritonWinVer = $_tritonProbe.TritonWin
+    $_tritonXpuSpec = $_tritonProbe.XpuSpec
+    $_tritonImportedBefore = $true
+    $_tritonXpuWrong = $false
+    if ($_tritonXpuSpec -match '(?i)xpu') {
+        $_tritonImportedBefore = (Get-TritonRuntimeState).Healthy
+        $_tritonXpuWrong = -not $_tritonProbe.XpuOk
+    }
+    $_tritonWanted = $_tritonXpuSpec -match '(?i)xpu' -and ($_tritonWinVer -or -not $_tritonImportedBefore -or $_tritonXpuWrong)
+    if ($_tritonWanted -and ($script:OfflineFastPath -or (Test-UvOfflineRequested))) {
+        substep "torch's Intel XPU triton $_tritonXpuSpec is not in place but UV_OFFLINE is set -- left for the next online update" "Yellow"
+    } elseif ($_tritonWanted) {
+        if ($_tritonWinVer) {
+            substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+            $_tritonLeft = "triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU."
+        } elseif (-not $_tritonImportedBefore) {
+            substep "triton does not import -- reinstalling $_tritonXpuSpec (Intel XPU)..." "Cyan"
+            $_tritonLeft = "triton still does not import, so torch.compile will not work."
+        } else {
+            $_tritonXpuHave = if ($_tritonProbe.XpuDist) { "Intel XPU triton $($_tritonProbe.XpuDist)" } else { "no Intel XPU triton" }
+            substep "$_tritonXpuHave installed, but torch requires $_tritonXpuSpec -- reinstalling it..." "Cyan"
+            $_tritonLeft = "$_tritonXpuHave left in place, and torch requires $_tritonXpuSpec."
+        }
+        # Redacted: a mirror pin can carry a token.
+        $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+        $_tritonRepair = "python -m pip install --force-reinstall --no-deps `"$_tritonXpuSpec`" --index-url $_tritonRepairUrl"
         # test_intel_registry_fallback.ps1 asserts this literal matches MANIFEST_NAME.
         $_manifestPath = Join-Path $VenvDir "unsloth_install_manifest.json"
         # Fetch, then uninstall, then install, so a dead mirror cannot strand the venv between steps.
         $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        # Inherited UV_EXCLUDE can make installation report success without installing the replacement.
+        $_tritonSavedEnv = Enter-TritonInstallEnv
         try {
             New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
             # Advanced function: PowerShell binds `-d` to -Debug, so use `--dest`.
@@ -8423,7 +9170,15 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
             }
             $_tritonWheel = @(Get-ChildItem -LiteralPath $_tritonTmp -Filter "*.whl" -ErrorAction SilentlyContinue) | Select-Object -First 1 -ExpandProperty FullName
             if ($tritonDlExit -ne 0 -or -not $_tritonWheel) {
-                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                if (-not $_tritonImportedBefore -and (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                    try {
+                        Remove-Item -LiteralPath $_manifestPath -Force -ErrorAction Stop
+                    } catch {
+                        Write-StudioLine "[ERROR] triton does not import and the install manifest could not be removed: $($_.Exception.Message)" -ForegroundColor Red
+                        $stackExit = 1
+                    }
+                }
+                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); $_tritonLeft" "Yellow"
                 Write-StudioLine (Redact-InstallOutput $tritonDlOutput) -ForegroundColor Yellow
             } else {
                 # Move (never rewrite) the manifest aside during the swap: 5.1 encodings would corrupt it.
@@ -8445,16 +9200,25 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                 }
                 if ($_manifestBlocked) {
                     # An unmovable manifest stays valid through the destructive window, so skip the swap.
-                    substep "[WARN] could not set the install manifest aside; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
-                } else {
+                    substep "[WARN] could not set the install manifest aside; $_tritonLeft" "Yellow"
+                } elseif ($_tritonWinVer) {
                     Fast-Uninstall "triton-windows" | Out-Null
                     $_uninstallExit = $LASTEXITCODE
                 }
-                # An uninstall that failed (file held open) leaves the shadowing in place.
+                # A failed uninstall can still remove files; recheck imports before restoring the manifest.
                 if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {
-                    substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
-                    if ($_manifestHeld) {
-                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                    if ((Get-TritonRuntimeState).Healthy) {
+                        substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                        if ($_manifestHeld) {
+                            try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                        }
+                    } elseif ($_tritonImportedBefore) {
+                        Write-StudioLine "[ERROR] removing triton-windows $_tritonWinVer failed part way (exit $_uninstallExit) and triton no longer imports -- torch.compile is broken." -ForegroundColor Red
+                        Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
+                        # Fail, or install.ps1 commits this venv over its rollback copy.
+                        $stackExit = $_uninstallExit
+                    } else {
+                        substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); $_tritonLeft" "Yellow"
                     }
                 } elseif (-not $_manifestBlocked) {
                     if ($script:UnslothVerbose) {
@@ -8465,22 +9229,33 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                         $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
                         $tritonXpuExit = $LASTEXITCODE
                     }
-                    $_tritonPresent = ($tritonXpuExit -eq 0)
-                    if ($tritonXpuExit -ne 0) {
-                        # Put SOME triton back rather than leave the venv without one.
+                    $_tritonAfter = Get-XpuTritonState
+                    $_tritonPresent = ($tritonXpuExit -eq 0 -and $_tritonAfter.Known -and $_tritonAfter.XpuOk -and
+                        -not $_tritonAfter.TritonWin -and (Get-TritonRuntimeState).Healthy)
+                    if (-not $_tritonPresent) {
+                        $_tritonXpuWhy = if ($tritonXpuExit -ne 0) { "exit $tritonXpuExit" } else { "exit 0, but it is not installed or triton does not import" }
+                        # A stale XPU RECORD can later delete the generic fallback's shared files.
+                        Fast-Uninstall ($_tritonXpuSpec -replace '^([A-Za-z0-9._-]+).*$', '$1') | Out-Null
                         Fast-Install --force-reinstall --no-deps $_tritonSpec | Out-Null
                         $tritonBackExit = $LASTEXITCODE
-                        $_tritonPresent = ($tritonBackExit -eq 0)
+                        $_tritonBack = Get-XpuTritonState
+                        $_tritonPresent = ($tritonBackExit -eq 0 -and $_tritonBack.Known -and -not $_tritonBack.XpuDist -and $_tritonBack.TritonWin -and
+                            (Get-TritonRuntimeState).Healthy)
                         Write-StudioLine (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
-                        if ($tritonBackExit -eq 0) {
-                            substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
+                        if ($_tritonPresent -and $InstallerManagedSetup -and -not $_tritonWinVer) {
+                            Write-StudioLine "[ERROR] could not install $_tritonXpuSpec ($_tritonXpuWhy); the triton-windows fallback would drop the Intel XPU triton -- keeping the installer's rollback copy." -ForegroundColor Red
+                            Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
+                            $stackExit = 1
+                        } elseif ($_tritonPresent) {
+                            substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy); fell back to triton-windows, so triton imports -- but torch.compile will not use the XPU." "Yellow"
+                        } elseif ($_tritonImportedBefore -or $InstallerManagedSetup) {
+                            $_tritonBackWhy = if ($_tritonBack.XpuDist) { "the Intel XPU distribution is still recorded over the fallback files" }
+                                else { "the fallback distribution or runtime could not be verified" }
+                            Write-StudioLine "[ERROR] could not verify the triton-windows fallback: $_tritonBackWhy." -ForegroundColor Red
+                            Write-StudioLine "        Repair with: $_tritonRepair" -ForegroundColor Red
+                            $stackExit = if ($tritonBackExit -ne 0) { $tritonBackExit } else { 1 }
                         } else {
-                            # Redacted: a mirror pin can carry a token.
-                            $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
-                            Write-StudioLine "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
-                            Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
-                            # Fail, or install.ps1 commits this triton-less venv over its rollback copy.
-                            $stackExit = $tritonBackExit
+                                substep "[WARN] could not install $_tritonXpuSpec ($_tritonXpuWhy) and the triton-windows fallback could not be verified. Repair with: $_tritonRepair" "Yellow"
                         }
                     }
                     # Restore only once a triton imports; a lost manifest makes the next update repair.
@@ -8493,8 +9268,18 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
                 }
             }
         } finally {
+            Exit-TritonInstallEnv -Saved $_tritonSavedEnv
             Remove-Item -Recurse -Force -LiteralPath $_tritonTmp -ErrorAction SilentlyContinue
         }
+    }
+    # Managed setup must preserve rollback even when triton was already broken or its requirement is unreadable.
+    if ($stackExit -eq 0 -and $InstallerManagedSetup -and ($_tritonXpuSpec -match '(?i)xpu' -or -not $_tritonProbe.Known) -and
+        -not (Get-TritonRuntimeState).Healthy) {
+        $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+        $_tritonRepairSpec = if ($_tritonXpuSpec) { $_tritonXpuSpec } else { "pytorch-triton-xpu" }
+        Write-StudioLine "[ERROR] triton does not import -- torch.compile is broken; keeping the installer's rollback copy." -ForegroundColor Red
+        Write-StudioLine "        Repair with: python -m pip install --force-reinstall --no-deps `"$_tritonRepairSpec`" --index-url $_tritonRepairUrl" -ForegroundColor Red
+        $stackExit = 1
     }
 }
 
@@ -8510,7 +9295,7 @@ if ($stackExit -ne 0) {
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
     Complete-FrontendBuildBackground
-    step "setup" "the update replaced this setup script; finishing with the new version"
+    step "setup" "the update changed setup or its Node pin; finishing with the new version"
     $_setupRerunArgs = $script:SetupArgs
     Restore-SetupStartEnvironment
     Remove-Item Env:UNSLOTH_STUDIO_FULL_DEPS -ErrorAction SilentlyContinue
@@ -8537,6 +9322,7 @@ if (Test-SetupScriptReplaced) {
 
 } else {
     step "python" "dependencies up to date"
+    Invoke-HnswBackfill
     $ErrorActionPreference = $prevEAP
 }
 Complete-FrontendBuildBackground -IfDone
@@ -8810,14 +9596,14 @@ if ((Test-Path -LiteralPath $VenvT5Legacy) -and ($script:OfflineFastPath -or (Te
     $_NeedT5_510 = $true
 }
 if (-not (Test-SidecarCurrent -TargetDir $VenvT5_530Dir -Version "5.3.0")) { $_NeedT5_530 = $true }
-if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.0")) { $_NeedT5_550 = $true }
-if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.10.2")) { $_NeedT5_510 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_550Dir -Version "5.5.4")) { $_NeedT5_550 = $true }
+if (-not (Test-SidecarCurrent -TargetDir $VenvT5_510Dir -Version "5.15.1")) { $_NeedT5_510 = $true }
 # Offline keep: defer sidecar rebuilds; the runtime self-heal covers a missing tier. Mirrors setup.sh.
 $_DeferT5_530 = $false
 $_DeferT5_550 = $false
 $_DeferT5_510 = $false
 if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale or missing but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -8827,7 +9613,7 @@ if (-not $script:OfflineFastPath -and (Test-UvOfflineRequested)) {
     }
 }
 if ($script:OfflineFastPath) {
-    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.0"), @("510", "5.10.2"))) {
+    foreach ($tier in @(@("530", "5.3.0"), @("550", "5.5.4"), @("510", "5.15.1"))) {
         $flag = "_NeedT5_$($tier[0])"
         if ((Get-Variable -Name $flag -ValueOnly)) {
             substep "transformers $($tier[1]) sidecar is stale but UV_OFFLINE is set -- left for the next online update" "Yellow"
@@ -8853,19 +9639,19 @@ if ($_NeedT5_530) {
     Repair-SidecarTiktoken -TargetDir $VenvT5_530Dir -DirName ".venv_t5_530"
 }
 if ($_NeedT5_550) {
-    Install-T5Sidecar -TargetDir $VenvT5_550Dir -Version "5.5.0" -Label "5.5" -DirName ".venv_t5_550" -Reason "for Gemma 4 support"
+    Install-T5Sidecar -TargetDir $VenvT5_550Dir -Version "5.5.4" -Label "5.5" -DirName ".venv_t5_550" -Reason "for Gemma 4 support"
 } elseif ($_DeferT5_550) {
-    step "transformers" "5.5.0 sidecar stale -- left for the next online update"
+    step "transformers" "5.5.4 sidecar stale -- left for the next online update"
 } else {
-    step "transformers" "5.5.0 sidecar current"
+    step "transformers" "5.5.4 sidecar current"
     Repair-SidecarTiktoken -TargetDir $VenvT5_550Dir -DirName ".venv_t5_550"
 }
 if ($_NeedT5_510) {
-    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.10.2" -Label "5.10" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
+    Install-T5Sidecar -TargetDir $VenvT5_510Dir -Version "5.15.1" -Label "5.15" -DirName ".venv_t5_510" -Reason "for Gemma 4 Unified support"
 } elseif ($_DeferT5_510) {
-    step "transformers" "5.10.2 sidecar stale -- left for the next online update"
+    step "transformers" "5.15.1 sidecar stale -- left for the next online update"
 } else {
-    step "transformers" "5.10.2 sidecar current"
+    step "transformers" "5.15.1 sidecar current"
     Repair-SidecarTiktoken -TargetDir $VenvT5_510Dir -DirName ".venv_t5_510"
 }
 $ErrorActionPreference = $script:PrevEAP_T5
@@ -10009,6 +10795,11 @@ if ($LocalLlamaCppLinked) {
         $null = cmake --build $BuildDir --config Release --target llama-diffusion-gemma-visual-server -j $NumCpu 2>&1 | Out-String
     }
 
+    # -- Step F: llama-bench (best-effort) --
+    if ($BuildOk) {
+        $null = cmake --build $BuildDir --config Release --target llama-bench -j $NumCpu 2>&1 | Out-String
+    }
+
     # Swap temp build dir into final location (only if we built in a temp dir)
     if ($BuildOk -and $LlamaCppDir -ne $OriginalLlamaCppDir) {
         Assert-StudioOwnedOrAbsent -Path $OriginalLlamaCppDir -Label "llama.cpp install" -IsCustom $RuntimeRootIsCustom
@@ -10081,6 +10872,24 @@ if (-not $llamaCppIsLink -and (
 }
 
 Complete-FrontendBuildBackground
+
+# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+$_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
+$_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
+$_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
+    Where-Object { $_ } | ForEach-Object { $_.Trim().ToLowerInvariant() })
+$_pycOptedOut = @($_pycSwitches | Where-Object { @('0', 'false', 'no', 'off') -contains $_ }).Count -gt 0
+$_pycOptedIn = @($_pycSwitches | Where-Object { @('1', 'true', 'yes', 'on') -contains $_ }).Count -gt 0
+if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOptedIn -and -not $_pycOptedOut -and
+    (Test-Path -LiteralPath $_pycPython -PathType Leaf) -and
+    (Test-Path -LiteralPath $_pycHelper -PathType Leaf)) {
+    step "python" "precompiling bytecode..."
+    $_pycPrevExit = $global:LASTEXITCODE
+    $_pycPrevEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & $_pycPython -I $_pycHelper } catch { } finally { $ErrorActionPreference = $_pycPrevEAP }
+    $global:LASTEXITCODE = $_pycPrevExit
+}
 
 # ─────────────────────────────────────────────
 # Footer

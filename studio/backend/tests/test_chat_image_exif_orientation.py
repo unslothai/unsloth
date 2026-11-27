@@ -94,6 +94,13 @@ def test_llama_server_gets_a_tagged_png_upright():
 
 
 def test_a_tagged_png_is_decoded_once(monkeypatch):
+    import collections
+
+    import routes.inference as inference
+
+    # A fresh memo: an earlier test may already have normalized this image.
+    monkeypatch.setattr(inference, "_LLAMA_IMAGE_MEMO", collections.OrderedDict())
+    monkeypatch.setattr(inference, "_llama_image_memo_chars", 0)
     opened = []
     real_open = Image.open
 

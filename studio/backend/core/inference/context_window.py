@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import bisect
 import re
 from collections.abc import Callable
 from typing import Any, Optional
@@ -158,6 +159,11 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     return sum(estimate_message_tokens(message) for message in messages)
 
 
+def _ascii_count(text: str) -> int:
+    """Number of code points <= 127; ``errors = "ignore"`` drops every other one, surrogates included."""
+    return len(text) if text.isascii() else len(text.encode("ascii", "ignore"))
+
+
 def estimate_messages_tokens_dense(messages: list[dict]) -> int:
     """Estimate charging non-ASCII a token per character (2.1x undercount measured on CJK). Not the
     default: eviction must not be pessimistic."""
@@ -168,7 +174,7 @@ def estimate_messages_tokens_dense(messages: list[dict]) -> int:
         except Exception:
             total += 1
             continue
-        dense = sum(1 for char in text if ord(char) > 127)
+        dense = len(text) - _ascii_count(text)
         total += max(1, dense + (len(text) - dense) // 4)
     return total
 
@@ -192,15 +198,12 @@ def estimate_messages_tokens_conservative(
         except Exception:
             total += 1
             continue
-        wide = sum(1 for char in text if ord(char) > 127)
+        wide = len(text) - _ascii_count(text)
         if dense_ascii:
             total += max(1, wide + (len(text) - wide) // _DENSE_RUN_CHARS_PER_TOKEN)
             continue
         # ASCII only: a run of CJK is already charged a token a character above.
-        runs = sum(
-            sum(1 for char in match.group(0) if ord(char) <= 127)
-            for match in _DENSE_RUN_RE.finditer(text)
-        )
+        runs = sum(_ascii_count(match.group(0)) for match in _DENSE_RUN_RE.finditer(text))
         plain = len(text) - wide - runs
         total += max(1, wide + runs // _DENSE_RUN_CHARS_PER_TOKEN + plain // 4)
     return total
@@ -408,16 +411,6 @@ _ARG_COMPACTION_FLOOR_CHARS = 1024
 _ARG_COMPACTION_AGGREGATE_LEAF_FLOOR = 256
 # Matches the per-leaf floor: the same amount of window either way.
 _ARG_COMPACTION_TOTAL_FLOOR_CHARS = 1024
-
-
-def _largest_leaf(value: Any) -> int:
-    if isinstance(value, str):
-        return len(value)
-    if isinstance(value, dict):
-        return max((_largest_leaf(item) for item in value.values()), default = 0)
-    if isinstance(value, list):
-        return max((_largest_leaf(item) for item in value), default = 0)
-    return 0
 
 
 def _total_leaves(value: Any) -> int:
@@ -907,6 +900,7 @@ def fit_rolling_context(
     headroom_ratio: Optional[float] = None,
     estimate_message: Callable[[dict], int] = estimate_message_tokens,
     replay_only: bool = False,
+    on_evict: Optional[Callable[[], None]] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Drops oldest turns; reserve_tokens never affects trimming; sticky_dropped replays the boundary."""
     if context_length <= 1:
@@ -956,6 +950,8 @@ def fit_rolling_context(
         headroom = int(prompt_target * ratio) if keeps_boundary else 0
         trim_target = max(1, prompt_target - reserve_tokens - headroom)
 
+    if on_evict is not None and current_tokens > trim_target:
+        on_evict()
     while current_tokens > trim_target:
         keep_ratio = trim_target / max(1, current_tokens)
         if min_bite:
@@ -1015,6 +1011,8 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
 )
 # The frontend's wrapper tag (attachment, pasted_text, document_annotations); the cut goes inside it.
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
+# The browser parsers' header ("[PDF: name]", runtime-provider.tsx): their text has no closing tag.
+_LABELLED_TEXT_RE = re.compile(r"\[[A-Z]+: [^\n]*\]\n")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
 # No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
@@ -1023,32 +1021,60 @@ _MAX_CHARS_PER_TOKEN = 16
 
 def _attachment_spans(text: str):
     """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
-    notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
-    for index, note in enumerate(notes):
-        end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
-        body = text[note.end() : end]
-        opened = _ATTACHMENT_OPEN_RE.match(body)
-        closing = f"\n</{opened.group('tag')}>" if opened else ""
-        close = body.rfind(closing) if opened else -1
-        if opened and close >= opened.end():
-            yield (
-                note,
-                opened.group(0),
-                body[opened.end() : close],
-                closing,
-                body[close + len(closing) :],
-            )
-        else:
+    # A note starts an attachment only when its content follows; a file quoting the note is text (#16913).
+    notes, openers, fences = [], [], []
+    for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text):
+        fences.append(note.start())
+        opened = _ATTACHMENT_OPEN_RE.match(text, note.end())
+        if opened or _LABELLED_TEXT_RE.match(text, note.end()):
+            notes.append(note)
+            openers.append(opened)
+    # Wrappers pair with closing tags like brackets, so a quoted attachment nests; an unclosed one runs to the next note.
+    pending = [i for i, opened in enumerate(openers) if opened]
+    ends, open_by_tag, nxt = {}, {}, 0
+    tags = {openers[i].group("tag") for i in pending}
+    closings = (
+        re.compile("\n</(?P<tag>" + "|".join(map(re.escape, sorted(tags))) + ")>") if tags else None
+    )
+    for closed in closings.finditer(text) if closings else ():
+        if nxt == len(pending) and not any(open_by_tag.values()):
+            break
+        while nxt < len(pending) and openers[pending[nxt]].end() <= closed.start():
+            open_by_tag.setdefault(openers[pending[nxt]].group("tag"), []).append(pending[nxt])
+            nxt += 1
+        if open_by_tag.get(closed.group("tag")):
+            ends[open_by_tag[closed.group("tag")].pop()] = closed.end()
+    index = 0
+    while index < len(notes):
+        note, opened, extent = notes[index], openers[index], ends.get(index, -1)
+        index += 1
+        while index < len(notes) and notes[index].start() < extent:
+            index += 1
+        body = text[note.end() : notes[index].start() if index < len(notes) else len(text)]
+        if extent < 0:
             yield note, "", body, "", ""
+            continue
+        closing = f"\n</{opened.group('tag')}>"
+        # A later note-shaped line still fences the search, so a stray close tag after it stays in the tail.
+        fence = bisect.bisect_left(fences, extent)
+        limit = fences[fence] if fence < len(fences) else len(text)
+        close = text.rfind(closing, opened.end(), min(limit, note.end() + len(body))) - note.end()
+        yield (
+            note,
+            opened.group(0),
+            body[opened.end() - note.end() : close],
+            closing,
+            body[close + len(closing) :],
+        )
 
 
 def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
     """Attachments longer than ``keep_chars`` keep their first whole lines (``excerpt``) or only their path."""
-    first = _SANDBOX_ATTACHMENT_NOTE_RE.search(text)
-    if not first:
+    spans = list(_attachment_spans(text))
+    if not spans:
         return text
-    out = [text[: first.start()]]
-    for note, opened, inner, close, tail in _attachment_spans(text):
+    out = [text[: spans[0][0].start()]]
+    for note, opened, inner, close, tail in spans:
         name, path = note.group("name"), note.group("path")
         if len(inner) <= keep_chars:
             out.append(note.group(0) + opened + inner + close + tail)

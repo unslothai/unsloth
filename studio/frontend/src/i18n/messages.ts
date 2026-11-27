@@ -2,25 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { getLocale } from "./locale-store";
+import { LOCALES } from "./locale-tags";
 import { en } from "./locales/en";
 import type { InterpolationValues, MessageKey, MessageTree } from "./types";
 
-export const LOCALES = {
-  en: { label: "English", nativeLabel: "English" },
-  "zh-CN": { label: "Chinese (Simplified)", nativeLabel: "简体中文" },
-  ja: { label: "Japanese", nativeLabel: "日本語" },
-  ko: { label: "Korean", nativeLabel: "한국어" },
-  es: { label: "Spanish", nativeLabel: "Español" },
-  "pt-BR": { label: "Portuguese (Brazil)", nativeLabel: "Português (Brasil)" },
-  fr: { label: "French", nativeLabel: "Français" },
-  de: { label: "German", nativeLabel: "Deutsch" },
-  it: { label: "Italian", nativeLabel: "Italiano" },
-  ru: { label: "Russian", nativeLabel: "Русский" },
-  sv: { label: "Swedish", nativeLabel: "Svenska" },
-  hi: { label: "Hindi", nativeLabel: "हिन्दी" },
-  ar: { label: "Arabic", nativeLabel: "العربية" },
-  he: { label: "Hebrew", nativeLabel: "עברית" },
-} as const;
+export { LOCALES };
 
 export type Locale = keyof typeof LOCALES;
 export type TranslationKey = MessageKey<typeof en>;
@@ -36,9 +22,11 @@ type LazyLocale = Exclude<Locale, "en">;
 
 const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   "zh-CN": () => import("./locales/zh-CN"),
+  "zh-TW": () => import("./locales/zh-TW"),
   ja: () => import("./locales/ja"),
   ko: () => import("./locales/ko"),
   es: () => import("./locales/es"),
+  "es-419": () => import("./locales/es-419"),
   "pt-BR": () => import("./locales/pt-br"),
   fr: () => import("./locales/fr"),
   de: () => import("./locales/de"),
@@ -48,6 +36,15 @@ const localeLoaders: Record<LazyLocale, () => Promise<unknown>> = {
   hi: () => import("./locales/hi"),
   ar: () => import("./locales/ar"),
   he: () => import("./locales/he"),
+  id: () => import("./locales/id"),
+  vi: () => import("./locales/vi"),
+  tr: () => import("./locales/tr"),
+  pl: () => import("./locales/pl"),
+  uk: () => import("./locales/uk"),
+  th: () => import("./locales/th"),
+  fa: () => import("./locales/fa"),
+  cs: () => import("./locales/cs"),
+  nl: () => import("./locales/nl"),
 };
 
 function readCatalog(module: unknown, locale: LazyLocale): MessageTree {

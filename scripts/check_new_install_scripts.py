@@ -2,21 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Diff two `package-lock.json` files and flag NEW install-script deps.
-
-A `"hasInstallScript": true` package runs preinstall/install/postinstall
-hooks on every `npm ci` -- the lever behind recent npm supply-chain
-compromises (attacker publishes a malicious version of a trusted dep).
-This refuses to land a newly-introduced install-script dep without a
-maintainer eyeball; pre-existing ones are not re-flagged.
-
-Supports lockfileVersion 1 (recursive `dependencies`) and 2/3 (flat
-`packages` with `node_modules/.../node_modules/...` nesting). For each
-new entry we best-effort fetch the registry metadata to recover the
-postinstall command body; the finding is still emitted if unreachable.
-
-Exit codes: 0 = none; 1 = one or more (on stderr); 2 = internal error.
-"""
+"""Fails on newly added hasInstallScript deps in package-lock.json; existing ones are not flagged;
+registry metadata fetch is best-effort and the finding is still emitted if unreachable"""
 
 from __future__ import annotations
 

@@ -180,5 +180,4 @@ def test_real_triton_without_a_compiler(tmp_path, patch):
     if not patch:
         assert not result["ok"] and "Failed to find C compiler" in result["error"], result
     else:
-        # bitsandbytes' PyTorch kernels match its native CUDA ones bit for bit.
         assert result == {"ok": True, "packed_equal": True, "absmax_equal": True}, result

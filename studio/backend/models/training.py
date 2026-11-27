@@ -6,7 +6,14 @@
 import math
 import re
 from pathlib import Path, PureWindowsPath
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from typing import Annotated, Any, Optional, List, Dict, Literal, Union
 
 from hub.schemas.inventory import ModelFormat
@@ -553,8 +560,7 @@ class TrainingStartRequest(BaseModel):
     save_steps: int = Field(100, description = "Steps between checkpoints")
     # NaN clears _check_weight_decay's 0..10 range check (every comparison with it is False), so it is refused here.
     weight_decay: float = Field(0.001, allow_inf_nan = False, description = "Weight decay")
-    # Finite as well as non-negative: JSON 1e309 floats to inf, which clears ge=0 but never binds, so
-    # the run would train unclipped while reporting a threshold.
+    # Reject inf too: JSON 1e309 parses to inf, which passes ge=0 but never binds the clip.
     max_grad_norm: Optional[float] = Field(
         None,
         ge = 0,
@@ -603,7 +609,7 @@ class TrainingStartRequest(BaseModel):
             "and unsloth's historical recommended value."
         ),
     )
-    packing: bool = Field(False, description = "Enable sequence packing")
+    packing: bool = Field(True, description = "Enable sequence packing where supported")
     optim: str = Field("adamw_8bit", description = "Optimizer")
     lr_scheduler_type: str = Field("linear", description = "Learning rate scheduler type")
     embedding_learning_rate: Optional[float] = Field(
@@ -646,7 +652,9 @@ class TrainingStartRequest(BaseModel):
     use_rslora: bool = Field(False, description = "Use RSLoRA")
     use_loftq: bool = Field(False, description = "Use LoftQ")
     use_dora: bool = Field(False, description = "Use DoRA")
-    train_on_completions: bool = Field(False, description = "Train on completions only")
+    train_on_completions: bool = Field(
+        True, description = "Train on assistant completions where supported"
+    )
 
     finetune_vision_layers: bool = Field(False, description = "Finetune vision layers")
     finetune_language_layers: bool = Field(True, description = "Finetune language layers")
@@ -667,6 +675,10 @@ class TrainingStartRequest(BaseModel):
     decision_layout: Optional[Literal["laya", "clef", "llm"]] = Field(
         None,
         description = "Set by the server from the checkpoint files; a caller's value is replaced",
+    )
+    decision_head: Optional[Literal["clef", "d1"]] = Field(
+        None,
+        description = "What a language model trains into: a Clef head, or a d1 on MLX for LFM3-VL and LFM3-Omni, the default there",
     )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
@@ -695,6 +707,23 @@ class TrainingStartRequest(BaseModel):
         ),
     )
 
+    parallel_mode: Optional[
+        Literal["auto", "single", "layer_split", "ddp", "fsdp2", "tp", "pp", "cp", "ep", "custom"]
+    ] = Field(
+        None,
+        description = (
+            "Multi-GPU layout. auto: Studio picks (DDP when the model fits each GPU, FSDP2 when it fits sharded, "
+            "expert parallel for MoE where Unsloth has it, else layers split across GPUs). single / layer_split: "
+            "one process. ddp / fsdp2 / tp / pp / cp / ep / custom: one process per GPU (Linux NVIDIA / AMD). "
+            "Omit for the behaviour before this field existed."
+        ),
+    )
+    parallel_spec: Optional[str] = Field(
+        None,
+        max_length = 200,
+        description = 'With parallel_mode "custom": the UNSLOTH_PARALLEL layout, e.g. "dp=2,tp=2".',
+    )
+
     s3_config: Optional[S3Config] = Field(
         None,
         description = 'S3 bucket configuration. Missing SDK installs on first use; preinstall offline support with: python -m pip install "unsloth[s3]"',
@@ -705,6 +734,21 @@ class TrainingStartRequest(BaseModel):
     def _normalize_target_modules(cls, value: Any) -> Any:
         # Sanitized non-LoRA history stores the unused value as null; treat it as an omitted list.
         return [] if value is None else value
+
+    @model_validator(mode = "after")
+    def _default_training_objective_toggles(self) -> "TrainingStartRequest":
+        # getattr: validate_assignment on a model_construct() instance lacks required fields.
+        non_chat = getattr(self, "is_embedding", False) or getattr(self, "is_decision", False)
+        if "packing" not in self.model_fields_set and non_chat:
+            self.packing = False
+        if "train_on_completions" not in self.model_fields_set and (
+            non_chat
+            or getattr(self, "dataset_streaming", False)
+            or getattr(self, "training_type", None) == "Continued Pretraining"
+            or getattr(self, "format_type", None) in ("raw", "raw_text")
+        ):
+            self.train_on_completions = False
+        return self
 
     @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
@@ -779,6 +823,34 @@ class TrainingStartRequest(BaseModel):
         return self
 
 
+class ParallelPlanRequest(BaseModel):
+    """POST /api/train/parallel/plan body."""
+
+    model_name: str = Field(..., max_length = 512)
+    training_type: Literal["LoRA/QLoRA", "Full Finetuning", "Continued Pretraining"] = "LoRA/QLoRA"
+    load_in_4bit: bool = TrainingStartRequest.model_fields["load_in_4bit"].default
+    batch_size: int = Field(TrainingStartRequest.model_fields["batch_size"].default, ge = 1)
+    max_seq_length: int = Field(TrainingStartRequest.model_fields["max_seq_length"].default, ge = 1)
+    lora_r: int = Field(TrainingStartRequest.model_fields["lora_r"].default, ge = 1)
+    target_modules: Optional[List[str]] = None
+    gradient_checkpointing: str = TrainingStartRequest.model_fields[
+        "gradient_checkpointing"
+    ].default
+    optim: str = TrainingStartRequest.model_fields["optim"].default
+    gpu_ids: Optional[List[int]] = None
+    parallel_mode: Optional[
+        Literal["auto", "single", "layer_split", "ddp", "fsdp2", "tp", "pp", "cp", "ep", "custom"]
+    ] = "auto"
+    parallel_spec: Optional[str] = Field(None, max_length = 200)
+    offload_layers: Optional[Union[int, str]] = None
+    packing: bool = TrainingStartRequest.model_fields["packing"].default
+    is_dataset_image: bool = False
+    is_dataset_audio: bool = False
+    is_embedding: bool = False
+    is_decision: bool = False
+    drafter: Optional[DrafterTrainingConfig] = None
+
+
 class TrainingJobResponse(BaseModel):
     """Immediate response when training is initiated"""
 
@@ -803,7 +875,7 @@ class TokenPreviewRequest(BaseModel):
     dataset_known_cached: bool = False
     format_type: str = "auto"
     custom_format_mapping: Optional[Dict[str, Any]] = None
-    train_on_completions: bool = False
+    train_on_completions: bool = True
     is_cpt: bool = False
     max_seq_length: int = Field(2048, ge = 1, le = 1_048_576)
     num_samples: int = Field(3, ge = 1, le = 8)
@@ -822,6 +894,29 @@ class TrainingStartRequestStatus(BaseModel):
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+
+
+class TrainingMemoryPeaks(BaseModel):
+    """Memory peaks of the process that trains the run (not the whole GPU or host), in bytes.
+
+    GPU values are summed over every device visible to the training process. A field is None
+    when the host cannot measure it (no CUDA, or commit outside Windows).
+    """
+
+    gpu_peak_allocated_bytes: Optional[int] = Field(
+        None, description = "torch.cuda.max_memory_allocated summed over visible devices"
+    )
+    gpu_peak_reserved_bytes: Optional[int] = Field(
+        None, description = "torch.cuda.max_memory_reserved summed over visible devices"
+    )
+    gpu_device_count: Optional[int] = Field(None, description = "Devices the GPU sums cover")
+    host_peak_rss_bytes: Optional[int] = Field(
+        None,
+        description = "Peak resident set (ru_maxrss on Linux/macOS, peak working set on Windows)",
+    )
+    host_peak_commit_bytes: Optional[int] = Field(
+        None, description = "Peak committed private memory (Windows only)"
+    )
 
 
 class TrainingStatus(BaseModel):
@@ -860,11 +955,30 @@ class TrainingStatus(BaseModel):
     details: Optional[dict] = Field(
         None, description = "Phase-specific info, e.g. {'model_size': '8B'}"
     )
+    parallel: Optional[dict] = Field(
+        None,
+        description = "Multi-GPU layout of the run (mode, world_size, gpu_ids, spec, launcher, "
+        "distributed_backend, reason); absent when started without parallel_mode.",
+    )
     metric_history: Optional[dict] = Field(
         None,
         description = "Full metric history arrays for chart recovery after SSE reconnection. "
         "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
+    memory_peaks: Optional[TrainingMemoryPeaks] = Field(
+        None,
+        description = "Memory peaks of the training process so far; absent until it reports them.",
+    )
+
+    @model_serializer(mode = "wrap")
+    def _omit_absent_layout(self, handler):
+        # Byte-identical status JSON for runs without a layout or memory peaks.
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in ("parallel", "memory_peaks"):
+                if data.get(key) is None:
+                    data.pop(key, None)
+        return data
 
 
 class TrainingProgress(BaseModel):
@@ -891,6 +1005,9 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+    memory_peaks: Optional[TrainingMemoryPeaks] = Field(
+        None, description = "Memory peaks of the training process so far"
+    )
 
 
 class TrainingRunSummary(BaseModel):
@@ -911,6 +1028,11 @@ class TrainingRunSummary(BaseModel):
     duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
+    # Peaks of the process that trained the run, in bytes (see TrainingMemoryPeaks); None on older runs.
+    gpu_peak_allocated_bytes: Optional[int] = None
+    gpu_peak_reserved_bytes: Optional[int] = None
+    host_peak_rss_bytes: Optional[int] = None
+    host_peak_commit_bytes: Optional[int] = None
     can_resume: bool = False
     # Why resume is unavailable when the reason is the recorded resource provenance rather than the checkpoint itself.
     resume_blocked_reason: Optional[str] = None
@@ -1077,7 +1199,10 @@ class DiffusionTrainingStartRequest(BaseModel):
             "across runs: a rerun whose images, captions and resolution are unchanged skips "
             "loading the VAE and the multi-GB text encoders entirely. Unsloth-relative names are "
             "resolved under the Unsloth outputs root and absolute paths must stay inside it. "
-            "null or blank keeps the in-memory cache, which is rebuilt every run."
+            "null or blank uses the default cache in the Studio cache folder (on for the DiT and "
+            "MiniMax-H3 families, oldest entries evicted past "
+            "UNSLOTH_DIFFUSION_TRAIN_COND_CACHE_MAX_GB, 20 by default); 'off' keeps the in-memory "
+            "cache only, rebuilt every run, as does UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0 for the default."
         ),
     )
     compile_transformer: Literal["off", "on", "auto"] = Field(
@@ -1093,6 +1218,26 @@ class DiffusionTrainingStartRequest(BaseModel):
             "int8 torchao weight-only, fp8 float8 training compute (Ada/Hopper/Blackwell), "
             "mxfp8 block-scaled float8 compute (Blackwell, best at high resolution/batch), "
             "or auto (pick by free VRAM + GPU class). Dense modes need a non-prequant base."
+        ),
+    )
+    block_swap: Optional[Union[Literal["off", "auto"], Annotated[int, Field(ge = 0, le = 1024)]]] = (
+        Field(
+            None,
+            description = (
+                "DiT families with base_precision='bf16' only: repeated transformer blocks kept in host RAM and "
+                "streamed to the GPU each step, so a bf16 base larger than the card trains at bf16 accuracy. "
+                "'auto' swaps as few as fit, a number swaps that many, 'off' or 0 none. Needs gradient "
+                "checkpointing and a discrete CUDA / ROCm GPU. null keeps the server default (UNSLOTH_DIT_BLOCK_SWAP)."
+            ),
+        )
+    )
+    num_gpus: int = Field(
+        1,
+        ge = 1,
+        le = 64,
+        description = (
+            "DiT families on CUDA: data-parallel training over this many identical visible GPUs (one process each); "
+            "train_batch_size is per GPU. Falls back to one GPU with a warning when the host cannot."
         ),
     )
     # DiT-only lever: undeclared, model_dump() silently dropped it. Defaults match DiffusionLoraConfig.
@@ -1205,10 +1350,24 @@ class DiffusionSampleImage(BaseModel):
     seed: Optional[int] = None
 
 
+class DiffusionModelLoadProgress(BaseModel):
+    done: int = Field(ge = 0)
+    total: int = Field(gt = 0)
+    unit: Literal["tensors", "components", "shards"]
+    label: str
+
+
 class DiffusionTrainingPreparation(BaseModel):
     stage: Optional[str] = None
     done: Optional[int] = None
     total: Optional[int] = None
+
+
+class DiffusionTrainingDownloadProgress(BaseModel):
+    bytes_done: int = Field(default = 0, ge = 0)
+    bytes_total: int = Field(default = 0, ge = 0)
+    label: str = "Model files"
+    scope: str = "active_files"
 
 
 class DiffusionTrainingStatusResponse(BaseModel):
@@ -1231,6 +1390,9 @@ class DiffusionTrainingStatusResponse(BaseModel):
     num_images: Optional[int] = None
     in_model_load: bool = False
     preparation: Optional[DiffusionTrainingPreparation] = None
+    model_load_stage: Optional[Literal["conditioning", "transformer", "quantizing"]] = None
+    model_load_progress: Optional[DiffusionModelLoadProgress] = None
+    download_progress: Optional[DiffusionTrainingDownloadProgress] = None
     output_dir: Optional[str] = None
     lora_path: Optional[str] = None
     # The second, EMA-averaged adapter written in the run's ema subdir when ema_decay was enabled.
@@ -1242,6 +1404,8 @@ class DiffusionTrainingStatusResponse(BaseModel):
     # Live throughput + peak VRAM (from the trainer's progress events).
     samples_per_second: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # What block_swap resolved to once the base loaded: swapped_blocks, total_blocks, host_gib, pinned_gib.
+    block_swap: Optional[Dict[str, float]] = None
     # Newest bundle and step, why it could not be written (Resume tooltip), and where a resume started.
     checkpoint_path: Optional[str] = None
     checkpoint_step: Optional[int] = None
@@ -1323,6 +1487,9 @@ class DiffusionTrainableFamily(BaseModel):
     default_base: str
     base_repos: List[str] = Field(default_factory = list)
     defaults: dict = Field(default_factory = dict)
+    # {steps, items, batch_size}: the step count a sweep measured for this family and the dataset size it ran on, so
+    # the panel scales it to the user's set; null where no step sweep exists (the generic hint applies).
+    step_guidance: Optional[dict] = None
     vram_note: str = ""
     # vram_note's facts as fields. Empty when this host cannot train the family.
     params: str = ""
@@ -1333,10 +1500,13 @@ class DiffusionTrainableFamily(BaseModel):
     precision_modes: List[str] = Field(default_factory = list)
     recommended_precision: str = "nf4"
     supports_compile: bool = False
+    # block_swap is refused outside the DiT trainer and without bf16, so the panel offers it only here.
+    supports_block_swap: bool = False
     # save_steps is refused for checkpointless families; True keeps old payloads.
     supports_checkpoints: bool = True
     supports_samples: bool = False
     supports_bucketing: bool = True
+    is_video: bool = False
     # 1 for a family whose forward covers one packed sequence: a value above the cap is refused rather
     # than clamped, and declaring it here is what stops Pydantic dropping it from the response.
     max_train_batch_size: Optional[int] = None
@@ -1344,6 +1514,8 @@ class DiffusionTrainableFamily(BaseModel):
     deploy_base: Optional[str] = None
     # maps each training base, including public mirrors, to its inference base.
     deploy_bases: Dict[str, str] = Field(default_factory = dict)
+    # Must be declared or Pydantic drops it and Deploy to Create loses the Klein Base adapter on Klein.
+    lora_families: Optional[List[str]] = None
     # overlays checkpoint-specific parameter and VRAM guidance on family defaults.
     base_specs: Dict[str, dict] = Field(default_factory = dict)
 

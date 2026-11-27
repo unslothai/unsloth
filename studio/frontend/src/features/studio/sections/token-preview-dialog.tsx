@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { TextSelectionIcon } from "@hugeicons/core-free-icons";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -27,7 +28,7 @@ import { useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { ShuffleIcon, TextSelectIcon } from "lucide-react";
+import { ShuffleIcon } from "lucide-react";
 import { type ReactNode, memo, useEffect, useMemo, useState } from "react";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -407,7 +408,7 @@ function TokenPreviewContent() {
       <DialogHeader className="px-6 max-sm:px-4 pt-5 pb-3 shrink-0">
         <div className="flex items-center gap-3 pr-10">
           <div className="rounded-md corner-squircle p-2 ring-1 ring-emerald-200 bg-emerald-50 text-emerald-600 dark:ring-emerald-800 dark:bg-emerald-950 dark:text-emerald-400 shrink-0">
-            <TextSelectIcon className="size-4" />
+            <HugeiconsIcon icon={TextSelectionIcon} className="size-4" />
           </div>
           <div className="min-w-0">
             <DialogTitle className="font-heading text-lg font-semibold tracking-tight">

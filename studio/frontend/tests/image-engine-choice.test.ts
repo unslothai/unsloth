@@ -5,10 +5,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   ENGINE_OPTIONS,
+  diffusersEngineOffered,
   engineModelKey,
+  engineOptionsFor,
+  hostEngineChoice,
   engineRequestField,
   engineSelectVisible,
   loadedEngineChoice,
+  loraUnavailableNote,
   nativeLoadAdvanced,
   nativeReloadTarget,
   offersCompiledLoraReload,
@@ -109,6 +113,20 @@ test("the LoRA note offers a native reload only where it would turn LoRA on", ()
   // The server pin would ignore the reload's pick.
   assert.equal(offersNativeLoraReload({ ...ggufOnDiffusers, engine_forced: "diffusers" }), false);
   assert.equal(offersNativeLoraReload({ loaded: false }), false);
+});
+
+test("the LoRA slot names why LoRA is off when no reload note applies", () => {
+  const reason = "LoRAs are not applied to a whole-pipeline SDXL GGUF. Load the .safetensors checkpoint to use LoRAs.";
+  const noNative = { ...ggufOnDiffusers, lora_via_native: false, lora_unavailable_reason: reason };
+  assert.equal(loraUnavailableNote(noNative), reason);
+  // A server pin suppresses the native reload note, so the reason shows instead.
+  assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, engine_forced: "diffusers", lora_unavailable_reason: reason }), reason);
+  assert.equal(loraUnavailableNote({ ...ggufOnDiffusers, lora_unavailable_reason: reason }), null);
+  assert.equal(loraUnavailableNote({ loaded: true, supports_lora: false, lora_after_reload: true }), null);
+  assert.match(loraUnavailableNote({ loaded: true, supports_lora: false }) ?? "", /cannot be applied/);
+  assert.equal(loraUnavailableNote({ loaded: true, supports_lora: true }), null);
+  assert.equal(loraUnavailableNote({ loaded: false }), null);
+  assert.equal(loraUnavailableNote(null), null);
 });
 
 test("the engine badge names the engine", () => {
@@ -334,7 +352,10 @@ test("a server pin never strips options: its native route falls back to diffuser
 
 test("a background load that fails reseeds the Engine select, like a refused start", () => {
   const source = readSrc("features/images/images-page.tsx");
-  assert.match(source, /if \(p\.phase === "error"\) \{[\s\S]{0,1200}setEngineSeed\(""\);[\s\S]{0,200}void refreshStatus\(\);\s*return;/);
+  assert.match(
+    source,
+    /if \(p\.phase === "error"\) \{[\s\S]{0,1200}setEngineSeed\(""\);[\s\S]{0,300}void refreshStatus\(\)\.finally\(\(\) => setFailedLoadReseed\(\(n\) => n \+ 1\)\);\s*return;/,
+  );
 });
 
 test("a reload from status keeps the resident GGUF's base repo, on the load and the plan", () => {
@@ -349,4 +370,29 @@ test("a reload from status keeps the resident GGUF's base repo, on the load and 
   // Carried into the next Reapply target.
   assert.match(source, /opts = \{ kind: opts\.kind, filename: opts\.filename, displayRepoId: opts\.displayRepoId, baseRepo: opts\.baseRepo \};/);
   assert.match(source, /displayRepoId: opts\.displayRepoId,\s*baseRepo: opts\.baseRepo,/);
+});
+
+test("a CPU-only host hides the Diffusers engine choice and never sends a remembered one", () => {
+  const cpu = { loaded: true, native_engine_eligible: true, gguf_diffusers_allowed: false };
+  const gpu = { loaded: true, native_engine_eligible: true, gguf_diffusers_allowed: true };
+  assert.equal(diffusersEngineOffered(cpu), false);
+  assert.deepEqual(engineOptionsFor(cpu).map(([value]) => value), ["auto", "sd_cpp"]);
+  assert.equal(hostEngineChoice("diffusers", cpu), "auto");
+  assert.equal(engineRequestField(hostEngineChoice("diffusers", cpu)), undefined);
+  assert.equal(hostEngineChoice("sd_cpp", cpu), "sd_cpp");
+  // GPU hosts and older backends that do not report the flag keep all three choices.
+  for (const status of [gpu, { loaded: true, native_engine_eligible: true }, null]) {
+    assert.equal(diffusersEngineOffered(status), true);
+    assert.deepEqual(engineOptionsFor(status), ENGINE_OPTIONS);
+    assert.equal(hostEngineChoice("diffusers", status), "diffusers");
+  }
+});
+
+test("the Images page renders and sends the engine through the host filter", () => {
+  const source = readSrc("features/images/images-page.tsx");
+  assert.match(source, /options=\{engineOptionsFor\(status\)\}/);
+  assert.match(source, /value=\{hostEngineChoice\(engineChoice, status\) \?\? "auto"\}/);
+  assert.match(source, /engineRequestField\(hostEngineChoice\(advanced\.engine, hostStatus\)\)/);
+  assert.match(source, /engineRequestField\(hostEngineChoice\(target && target === key \? choice : stored\[target\], hostStatus\)\)/);
+  assert.doesNotMatch(source, /options=\{ENGINE_OPTIONS\}/);
 });

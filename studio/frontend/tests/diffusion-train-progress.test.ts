@@ -91,6 +91,7 @@ test("stopped and failed runs do not keep an animated preparation bar", () => {
     });
     assert.equal(progress.preparing, false);
     assert.equal(progress.percent, 0);
+    assert.equal(progress.title, status === "stopped" ? "Stopped" : "Error");
   }
 });
 
@@ -141,7 +142,7 @@ test("a run stopped mid-preparation does not read as starting while its worker e
     preparation: null,
   });
   assert.equal(progress.preparing, false);
-  assert.equal(progress.title, "stopped");
+  assert.equal(progress.title, "Stopped");
   assert.equal(progress.percent, 0);
   assert.equal(progress.detail, "Stopped (no adapter saved).");
 });
@@ -153,4 +154,72 @@ test("encoded captions alone do not read as prepared training data", () => {
   });
   assert.equal(progress.title, "Preparing training data");
   assert.equal(progress.percent, 100);
+});
+
+
+test("download bytes belong to the global manager, not the inline preparation bar", () => {
+  const progress = diffusionTrainingProgress({ ...running, download_progress: {
+    bytes_done: 2 * 1024 ** 3, bytes_total: 4 * 1024 ** 3, label: "model.safetensors",
+  } });
+  assert.equal(progress.title, "Loading training model");
+  assert.equal(progress.percent, null);
+  assert.equal(progress.count, null);
+});
+
+test("download progress yields to preparation and actual training", () => {
+  const download_progress = { bytes_done: 1, bytes_total: 10 };
+  const prep = diffusionTrainingProgress({ ...running, download_progress,
+    preparation: { stage: "cache_latents", done: 8, total: 10 } });
+  assert.equal(prep.title, "Preparing training data");
+  assert.equal(prep.percent, 80);
+  const train = diffusionTrainingProgress({ ...running, in_model_load: false, step: 20, download_progress });
+  assert.equal(train.title, "Training");
+  assert.equal(train.percent, 20);
+});
+
+test("unknown download totals never fabricate a percentage", () => {
+  for (const total of [0, NaN, Infinity]) {
+    assert.equal(diffusionTrainingProgress({ ...running,
+      download_progress: { bytes_done: 1, bytes_total: total } }).percent, null);
+  }
+});
+
+
+test("successful tensor loading gives measured progress and explains 4-bit conversion", () => {
+  const progress = diffusionTrainingProgress({ ...running,
+    model_load_stage: "quantizing",
+    model_load_progress: { done: 28, total: 62, unit: "tensors", label: "Training model weights" },
+  });
+  assert.equal(progress.title, "Loading model and converting to 4-bit");
+  assert.equal(progress.percent, 28 / 62 * 100);
+  assert.equal(progress.count, "45%");
+  assert.equal(progress.detail,
+    "28 of 62 weight tensors processed. Downloaded files are reused; 4-bit conversion runs in memory each time.");
+});
+
+test("loading counts yield to downloads, preparation, training and terminal states", () => {
+  const loaded = { ...running, model_load_stage: "quantizing" as const,
+    model_load_progress: { done: 28, total: 62, unit: "tensors" as const, label: "Weights" },
+  };
+  assert.equal(diffusionTrainingProgress({ ...loaded,
+    download_progress: { bytes_done: 1, bytes_total: 10 },
+  }).percent, null);
+  assert.equal(diffusionTrainingProgress({ ...loaded,
+    preparation: { stage: "cache_latents", done: 2, total: 5 },
+  }).percent, 40);
+  assert.equal(diffusionTrainingProgress({ ...loaded, in_model_load: false, step: 10 }).percent, 10);
+  assert.equal(diffusionTrainingProgress({ ...loaded, status: "stopped" }).preparing, false);
+});
+
+test("unmeasured and invalid loader counts never fabricate a percentage or hide warnings", () => {
+  for (const [done, total] of [[0, 0], [-1, 20], [21, 20], [NaN, 20], [1, Infinity]]) {
+    const progress = diffusionTrainingProgress({ ...running, model_load_stage: "conditioning",
+      model_load_progress: { done, total, unit: "tensors", label: "Weights" },
+    });
+    assert.equal(progress.percent, null);
+  }
+  const message = "Cancel requested; finishing the current step...";
+  assert.equal(diffusionTrainingProgress({ ...running, message,
+    model_load_stage: "quantizing",
+  }).detail, message);
 });

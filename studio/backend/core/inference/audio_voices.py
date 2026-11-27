@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Saved voices: ``{id}.wav`` (24 kHz mono, at most 30 s) plus ``{id}.json`` under the account's
-``<gallery_dir>/voices``, kept until deleted. As in the gallery the sidecar is written last and is
-what makes a pair a voice, so a lone WAV is never listed, served or deleted."""
+"""Saved voices: {id}.wav (24 kHz mono, at most 30 s) plus {id}.json under <gallery_dir>/voices,
+kept until deleted; the sidecar is written last and is what makes a pair a voice, so a lone WAV
+is never listed, served or deleted."""
 
 from __future__ import annotations
 
@@ -40,15 +40,15 @@ def voices_dir() -> Path:
     return directory
 
 
-def _sidecar(voice_id: str) -> Path:
-    return voices_dir() / f"{voice_id}.json"
+def _sidecar(voice_id: str, directory: Optional[Path] = None) -> Path:
+    return (directory or voices_dir()) / f"{voice_id}.json"
 
 
-def _read(voice_id: str) -> Optional[dict[str, Any]]:
+def _read(voice_id: str, directory: Optional[Path] = None) -> Optional[dict[str, Any]]:
     if not _valid_id(voice_id):
         return None
     try:
-        meta = json.loads(_sidecar(voice_id).read_text(encoding = "utf-8"))
+        meta = json.loads(_sidecar(voice_id, directory).read_text(encoding = "utf-8"))
     except (OSError, ValueError, UnicodeError):
         return None
     if not isinstance(meta, dict) or any(k not in meta for k in _REQUIRED):
@@ -83,11 +83,22 @@ def _clean_name(value: Optional[str]) -> str:
     return text
 
 
-def _ids() -> list[str]:
+def _scan() -> tuple[Optional[Path], list[tuple[str, dict[str, Any]]]]:
+    """The voices folder (resolved once: a settings lookup + mkdir) and each valid sidecar."""
     try:
-        return [p.stem for p in voices_dir().glob("*.json") if _read(p.stem) is not None]
+        directory = voices_dir()
+        found = []
+        for path in directory.glob("*.json"):
+            meta = _read(path.stem, directory)
+            if meta is not None:
+                found.append((path.stem, meta))
+        return directory, found
     except OSError:
-        return []
+        return None, []
+
+
+def _ids() -> list[str]:
+    return [voice_id for voice_id, _meta in _scan()[1]]
 
 
 def create(src_path: Path, meta: dict[str, Any]) -> dict[str, Any]:
@@ -127,9 +138,9 @@ def create(src_path: Path, meta: dict[str, Any]) -> dict[str, Any]:
 def list_voices() -> list[dict[str, Any]]:
     """Every saved voice in this account, newest first."""
     entries = []
-    for voice_id in _ids():
-        meta = _read(voice_id)
-        if meta is None or not (voices_dir() / f"{voice_id}.wav").is_file():
+    directory, found = _scan()
+    for voice_id, meta in found:
+        if not (directory / f"{voice_id}.wav").is_file():
             continue
         created = float(meta.get("created_at_epoch") or 0.0)
         entries.append((created, meta["created_at"], voice_id, meta))

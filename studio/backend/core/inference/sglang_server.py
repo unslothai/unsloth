@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TorchAO API compatibility for the pinned SGLang server.
-
-Executed by the isolated engine Python, including multiprocessing children.
-No engine packages are imported into Studio's environment.
-"""
+"""TorchAO compat for the pinned SGLang server; runs in the isolated engine Python, not Studio's."""
 
 import os
 import runpy

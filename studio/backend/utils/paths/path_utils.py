@@ -371,6 +371,58 @@ def _wsl_reveal_in_explorer(path: Path, is_file: bool) -> bool:
         return False
 
 
+_FILE_MANAGER1 = "org.freedesktop.FileManager1"
+
+
+def _linux_show_items(path: Path, is_file: bool) -> bool:
+    """FileManager1 over D-Bus (Nautilus, Dolphin, Nemo, Caja, Thunar) shows *path*, a file
+    selected in its folder; False when nothing answers."""
+    import subprocess
+
+    # as_uri percent-encodes quotes and commas, so the URI is safe in both argument syntaxes.
+    uri = Path(os.path.abspath(path)).as_uri()
+    method = f"{_FILE_MANAGER1}.{'ShowItems' if is_file else 'ShowFolders'}"
+    object_path = "/org/freedesktop/FileManager1"
+    commands = (
+        ["gdbus", "call", "--session", "--dest", _FILE_MANAGER1, "--object-path", object_path]
+        + ["--method", method, f"['{uri}']", "''"],
+        ["dbus-send", "--session", "--print-reply", f"--dest={_FILE_MANAGER1}", object_path]
+        + [method, f"array:string:{uri}", "string:"],
+    )
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                stdin = subprocess.DEVNULL,
+                stdout = subprocess.DEVNULL,
+                stderr = subprocess.DEVNULL,
+                timeout = 10,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if result.returncode == 0:
+            return True
+    return False
+
+
+def _linux_xdg_open(folder: str) -> None:
+    """Raises when xdg-open exits non-zero (no handler for folders) instead of doing nothing."""
+    import subprocess
+
+    launcher = subprocess.Popen(
+        ["xdg-open", folder],
+        stdin = subprocess.DEVNULL,
+        stdout = subprocess.DEVNULL,
+        stderr = subprocess.DEVNULL,
+    )
+    try:
+        status = launcher.wait(timeout = 5)
+    except subprocess.TimeoutExpired:
+        return  # Generic fallbacks run the file manager in the foreground.
+    if status != 0:
+        raise RuntimeError(f"xdg-open exited with status {status}")
+
+
 def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
     """Raises FileNotFoundError when gone, rather than revealing the parent folder; expect_dir refuses symlinks and non-dirs, and is off by default."""
     import stat as stat_module
@@ -404,9 +456,9 @@ def reveal_in_file_manager(path: Path, expect_dir: bool = False) -> None:
             os.startfile(str(path.parent))  # noqa: S606 - local user's own file manager
         else:
             os.startfile(target)  # noqa: S606 - local user's own file manager
-    elif not _wsl_reveal_in_explorer(path, is_file):
-        # No cross-desktop "select file" standard on Linux; open the directory.
-        subprocess.Popen(["xdg-open", str(path.parent) if is_file else target])
+    elif not _wsl_reveal_in_explorer(path, is_file) and not _linux_show_items(path, is_file):
+        # No FileManager1 on this desktop: open the folder without selecting the file.
+        _linux_xdg_open(str(path.parent) if is_file else target)
 
 
 # Viewer-opened types only: scripts or installers would execute, and these files are model-written.
@@ -551,16 +603,10 @@ def _same_bytes(handle: int, staged: Path, size: int) -> bool:
 
 
 def _stage_for_open(path: Path, root: Optional[Path] = None) -> Path:
-    """A name for *path*'s current file in a private directory, for the OS opener.
-
-    Tool code runs in the sandbox and can swap *path* for a symlink (to an app or a script outside
-    it) between any check and the opener resolving the name. So the file is opened once without
-    following links, and what that open returned is copied into a fresh directory only Studio
-    writes to. That name is what the OS opens. Not a hard link: the OS sandbox refuses a workdir
-    file linked from outside it.
-    O_NOFOLLOW only covers the last component, so a swapped parent is caught by checking where the
-    opened file really is against *root*.
-    """
+    """Stages the file at path for the OS opener: opened once without following links, then copied
+    to a Studio-only dir, since sandboxed tool code can swap in a symlink; not a hard link
+    (sandbox refuses outside links); O_NOFOLLOW covers only the last component, so check the real
+    location against root."""
     import shutil
     import stat as stat_module
     import tempfile
@@ -667,9 +713,8 @@ _PC_CASE_SENSITIVE = 11
 
 
 def macos_volume_ignores_case(path: str) -> bool:
-    """Whether the macOS volume holding ``path`` (or its nearest folder that exists) ignores case,
-    as APFS and HFS+ do unless formatted case-sensitive. True off macOS, where only a test acting
-    as macOS asks."""
+    """Whether the macOS volume of path (or its nearest existing folder) ignores case, as APFS and
+    HFS+ do unless case-sensitive; True off macOS unless a test acts as macOS."""
     if sys.platform != "darwin":
         return True
     probe = path

@@ -210,9 +210,7 @@ def test_explicit_modes_are_untouched(monkeypatch, mode):
 
 
 def _speed_key(plan, dit_mib):
-    """(tier, -resident denoiser MiB), smaller is faster: 0 the whole denoiser stays on the device every step, 1
-    whole-module offload with the denoiser fitting the budget whole (uploaded once per call), 2 the denoiser streams
-    every step, 3 whole-module offload of a denoiser larger than the budget."""
+    """Speed key (tier, -resident MiB): 0 resident, 1 fitting offload, 2 streamed per step, 3 oversize."""
     if plan.offload_policy == dm.OFFLOAD_NONE or (
         plan.offload_policy == dm.OFFLOAD_GROUP and not plan.stream_transformer
     ):

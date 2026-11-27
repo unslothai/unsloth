@@ -96,14 +96,27 @@ def test_explicit_values_equal_to_the_schema_defaults_stay_and_skip_the_status_r
     client, monkeypatch
 ):
     backend = _use(monkeypatch, _ModelBackend(DEV))
+    # loras named too: an omitted loras stands for the load's adapters (#17993), which needs the status.
     response = client.post(
-        "/api/inference/images/generate", json = {"prompt": "p", "steps": 9, "guidance": 0.0}
+        "/api/inference/images/generate",
+        json = {"prompt": "p", "steps": 9, "guidance": 0.0, "loras": []},
     )
     assert _recipe(response) == (9, 0.0)
     assert (backend.calls[0]["steps"], backend.calls[0]["guidance"]) == (9, 0.0)
     # The one read is FLUX.3 prompt upsampling's family probe (#14137); the defaults add none.
     assert backend.status_calls == 1
     assert backend.calls[0]["expected_load"] is None
+
+
+def test_an_omitted_loras_reuses_the_upsampler_probes_status_read(client, monkeypatch):
+    # Omitted loras = the load's adapters (#17993): read from the probe's status, not a second read, and pinned.
+    backend = _use(monkeypatch, _ModelBackend(DEV))
+    response = client.post(
+        "/api/inference/images/generate", json = {"prompt": "p", "steps": 9, "guidance": 0.0}
+    )
+    assert _recipe(response) == (9, 0.0)
+    assert backend.status_calls == 1
+    assert backend.calls[0]["expected_load"] is not None
 
 
 def test_a_replacement_retry_uses_the_new_models_defaults_and_pins_it(client, monkeypatch):

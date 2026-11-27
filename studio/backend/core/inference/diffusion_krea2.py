@@ -1,27 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 pipeline loader: assembles ``Krea2Pipeline`` from per-component loads.
-
-Why not ``from_pretrained``: the ``krea/Krea-2-Turbo`` repo was exported with transformers 5.2 and
-two configs use 5.x-only conventions 4.x can't parse:
-
-- ``tokenizer_config.json`` declares slow ``Qwen2Tokenizer`` but ships only ``tokenizer.json``.
-  4.x's slow class needs vocab.json/merges.txt (absent), and its fast class trips over
-  ``extra_special_tokens`` stored as a LIST. Loading the fast class with ``extra_special_tokens={}``
-  is id-identical (every token is already an added special token, and the pipeline templates prompts
-  manually).
-- ``text_encoder/config.json`` keeps rope under ``rope_parameters`` (5.x); 4.x reads
-  ``rope_scaling`` + ``rope_theta`` and crashes. The values are copied verbatim and equal 4.x's
-  Qwen3-VL defaults, so the rotary embedding is numerically identical.
-
-``from_pretrained`` also type-checks a passed ``tokenizer`` against the SLOW class, so the pipeline
-is built through its constructor, forwarding the ``is_distilled`` / ``text_encoder_select_layers`` /
-``patch_size`` init config (Turbo's mu=1.15 shift rides on ``is_distilled``).
-
-Both workarounds self-disable on transformers 5.x (the plain tokenizer load succeeds, rope_scaling
-parses non-None).
-"""
+"""Krea2Pipeline built through its constructor, forwarding is_distilled, text_encoder_select_layers
+and patch_size (Turbo shift rides on is_distilled); both workarounds self-disable on transformers
+5.x."""
 
 from __future__ import annotations
 
@@ -42,6 +24,23 @@ def _live_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
+def krea2_hub_patterns() -> list[str]:
+    """The Hub files ``load_krea2_pipeline`` reads (non-variant component weights, nothing at the repo root)."""
+    patterns = ["model_index.json", "scheduler/*", "tokenizer/*"]
+    for sub, stem in (
+        ("text_encoder", "model"),
+        ("vae", "diffusion_pytorch_model"),
+        ("transformer", "diffusion_pytorch_model"),
+    ):
+        patterns += [
+            f"{sub}/config.json",
+            f"{sub}/{stem}.safetensors",
+            f"{sub}/{stem}.safetensors.index.json",
+            f"{sub}/{stem}-*-of-*.safetensors",
+        ]
+    return patterns
+
+
 def load_krea2_tokenizer(
     repo_id: str,
     hf_token: Optional[str] = None,
@@ -53,7 +52,7 @@ def load_krea2_tokenizer(
         check_cancelled()
     from transformers import AutoTokenizer
 
-    from .diffusion_offline_source import offline_snapshot_source
+    from .diffusion_offline_source import tokenizer_snapshot_source
 
     cache_dir = _live_cache_dir()
     kwargs: dict[str, Any] = {
@@ -63,9 +62,13 @@ def load_krea2_tokenizer(
     }
     if hf_token:
         kwargs["token"] = hf_token
-    # Offline by repo id, transformers 5.x fails both attempts below (see diffusion_offline_source).
-    source = offline_snapshot_source(
-        repo_id, "tokenizer", local_files_only = local_files_only, cache_dir = cache_dir
+    # By repo id, transformers 5.x breaks offline and drops the token on gated repos.
+    source = tokenizer_snapshot_source(
+        repo_id,
+        "tokenizer",
+        local_files_only = local_files_only,
+        token = hf_token,
+        cache_dir = cache_dir,
     )
     try:
         return AutoTokenizer.from_pretrained(source, **kwargs)
@@ -165,11 +168,15 @@ def load_krea2_pipeline(
     text_encoder = None,
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
+    vae = None,
+    storage_dtypes: Optional[dict] = None,
 ):
-    """local_files_only raises rather than fetching a component after the resident pipeline was evicted."""
+    """local_files_only raises rather than fetching a component after the resident pipeline was evicted.
+    ``storage_dtypes`` loads those components at their stored dtype so they stay memory-mapped."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers
+    import torch
 
     # diffusers gained Krea2Pipeline in 0.39; on an older install the getattr chain below dies with a bare
     # AttributeError, so fail first with the fix.
@@ -193,15 +200,30 @@ def load_krea2_pipeline(
         check_cancelled = check_cancelled,
     )
     check_cancelled()
+    stored = {
+        name: getattr(torch, str(dt).replace("torch.", ""))
+        for name, dt in (storage_dtypes or {}).items()
+    }
+    from .diffusion_te_vision import (
+        drop_vision_tower,
+        family_drops_vision_tower,
+        vision_tower_skipped,
+    )
+
+    # Krea-2 conditions on text only: the encoder's vision tower is never read, so it is never loaded.
+    drop_vision = family_drops_vision_tower(KREA2_FAMILY_NAME)
     if text_encoder is None:
-        text_encoder = load_krea2_text_encoder(
-            repo_id,
-            dtype,
-            hf_token = token,
-            local_files_only = local_files_only,
-            check_cancelled = check_cancelled,
-        )
+        with vision_tower_skipped(drop_vision):
+            text_encoder = load_krea2_text_encoder(
+                repo_id,
+                stored.get("text_encoder", dtype),
+                hf_token = token,
+                local_files_only = local_files_only,
+                check_cancelled = check_cancelled,
+            )
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.krea2: the text encoder's unused vision tower is not loaded")
     scheduler = diffusers.FlowMatchEulerDiscreteScheduler.from_pretrained(
         repo_id,
         subfolder = "scheduler",
@@ -210,26 +232,27 @@ def load_krea2_pipeline(
         cache_dir = cache_dir,
     )
     check_cancelled()
-    vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
-        repo_id,
-        subfolder = "vae",
-        torch_dtype = dtype,
-        token = token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
-    )
-    check_cancelled()
-    if transformer is None and with_transformer:
-        transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
+    if vae is None:
+        vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
             repo_id,
-            subfolder = "transformer",
-            torch_dtype = dtype,
+            subfolder = "vae",
+            torch_dtype = stored.get("vae", dtype),
             token = token,
             local_files_only = local_files_only,
             cache_dir = cache_dir,
         )
         check_cancelled()
-    return diffusers.Krea2Pipeline(
+    if transformer is None and with_transformer:
+        transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
+            repo_id,
+            subfolder = "transformer",
+            torch_dtype = stored.get("transformer", dtype),
+            token = token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        check_cancelled()
+    pipe = diffusers.Krea2Pipeline(
         scheduler = scheduler,
         vae = vae,
         text_encoder = text_encoder,
@@ -239,3 +262,12 @@ def load_krea2_pipeline(
         is_distilled = bool(model_index.get("is_distilled", False)),
         patch_size = int(model_index.get("patch_size", 2)),
     )
+    if transformer is not None:
+        # before the attention backend / INT8 route, which read the block processors
+        from .diffusion_krea2_prefix_kv import install as install_prefix_kv
+
+        install_prefix_kv(transformer, logger)
+        from .diffusion_krea2_text_cache import install as install_text_cache
+
+        install_text_cache(transformer, logger)
+    return pipe

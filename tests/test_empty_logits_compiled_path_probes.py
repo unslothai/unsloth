@@ -130,8 +130,7 @@ def test_an_ordinary_attribute_on_the_generated_sentinel_still_explains_itself(g
 
 
 def test_these_probes_fail_on_the_sentinel_zoo_used_to_generate():
-    """Mutation control: the pre-fix copy must trip both probes, so a skip above is the only
-    way they stay quiet. Without this, a zoo that stopped shipping the fix would look green."""
+    """Pre-fix copy must trip both probes, so a zoo that dropped the fix cannot look green."""
     stale = _build(PRE_FIX_SENTINEL_SOURCE)
     assert hasattr(stale, "__dataclass_fields__")
     with pytest.raises(TypeError, match = "replace"):

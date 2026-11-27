@@ -29,24 +29,15 @@ function button(): string {
   return THREAD.slice(start, THREAD.indexOf("\n};", start));
 }
 
-test("the button shows by default, including installs that never saw the setting", () => {
-  assert.equal(
-    useChatPreferencesStore.getInitialState().showScrollToBottomButton,
-    true,
-  );
-  assert.match(
-    STORE,
-    /showScrollToBottomButton: saved\?\.showScrollToBottomButton \?\? true/,
-  );
-});
-
-test("turning it off hides the button without unmounting it", () => {
+test("the button always shows once you scroll up; there is no setting to turn it off", () => {
   const source = button();
-  assert.match(source, /state\.showScrollToBottomButton/);
+  assert.doesNotMatch(source, /showScrollToBottomButton/);
   // Unmounting would read as a content change to the autoscroll observer.
-  assert.match(
-    source,
-    /\(isAtBottom \|\| !enabled\) && "invisible pointer-events-none"/,
+  assert.match(source, /isAtBottom && "invisible pointer-events-none"/);
+  assert.doesNotMatch(STORE, /showScrollToBottomButton/);
+  assert.equal(
+    "showScrollToBottomButton" in useChatPreferencesStore.getInitialState(),
+    false,
   );
 });
 
@@ -61,15 +52,10 @@ test("a smaller button with a larger arrow, lifted off the dark background", () 
   assert.doesNotMatch(source, /dark:bg-background/);
 });
 
-test("the setting is a searchable switch in Chat settings", () => {
+test("Chat settings no longer offer the switch", () => {
   const tab = readSrc("features/settings/tabs/chat-tab.tsx");
-  const at = tab.indexOf('label={t("settings.chat.scrollToBottomButton")}');
-  assert.notEqual(at, -1);
-  const row = tab.slice(at, tab.indexOf("</SettingsRow>", at));
-  assert.match(row, /<Switch/);
-  assert.match(row, /checked=\{showScrollToBottomButton\}/);
-  assert.match(row, /onCheckedChange=\{setShowScrollToBottomButton\}/);
+  assert.doesNotMatch(tab, /scrollToBottomButton/);
   assert.ok(
-    SETTINGS_SEARCH_INDEX.chat.includes("settings.chat.scrollToBottomButton"),
+    !SETTINGS_SEARCH_INDEX.chat.some((key) => key.includes("scrollToBottom")),
   );
 });

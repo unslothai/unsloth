@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA runtime dirs the loader does not find on its own (Python wheels, privately vendored dirs).
-
-Kept in sync with install_llama_prebuilt.py's python_runtime_dirs and
-prebuilt_core.py's linux_runtime_dirs_for_required_libraries; the backend cannot
-import the studio/ installer scripts, so this small copy stays importable with
-only the backend root on sys.path.
-"""
+"""CUDA runtime dirs the loader misses; synced with install_llama_prebuilt.py and prebuilt_core.py;
+must stay importable with only the backend root on sys.path."""
 
 from __future__ import annotations
 
@@ -220,3 +215,16 @@ def python_runtime_dirs() -> list[str]:
         candidates.extend(root.glob("nvidia/*/Library/bin/x64"))
         candidates.extend(root.glob("torch/lib"))
     return dedupe_existing_dirs(candidates)
+
+
+def venv_oneapi_lib_dirs() -> list[str]:
+    """The active venv's oneAPI runtime (libsycl, MKL, compiler runtime), shipped by the torch-xpu wheels."""
+    venv_lib = Path(sys.prefix) / "lib"
+    return [str(venv_lib)] if any(venv_lib.glob("libsycl.so.*")) else []
+
+
+def oneapi_lib_dirs(binary_dir: str | Path) -> list[str]:
+    """oneAPI dirs a SYCL build in ``binary_dir`` needs; resolved per launch, since the venv can move."""
+    if not any(Path(binary_dir).glob("libggml-sycl.so*")):
+        return []
+    return venv_oneapi_lib_dirs()

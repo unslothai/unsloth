@@ -8,16 +8,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Access to unsloth_zoo.disk_utils that survives an older installed zoo.
-
-The disk sizing and Kaggle detection logic is owned by
-`unsloth_zoo.disk_utils` so the two packages cannot disagree about whether we
-are on Kaggle. unsloth pins a new enough unsloth_zoo, but a stale environment
-that satisfies `import unsloth_zoo` and not `unsloth_zoo.disk_utils` must
-still be able to save a model, so the fallbacks below keep the environment
-question answered correctly and turn the new disk guard into a no-op rather
-than an ImportError.
-"""
+"""Access to unsloth_zoo.disk_utils that survives an older zoo: the disk guard becomes a no-op, not
+an ImportError, and the Kaggle check still answers correctly."""
 
 import os
 

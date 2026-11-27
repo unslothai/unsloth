@@ -1,20 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dense embedder facade dispatching to a process-wide backend from ``config.EMBED_BACKEND`` (``auto``
-picks by hardware): ``sentence-transformers`` (torch) or ``llama-server`` (GGUF, no torch).
-
-Either way the embedder stays off the GPU unless asked: this one runs in the backend process, where
-a CUDA context outlives every unload, and the other runs in a child. See ``_device``.
-
-Backends produce different vectors, so switching requires rebuilding the index. We degrade to
-llama.cpp rather than crash when ST breaks on a machine: an init-time probe falls back before any
-vector is produced (so spaces cannot mix), and a runtime ``encode`` failure swaps the process to
-llama-server for the rest of its life (KBs already embedded with ST should then be reindexed).
-
-Torch driver faults bypass Python handlers, so ``_load_device`` probes allocation in a child and
-falls back to CPU without changing the embedding space.
-"""
+"""Dense embedder facade over config.EMBED_BACKEND (sentence-transformers or llama-server); off GPU
+unless asked; backends differ, so switching needs reindex; ST failure falls back to llama-server;
+_load_device probes in a child and falls back to CPU without changing the embedding space."""
 
 from __future__ import annotations
 
@@ -23,6 +12,7 @@ import logging
 import os
 import re
 import threading
+import weakref
 from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import lru_cache
@@ -153,6 +143,37 @@ class EmbeddingModelDownloadRequiredError(RuntimeError):
     """The picker activated a model whose explicit transfer is still pending."""
 
 
+# Shared by the raise sites and is_download_required_error: a document job keeps only the error text.
+DOWNLOAD_REQUIRED_HINT = "Finish its Settings download before indexing documents."
+
+
+def download_required_message(name: str) -> str:
+    return f"Embedding model {name!r} is not downloaded yet. {DOWNLOAD_REQUIRED_HINT}"
+
+
+def is_download_required_error(error: str | None) -> bool:
+    """A stored error text from EmbeddingModelDownloadRequiredError: a wait, not a bad file."""
+    return bool(error) and DOWNLOAD_REQUIRED_HINT in error
+
+
+def download_required(model_name: str | None = None) -> bool:
+    """True while ``model_name``'s Settings transfer is pending and the cache-only loader still cannot load it."""
+    name = model_name or config.effective_embedding_model()
+    try:
+        from utils.embedding_model_settings import get_stored_download_pending
+        if not get_stored_download_pending(name):
+            return False
+    except Exception:  # noqa: BLE001 - old/unavailable settings store
+        return False
+    try:
+        warm(name)
+    except EmbeddingModelDownloadRequiredError:
+        return True
+    except Exception:  # noqa: BLE001 - any other load failure stays the per-document error it was
+        logger.debug("embedding model %s failed to warm", name, exc_info = True)
+    return False
+
+
 def _ambient_hf_token() -> str | None:
     """The HF token the loader itself would use (HF_TOKEN env or the cached login), so
     the scan can reach a gated/private repo instead of failing open. None if unavailable."""
@@ -203,7 +224,7 @@ def _st_module_subdirs(name: str, token: str | None) -> tuple[str, ...]:
         data = _repo_json(name, "modules.json", token)
         subdirs = []
         for module in data or ():
-            sub = str((module or {}).get("path", "")).strip().strip("/")
+            sub = str((module or {}).get("path", "")).strip("/")
             if sub:
                 subdirs.append(sub)
         return tuple(dict.fromkeys(subdirs))
@@ -590,6 +611,9 @@ def _get(model_name: str | None = None):
             from utils.hf_cache_settings import active_hf_hub_cache
 
             _gate_st_custom_modules()
+            from utils.security import st_config_args
+
+            st_config_args.install()
 
             logger.info("loading embedding model %s on %s", name, device)
             st_kwargs = dict(
@@ -614,19 +638,13 @@ def _get(model_name: str | None = None):
                 if download_pending and st_source is None:
                     # Defensive: a loadable check and snapshot lookup share no lock, so eviction between them is
                     # still a pending model.
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 snapshot = st_source[1] if st_source else hf_cache_snapshot_dir(name)
                 if snapshot is not None:
                     # Re-emit in finally: MISSING or MISMATCH lines matter most when the load raises.
                     load_target = str(snapshot)
                 elif download_pending:
-                    raise EmbeddingModelDownloadRequiredError(
-                        f"Embedding model {name!r} is not downloaded yet. "
-                        "Finish its Settings download before indexing documents."
-                    )
+                    raise EmbeddingModelDownloadRequiredError(download_required_message(name))
                 elif _st_accepts_local_files_only(SentenceTransformer):
                     st_kwargs["local_files_only"] = True
             # Scan only after load_target is settled, so the scanned commit is the loaded one.
@@ -731,19 +749,85 @@ def _st_max_tokens(model_name: str | None = None) -> int | None:
         return max(1, int(limit) - reserved)
 
 
+_ST_COUNT_CACHE_SIZE = 4096
+
+
 def _st_token_counter(model_name: str | None = None) -> Callable[[str], int]:
-    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload."""
+    """Reads the tokenizer per call under _compute_lock; caching it would outlive an unload.
+    The count memo is tied to that tokenizer by a weakref: a switch empties it, an unload frees it."""
+    counts: dict[str, int] = {}
+    counted_by: list = [None]
+
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        out = [0] * len(texts)
+        # The lock is released between batches so a query encode never waits out a whole document.
+        for start in range(0, len(texts), _ST_COUNT_BATCH):
+            with _compute_lock:
+                tok = _get(model_name).tokenizer
+                owner = counted_by[0]
+                if owner is None or owner() is not tok:
+                    counts.clear()
+                    try:
+                        counted_by[0] = weakref.ref(tok)
+                    except TypeError:
+                        counted_by[0] = None
+                memoize = counted_by[0] is not None
+                misses: dict[str, list[int]] = {}
+                loose: list[int] = []
+                for i in range(start, min(start + _ST_COUNT_BATCH, len(texts))):
+                    t = texts[i]
+                    memo = memoize and type(t) is str
+                    known = counts.get(t) if memo else None
+                    if known is not None:
+                        out[i] = known
+                    elif memo:
+                        misses.setdefault(t, []).append(i)
+                    else:
+                        loose.append(i)
+                if not misses and not loose:
+                    # Leave the environment a tokenize would.
+                    if os.environ.get("TOKENIZERS_PARALLELISM") != "false":
+                        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                    continue
+                keys = list(misses)
+                os.environ["TOKENIZERS_PARALLELISM"] = "true"
+                try:
+                    lengths = _encoded_lengths(tok, keys + [texts[i] for i in loose])
+                finally:
+                    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+                for key, n in zip(keys, lengths):
+                    for i in misses[key]:
+                        out[i] = n
+                    if len(counts) >= _ST_COUNT_CACHE_SIZE:
+                        counts.pop(next(iter(counts)))
+                    counts[key] = n
+                for i, n in zip(loose, lengths[len(keys) :]):
+                    out[i] = n
+        return out
 
     def _count(t: str) -> int:
-        with _compute_lock:
-            tok = _get(model_name).tokenizer
-            os.environ["TOKENIZERS_PARALLELISM"] = "true"
-            try:
-                return len(tok.encode(t, add_special_tokens = False))
-            finally:
-                os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        return _count_many((t,))[0]
 
+    _count.many = _count_many
     return _count
+
+
+_ST_COUNT_BATCH = 256
+
+
+def _encoded_lengths(tok, texts: list) -> list[int]:
+    """``len(tok.encode(t, add_special_tokens=False))`` per text; a fast tokenizer's batch call is the path encode wraps."""
+    if len(texts) > 1 and getattr(tok, "is_fast", False) is True:
+        ids = tok(
+            texts,
+            add_special_tokens = False,
+            return_attention_mask = False,
+            return_token_type_ids = False,
+        )["input_ids"]
+        if len(ids) == len(texts):
+            return [len(row) for row in ids]
+    return [len(tok.encode(t, add_special_tokens = False)) for t in texts]
 
 
 def _release_st_model() -> bool:
@@ -818,12 +902,37 @@ def _resolve_auto() -> str:
     """Auto picks sentence-transformers on a CUDA/ROCm GPU, else llama-server; GPU detection uses smi."""
     from core.inference.llama_cpp import LlamaCppBackend
 
-    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
-    if LlamaCppBackend._get_gpu_free_memory():
+    global _gpu_found_key
+    key = _gpu_probe_key(LlamaCppBackend)
+    if key == _gpu_found_key:
         return "sentence-transformers"
-    if LlamaCppBackend._find_llama_server_binary():
-        return "llama-server"
-    return "sentence-transformers"
+    binary = key[1]
+    # Unfiltered probe: the llama.cpp ROCm arch gate (#7624) does not apply to PyTorch.
+    if LlamaCppBackend._get_gpu_free_memory(binary = binary):
+        # Kept only if no key input moved while the probe ran (another thread changing a mask).
+        if _gpu_probe_key(LlamaCppBackend) == key:
+            _gpu_found_key = key
+        return "sentence-transformers"
+    return "llama-server" if binary else "sentence-transformers"
+
+
+# Key of the last probe that found a GPU (each probe spawns nvidia-smi / amd-smi); misses are never cached.
+_gpu_found_key: tuple | None = None
+
+
+def _gpu_probe_key(llama_cpp_backend) -> tuple:
+    binary = llama_cpp_backend._find_llama_server_binary()
+    try:
+        st = os.stat(binary) if binary else None
+        binary_id = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns) if st else None
+    except OSError:
+        binary_id = None
+    return (
+        llama_cpp_backend._get_gpu_free_memory,
+        binary,
+        binary_id,
+        frozenset(os.environ.items()),
+    )
 
 
 # Cached: the auto GPU probe is a subprocess (#10390).
@@ -1037,6 +1146,8 @@ def _st_load_preflight(model_name: str, token: str | bool | None = None) -> bool
 
 def resolved_backend_for_model(model_name: str, token: str | bool | None = None) -> str:
     """Backend a fresh operation for ``model_name`` would actually select."""
+    if config.is_connection_model(model_name):
+        return "connection"
     raw = _raw_backend()
     forced = _forced_backends.get(model_name)
     key = forced or (_resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw)
@@ -1135,11 +1246,8 @@ def _current_backend_key() -> str:
     """The cache key the backend in use should carry right now. Tests that install a
     stub backend set ``_backend_key`` from this so it is not rebuilt under them."""
     raw = _raw_backend()
-    forced = _forced_backends.get(config.effective_embedding_model())
-    if forced:
-        return _backend_cache_key(raw, forced)
-    key = _resolve_auto_for_model() if raw in _AUTO_ALIASES else raw
-    return _backend_cache_key(raw, key)
+    model = config.effective_embedding_model()
+    return _backend_cache_key(raw, _backend_choice(raw, model, _forced_backends.get(model)))
 
 
 def _backend_cache_key(raw: str, key: str) -> str:
@@ -1166,6 +1274,25 @@ def _dispose_replaced_backend(old, new = None) -> None:
             logger.warning("replaced embedding backend shutdown failed", exc_info = True)
 
 
+def _backend_choice(
+    raw: str,
+    model: str,
+    forced: str | None = None,
+) -> str:
+    # The model itself is remote, so it wins over RAG_EMBED_BACKEND and any local fallback pin.
+    if config.is_connection_model(model):
+        return "connection"
+    return forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+
+
+def _is_connection_backend(backend) -> bool:
+    try:
+        from .embed_connection import ConnectionEmbeddingBackend
+    except Exception:  # noqa: BLE001 - connection plumbing import must never block
+        return False
+    return isinstance(backend, ConnectionEmbeddingBackend)
+
+
 def _get_backend(model_name: str | None = None):
     """Uses the job's pinned model_name, not the live setting; a Settings change would mislabel vectors."""
     global _backend, _backend_key
@@ -1177,12 +1304,15 @@ def _get_backend(model_name: str | None = None):
         forced = _forced_backends.get(model)
         # Load-bearing: other probes resolve auto outside this lock and would keep a stale answer.
         _hardware_probe.choice = None
-        key = forced or (_resolve_auto_for_model(model) if raw in _AUTO_ALIASES else raw)
+        key = _backend_choice(raw, model, forced)
         if _backend is not None and _backend_key == _backend_cache_key(raw, key):
             _keep_hardware_choice(_backend)
             return _backend
         old = _backend
-        if key in _ST_ALIASES:
+        if key == "connection":
+            from .embed_connection import ConnectionEmbeddingBackend
+            new = ConnectionEmbeddingBackend()
+        elif key in _ST_ALIASES:
             new = _build_st_backend_or_fallback(model)
         elif key in _LLAMA_ALIASES:
             # Imported lazily so the ST path never imports llama plumbing.
@@ -1207,12 +1337,13 @@ def _get_backend(model_name: str | None = None):
 
 def _reset_backend() -> None:
     """Drop the cached backend (test teardown / re-init)."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         _forced_backends.clear()
         _backend = None
         _backend_key = None
         _resident_hardware = None
+        _gpu_found_key = None
 
 
 def backend_is_loaded(model_name: str | None = None) -> bool:
@@ -1234,6 +1365,8 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
         return True
     if isinstance(backend, _SentenceTransformersBackend):
         return _model is not None and _name == model_name
+    if _is_connection_backend(backend):
+        return config.is_connection_model(model_name)
     if _is_llama_backend(backend):
         try:
             # Unload is a fresh start: clearing _forced_backends lets the saved model pick its backend again.
@@ -1247,13 +1380,14 @@ def backend_is_loaded(model_name: str | None = None) -> bool:
 
 def release_backend() -> bool:
     """Drops the embedder, stopping its llama-server; safe mid-ingestion as the next embed rebuilds it."""
-    global _backend, _backend_key, _resident_hardware
+    global _backend, _backend_key, _resident_hardware, _gpu_found_key
     with _backend_lock:
         # Unload is an explicit fresh start, so a past runtime fallback stops pinning the choice and the saved
         # model picks its backend again.
         _forced_backends.clear()
         backend, _backend, _backend_key = _backend, None, None
         _resident_hardware = None
+        _gpu_found_key = None
     if backend is None:
         # Live servers keep spawn-time pooling; a stopped backend re-reads the file, so dedup must match.
         return _release_st_model()
@@ -1274,10 +1408,23 @@ def active_backend_is_llama(model_name: str | None = None) -> bool:
                 return False
             return isinstance(backend, LlamaServerBackend)
         raw = (config.EMBED_BACKEND or "auto").strip().lower()
-        key = _resolve_auto_for_model(model_name) if raw in _AUTO_ALIASES else raw
+        key = _backend_choice(raw, model_name or config.effective_embedding_model())
         return key in _LLAMA_ALIASES
     except Exception:  # noqa: BLE001 - a backend probe must never block saving
         return False
+
+
+def batches_across_documents(model_name: str | None = None) -> bool:
+    """Whether concurrent documents should share encode calls (#16715). Not for sentence-transformers on
+    CPU: it pads each batch to its longest text, and on CPU that padding costs more than the calls saved."""
+    if active_backend_is_llama(model_name) or config.is_connection_model(
+        model_name or config.effective_embedding_model()
+    ):
+        return True
+    model = _model
+    # A loaded model's device counts: a GPU choice can still have fallen back to CPU at load.
+    device = getattr(model, "device", None) if model is not None else None
+    return (str(device) if device is not None else _device()).split(":")[0] != "cpu"
 
 
 def _llama_pooling(name: str, served = None) -> str | None:
@@ -1312,8 +1459,13 @@ def _identity(
     is_llama: bool,
     name: str,
     served = None,
-    served_identity: tuple[str | None, str | None] | None = None,
+    served_identity: tuple[str | None, str | None] | str | None = None,
 ) -> str:
+    if config.is_connection_model(name):
+        from .embed_connection import connection_identity
+        return connection_identity(
+            name, served_identity if isinstance(served_identity, str) else None
+        )
     if is_llama:
         if served_identity is None:
             repo = config.effective_gguf_repo_for_embedding_model(name)
@@ -1337,8 +1489,7 @@ def _identity_backend_is_llama(name: str) -> bool:
         with _backend_lock:
             backend = _backend
             cached_key = _backend_key
-        forced = _forced_backends.get(name)
-        resolved = forced or (_resolve_auto_for_model(name) if raw in _AUTO_ALIASES else raw)
+        resolved = _backend_choice(raw, name, _forced_backends.get(name))
         expected_key = _backend_cache_key(raw, resolved)
         if backend is None or cached_key == expected_key:
             return active_backend_is_llama(name)
@@ -1433,6 +1584,31 @@ def clip_to_limit(text: str, count, limit: int | None) -> tuple[str, bool]:
     return text[:lo], True
 
 
+def clip_many_to_limit(texts, count, limit: int | None) -> list[tuple[str, bool]]:
+    """``clip_to_limit`` per text, bisecting every over-limit text in lockstep: one ``count.many`` per round."""
+    texts = list(texts)
+    if not limit or getattr(count, "many", None) is None or len(texts) < 2:
+        return [clip_to_limit(t, count, limit) for t in texts]
+    out = [(t, False) for t in texts]
+    bounds = {
+        i: [0, len(t)] for i, (t, n) in enumerate(zip(texts, _many(count, texts))) if n > limit
+    }
+    active = list(bounds)
+    while active:
+        mids = [(bounds[i][0] + bounds[i][1] + 1) // 2 for i in active]
+        for i, mid, n in zip(
+            active, mids, _many(count, [texts[i][:m] for i, m in zip(active, mids)])
+        ):
+            if n <= limit:
+                bounds[i][0] = mid
+            else:
+                bounds[i][1] = mid - 1
+        active = [i for i in active if bounds[i][0] < bounds[i][1]]
+    for i, (lo, _) in bounds.items():
+        out[i] = (texts[i][:lo], True)
+    return out
+
+
 def chunk_tokens(model_name: str | None = None) -> int:
     limit = max_tokens(model_name)
     return min(config.CHUNK_TOKENS, limit) if limit else config.CHUNK_TOKENS
@@ -1444,11 +1620,11 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
     state = (backend, backend.token_counter(model_name = model_name))
     counter_lock = threading.Lock()
 
-    def _count(text: str) -> int:
+    def _served(use):
         nonlocal state
         served_backend, served_count = state
         try:
-            return served_count(text)
+            return use(served_count)
         except RuntimeError:
             if not (
                 _is_llama_backend(served_backend) and getattr(served_backend, "_closed", False)
@@ -1465,6 +1641,21 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
                     replacement.token_counter(model_name = model_name),
                 )
             retry = state[1]
-        return retry(text)
+        return use(retry)
 
+    def _count(text: str) -> int:
+        return _served(lambda count: count(text))
+
+    def _count_many(texts) -> list[int]:
+        texts = list(texts)
+        return _served(lambda count: _many(count, texts))
+
+    # Only a batching backend (sentence-transformers, llama-server) changes how chunking asks for counts.
+    if getattr(state[1], "many", None) is not None:
+        _count.many = _count_many
     return _count
+
+
+def _many(count, texts: list) -> list[int]:
+    many = getattr(count, "many", None)
+    return list(many(texts)) if many is not None else [count(t) for t in texts]

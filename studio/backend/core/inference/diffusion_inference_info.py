@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure, torch-free per-family footprint summary for the inference info endpoint.
-
-Turns the auto-policy's per-family bf16 component table plus its per-scheme steady factors into a
-static "what would this cost resident" summary the frontend shows BEFORE loading, so a user can
-size the int8/fp8/nvfp4/mxfp8 tradeoff. Estimates are the STEADY resident footprint (transformer *
-factor + companions), matching ``estimate_dense_quant``'s ``steady_total``. Pure: torch-free, no
-GPU probing, unit-tests on CPU-only hosts.
-"""
+"""Pure torch-free per-family steady footprint (transformer * factor + companions) for info endpoint."""
 
 from __future__ import annotations
 

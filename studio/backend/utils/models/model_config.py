@@ -30,19 +30,22 @@ from hub.utils.hf_tokens import (
     cache_reads_authorized,
     call_with_anonymous_retry,
     collecting_hub_token_rejections,
+    note_saved_token_rejected,
+    saved_token_rejected,
     HUB_TOKEN_REJECTED_ERROR,
     hf_token_arg,
     is_rejected_credential_error,
     is_anonymous,
     normalize_token,
 )
-from utils.utils import without_hf_auth
+from utils.utils import hf_env_offline, without_hf_auth
 from utils.training_runs import (
     base_model_from_run_dir_name as _base_model_from_dir_name,
 )
 from utils.audio_tokens import (
     AUDIO_TOKENIZER_CONFIG_PATHS as _AUDIO_TOKENIZER_CONFIG_PATHS,
     classify_audio_tokens as _check_token_patterns,
+    declares_audio_token as _declares_audio_token,
     is_audio_input_type,
     may_hold_audio_tokens as _may_hold_audio_tokens,
 )
@@ -54,10 +57,11 @@ from utils.models.gguf_metadata import (
     read_gguf_general_metadata,
     read_gguf_nextn_predict_layers,
 )
+from glob import escape as _glob_escape
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 import functools
 import os
 import platform
@@ -81,22 +85,6 @@ from utils.subprocess_compat import (
 )
 
 logger = get_logger(__name__)
-
-
-_OFFLINE_TRUE_VALUES = {"1", "true", "yes", "on"}
-
-
-def _env_offline() -> bool:
-    """Open force_hf_offline window wins over the env; raw requests.get ignores the hub constant."""
-    try:
-        from utils.utils import hf_env_offline
-        return hf_env_offline()
-    except Exception:
-        pass
-    return (
-        os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-        or os.environ.get("TRANSFORMERS_OFFLINE", "").strip().lower() in _OFFLINE_TRUE_VALUES
-    )
 
 
 @_contextlib.contextmanager
@@ -286,6 +274,13 @@ MODEL_NAME_MAPPING = {
         "unsloth/LFM2-1.2B",
         "LiquidAI/LFM2-1.2B",
         "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
+    ],
+    "LiquidAI_LFM3-Omni-2B.yaml": [
+        "LiquidAI/LFM3-Omni-2B",
+        "LiquidAI/LFM3-1.7B",
+        "LiquidAI/LFM3-1.7B-Base",
+        "LiquidAI/LFM3-VL-2B",
+        "LiquidAI/LFM3-Audio-2B",
     ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
@@ -646,14 +641,179 @@ _CURATED_REMOTE_VLM_TYPES = frozenset(
 _FALLBACK_AUDIO_MODEL_TYPES = frozenset({"csm", "whisper"})
 
 
+_VLM_MAPPING_ATTRS = (
+    "MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES",
+    "MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES",
+)
+_AUDIO_MAPPING_ATTRS = (
+    "MODEL_FOR_CTC_MAPPING_NAMES",
+    "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
+    "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
+    "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
+)
+
+
+_READ_ONLY_DICT_METHODS = frozenset({"items", "keys", "values", "get", "copy"})
+
+
+def _modeling_auto_source_path() -> Optional[str]:
+    """modeling_auto.py of the transformers an import would load now, found without importing it."""
+    import importlib.util
+
+    package = sys.modules.get("transformers")
+    try:
+        if package is not None:
+            locations = list(getattr(package, "__path__", None) or [])
+        else:
+            spec = importlib.util.find_spec("transformers")
+            locations = list(spec.submodule_search_locations or []) if spec is not None else []
+    except (ImportError, ValueError, AttributeError):
+        return None
+    if len(locations) != 1:
+        return None
+    path = os.path.join(locations[0], "models", "auto", "modeling_auto.py")
+    return path if os.path.isfile(path) else None
+
+
+def _transformers_enables_torch() -> bool:
+    """True only when transformers surely enables torch (installed, USE_TORCH/USE_TF, declared
+    floor); False keeps the import path, so no-torch installs get the curated fallback."""
+    import importlib.metadata
+    import importlib.util
+
+    # transformers 4.x honours these; `import unsloth` sets USE_TF=0, which leaves torch on.
+    true_values = {"1", "ON", "YES", "TRUE"}
+    if os.environ.get("USE_TORCH", "AUTO").upper() not in true_values | {"AUTO"}:
+        return False
+    if os.environ.get("USE_TF", "AUTO").upper() in true_values:
+        return False
+    try:
+        from packaging.requirements import Requirement
+        from packaging.version import Version
+
+        if importlib.util.find_spec("torch") is None:
+            return False
+        torch_version = Version(importlib.metadata.version("torch"))
+        requirements = [Requirement(r) for r in importlib.metadata.requires("transformers") or []]
+    except Exception:  # noqa: BLE001
+        return False
+    # Floors only: ceilings are not runtime gates (4.52 declares torch<2.7, runs on newer torch).
+    floors = [
+        spec
+        for r in requirements
+        if r.name == "torch"
+        for spec in r.specifier
+        if spec.operator in (">=", ">")
+    ]
+    if not floors:
+        return False
+    return all(spec.contains(torch_version, prereleases = True) for spec in floors)
+
+
+def _mapping_names_from_source(path: str) -> Optional[Dict[str, dict]]:
+    """The wanted *_MAPPING_NAMES from modeling_auto.py's source via ast, without importing torch.
+    None (caller imports) unless each is bound once at module level to a literal and never
+    rebound or mutated."""
+    import ast
+
+    wanted = frozenset(_VLM_MAPPING_ATTRS + _AUDIO_MAPPING_ATTRS)
+    try:
+        with open(path, encoding = "utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError, MemoryError, RecursionError):
+        return None
+    found: Dict[str, dict] = {}
+    for node in tree.body:
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in wanted
+        ):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "OrderedDict"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        try:
+            literal = ast.literal_eval(value)
+            mapping = dict(literal)
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if node.targets[0].id in found or not all(isinstance(k, str) for k in mapping):
+            return None
+        found[node.targets[0].id] = mapping
+    # Unmentioned names read as {} like getattr(..., None) (VISION_2_SEQ is gone in 5.x), unless
+    # __getattr__, a star import or globals() could create them.
+    mentioned = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and n.id in wanted}
+    for node in ast.walk(tree):
+        if (
+            (isinstance(node, ast.FunctionDef) and node.name == "__getattr__")
+            or (isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names))
+            or (isinstance(node, ast.Name) and node.id in ("globals", "vars", "setattr", "exec"))
+        ):
+            if wanted - set(found):
+                return None
+    if not found:
+        return None
+    for name in wanted - set(found):
+        if name in mentioned:
+            return None
+        found[name] = {}
+    stores: Dict[str, int] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id in wanted and not isinstance(node.ctx, ast.Load):
+            stores[node.id] = stores.get(node.id, 0) + 1
+        elif isinstance(node, (ast.Attribute, ast.Subscript)):
+            base = node.value
+            if (
+                isinstance(base, ast.Name)
+                and base.id in wanted
+                and not (
+                    isinstance(node.ctx, ast.Load)
+                    and (isinstance(node, ast.Subscript) or node.attr in _READ_ONLY_DICT_METHODS)
+                )
+            ):
+                return None
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and wanted.intersection(node.names):
+            return None
+        elif isinstance(node, (ast.Import, ast.ImportFrom)) and any(
+            (alias.asname or alias.name) in wanted for alias in node.names
+        ):
+            return None
+    if any(stores.get(name, 0) != (1 if name in mentioned else 0) for name in wanted):
+        return None
+    return found
+
+
 def _build_detection_sets():
     """Reads static name dicts from the transformers registry only; no model loads and no code runs."""
     try:
-        from transformers.models.auto import modeling_auto as _ma
+        source_path = (
+            None
+            if "transformers.models.auto.modeling_auto" in sys.modules
+            or not _transformers_enables_torch()
+            else _modeling_auto_source_path()
+        )
+        from_source = _mapping_names_from_source(source_path) if source_path else None
+        if from_source is not None:
 
-        def _names(attr):
-            d = getattr(_ma, attr, None)
-            return dict(d) if d else {}
+            def _names(attr):
+                d = from_source[attr]
+                return dict(d) if d else {}
+
+        else:
+            from transformers.models.auto import modeling_auto as _ma
+            def _names(attr):
+                d = getattr(_ma, attr, None)
+                return dict(d) if d else {}
 
         itt = _names("MODEL_FOR_IMAGE_TEXT_TO_TEXT_MAPPING_NAMES")
         v2s = _names("MODEL_FOR_VISION_2_SEQ_MAPPING_NAMES")
@@ -661,14 +821,7 @@ def _build_detection_sets():
         vlm_classes = set(itt.values()) | set(v2s.values())
 
         audio_types: set = set()
-        for attr in (
-            "MODEL_FOR_CTC_MAPPING_NAMES",
-            "MODEL_FOR_SPEECH_SEQ_2_SEQ_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_CLASSIFICATION_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_WAVEFORM_MAPPING_NAMES",
-            "MODEL_FOR_TEXT_TO_SPECTROGRAM_MAPPING_NAMES",
-            "MODEL_FOR_AUDIO_XVECTOR_MAPPING_NAMES",
-        ):
+        for attr in _AUDIO_MAPPING_ATTRS:
             audio_types |= set(_names(attr))
         audio_types |= set(_FALLBACK_AUDIO_MODEL_TYPES)
 
@@ -834,11 +987,12 @@ def _raw_config_has_vision_config(
             return None
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")
-        explicit_vision = (
-            "vision_config" in config
-            or "img_processor" in config
-            or "image_token_index" in config
-            or "projector_config" in config
+        # Empty modality fields mean text only on a causal LM (LFM3); Qwen3-Omni and Molmo2 VLMs ship them too.
+        causal_lm = any(isinstance(x, str) and x.endswith("ForCausalLM") for x in architectures)
+        explicit_vision = any(
+            config[key] not in (None, {}) or not causal_lm
+            for key in ("vision_config", "img_processor", "image_token_index", "projector_config")
+            if key in config
         )
         vlm_types, vlm_classes, audio_types = _detection_sets()
         # Audio-only models are vision only if they carry an explicit vision sub-config.
@@ -1000,8 +1154,7 @@ _LAZY_MODULE_LOCK = threading.Lock()
 
 
 def _lazy_module_attr(name: str) -> Any:
-    """Build-once accessor. Also for in-module callers, where a bare global read would
-    not reach PEP 562."""
+    """Build-once accessor for in-module callers too; a bare global read would skip PEP 562."""
     with _LAZY_MODULE_LOCK:
         if name not in _LAZY_MODULE_CACHE:
             _LAZY_MODULE_CACHE[name] = _LAZY_MODULE_ATTRS[name]()
@@ -1129,8 +1282,9 @@ _GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 @_contextlib.contextmanager
 def shared_hub_model_info():
-    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
-    token = _hub_model_info_scope.set({})
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential. A nested block joins the open one."""
+    open_scope = _hub_model_info_scope.get()
+    token = _hub_model_info_scope.set({} if open_scope is None else open_scope)
     try:
         yield
     finally:
@@ -1147,12 +1301,16 @@ def _hub_model_info(
     from huggingface_hub import model_info as hf_model_info
 
     # from_identifier's remote-LoRA probe needs this to raise; _offline_while_reading can force offline.
-    scope = None if _env_offline() else _hub_model_info_scope.get()
+    scope = None if hf_env_offline() else _hub_model_info_scope.get()
     # The forced-anonymous sentinel is a credential of its own, so key on its fingerprint.
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
         if key in scope:
-            return scope[key]
+            info, rejected = scope[key]
+            if rejected:
+                # The read may have run before the caller's rejection scope opened.
+                note_saved_token_rejected(hf_token)
+            return info
         # Asked unconditionally so one response serves every probe; the listing needs sizes.
         files_metadata = True
 
@@ -1162,13 +1320,38 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    info = call_with_anonymous_retry(
-        lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
-    )
+    with collecting_hub_token_rejections():
+        info = call_with_anonymous_retry(
+            lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
+        )
+        rejected = saved_token_rejected(hf_token)
 
     if scope is not None:
-        scope[key] = info
+        scope[key] = (info, rejected)
     return info
+
+
+def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
+    """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
+    if is_local_path(repo_id):
+        return None
+
+    # Resolve the lazy import before the thread can race the MLX hardware probe's Hub imports.
+    try:
+        from huggingface_hub import model_info  # noqa: F401
+    except Exception as exc:
+        logger.debug("model_info import for read ahead failed for %s: %s", repo_id, exc)
+        return None
+
+    def read():
+        try:
+            _hub_model_info(repo_id, hf_token)
+        except Exception as exc:
+            logger.debug("model_info read ahead failed for %s: %s", repo_id, exc)
+
+    thread = threading.Thread(target = copy_context().run, args = (read,), daemon = True)
+    thread.start()
+    return thread
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -1217,9 +1400,8 @@ def _is_vision_model_or_none(
     ``gguf_variant`` picks the quant out of a directory, so the probe reads the weight
     file the load will open. ``require_image=False`` asks only for a companion projector,
     which is what an audio request needs: audio input rides the same file."""
-    # Local GGUF models are served by llama-server, so multimodal capability comes from a
-    # companion mmproj, not a Transformers config. Do not cache: a projector may be added
-    # beside an existing weight file after it was first inspected.
+    # Local GGUF models are served by llama-server, so multimodal support comes from a companion
+    # mmproj, not a Transformers config; do not cache, as a projector may be added later.
     if is_local_path(model_name):
         local_path = normalize_path(model_name)
         # Same rule as ModelConfig.from_identifier: variant lookup is directory-only, and
@@ -1272,7 +1454,7 @@ def _is_vision_model_or_none(
         )
         resolved_name = model_name
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later lookup.
-    effective_offline = bool(local_files_only or _env_offline())
+    effective_offline = bool(local_files_only or hf_env_offline())
     # Uncached, so use is_vision_model(); None marks a transient failure the caller must not cache, and the code-free raw-config reader runs first.
     if _offline_cache_read_refused(hf_token, model_name, resolved_name, effective_offline):
         return False
@@ -1324,6 +1506,33 @@ def is_vision_model(
             gguf_companion_roots,
         )
     )
+
+
+def audio_vlm_multimodal_lm_checked(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+    revision: Optional[str] = None,
+) -> Tuple[bool, bool]:
+    """(loads through AutoModelForMultimodalLM, config.json readable): no vision tower and a class registered there,
+    natively or by auto_map. AudioFlamingo3 has none and keeps FastModel's resolver. Raw config: no repo code runs."""
+    vision = _raw_config_has_vision_config(model_name, hf_token, local_files_only, revision)
+    if vision is None:
+        return False, False
+    if vision:
+        return False, True
+    try:
+        config = _read_raw_config_json(model_name, hf_token, local_files_only, revision) or {}
+    except Exception:
+        return False, False
+    auto_map = config.get("auto_map")
+    if isinstance(auto_map, dict) and "AutoModelForMultimodalLM" in auto_map:
+        return True, True
+    try:
+        from transformers.models.auto.modeling_auto import MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES
+    except ImportError:
+        return False, True
+    return config.get("model_type") in MODEL_FOR_MULTIMODAL_LM_MAPPING_NAMES, True
 
 
 def is_vision_model_checked(
@@ -1533,7 +1742,7 @@ def detect_audio_type_checked(
         return curated_type, True
 
     # Key on effective offline (kwarg OR env) so an offline negative can't poison a later probe.
-    effective_offline = bool(local_files_only or _env_offline())
+    effective_offline = bool(local_files_only or hf_env_offline())
     audio_cpp_type = _audio_cpp_repo_audio_type(str(model_name), hf_token, effective_offline)
     if audio_cpp_type is not None:
         return audio_cpp_type or None, True
@@ -1629,6 +1838,32 @@ def _detect_audio_from_config(
         return None
 
 
+def _read_local_model_config(root: Path, missing_is_absent: bool) -> Optional[dict]:
+    """None when config.json cannot be read. A cache snapshot can hold the tokenizer without
+    it (a tokenizer-only download), so there a missing file is unknown, not absent, unless the
+    snapshot is an adapter repo, which never ships one."""
+    config_file = root / "config.json"
+    if not config_file.is_file():
+        return {} if missing_is_absent or (root / "adapter_config.json").is_file() else None
+    try:
+        config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+    return config if isinstance(config, dict) else {}
+
+
+def _classify_audio_tokenizer(tok_config: dict, read_model_config) -> Tuple[Optional[str], bool]:
+    """(audio_type, known). A declared audio_token is audio input only with an audio encoder:
+    Gemma 4 26B/31B carry the token and none, so config.json decides, read only for that case."""
+    result = _check_token_patterns(tok_config)
+    if result or not _declares_audio_token(tok_config):
+        return result, True
+    model_config = read_model_config()
+    if model_config is None:
+        return None, False
+    return ("audio_vlm" if model_config.get("audio_config") else None), True
+
+
 def _detect_audio_from_tokenizer(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1638,6 +1873,8 @@ def _detect_audio_from_tokenizer(
     """Returns definitive False only on a transient read failure, so callers retry instead of caching."""
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
+    # A declared audio_token whose encoder config could not be read keeps every negative unknown.
+    unresolved = False
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
@@ -1673,7 +1910,8 @@ def _detect_audio_from_tokenizer(
 
         current: list = []  # resolved lazily: only a negative answer needs it
         # Only a read standing in for the Hub copy has to prove the file whole.
-        may_answer_for_hub = not local_files_only and not is_local_path(model_name)
+        local_model = is_local_path(model_name)
+        may_answer_for_hub = not local_files_only and not local_model
         for root in roots:
             root_read: set = set()
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
@@ -1690,20 +1928,29 @@ def _detect_audio_from_tokenizer(
                             except Exception:
                                 continue
                             # Raw scan misses escaped markers (Go's encoding/json writes them), so decode first.
-                            result = _check_token_patterns(decoded)
+                            result, known = _classify_audio_tokenizer(
+                                decoded, lambda: _read_local_model_config(root, local_model)
+                            )
                             if result:
                                 return result, True
+                            if not known:
+                                unresolved = True
+                                continue
                         elif not raw.rstrip().endswith("}"):
                             continue
                         read_any = True
                         root_read.add(tok_path)
                         continue
-                    tok_config = json.loads(raw)
-                    read_any = True
-                    root_read.add(tok_path)
-                    result = _check_token_patterns(tok_config)
+                    result, known = _classify_audio_tokenizer(
+                        json.loads(raw), lambda: _read_local_model_config(root, local_model)
+                    )
                     if result:
                         return result, True
+                    if not known:
+                        unresolved = True
+                        continue
+                    read_any = True
+                    root_read.add(tok_path)
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
             # Negatives are cached for the process, so only answer negatively after reading every path.
@@ -1725,18 +1972,18 @@ def _detect_audio_from_tokenizer(
         logger.debug(f"Could not check local cache for {model_name}: {e}")
 
     # This raw requests.get ignores HF offline flags, so gate it explicitly.
-    if local_files_only or _env_offline():
-        return None, read_any
+    if local_files_only or hf_env_offline():
+        return None, read_any and not unresolved
 
     # A filesystem path is not a repo id, so no Hub URL; the local read is the whole answer, or /loras blocks the event loop on timeouts.
     if is_local_path(model_name):
-        return None, read_any
+        return None, read_any and not unresolved
 
     try:
         import requests
         import os
     except Exception:
-        return None, read_any
+        return None, read_any and not unresolved
 
     # `False` is falsy, so `or` would reach past it to the ambient credential.
     token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
@@ -1749,6 +1996,21 @@ def _detect_audio_from_tokenizer(
     from utils.hf_endpoint import get_hf_endpoint
 
     hf_endpoint = get_hf_endpoint()
+
+    def _fetch_model_config() -> Optional[dict]:
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/config.json"
+        try:
+            resp = requests.get(url, headers = headers, timeout = 15)
+            if resp.status_code == 404:
+                return {}
+            if not resp.ok:
+                return None
+            config = resp.json()
+        except Exception as e:
+            logger.debug(f"Could not fetch config.json for {model_name}: {e}")
+            return None
+        return config if isinstance(config, dict) else {}
+
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
         url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
@@ -1768,13 +2030,16 @@ def _detect_audio_from_tokenizer(
             logger.debug(f"Bad tokenizer_config for {model_name}/{tok_path}: {e}")
             transient = True
             continue
-        read_any = True
-        result = _check_token_patterns(tok_config)
+        result, known = _classify_audio_tokenizer(tok_config, _fetch_model_config)
         if result:
             return result, True
+        if not known:
+            unresolved = True
+            continue
+        read_any = True
 
     # No audio tokens: definitive unless every attempt failed transiently.
-    return None, (read_any or not transient)
+    return None, (read_any or not transient) and not unresolved
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -2044,13 +2309,26 @@ def colocated_split_shards(path: Path) -> tuple[list[Path], bool]:
     return [found[i] for i in sorted(found)], len(found) == total
 
 
+def _engram_table_shard_skipped(path: Path) -> bool:
+    """A split set short only of the table shard a --ple download skips loads from its snapshot."""
+    from core.inference.engram_tables import table_shard_skipped
+
+    match = _GGUF_SPLIT_FILE_RE.match(path.name)
+    if match is None:
+        return False
+    shards, _ = colocated_split_shards(path)
+    total = int(match.group("total"))
+    by_index = sorted(shards, key = lambda p: int(_GGUF_SPLIT_FILE_RE.match(p.name).group("index")))
+    return table_shard_skipped(by_index, total)
+
+
 def _local_gguf_load_path(path: Path) -> Path:
     """Choose a loadable local path while preserving complete symlink sets."""
     if _GGUF_SPLIT_FILE_RE.match(path.name) is None:
         return path.absolute()
 
     first, complete = _colocated_first_split_shard(path)
-    if complete and first is not None:
+    if first is not None and (complete or _engram_table_shard_skipped(path)):
         return first.absolute()
 
     try:
@@ -2232,6 +2510,7 @@ from utils.models.drafters import (  # noqa: E402
     _drafter_total_size,
     detect_dflash_file,
     dspark_precision_rank,
+    dspark_preferred_first,
     is_published_drafter_filename,
 )
 from utils.models.drafters import (  # noqa: E402
@@ -2240,7 +2519,7 @@ from utils.models.drafters import (  # noqa: E402
 from utils.paths.path_utils import is_appledouble_metadata
 
 
-def dspark_preference_key(name: str) -> Tuple[int, str]:
+def dspark_preference_key(name: str) -> Tuple[int, int, str]:
     """Delegates instead of re-exporting: repointing routes/inference.py's import trips the lint rule."""
     return _drafters_dspark_preference_key(name)
 
@@ -2373,9 +2652,10 @@ def detect_dspark_file(
 ) -> Optional[str]:
     """Requires a published drafter name even in dspark/, so a parked weight never loads as --model-draft."""
 
-    def _rank(candidate: Path) -> tuple[int, int, int, str]:
-        # Most specific family, then precision, then total size, then name.
+    def _rank(candidate: Path) -> tuple[int, int, int, int, str]:
+        # A model's preferred published drafter, then most specific family, then precision, then total size, then name.
         return (
+            dspark_preferred_first(candidate.name),
             _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
@@ -2448,7 +2728,10 @@ def detect_dspark_file(
 def _registered_custom_model_root(path: str) -> Optional[Path]:
     try:
         from storage.studio_db import list_scan_folders
-        folders = list_scan_folders()
+        from utils.paths import studio_db_path
+        from utils.scan_memo import memoized
+
+        folders = memoized(("scan_folders", str(studio_db_path())), list_scan_folders)
     except Exception:
         return None
     candidate = Path(os.path.abspath(Path(path).expanduser()))
@@ -2868,7 +3151,7 @@ def list_gguf_variants(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[list[GgufVariantInfo], bool]:
     """Returns (variants, has_vision); the mmproj projector in the repo is what flags vision."""
-    if _env_offline():
+    if hf_env_offline():
         cached = _list_gguf_variants_from_hf_cache(repo_id)
         return cached if cached is not None else ([], False)
 
@@ -3309,7 +3592,7 @@ def _refused_repo_cached_gguf(
 
 def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Optional[str]:
     """Retries transient Hub failures, since a silent None would send a GGUF-only repo down the MLX path."""
-    if _env_offline():
+    if hf_env_offline():
         return _detect_gguf_from_hf_cache(repo_id)
 
     last_err: Optional[Exception] = None
@@ -3470,8 +3753,25 @@ def clef_files_kind(has) -> Optional[str]:
     return None
 
 
+def is_d1_folder(folder: Path) -> bool:
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    # Markers unsloth-zoo's d1 loader reads: d1-3B only in auto_map, d1-omni by model_type.
+    automodel = str((config.get("auto_map") or {}).get("AutoModel", ""))
+    return (
+        config.get("model_type") == "d1_omni"
+        or "D1Model" in (config.get("architectures") or ())
+        or automodel.endswith("D1Model")
+    )
+
+
 def clef_folder_kind(folder: Path) -> Optional[str]:
-    return clef_files_kind(lambda name: (folder / name).is_file())
+    kind = clef_files_kind(lambda name: (folder / name).is_file())
+    return kind or ("merged" if is_d1_folder(folder) else None)
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:
@@ -3603,7 +3903,7 @@ def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, st
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
-        logger.warning(f"Outputs directory not found: {outputs_dir}")
+        logger.warning(f"Outputs directory not found: {outputs_path}")
         return trained_models
 
     try:
@@ -3960,6 +4260,14 @@ def get_base_model_from_lora_identifier(
         except Exception as exc:
             logger.warning("Could not parse adapter_config.json for '%s': %s", identifier, exc)
             return None
+        from utils.datasets.remote_images import is_network_share
+
+        if isinstance(base_model, str) and is_network_share(base_model):
+            # Touching a share path makes Windows sign in to its host (NTLM); the Hub repo picked it.
+            logger.warning(
+                "Ignoring a network share base in adapter_config.json of '%s'", identifier
+            )
+            return None
         if base_model:
             logger.info(
                 "Detected base model from remote adapter_config.json (%s): %s",
@@ -4041,7 +4349,7 @@ def load_model_defaults(model_name: str) -> Dict[str, Any]:
 
         # Runs after the registry so an alias never loses to a filename.
         for name in lookup_names:
-            for config_path in defaults_dir.rglob(name.replace("/", "_") + ".yaml"):
+            for config_path in defaults_dir.rglob(_glob_escape(name.replace("/", "_")) + ".yaml"):
                 if config_path.is_file():
                     with open(config_path, "r", encoding = "utf-8") as f:
                         config = yaml.safe_load(f) or {}
@@ -4103,6 +4411,8 @@ class ModelConfig:
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
+    # A picked MLX precision folder's config, for route checks only; sizing needs the folder's weights.
+    config_dir: Optional[str] = None
     base_model: Optional[str] = None  # Base model (for LoRAs)
     # Set for a GGUF only audio.cpp runs; loads via the native-audio worker, never llama-server.
     audio_cpp: Optional[Any] = None
@@ -4396,7 +4706,7 @@ class ModelConfig:
                             and is_rejected_credential_error(detect_failures[-1], hf_token),
                         )
                     ) from None
-                if _env_offline():
+                if hf_env_offline():
                     raise GgufRepoUnreadableError(_gguf_repo_unreadable_message(identifier, None))
             if gguf_filename:
                 # A GGUF only audio.cpp reads never reaches llama-server; its header reveals this before download.
@@ -4593,6 +4903,7 @@ class ModelConfig:
 
         return cls(
             gguf_variant = precision_folder,
+            config_dir = check_model if precision_folder else None,
             identifier = identifier,
             display_name = display_name,
             path = path,
@@ -4627,7 +4938,12 @@ class ModelConfig:
                 return None
             target = gguf_file
             resolved_variant = Path(gguf_file).name
-        elif gguf_hint is None and not audio_cpp_models.is_umbrella_id(identifier):
+        elif (
+            gguf_hint is None
+            and not audio_cpp_models.is_umbrella_id(identifier)
+            # A repo the runtime's own spec names is audio.cpp's whatever its GGUF headers say.
+            and not audio_cpp_models.is_spec_vouched_id(identifier)
+        ):
             return None
         else:
             target = identifier
@@ -4636,7 +4952,7 @@ class ModelConfig:
             target,
             resolved_variant,
             hf_token,
-            network = not _env_offline(),
+            network = not hf_env_offline(),
             gguf_hint = gguf_hint,
         )
         if model is None:

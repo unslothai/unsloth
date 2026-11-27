@@ -30,11 +30,10 @@ from test_tp_native_gloo import (  # noqa: E402
     _trainer_args,
 )
 
-# These arms start the adapters at init_lora_weights = False and compare 3 whole Trainer steps. At AdamW's
-# default eps 1e-8, m / (sqrt(v) + eps) turns the fp32 reduction-order noise between tp = 2 and one process
-# into 1e-5 grad-norm and 1e-4 weight drift by step 3 while the losses still match exactly; at 1e-4 it stays
-# below 1e-6, and a real tp error (a missed all-reduce) still lands at 3.5e-4. Only these runs take it: the
-# native Trainer tests (B = 0 adapters) pass at the default eps on the CI runners and fail at 1e-4 there.
+# Only these arms use eps 1e-4: at the default 1e-8 AdamW turns tp=2 vs one-process fp32 reduction
+# noise into 1e-4 weight drift by step 3; at 1e-4 drift stays below 1e-6 while a real missed
+# all-reduce still gives 3.5e-4; B = 0 native Trainer tests pass at default eps on CI but fail at
+# 1e-4.
 _ADAM_EPS = 1e-4
 
 _ENV_KEYS = (
@@ -121,8 +120,8 @@ def _case_units(rank, world, tmp):
     layout(UNSLOTH_TP_SIZE = 2, WORLD_SIZE = 2)
     wrapped = tp_env.tensor_parallel_env_load(loader)
     out["refuse_vllm"] = _raised(lambda: wrapped("m", fast_inference = True))
-    out["refuse_full_ft"] = _raised(lambda: wrapped("m", False, full_finetuning = True))
     out["refuse_8bit"] = _raised(lambda: wrapped("m", load_in_8bit = True))
+    out["refuse_float8"] = _raised(lambda: wrapped("m", full_finetuning = True, float8_training = True))
     layout(UNSLOTH_TP_SIZE = 2, UNSLOTH_FSDP2 = 1, UNSLOTH_FSDP2_SHARDED_LOAD = 1, WORLD_SIZE = 2)
     out["refuse_fsdp2_sharded_load"] = _raised(lambda: wrapped("m", False))
     os.environ.pop("UNSLOTH_FSDP2_SHARDED_LOAD", None)
@@ -280,11 +279,13 @@ def _case_env(
         trainer_b.train(resume_from_checkpoint = ckpt2)
         res["b"] = summary(trainer_b)
         if layout is not None:
-            # A checkpoint written on another layout is refused before anything is loaded.
+            # A checkpoint written on another layout without the 1-GPU optimizer.pt (an older Unsloth) is refused
+            # before anything is loaded; with it, it resumes resharded (test_layout_portable_resume_gloo).
             bad = os.path.join(tmp, "bad")
             if rank == 0:
                 import shutil
                 shutil.copytree(ckpt2, bad)
+                os.remove(os.path.join(bad, "optimizer.pt"))
             dist.barrier()
             path = os.path.join(bad, "unsloth_tp", f"rank{rank:05d}.pt")
             payload = torch.load(path, weights_only = True)
@@ -315,7 +316,9 @@ def _case_env(
                 eval_dataset = data,
             )
         )
-        res["evaluate"] = _raised(lambda: trainer.evaluate(data))
+        res["evaluate"] = _raised(
+            lambda: res.__setitem__("eval_loss", trainer.evaluate(data)["eval_loss"])
+        )
         res["lion"] = _raised(
             lambda: SequentialTrainer(
                 model = model,
@@ -390,6 +393,48 @@ def _case_dp_average_dtypes(rank, world, tmp):
     return out
 
 
+def _case_dp_average_buckets(rank, world, tmp):
+    """64-byte cap: every grad (any dtype, over the cap, non-contiguous) equals its own all-reduce mean."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import torch.distributed as dist
+    from torch.distributed.device_mesh import init_device_mesh
+
+    from unsloth.models import ep_native, tp_native
+
+    dist.init_process_group("gloo")
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("dp",))
+    torch.manual_seed(rank)
+    params, reference = [], []
+    for dtype in (torch.float16, torch.bfloat16, torch.float32):
+        for shape in ((3,), (5, 4), (40,), (7,), (2, 3)):
+            p = torch.nn.Parameter(torch.zeros(shape, dtype = dtype))
+            g = (torch.randn(shape[::-1]) * 2e4).to(dtype)
+            p.grad = g.t() if g.dim() == 2 else g  # 2-D: a non-contiguous gradient
+            params.append(p)
+            want = p.grad.float() if dtype == torch.float16 else p.grad.clone()
+            dist.all_reduce(want)
+            reference.append(want.div_(world).to(dtype))
+    calls = []
+    all_reduce = dist.all_reduce
+
+    def counting(tensor, *args, **kwargs):
+        calls.append(tensor.numel())
+        return all_reduce(tensor, *args, **kwargs)
+
+    ep_native._REPLICA_BUCKET_BYTES, dist.all_reduce = 64, counting
+    try:
+        tp_native._dp_average(params, mesh["dp"])
+    finally:
+        dist.all_reduce = all_reduce
+    return {
+        "equal": [torch.equal(p.grad, want) for p, want in zip(params, reference)],
+        "dtypes": [p.grad.dtype == want.dtype for p, want in zip(params, reference)],
+        "reduces": len(calls) - 1,  # the first one is the has-gradient vote
+    }
+
+
 def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     """UNSLOTH_FSDP2=1 that resolves to accelerate's FSDP: the dp dimension would be left unsynced."""
     error = _import_checkout_unsloth()
@@ -419,12 +464,169 @@ def _case_accelerate_fsdp(rank, world, tmp, ckpt):
     }
 
 
+def _case_model_init(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    hooked,
+    with_model = False,
+    import_only = False,
+):
+    """Trainer(model_init = ...) under UNSLOTH_TP_SIZE: model_init runs after the tp setup saw model = None."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_env, tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    if not import_only:
+        patch_gradient_accumulation_fix(transformers.Trainer)
+
+    def load(name, load_in_4bit = True):
+        model = AutoModelForCausalLM.from_pretrained(name, torch_dtype = torch.float32)
+        if (
+            hooked and import_only
+        ):  # FastLanguageModel.from_pretrained installs the wrapper after loading
+            patch_gradient_accumulation_fix(transformers.Trainer)
+        return model
+
+    def peft(model):
+        return get_peft_model(model, LoraConfig(r = 4, target_modules = "all-linear"))
+
+    if hooked:  # FastLanguageModel.from_pretrained / get_peft_model inside model_init
+        load = tp_env.tensor_parallel_env_load(load)
+        peft = tp_env.tensor_parallel_env_peft(peft)
+    built = []
+
+    def model_init():
+        model = peft(load(ckpt, load_in_4bit = False))
+        built.append(tp_native.is_tensor_parallel(model))
+        return model
+
+    data = _Rows([torch.arange(9)] * 8)
+    trainer = []
+    if import_only:
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    elif (
+        with_model
+    ):  # transformers 4.x accepts both (FutureWarning) and train() rebuilds from model_init
+        model = peft(load(ckpt, load_in_4bit = False))
+
+        def run():
+            trainer.append(
+                transformers.Trainer(
+                    model = model,
+                    model_init = model_init,
+                    args = _trainer_args(tmp, 2),
+                    train_dataset = data,
+                )
+            )
+            trainer[0].train()
+
+        refused = _raised(run)
+    else:
+        refused = _raised(
+            lambda: trainer.append(
+                transformers.Trainer(
+                    model_init = model_init, args = _trainer_args(tmp, 2), train_dataset = data
+                )
+            )
+        )
+    return {
+        "refused": refused,
+        "built": built,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
+def _case_prebuilt_optimizer(
+    rank,
+    world,
+    tmp,
+    ckpt,
+    kwargs_params = False,
+):
+    """Trainer(optimizers = (optimizer, None)) under UNSLOTH_TP_SIZE alone, on a model get_peft_model did not shard
+    (PEFT's own get_peft_model): the split in Trainer.__init__ replaces the trainable parameters."""
+    error = _import_checkout_unsloth()
+    if error is not None:
+        return {"skip": error}
+    import transformers
+    from peft import LoraConfig, get_peft_model
+    from transformers import AutoModelForCausalLM
+
+    from unsloth.models import tp_native
+    from unsloth.models._utils import patch_gradient_accumulation_fix
+
+    patch_gradient_accumulation_fix(transformers.Trainer)
+    model = AutoModelForCausalLM.from_pretrained(ckpt, torch_dtype = torch.float32)
+    torch.manual_seed(1)
+    model = get_peft_model(
+        model, LoraConfig(r = 4, target_modules = "all-linear", init_lora_weights = False)
+    )
+    params = [p for p in model.parameters() if p.requires_grad]
+    extra = {}
+    if kwargs_params is None:
+        pass  # control: the Trainer builds the optimizer after the split
+    elif kwargs_params:
+        extra["optimizer_cls_and_kwargs"] = (torch.optim.AdamW, {"params": params, "lr": 1e-2})
+    else:
+        extra["optimizers"] = (torch.optim.AdamW(params, lr = 1e-2), None)
+    trainer = []
+
+    def run():
+        trainer.append(
+            transformers.Trainer(
+                model = model,
+                args = _trainer_args(tmp, 2, max_steps = 2),
+                train_dataset = _Rows([torch.arange(9)] * 8),
+                **extra,
+            )
+        )
+        before = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer[0].train()
+        after = {
+            n: (p.full_tensor() if hasattr(p, "full_tensor") else p).detach().clone()
+            for n, p in trainer[0].model.named_parameters()
+            if p.requires_grad
+        }
+        trainer.append(max((after[n] - before[n]).abs().max().item() for n in before))
+
+    refused = _raised(run)
+    return {
+        "refused": refused,
+        "max_update": trainer[1] if len(trainer) > 1 else None,
+        "is_tp": bool(trainer) and tp_native.is_tensor_parallel(trainer[0].model),
+    }
+
+
 CASES = {
     "units": _case_units,
     "env": _case_env,
     "dp_average": _case_dp_average,
     "dp_average_dtypes": _case_dp_average_dtypes,
+    "dp_average_buckets": _case_dp_average_buckets,
     "accelerate_fsdp": _case_accelerate_fsdp,
+    "model_init": _case_model_init,
+    "prebuilt_optimizer": _case_prebuilt_optimizer,
 }
 
 
@@ -460,7 +662,7 @@ def _spawn(
     ctx = multiprocessing.get_context("spawn")
     port = _free_port()
     with tempfile.TemporaryDirectory() as tmp:
-        if case in ("env", "accelerate_fsdp"):
+        if case in ("env", "accelerate_fsdp", "model_init", "prebuilt_optimizer"):
             kwargs["ckpt"] = _checkpoint(tmp)
         procs = [
             ctx.Process(target = _worker, args = (r, world, port, case, tmp, env or {}, kwargs))
@@ -514,15 +716,18 @@ def test_env_layout_parsing_and_refusals():
     assert (
         "WORLD_SIZE=1" in res["no_torchrun"] and "torchrun --nproc-per-node 2" in res["no_torchrun"]
     )
-    for key in ("pp", "pp_with_tp"):
-        assert "UNSLOTH_PP_SIZE=2" in res[key] and "Python API" in res[key], res[key]
+    # UNSLOTH_PP_SIZE is env-driven too now (models/pp_env.py, tests/test_pp_env_gloo.py).
+    assert res["pp"] == (1, 2, 4, False) and res["pp_with_tp"] == (2, 1, 4, False), (
+        res["pp"],
+        res["pp_with_tp"],
+    )
     assert res["pp_one"] == (2, 2, 4, False)
     assert res["tp_world"] == (4, 1, 4, False)
     assert res["ddp"] == (2, 2, 4, False)
     assert res["fsdp2"] == (2, 2, 4, True)
     assert "native FSDP2 only" in res["accelerate_fsdp"]
     assert "vLLM" in res["refuse_vllm"] and "UNSLOTH_TP_SIZE=2" in res["refuse_vllm"]
-    assert "full finetuning" in res["refuse_full_ft"]
+    assert "float8_training" in res["refuse_float8"] and "UNSLOTH_FSDP2=1" in res["refuse_float8"]
     assert "8-bit weights" in res["refuse_8bit"]
     assert "UNSLOTH_FSDP2_SHARDED_LOAD=1" in (res["refuse_fsdp2_sharded_load"] or ""), res[
         "refuse_fsdp2_sharded_load"
@@ -549,11 +754,11 @@ def test_env_tp2_trainer_matches_one_process(four_bit):
         _close(res["a"], ref["a"], what = rank)
         hint = "UNSLOTH_TP_SIZE=2: unset it"
         assert "map-style dataset" in res["iterable"] and hint in res["iterable"], res["iterable"]
-        assert "evaluation during training" in res["eval"] and hint in res["eval"], res["eval"]
-        assert "Trainer.evaluate is not supported" in res["evaluate"] and hint in res["evaluate"]
+        assert res["eval"] is None and res["evaluate"] is None, (res["eval"], res["evaluate"])
         assert "lion_8bit" in res["lion"], res["lion"]
         assert res["generate"] is None, res["generate"]  # a whole replica per rank (tp_replica.py)
     assert results[0]["seen"] == results[1]["seen"]  # both tp ranks read the same batches
+    assert results[0]["eval_loss"] == results[1]["eval_loss"]
 
 
 def test_env_tp2_with_fsdp2_flag_and_no_dp_dimension():
@@ -659,6 +864,13 @@ def test_dp_average_matches_ddp_for_gradients_on_some_replicas():
         assert res["none"] is None and res["frozen"] is None, res
 
 
+def test_dp_average_caps_buckets_and_matches_per_tensor_mean():
+    for res in _spawn("dp_average_buckets", 2):
+        assert all(res["equal"]) and all(res["dtypes"]), res
+        # An uncapped flatten makes one buffer per dtype (3 all-reduces); a 64-byte cap must split them.
+        assert res["reduces"] > 3, res
+
+
 def test_dp_average_keeps_fp16_finite_and_bf16_fp32_unchanged():
     results = _spawn("dp_average_dtypes", 2)
     for res in results:
@@ -681,3 +893,69 @@ def test_env_tp_x_accelerate_fsdp_is_refused():
     env = {"UNSLOTH_TP_SIZE": "2", "UNSLOTH_FSDP2": "1", "ACCELERATE_USE_FSDP": "true"}
     for res in _spawn("accelerate_fsdp", 4, env):
         assert "needs Unsloth's native FSDP2" in (res["refused"] or ""), res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused(hooked):
+    """Unrefused, a model_init model silently trained as plain DDP despite UNSLOTH_TP_SIZE=2."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = hooked):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+def test_env_tp_model_and_model_init_is_refused():
+    """Trainer(model = m, model_init = f): 4.x train() swapped tp m for a plain DDP model; 5.x raises ValueError."""
+    for res in _spawn("model_init", 2, {"UNSLOTH_TP_SIZE": "2"}, hooked = False, with_model = True):
+        assert res["refused"] is not None and res["built"] == [], res
+        assert "model_init" in res["refused"], res
+
+
+def _pipelining_step_outputs():
+    try:
+        import inspect
+
+        from torch.distributed.pipelining import ScheduleGPipe
+    except Exception:
+        return False
+    return "return_outputs" in inspect.signature(ScheduleGPipe.step).parameters
+
+
+@pytest.mark.skipif(not _pipelining_step_outputs(), reason = "UNSLOTH_PP_SIZE needs torch >= 2.10")
+@pytest.mark.parametrize("import_only", [False, True], ids = ["patched", "plain_import"])
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_pp_model_init_is_refused(hooked, import_only):
+    """The same silent DDP under UNSLOTH_PP_SIZE: the pipeline split runs on the __init__ model only."""
+    for res in _spawn(
+        "model_init", 2, {"UNSLOTH_PP_SIZE": "2"}, hooked = hooked, import_only = import_only
+    ):
+        assert "UNSLOTH_PP_SIZE=2 (pipeline parallel)" in (res["refused"] or ""), res
+        assert "unset UNSLOTH_PP_SIZE." in res["refused"], res
+        assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+@pytest.mark.parametrize("hooked", [False, True], ids = ["plain", "unsloth_loaders"])
+def test_env_tp_model_init_is_refused_after_plain_import(hooked):
+    """Only `import unsloth`: nothing installed the Trainer wrapper before model_init ran, so it trained."""
+    env = {"UNSLOTH_TP_SIZE": "2"}
+    for res in _spawn("model_init", 2, env, hooked = hooked, import_only = True):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "model_init" in res["refused"] and res["built"] == [], res
+
+
+@pytest.mark.parametrize(
+    "kwargs_params", [False, True], ids = ["optimizers", "optimizer_cls_and_kwargs"]
+)
+def test_env_tp_prebuilt_optimizer_on_an_unsharded_model_is_refused(kwargs_params):
+    """Unrefused, the optimizer stepped the parameters the tensor parallel split replaced: no update at all."""
+    for res in _spawn(
+        "prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = kwargs_params
+    ):
+        assert "UNSLOTH_TP_SIZE=2" in (res["refused"] or ""), res
+        assert "optimizers = (optimizer" in res["refused"], res
+
+
+def test_env_tp_trainer_built_optimizer_on_an_unsharded_model_trains():
+    """The control: without a prebuilt optimizer the same model is split in Trainer.__init__ and trains."""
+    for res in _spawn("prebuilt_optimizer", 2, {"UNSLOTH_TP_SIZE": "2"}, kwargs_params = None):
+        assert res["refused"] is None and res["is_tp"], res
+        assert res["max_update"] > 0, res

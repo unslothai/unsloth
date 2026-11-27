@@ -4,6 +4,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+
 // Kept in localStorage; new pins are prepended so the newest pin sorts first.
 export interface PinnedProjectsState {
   pinnedIds: string[];
@@ -38,3 +40,5 @@ export const usePinnedProjectsStore = create<PinnedProjectsState>()(
     },
   ),
 );
+
+syncAcrossWindows(usePinnedProjectsStore);

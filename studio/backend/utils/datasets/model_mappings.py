@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Model and template mappings for dataset processing.
-
-Maps model names to their chat templates and response markers.
-"""
+"""Maps model names to chat templates and response markers for dataset processing."""
 
 TEMPLATE_TO_MODEL_MAPPER = {
     "phi-3.5": (
@@ -35,14 +32,6 @@ TEMPLATE_TO_MODEL_MAPPER = {
         "unsloth/phi-4-reasoning-plus",
         "microsoft/Phi-4-reasoning-plus",
         "unsloth/phi-4-reasoning-plus-bnb-4bit",
-        "unsloth/phi-4-mini-reasoning-unsloth-bnb-4bit",
-        "unsloth/phi-4-mini-reasoning",
-        "microsoft/Phi-4-mini-reasoning",
-        "unsloth/phi-4-mini-reasoning-bnb-4bit",
-        "unsloth/Phi-4-mini-instruct-unsloth-bnb-4bit",
-        "unsloth/Phi-4-mini-instruct",
-        "microsoft/Phi-4-mini-instruct",
-        "unsloth/Phi-4-mini-instruct-bnb-4bit",
     ),
     "mistral": (
         "unsloth/mistral-7b-instruct-v0.1-bnb-4bit",

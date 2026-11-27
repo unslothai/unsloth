@@ -1,30 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reversible, failure-safe monkey-patches that speed up the diffusion denoiser.
-
-These patch a couple of SHARED diffusers classes (a tiny surface covering all families) to make
-inference faster WITHOUT reducing accuracy or regressing ``torch.compile``. Both are compile-safe:
-they lower to plain ops, are bit-identical or FMA-1-ULP (equal-or-MORE accurate) vs stock, and
-torch.compile fuses either form to the same kernel -- so they help EAGER and are compile-neutral.
-
-Patched (measured B200, bf16, DiT shapes):
-* ``RMSNorm.forward`` -> fused ``F.rms_norm`` on the common path (non-NPU, no bias, weight
-  None/fp16/bf16; else the exact original). The standout win (~6-12x per call, QK-norm runs every
-  attention block on Qwen-Image + Z-Image). bf16: one rounding instead of two (~1 ULP off stock, nearer fp64).
-* ``AdaLayerNormContinuous`` / ``AdaLayerNormZero`` / ``AdaLayerNormZeroSingle`` -> the
-  ``norm(x)*(1+scale)+shift`` modulation fused via ``torch.addcmul`` (~1.2x, fp32 exact, bf16 1
-  ULP). Covers flux.1 / flux.2-klein / qwen-image.
-
-NOT patched (evidence-based): ``FeedForward`` Dropout skip (measured a REGRESSION, the isinstance
-check costs more); GEGLU/SwiGLU/GELU (mul-bound, need a custom kernel); per-family custom classes
-and attention (not shared; attention already routes through the set_attention_backend dispatcher).
-
-Lifecycle: ``install_compile_safe_patches()`` is idempotent, class-level. Install for any active
-speed tier; the bit-identical ``off`` path runs UNINSTALLED, so the caller uninstalls on an ``off``
-load and on unload. The chat<->diffusion arbiter guarantees a single active pipe, so class-level
-state is safe.
-"""
+"""Reversible, failure-safe, compile-safe accuracy-neutral patches of shared diffusers classes;
+uninstall on off-tier loads and on unload; the chat/diffusion arbiter ensures one active pipe, so
+class-level state is safe"""
 
 from __future__ import annotations
 
@@ -139,6 +118,9 @@ def install_compile_safe_patches() -> int:
     if not _patches_enabled():
         uninstall_patches()
         return 0
+    if _fp16_rmsnorm_only:
+        # full set must install from the stock classes
+        uninstall_fp16_rmsnorm()
     if _patched:
         return len(_patched)
     for cls, new_fn in _specs():
@@ -168,10 +150,68 @@ def install_compile_safe_patches() -> int:
 def uninstall_patches() -> None:
     """Restore every patched class to its exact original ``forward`` (idempotent)."""
     global _orig_rmsnorm_forward
-    for cls in list(_patched):
+    for cls in list(_patched) + list(_fp16_rmsnorm_only):
         revert_patch(cls, "forward")
     _patched.clear()
+    _fp16_rmsnorm_only.clear()
     _orig_rmsnorm_forward = None
+
+
+# fp16 ``off`` tier: fused RMSNorm alone (Colab T4 Z-Image: 4.4 s of a 29.9 s denoise in decomposed RMSNorm).
+# F.rms_norm rounds once (diffusers twice): nearer fp64, not bit-identical.
+FP16_RMSNORM_ENV = "UNSLOTH_DIFFUSION_FP16_RMSNORM"
+FP16_RMSNORM_CLASSES = ("ZImageTransformer2DModel",)
+_fp16_rmsnorm_only: list[type] = []
+
+
+def fp16_rmsnorm_enabled() -> bool:
+    return (os.environ.get(FP16_RMSNORM_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def fp16_rmsnorm_wanted(denoiser: object, dtype: object, speed_mode: Optional[str]) -> bool:
+    return (
+        fp16_rmsnorm_enabled()
+        and _patches_enabled()
+        and str(speed_mode or "").strip().lower() == "off"
+        and dtype == torch.float16
+        and type(denoiser).__name__ in FP16_RMSNORM_CLASSES
+    )
+
+
+def install_fp16_rmsnorm() -> bool:
+    """False when the full set already holds it or the patch is refused."""
+    global _orig_rmsnorm_forward
+    if _fp16_rmsnorm_only:
+        return True
+    if _patched or _RMSNorm is None or not hasattr(F, "rms_norm"):
+        return False
+    _orig_rmsnorm_forward = _RMSNorm.forward
+    if not apply_patch(_RMSNorm, "forward", _rmsnorm_forward, match_level = "relaxed"):
+        _orig_rmsnorm_forward = None
+        return False
+    _fp16_rmsnorm_only.append(_RMSNorm)
+    logger.info(
+        "eager-patch: fused RMSNorm on the fp16 eager tier (%s)", ", ".join(FP16_RMSNORM_CLASSES)
+    )
+    return True
+
+
+def uninstall_fp16_rmsnorm() -> None:
+    global _orig_rmsnorm_forward
+    for cls in list(_fp16_rmsnorm_only):
+        revert_patch(cls, "forward")
+    if _fp16_rmsnorm_only and not _patched:
+        _orig_rmsnorm_forward = None
+    _fp16_rmsnorm_only.clear()
+
+
+def fp16_rmsnorm_installed() -> bool:
+    return bool(_fp16_rmsnorm_only)
 
 
 def is_installed() -> bool:

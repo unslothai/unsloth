@@ -10,6 +10,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { usePlatformStore } from "@/config/env";
+import { isServedByMlx } from "@/features/model-picker/model-config/per-model-config";
 import { useFullInstallUpgrade } from "@/hooks/use-full-install-upgrade";
 import { useT } from "@/i18n";
 import { type ReactElement, useState } from "react";
@@ -25,13 +27,21 @@ export function FullInstallDialog({
   onConfirm: () => void;
 }): ReactElement {
   const t = useT();
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  const servesMlx = useServesMlx();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>{t("settings.general.fullInstall.confirmTitle")}</DialogTitle>
           <DialogDescription>
-            {t("settings.general.fullInstall.confirmDescription")}
+            {t(
+              cpuTraining
+                ? "settings.general.fullInstall.confirmDescriptionCpu"
+                : servesMlx
+                  ? "settings.general.fullInstall.confirmDescriptionMlx"
+                  : "settings.general.fullInstall.confirmDescription",
+            )}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
@@ -56,6 +66,8 @@ export function FullInstallDialog({
 export function DesktopInstallTypeControl(): ReactElement | null {
   const t = useT();
   const controller = useFullInstallUpgrade();
+  const cpuTraining = usePlatformStore((s) => s.cpuTraining);
+  const servesMlx = useServesMlx();
   const [confirmOpen, setConfirmOpen] = useState(false);
   if (!controller) return null;
 
@@ -63,7 +75,13 @@ export function DesktopInstallTypeControl(): ReactElement | null {
     <>
       <SettingsRow
         label={t("settings.general.fullInstall.label")}
-        description={t("settings.general.fullInstall.description")}
+        description={t(
+          cpuTraining
+            ? "settings.general.fullInstall.descriptionCpu"
+            : servesMlx
+              ? "settings.general.fullInstall.descriptionMlx"
+              : "settings.general.fullInstall.description",
+        )}
       >
         <Button size="sm" onClick={() => setConfirmOpen(true)}>
           {t("settings.general.fullInstall.action")}
@@ -75,5 +93,11 @@ export function DesktopInstallTypeControl(): ReactElement | null {
         onConfirm={() => void controller.repairInstall()}
       />
     </>
+  );
+}
+
+function useServesMlx(): boolean {
+  return usePlatformStore((s) =>
+    isServedByMlx(false, s.deviceType, s.chatOnlyReason, s.mlxInference),
   );
 }

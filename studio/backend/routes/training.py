@@ -16,11 +16,14 @@ from core.training.account_jobs import (
     validate_job_paths,
 )
 import contextlib
+import contextvars
 import json
 import os
 import re
 import sys
 import threading
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from fastapi import (
@@ -118,6 +121,7 @@ from models import (
     TrainingProgress,
 )
 from models.training import (
+    ParallelPlanRequest,
     DiffusionCaptionUpdateRequest,
     DiffusionDatasetExample,
     DiffusionDatasetExamplesResponse,
@@ -265,6 +269,13 @@ def _run_finished(backend) -> bool:
     here: a stand-in without it keeps the old liveness-only behaviour."""
     check = getattr(backend, "is_run_finished", None)
     return bool(check()) if callable(check) else False
+
+
+async def _await_finished_worker_exit(backend) -> None:
+    """A run that reported terminal holds the GPU until its worker exits: give that exit the stop grace
+    before a new start reads is_training_active()."""
+    if _run_finished(backend):
+        await asyncio.to_thread(backend.wait_for_finished_worker)
 
 
 def _run_active(backend) -> bool:
@@ -470,23 +481,28 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
     """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
 
-    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
-    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    The embedding and decision runners always build a fresh adapter on top, so those still need
+    a base model."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
-    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
-        return False
-    from core.training.training import should_use_mlx_training_backend
-
-    return not should_use_mlx_training_backend()
+    return not (getattr(request, "is_embedding", False) or getattr(request, "is_decision", False))
 
 
 # The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+# The MLX loader imports PEFT safetensors (not .bin) and reads its own saved format.
+_MLX_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapters.safetensors")
 
 
 def _has_local_adapter_weights(path: Path) -> bool:
-    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+    if not path.is_dir():
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    names = (
+        _MLX_ADAPTER_WEIGHT_FILES if should_use_mlx_training_backend() else _ADAPTER_WEIGHT_FILES
+    )
+    return any((path / name).is_file() for name in names)
 
 
 _HF_MODEL_ACCESS_DENIED = (
@@ -736,10 +752,15 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     if not dataset_id:
         return
 
+    from core.training.account_jobs import _dataset_builder_name
     from huggingface_hub.utils import HFValidationError, validate_repo_id
 
     try:
         validate_repo_id(dataset_id)
+        # Well formed, but load_dataset takes its own builder names ahead of the Hub and reads the
+        # worker's cwd with them.
+        if _dataset_builder_name(dataset_id):
+            raise HFValidationError(f"'{dataset_id}' is a datasets builder, not a repository")
     except HFValidationError as error:
         raise _hf_preflight_error(
             400,
@@ -925,11 +946,14 @@ def _authorize_adapter_base(adapter: str, hf_token: HfTokenArg) -> Optional[str]
         cached_repo_ref_for_path,
         repo_cache_has_usable_snapshot,
     )
+    from hub.services.models import account_access
     from utils.models.model_config import get_base_model_from_lora_identifier
 
+    account_access.require_listed_adapters_access(adapter)
     base = get_base_model_from_lora_identifier(adapter, account_hf_token(hf_token))
     if not base:
         return None
+    account_access.require_adapter_chain_access(base)
     if is_local_path(base):
         # A managed account may only reach bases in its own workspace or the shared cache.
         account_path(base, shared_cache = True)
@@ -1315,22 +1339,42 @@ def _reject_untrainable_model_request(
 def _validate_training_platform(request: TrainingStartRequest) -> None:
     from utils.hardware import hardware
 
-    if hardware.DEVICE != hardware.DeviceType.MLX:
-        return
-    if request.training_type == "Continued Pretraining":
+    if hardware.chat_only_mac_install():
         raise HTTPException(
             status_code = 400,
-            detail = "Continued Pretraining is not supported for MLX training yet.",
+            detail = (
+                "This install was set up without the training stack (Chat only), so training is "
+                "disabled. Reinstall Unsloth Studio without --no-torch, or use Upgrade to full "
+                "install in Settings, to enable training."
+            ),
         )
+    if hardware.DEVICE == hardware.DeviceType.CPU and hardware.trains_on_cpu(
+        hardware.current_chat_only_verdict()[0]
+    ):
+        # The CPU backend (unsloth/_cpu_init.py) trains text models with SFTTrainer only.
+        if request.is_dataset_image or request.is_dataset_audio:
+            unsupported = "Vision and audio training"
+        elif request.is_embedding:
+            unsupported = "Embedding model training"
+        elif request.is_decision:
+            unsupported = "Decision model training"
+        elif request.drafter is not None and request.drafter.enabled:
+            unsupported = "Drafter training"
+        else:
+            return
+        raise HTTPException(
+            status_code = 400,
+            detail = (
+                f"{unsupported} is not supported on CPU yet. No GPU was found, so this host "
+                "trains text models only (LoRA or full finetuning)."
+            ),
+        )
+    if hardware.DEVICE != hardware.DeviceType.MLX:
+        return
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
-        )
-    if request.is_dataset_audio:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Audio dataset training is not yet supported on Apple Silicon.",
         )
     if request.use_loftq:
         raise HTTPException(
@@ -1526,13 +1570,15 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest, resume_run: dict
-) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str], dict[str, Any]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
         RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
+        local_model_resume_expectation,
         resource_provenance_is_complete,
+        streamed_dataset_revision,
     )
 
     try:
@@ -1605,6 +1651,22 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    overrides: dict[str, Any] = {}
+    stream_revision = streamed_dataset_revision(stored)
+    if stream_revision is not None:
+        # Replay the streamed commit even if the run never attested, not the moving branch.
+        overrides["dataset_revision"] = stream_revision
+    expected_model = local_model_resume_expectation(stored)
+    if expected_model is not None:
+        # The worker checks the base it loads against this; the dataset pin still applies.
+        return (
+            None,
+            False,
+            requires_exact_dataset,
+            False,
+            None,
+            {**overrides, "resume_expected_model": expected_model},
+        )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
         _normalized_optional_string(marker.get("model_load_mode"))
@@ -1617,6 +1679,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
+        overrides,
     )
 
 
@@ -1644,6 +1707,10 @@ async def get_offload_state(current_subject: str = Depends(get_current_subject))
     if not offload:
         return {"active": False}
     return {"active": True, **offload}
+
+
+# Own pool: queued 300 s probes must not hold the default executor other routes reach via asyncio.to_thread.
+_drafter_pool = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "drafter-probe")
 
 
 @router.get("/drafter-capability")
@@ -1684,7 +1751,56 @@ async def get_drafter_capability(
     # The caller's own token comes in the header; without one, ambient credentials for the owner
     # only, anonymous for API keys and managed accounts (the owner's token must not answer for them).
     token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
-    return {**await asyncio.to_thread(drafter_capability, name, token), "model_name": shown}
+    answer = await asyncio.get_running_loop().run_in_executor(
+        _drafter_pool, drafter_capability, name, token
+    )
+    return {**answer, "model_name": shown}
+
+
+@router.get("/parallel/capabilities")
+async def get_parallel_capabilities(current_subject: str = Depends(get_current_subject)):
+    from core.training import parallel_plan
+    from utils.hardware import gpu_query
+    with gpu_query.display_reads():
+        return await asyncio.to_thread(parallel_plan.capabilities)
+
+
+@router.post("/parallel/plan")
+async def plan_parallel_training(
+    request: ParallelPlanRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+    hf_token: Optional[str] = Depends(get_hf_token),
+):
+    """A refused mode comes back in `error`, not as a 400, so the Train page can show it inline."""
+    from core.training import parallel_plan
+    from models.inference import resolve_inventory_handle
+    from utils.models.model_config import shared_hub_model_info
+
+    values = request.model_dump()
+    values["drafter"] = (
+        values["drafter"] if request.drafter is not None and request.drafter.enabled else None
+    )
+    name = resolve_inventory_handle((request.model_name or "").strip())
+    if not name:
+        raise HTTPException(status_code = 400, detail = "model_name is required")
+    values["model_name"] = name
+    managed = managed_account()
+    token = hf_token_arg(hf_token, allow_ambient_token = not (via_api_key is True or managed))
+
+    def _plan():
+        sizing = values
+        if managed:
+            # Same rule as the training routes: a managed account reads only Hub ids or its own workspace paths.
+            try:
+                account_path(name, reference = True, shared_cache = True)
+                _authorize_cache_fallback(name)
+            except HTTPException:
+                sizing = {**values, "model_name": None}  # host-only plan, no model facts
+        with shared_hub_model_info():
+            return parallel_plan.plan_for_request(sizing, hf_token = token, inline_error = True)
+
+    return await asyncio.to_thread(_plan)
 
 
 @router.get("/hardware/visible")
@@ -1732,6 +1848,10 @@ def _token_preview_rows(request: TokenPreviewRequest, hf_token) -> list[dict]:
             detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token),
         ) from exc
     return rows.to_list()
+
+
+# Previews wait on one worker for up to 300 s; queued ones wait here, not on the shared default executor.
+_token_preview_pool = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "token-preview")
 
 
 @router.post("/token-preview")
@@ -1805,7 +1925,9 @@ async def token_preview(
         )
 
     try:
-        return await asyncio.to_thread(_run)
+        return await asyncio.get_running_loop().run_in_executor(
+            _token_preview_pool, contextvars.copy_context().run, _run
+        )
     except TokenPreviewError as exc:
         from hub.utils import download_registry
         detail = download_registry.scrub_secrets(str(exc), hf_token = hf_token)
@@ -1898,18 +2020,7 @@ def _background_video_generation_active() -> bool:
         return False
 
 
-@router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
-async def start_training(
-    request: TrainingStartRequest,
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    """
-    Start a training job.
-
-    Initiates training in the background and returns immediately. Use /status
-    to check progress.
-    """
+async def _prepare_training_request(request: TrainingStartRequest, via_api_key: bool) -> None:
     await asyncio.to_thread(_validate_decision_request, request, via_api_key)
     if request.drafter is not None and request.drafter.enabled:
         from core.training.training import should_use_mlx_training_backend
@@ -1929,6 +2040,495 @@ async def start_training(
         if not directory or not Path(directory).is_absolute():
             request.tensorboard_dir = str(tensorboard_root() / (directory or ""))
         validate_job_paths(request.model_dump())
+
+
+@dataclass
+class _AdmittedTrainingRequest:
+    training_kwargs: dict
+    hf_token: Optional[str]
+    resume_run: Optional[dict]
+
+
+async def _admit_training_request(
+    request: TrainingStartRequest, current_subject: str, via_api_key: bool
+) -> _AdmittedTrainingRequest:
+    """Per-request validation and worker kwargs of a start; raises the start route's own errors."""
+    resume_output_dir: Optional[str] = None
+    resume_run: Optional[dict] = None
+    resume_actual_model_repo_id: Optional[str] = None
+    resume_model_load_mode: Optional[str] = None
+    resume_requires_exact_resources = False
+    resume_requires_exact_model = False
+    resume_requires_exact_dataset = False
+    resume_overrides: dict[str, Any] = {}
+    if request.resume_from_checkpoint:
+        try:
+            resume_output_dir = await asyncio.to_thread(
+                normalize_resume_output_dir,
+                request.resume_from_checkpoint,
+            )
+        except ValueError as e:
+            # Deliberate user-facing validation message.
+            validation_message = str(e)
+            raise HTTPException(status_code = 400, detail = validation_message)
+
+        resume_run = await asyncio.to_thread(
+            get_resumable_run_by_output_dir,
+            resume_output_dir,
+        )
+        if not resume_run or not await asyncio.to_thread(can_resume_run, resume_run):
+            detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state."
+            # Only when the checkpoint itself is intact: can_resume_run refuses for several reasons, so asking
+            # unconditionally answers a provenance sentence when the checkpoint is what is missing.
+            # has_resume_state is the discriminator can_resume_run itself short-circuits on.
+            if resume_run and await asyncio.to_thread(
+                has_resume_state, resume_run.get("output_dir")
+            ):
+                from core.training.provenance import (
+                    resource_provenance_resume_blocker,
+                )
+                blocker = await asyncio.to_thread(
+                    resource_provenance_resume_blocker,
+                    training_run_config(resume_run),
+                )
+                if blocker:
+                    detail = blocker
+            raise HTTPException(status_code = 400, detail = detail)
+        resume_checkpoint = await asyncio.to_thread(
+            get_resume_checkpoint_path,
+            resume_output_dir,
+        )
+        if not resume_checkpoint:
+            raise HTTPException(
+                status_code = 400,
+                detail = "Resume checkpoint must include saved trainer state.",
+            )
+        request.resume_from_checkpoint = resume_checkpoint
+        (
+            resume_actual_model_repo_id,
+            resume_requires_exact_model,
+            resume_requires_exact_dataset,
+            resume_requires_exact_resources,
+            resume_model_load_mode,
+            resume_overrides,
+        ) = await asyncio.to_thread(
+            _prepare_resume_resource_provenance,
+            request,
+            resume_run,
+        )
+
+    if request.local_datasets:
+        request.local_datasets = _validate_local_dataset_paths(
+            request.local_datasets, "Local dataset"
+        )
+    # Not `eval_steps > 0`: inf passes that but reads as disabled everywhere in the trainer.
+    if request.local_eval_datasets and evaluation_enabled(request.eval_steps):
+        request.local_eval_datasets = _validate_local_dataset_paths(
+            request.local_eval_datasets, "Local eval dataset"
+        )
+
+    from utils.hardware import hardware as _hw
+    from utils.hardware import ensure_hardware_detected
+
+    await asyncio.to_thread(ensure_hardware_detected)
+    _validate_training_platform(request)
+
+    if request.dataset_streaming:
+        if not request.hf_dataset:
+            raise HTTPException(
+                status_code = 400,
+                detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
+            )
+        if request.is_dataset_image or request.is_dataset_audio:
+            raise HTTPException(
+                status_code = 400,
+                detail = "dataset_streaming is not supported for vision or audio datasets.",
+            )
+        if request.is_embedding:
+            raise HTTPException(
+                status_code = 400,
+                detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
+            )
+        if request.max_steps is None or request.max_steps <= 0:
+            raise HTTPException(
+                status_code = 422,
+                detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
+            )
+        if request.train_on_completions:
+            raise HTTPException(
+                status_code = 422,
+                detail = "dataset_streaming is not supported with train_on_completions yet.",
+            )
+        if evaluation_enabled(request.eval_steps):
+            train_split = request.train_split or "train"
+            if not request.eval_split or request.eval_split == train_split:
+                raise HTTPException(
+                    status_code = 422,
+                    detail = "dataset_streaming with evaluation requires a separate eval_split.",
+                )
+        # Streaming is HF-only: reject when the request also carries a local dataset path or an
+        # S3 config, since those sources cannot be streamed via HF's loader.
+        if request.local_datasets:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                    "Streaming is not supported with local file paths."
+                ),
+            )
+        if request.s3_config is not None:
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    "dataset_streaming is HF-only; remove local_datasets / S3 source. "
+                    "Streaming is not supported with S3 datasets."
+                ),
+            )
+        if request.dataset_known_cached or request.dataset_local_path:
+            raise HTTPException(
+                status_code = 422,
+                detail = (
+                    "dataset_streaming streams from the Hub and cannot use the local "
+                    "dataset cache; disable streaming to train from the cached copy."
+                ),
+            )
+    allow_ambient = via_api_key is not True
+    hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
+    # The local dataset paths were resolved above for existence only; authorize them now that
+    # the caller's token is known, before anything reads them.
+    # Eval paths only while evaluation is on, matching the validation above and the trainer,
+    # which reads them under the same condition: a stale eval path nothing will open must not
+    # refuse an otherwise valid run.
+    for _local_paths, _label in (
+        (request.local_datasets, "dataset"),
+        (
+            request.local_eval_datasets if evaluation_enabled(request.eval_steps) else [],
+            "eval_dataset",
+        ),
+    ):
+        if _local_paths:
+            await asyncio.to_thread(
+                _refuse_unauthorized_cached_local_paths, _local_paths, hf_token, _label
+            )
+    model_preflight = await asyncio.to_thread(
+        _reject_untrainable_model_request,
+        request,
+        resume_actual_model_repo_id,
+        hf_token,
+    )
+    cached_model_pin = model_preflight.cached_model_pin
+    training_actual_model_repo_id = resume_actual_model_repo_id
+    training_model_snapshot_path = request.model_snapshot_path
+    if cached_model_pin is not None:
+        training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
+
+    if request.hf_dataset:
+        await asyncio.to_thread(_preflight_hf_dataset_request, request)
+        # After the preflight: a cache it pinned is still on disk for this scan to refuse.
+        # Not for a streaming start: it reads the Hub (load_dataset(streaming = True)) and never
+        # the materialized cache, the preflight above always verified the repo remotely, and
+        # the route already refuses streaming with a pinned cache. Asking anyway would refuse a
+        # valid start over an unrelated cached copy whenever /auth-check cannot be reached.
+        # And only when the Hub repo is the EFFECTIVE source: load_and_format_dataset takes
+        # local_datasets (and s3_config below it) ahead of dataset_source, so a payload carrying
+        # both never reads the Hub cache, and refusing over it fails a run on a dataset it does
+        # not use. The local paths took their own authorization pass above.
+        if not request.dataset_streaming and _hf_dataset_is_the_source(request):
+            await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
+
+    device_backend = getattr(_hw.DEVICE, "value", "") or ""
+    training_optimizer = normalize_training_optimizer_for_device(
+        request.optim,
+        device_backend = device_backend,
+    )
+
+    training_kwargs = {
+        "model_name": model_preflight.model_name,
+        "project_name": request.project_name,
+        "training_type": request.training_type,
+        "hf_token": (request.hf_token or "").strip(),
+        "allow_ambient": allow_ambient,
+        "load_in_4bit": request.load_in_4bit,
+        "max_seq_length": request.max_seq_length,
+        "vision_image_size": request.vision_image_size,
+        "hf_dataset": request.hf_dataset or "",
+        "model_known_cached": request.model_known_cached,
+        "model_local_path": model_preflight.model_local_path,
+        "model_format": request.model_format,
+        "model_snapshot_path": training_model_snapshot_path,
+        "actual_model_repo_id": training_actual_model_repo_id,
+        "resume_model_load_mode": resume_model_load_mode,
+        "dataset_known_cached": request.dataset_known_cached,
+        "dataset_local_path": request.dataset_local_path,
+        "dataset_snapshot_path": request.dataset_snapshot_path,
+        "local_datasets": request.local_datasets,
+        "local_eval_datasets": request.local_eval_datasets,
+        "format_type": request.format_type,
+        "subset": request.subset,
+        "train_split": request.train_split,
+        "dataset_streaming": request.dataset_streaming,
+        "eval_split": request.eval_split,
+        "eval_steps": request.eval_steps,
+        "early_stopping_patience": request.early_stopping_patience,
+        "drafter": (
+            request.drafter.model_dump()
+            if request.drafter is not None and request.drafter.enabled
+            else None
+        ),
+        "dataset_slice_start": request.dataset_slice_start,
+        "dataset_slice_end": request.dataset_slice_end,
+        "custom_format_mapping": request.custom_format_mapping,
+        "num_epochs": request.num_epochs,
+        "learning_rate": request.learning_rate,
+        "embedding_learning_rate": request.embedding_learning_rate,
+        "batch_size": request.batch_size,
+        "gradient_accumulation_steps": request.gradient_accumulation_steps,
+        "warmup_steps": request.warmup_steps,
+        "warmup_ratio": request.warmup_ratio,
+        "max_steps": request.max_steps,
+        "save_steps": request.save_steps,
+        "weight_decay": request.weight_decay,
+        "max_grad_norm": request.max_grad_norm,
+        "max_grad_value": request.max_grad_value,
+        "max_grad_leaf_norm": request.max_grad_leaf_norm,
+        "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
+        "random_seed": request.random_seed,
+        "packing": request.packing,
+        "optim": training_optimizer,
+        "lr_scheduler_type": request.lr_scheduler_type,
+        "use_lora": request.use_lora,
+        "lora_r": request.lora_r,
+        "lora_alpha": request.lora_alpha,
+        "lora_dropout": request.lora_dropout,
+        "target_modules": request.target_modules if request.target_modules else None,
+        "gradient_checkpointing": request.gradient_checkpointing.strip()
+        if request.gradient_checkpointing and request.gradient_checkpointing.strip()
+        else "unsloth",
+        "offload_layers": request.offload_layers,
+        "offload_vram_gb": request.offload_vram_gb,
+        "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
+        "prefetch_depth": request.prefetch_depth,
+        "use_rslora": request.use_rslora,
+        "use_loftq": request.use_loftq,
+        "use_dora": request.use_dora,
+        "train_on_completions": request.train_on_completions,
+        "finetune_vision_layers": request.finetune_vision_layers,
+        "finetune_language_layers": request.finetune_language_layers,
+        "finetune_attention_modules": request.finetune_attention_modules,
+        "finetune_mlp_modules": request.finetune_mlp_modules,
+        "is_dataset_image": request.is_dataset_image,
+        "is_dataset_audio": request.is_dataset_audio,
+        "is_embedding": request.is_embedding,
+        "is_decision": request.is_decision,
+        "model_subfolder": request.model_subfolder,
+        "decision_layout": request.decision_layout,
+        "decision_head": request.decision_head,
+        "enable_wandb": request.enable_wandb,
+        "wandb_token": request.wandb_token or "",
+        "wandb_project": request.wandb_project or "",
+        "enable_tensorboard": request.enable_tensorboard,
+        "tensorboard_dir": request.tensorboard_dir or "",
+        "output_dir": resume_output_dir,
+        "resume_from_checkpoint": request.resume_from_checkpoint,
+        "require_exact_resume_resources": resume_requires_exact_resources,
+        "require_exact_model_resource": resume_requires_exact_model,
+        "require_exact_dataset_resource": resume_requires_exact_dataset,
+        "require_validated_model_snapshot": cached_model_pin is not None,
+        "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
+        # A managed account never forwards remote code to the worker.
+        "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
+        "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
+        "subject": current_subject,
+        "gpu_ids": request.gpu_ids,
+        "s3_config": request.s3_config.model_dump() if request.s3_config else None,
+    }
+    training_kwargs.update(resume_overrides)
+
+    # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
+    # architectures, so VRAM checks must not underestimate a load the worker refuses.
+    from core.training.provenance import (
+        ExactResumeResourcesUnavailable,
+        effective_training_load_in_4bit,
+    )
+
+    if training_kwargs["load_in_4bit"]:
+        from core.training.training import resolve_training_model_load_target
+
+        try:
+            model_load_target = await asyncio.to_thread(
+                resolve_training_model_load_target,
+                training_kwargs,
+            )
+        except ExactResumeResourcesUnavailable as exc:
+            raise HTTPException(status_code = 409, detail = str(exc))
+        try:
+            effective_load_in_4bit = await asyncio.to_thread(
+                effective_training_load_in_4bit,
+                training_kwargs,
+                model_load_target,
+                hf_token,
+            )
+        except ExactResumeResourcesUnavailable as exc:
+            raise HTTPException(status_code = 409, detail = str(exc))
+        if not effective_load_in_4bit:
+            training_kwargs["load_in_4bit"] = False
+            training_kwargs["load_in_4bit_forced_16bit"] = True
+            logger.info(
+                "Latest-transformers sidecar active for %s - sizing and "
+                "training in 16-bit (4-bit is disabled for brand-new "
+                "architectures)",
+                model_load_target,
+            )
+
+    # Training page has no trust_remote_code toggle.
+    if not training_kwargs["trust_remote_code"]:
+        from utils.security.trusted_org import is_trusted_org_repo
+
+        model_defaults = load_model_defaults(request.model_name)
+        yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
+        if yaml_trust and is_trusted_org_repo(request.model_name, hf_token = hf_token):
+            logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
+            training_kwargs["trust_remote_code"] = True
+        elif yaml_trust:
+            logger.warning(
+                "YAML sets trust_remote_code=True for %s but it is not a trusted "
+                "first-party repo; leaving disabled (user can opt in explicitly).",
+                request.model_name,
+            )
+
+    if request.parallel_mode is not None or request.parallel_spec:
+        await _plan_parallel_training(request, training_kwargs, hf_token)
+
+    return _AdmittedTrainingRequest(
+        training_kwargs = training_kwargs,
+        hf_token = hf_token,
+        resume_run = resume_run,
+    )
+
+
+def _parallel_plan_input(training_kwargs: dict, request) -> dict:
+    keys = (
+        "model_name",
+        "training_type",
+        "load_in_4bit",
+        "batch_size",
+        "max_seq_length",
+        "lora_r",
+        "target_modules",
+        "gradient_checkpointing",
+        "optim",
+        "gpu_ids",
+        "offload_layers",
+        "packing",
+        "is_dataset_image",
+        "is_dataset_audio",
+        "is_embedding",
+        "is_decision",
+        "batch_members",
+        "drafter",
+    )
+    values = {key: training_kwargs.get(key) for key in keys}
+    values["batch_members"] = _PENDING_BATCH.get() is not None
+    values["parallel_mode"] = request.parallel_mode
+    values["parallel_spec"] = request.parallel_spec
+    return values
+
+
+def _parent_mask_takes_gpu_ids() -> bool:
+    try:
+        from utils.hardware import hardware as hw
+        return bool(hw._get_parent_visible_gpu_spec().get("supports_explicit_gpu_ids", True))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _parent_visible_gpu_order() -> list:
+    try:
+        from utils.hardware import hardware as hw
+        return list(hw.get_parent_visible_gpu_ids())
+    except Exception:
+        return []
+
+
+async def _plan_parallel_training(request, training_kwargs: dict, hf_token) -> None:
+    """Resolve parallel_mode before any VRAM moves: a refused layout is a 400."""
+    from core.training import parallel_plan
+
+    def _plan():
+        # Fresh telemetry, not the capabilities route's cached read.
+        host = parallel_plan.detect_host(max_age_s = 0)
+        plan = parallel_plan.plan_for_request(
+            _parallel_plan_input(training_kwargs, request), hf_token = hf_token, host = host
+        )
+        return plan, len(host.get("gpus") or [])
+
+    try:
+        plan, n_visible = await asyncio.to_thread(_plan)
+    except parallel_plan.ParallelPlanError as exc:
+        raise HTTPException(status_code = 400, detail = exc.payload) from None
+    pin = bool(plan["gpu_ids"])
+    if pin and not _parent_mask_takes_gpu_ids():
+        if len(plan["gpu_ids"]) < n_visible:
+            # A UUID / MIG / tile mask cannot be narrowed by id, so a subset of its GPUs cannot be honored.
+            raise HTTPException(
+                status_code = 400,
+                detail = {
+                    "code": "parallel_gpu_ids",
+                    "mode": plan["mode"],
+                    "message": (
+                        f"{plan['mode']} on GPU(s) {plan['gpu_ids']} needs a subset of the {n_visible} GPUs Studio "
+                        "sees, and this GPU visibility mask (UUID / MIG entries) cannot be narrowed by index."
+                    ),
+                    "alternative": "use every visible GPU, or start Studio with numeric CUDA_VISIBLE_DEVICES",
+                },
+            )
+        pin = False  # every visible GPU, which is what the plan counted
+        if plan["launcher"] == "multi_process":
+            # Rank r runs on the r-th device of the inherited mask: report gpu_ids in that order, or
+            # None when the mask names no telemetry index.
+            order = _parent_visible_gpu_order()
+            plan["gpu_ids"] = order if sorted(order) == sorted(plan["gpu_ids"]) else None
+    training_kwargs["parallel"] = {
+        key: plan[key]
+        for key in (
+            "requested_mode",
+            "mode",
+            "world_size",
+            "gpu_ids",
+            "spec",
+            "launcher",
+            "distributed_backend",
+            "reason",
+            "env",
+        )
+        if key in plan
+    }
+    if pin:
+        # The worker's mask lists these ids in this order, so rank r runs on gpu_ids[r].
+        training_kwargs["gpu_ids"] = list(plan["gpu_ids"])
+    logger.info(
+        "Multi-GPU plan: mode=%s world_size=%s gpu_ids=%s spec=%s (%s)",
+        plan["mode"],
+        plan["world_size"],
+        plan["gpu_ids"],
+        plan["spec"],
+        plan["reason"],
+    )
+
+
+@router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
+async def start_training(
+    request: TrainingStartRequest,
+    current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
+    """
+    Start a training job.
+
+    Initiates training in the background and returns immediately. Use /status
+    to check progress.
+    """
+    await _prepare_training_request(request, via_api_key)
     backend = None
     reserved_start_request_id = None
     start_task: Optional[asyncio.Task[bool]] = None
@@ -1988,6 +2588,7 @@ async def start_training(
                 except S3DependencyUnavailable as exc:
                     raise HTTPException(status_code = 501, detail = str(exc)) from exc
 
+        await _await_finished_worker_exit(backend)
         if await asyncio.to_thread(backend.is_training_active):
             existing_job_id: Optional[str] = getattr(backend, "current_job_id", "")
             _reject_start_request(
@@ -2023,336 +2624,16 @@ async def start_training(
                 error = "Diffusion training already active",
             )
 
-        resume_output_dir: Optional[str] = None
-        resume_run: Optional[dict] = None
-        resume_actual_model_repo_id: Optional[str] = None
-        resume_model_load_mode: Optional[str] = None
-        resume_requires_exact_resources = False
-        resume_requires_exact_model = False
-        resume_requires_exact_dataset = False
-        if request.resume_from_checkpoint:
-            try:
-                resume_output_dir = await asyncio.to_thread(
-                    normalize_resume_output_dir,
-                    request.resume_from_checkpoint,
-                )
-            except ValueError as e:
-                # Deliberate user-facing validation message.
-                validation_message = str(e)
-                raise HTTPException(status_code = 400, detail = validation_message)
-
-            resume_run = await asyncio.to_thread(
-                get_resumable_run_by_output_dir,
-                resume_output_dir,
-            )
-            if not resume_run or not await asyncio.to_thread(can_resume_run, resume_run):
-                detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state."
-                # Only when the checkpoint is intact, else the answer is a misleading provenance sentence.
-                if resume_run and await asyncio.to_thread(
-                    has_resume_state, resume_run.get("output_dir")
-                ):
-                    from core.training.provenance import (
-                        resource_provenance_resume_blocker,
-                    )
-                    blocker = await asyncio.to_thread(
-                        resource_provenance_resume_blocker,
-                        training_run_config(resume_run),
-                    )
-                    if blocker:
-                        detail = blocker
-                raise HTTPException(status_code = 400, detail = detail)
-            resume_checkpoint = await asyncio.to_thread(
-                get_resume_checkpoint_path,
-                resume_output_dir,
-            )
-            if not resume_checkpoint:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Resume checkpoint must include saved trainer state.",
-                )
-            request.resume_from_checkpoint = resume_checkpoint
-            (
-                resume_actual_model_repo_id,
-                resume_requires_exact_model,
-                resume_requires_exact_dataset,
-                resume_requires_exact_resources,
-                resume_model_load_mode,
-            ) = await asyncio.to_thread(
-                _prepare_resume_resource_provenance,
-                request,
-                resume_run,
-            )
-
-        if request.local_datasets:
-            request.local_datasets = _validate_local_dataset_paths(
-                request.local_datasets, "Local dataset"
-            )
-        # Not `eval_steps > 0`: inf passes that but reads as disabled everywhere in the trainer.
-        if request.local_eval_datasets and evaluation_enabled(request.eval_steps):
-            request.local_eval_datasets = _validate_local_dataset_paths(
-                request.local_eval_datasets, "Local eval dataset"
-            )
-
-        from utils.hardware import hardware as _hw
-        from utils.hardware import ensure_hardware_detected
-
-        await asyncio.to_thread(ensure_hardware_detected)
-        _validate_training_platform(request)
-
-        if request.dataset_streaming:
-            if not request.hf_dataset:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "dataset_streaming requires hf_dataset; streaming is not supported for local datasets.",
-                )
-            if request.is_dataset_image or request.is_dataset_audio:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "dataset_streaming is not supported for vision or audio datasets.",
-                )
-            if request.is_embedding:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
-                )
-            if _hw.DEVICE == _hw.DeviceType.MLX:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
-                )
-            if request.max_steps is None or request.max_steps <= 0:
-                raise HTTPException(
-                    status_code = 422,
-                    detail = "dataset_streaming requires max_steps > 0 because streaming datasets have no known length.",
-                )
-            if request.train_on_completions:
-                raise HTTPException(
-                    status_code = 422,
-                    detail = "dataset_streaming is not supported with train_on_completions yet.",
-                )
-            if evaluation_enabled(request.eval_steps):
-                train_split = request.train_split or "train"
-                if not request.eval_split or request.eval_split == train_split:
-                    raise HTTPException(
-                        status_code = 422,
-                        detail = "dataset_streaming with evaluation requires a separate eval_split.",
-                    )
-            # Streaming is HF-only; a local dataset or S3 config in the same request cannot be streamed.
-            if request.local_datasets:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
-                        "Streaming is not supported with local file paths."
-                    ),
-                )
-            if request.s3_config is not None:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = (
-                        "dataset_streaming is HF-only; remove local_datasets / S3 source. "
-                        "Streaming is not supported with S3 datasets."
-                    ),
-                )
-            if request.dataset_known_cached or request.dataset_local_path:
-                raise HTTPException(
-                    status_code = 422,
-                    detail = (
-                        "dataset_streaming streams from the Hub and cannot use the local "
-                        "dataset cache; disable streaming to train from the cached copy."
-                    ),
-                )
-        allow_ambient = via_api_key is not True
-        hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
-        # Authorize local paths now the caller's token is known. Eval paths only while evaluation is on.
-        for _local_paths, _label in (
-            (request.local_datasets, "dataset"),
-            (
-                request.local_eval_datasets if evaluation_enabled(request.eval_steps) else [],
-                "eval_dataset",
-            ),
-        ):
-            if _local_paths:
-                await asyncio.to_thread(
-                    _refuse_unauthorized_cached_local_paths, _local_paths, hf_token, _label
-                )
-        model_preflight = await asyncio.to_thread(
-            _reject_untrainable_model_request,
-            request,
-            resume_actual_model_repo_id,
-            hf_token,
-        )
-        cached_model_pin = model_preflight.cached_model_pin
-        training_actual_model_repo_id = resume_actual_model_repo_id
-        training_model_snapshot_path = request.model_snapshot_path
-        if cached_model_pin is not None:
-            training_actual_model_repo_id, training_model_snapshot_path = cached_model_pin
-
-        if request.hf_dataset:
-            await asyncio.to_thread(_preflight_hf_dataset_request, request)
-            # Not for streaming (reads the Hub, never the cache), and only when the Hub repo is the effective
-            # source: local_datasets / s3_config take precedence in load_and_format_dataset.
-            if not request.dataset_streaming and _hf_dataset_is_the_source(request):
-                await asyncio.to_thread(_refuse_unauthorized_cached_dataset, request, hf_token)
-
-        device_backend = getattr(_hw.DEVICE, "value", "") or ""
-        training_optimizer = normalize_training_optimizer_for_device(
-            request.optim,
-            device_backend = device_backend,
-        )
-
-        training_kwargs = {
-            "model_name": model_preflight.model_name,
-            "project_name": request.project_name,
-            "training_type": request.training_type,
-            "hf_token": (request.hf_token or "").strip(),
-            "allow_ambient": allow_ambient,
-            "load_in_4bit": request.load_in_4bit,
-            "max_seq_length": request.max_seq_length,
-            "vision_image_size": request.vision_image_size,
-            "hf_dataset": request.hf_dataset or "",
-            "model_known_cached": request.model_known_cached,
-            "model_local_path": model_preflight.model_local_path,
-            "model_format": request.model_format,
-            "model_snapshot_path": training_model_snapshot_path,
-            "actual_model_repo_id": training_actual_model_repo_id,
-            "resume_model_load_mode": resume_model_load_mode,
-            "dataset_known_cached": request.dataset_known_cached,
-            "dataset_local_path": request.dataset_local_path,
-            "dataset_snapshot_path": request.dataset_snapshot_path,
-            "local_datasets": request.local_datasets,
-            "local_eval_datasets": request.local_eval_datasets,
-            "format_type": request.format_type,
-            "subset": request.subset,
-            "train_split": request.train_split,
-            "dataset_streaming": request.dataset_streaming,
-            "eval_split": request.eval_split,
-            "eval_steps": request.eval_steps,
-            "early_stopping_patience": request.early_stopping_patience,
-            "drafter": (
-                request.drafter.model_dump()
-                if request.drafter is not None and request.drafter.enabled
-                else None
-            ),
-            "dataset_slice_start": request.dataset_slice_start,
-            "dataset_slice_end": request.dataset_slice_end,
-            "custom_format_mapping": request.custom_format_mapping,
-            "num_epochs": request.num_epochs,
-            "learning_rate": request.learning_rate,
-            "embedding_learning_rate": request.embedding_learning_rate,
-            "batch_size": request.batch_size,
-            "gradient_accumulation_steps": request.gradient_accumulation_steps,
-            "warmup_steps": request.warmup_steps,
-            "warmup_ratio": request.warmup_ratio,
-            "max_steps": request.max_steps,
-            "save_steps": request.save_steps,
-            "weight_decay": request.weight_decay,
-            "max_grad_norm": request.max_grad_norm,
-            "max_grad_value": request.max_grad_value,
-            "max_grad_leaf_norm": request.max_grad_leaf_norm,
-            "cast_norm_output_to_input_dtype": request.cast_norm_output_to_input_dtype,
-            "random_seed": request.random_seed,
-            "packing": request.packing,
-            "optim": training_optimizer,
-            "lr_scheduler_type": request.lr_scheduler_type,
-            "use_lora": request.use_lora,
-            "lora_r": request.lora_r,
-            "lora_alpha": request.lora_alpha,
-            "lora_dropout": request.lora_dropout,
-            "target_modules": request.target_modules if request.target_modules else None,
-            "gradient_checkpointing": request.gradient_checkpointing.strip()
-            if request.gradient_checkpointing and request.gradient_checkpointing.strip()
-            else "unsloth",
-            "offload_layers": request.offload_layers,
-            "offload_vram_gb": request.offload_vram_gb,
-            "offload_vram_gb_per_device": request.offload_vram_gb_per_device,
-            "prefetch_depth": request.prefetch_depth,
-            "use_rslora": request.use_rslora,
-            "use_loftq": request.use_loftq,
-            "use_dora": request.use_dora,
-            "train_on_completions": request.train_on_completions,
-            "finetune_vision_layers": request.finetune_vision_layers,
-            "finetune_language_layers": request.finetune_language_layers,
-            "finetune_attention_modules": request.finetune_attention_modules,
-            "finetune_mlp_modules": request.finetune_mlp_modules,
-            "is_dataset_image": request.is_dataset_image,
-            "is_dataset_audio": request.is_dataset_audio,
-            "is_embedding": request.is_embedding,
-            "is_decision": request.is_decision,
-            "model_subfolder": request.model_subfolder,
-            "decision_layout": request.decision_layout,
-            "enable_wandb": request.enable_wandb,
-            "wandb_token": request.wandb_token or "",
-            "wandb_project": request.wandb_project or "",
-            "enable_tensorboard": request.enable_tensorboard,
-            "tensorboard_dir": request.tensorboard_dir or "",
-            "output_dir": resume_output_dir,
-            "resume_from_checkpoint": request.resume_from_checkpoint,
-            "require_exact_resume_resources": resume_requires_exact_resources,
-            "require_exact_model_resource": resume_requires_exact_model,
-            "require_exact_dataset_resource": resume_requires_exact_dataset,
-            "require_validated_model_snapshot": cached_model_pin is not None,
-            "adapter_base_pin": getattr(model_preflight, "adapter_base_pin", None),
-            # A managed account never forwards remote code to the worker.
-            "trust_remote_code": request.trust_remote_code and not managed_remote_code_refused(),
-            "approved_remote_code_fingerprint": request.approved_remote_code_fingerprint,
-            "subject": current_subject,
-            "gpu_ids": request.gpu_ids,
-            "s3_config": request.s3_config.model_dump() if request.s3_config else None,
-        }
-
-        # Latest-sidecar models train 16-bit (4-bit disabled for new archs); size VRAM accordingly.
-        from core.training.provenance import (
-            ExactResumeResourcesUnavailable,
-            effective_training_load_in_4bit,
-        )
-
-        if training_kwargs["load_in_4bit"]:
-            from core.training.training import resolve_training_model_load_target
-
-            try:
-                model_load_target = await asyncio.to_thread(
-                    resolve_training_model_load_target,
-                    training_kwargs,
-                )
-            except ExactResumeResourcesUnavailable as exc:
-                raise HTTPException(status_code = 409, detail = str(exc))
-            try:
-                effective_load_in_4bit = await asyncio.to_thread(
-                    effective_training_load_in_4bit,
-                    training_kwargs,
-                    model_load_target,
-                    hf_token,
-                )
-            except ExactResumeResourcesUnavailable as exc:
-                raise HTTPException(status_code = 409, detail = str(exc))
-            if not effective_load_in_4bit:
-                training_kwargs["load_in_4bit"] = False
-                logger.info(
-                    "Latest-transformers sidecar active for %s - sizing and "
-                    "training in 16-bit (4-bit is disabled for brand-new "
-                    "architectures)",
-                    model_load_target,
-                )
-
-        # Training page has no trust_remote_code toggle.
-        if not training_kwargs["trust_remote_code"]:
-            from utils.security.trusted_org import is_trusted_org_repo
-
-            model_defaults = load_model_defaults(request.model_name)
-            yaml_trust = model_defaults.get("training", {}).get("trust_remote_code", False)
-            if yaml_trust and is_trusted_org_repo(request.model_name, hf_token = hf_token):
-                logger.info(f"YAML config sets trust_remote_code=True for {request.model_name}")
-                training_kwargs["trust_remote_code"] = True
-            elif yaml_trust:
-                logger.warning(
-                    "YAML sets trust_remote_code=True for %s but it is not a trusted "
-                    "first-party repo; leaving disabled (user can opt in explicitly).",
-                    request.model_name,
-                )
+        admitted = await _admit_training_request(request, current_subject, via_api_key)
+        training_kwargs = admitted.training_kwargs
+        hf_token = admitted.hf_token
+        resume_run = admitted.resume_run
+        # Set only by start_training_batch: this start becomes one multi-LoRA batch.
+        batch_members = _batch_members_for_start(training_kwargs)
 
         # before_spawn hook: runs only after start_training's guards pass.
         def _free_vram_for_training() -> None:
+            _refuse_a_foreign_export()
             try:
                 from core.export import get_export_backend
                 exp_backend = get_export_backend()
@@ -2391,6 +2672,7 @@ async def start_training(
             except Exception as e:
                 logger.warning("Could not unload diffusion model for training: %s", e)
 
+            _free_restyle_for_training()
             try:
                 # Video pipelines load under the VIDEO arbiter owner; tear down too. Must precede the chat block.
                 from core.inference import gpu_arbiter
@@ -2419,14 +2701,18 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    if (training_kwargs.get("parallel") or {}).get("launcher") == "multi_process":
+                        # Per-card sizing below assumes one process: free resident models rather than guess.
+                        return False, {"mode": "multi_process", "reason": "multi_process"}
+                    members = batch_members or [training_kwargs]
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
                         hf_token = hf_token,
                         training_type = training_kwargs["training_type"],
                         load_in_4bit = training_kwargs["load_in_4bit"],
-                        batch_size = training_kwargs["batch_size"],
+                        batch_size = sum(m["batch_size"] for m in members),
                         max_seq_length = training_kwargs["max_seq_length"],
-                        lora_rank = training_kwargs["lora_r"],
+                        lora_rank = sum(m["lora_r"] for m in members),
                         target_modules = training_kwargs["target_modules"],
                         gradient_checkpointing = training_kwargs["gradient_checkpointing"],
                         optimizer = training_kwargs["optim"],
@@ -2443,6 +2729,7 @@ async def start_training(
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
         from core.inference.gpu_arbiter import SegmenterStillRunningError
+        from core.training.provenance import ExactResumeResourcesUnavailable
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -2453,6 +2740,7 @@ async def start_training(
                     start_request_id = request.start_request_id,
                     before_spawn = _free_vram_for_training,
                     resume_source_run_id = resume_run["id"] if resume_run else None,
+                    **({"batch_members": batch_members} if batch_members else {}),
                     **training_kwargs,
                 )
             except (
@@ -2579,6 +2867,64 @@ async def start_training(
             event = "training.start_failed",
             log = logger,
         )
+
+
+# (first member's run id, the other members' entries) while start_training_batch drives start_training.
+_PENDING_BATCH: contextvars.ContextVar[Optional[tuple[str, list[dict]]]] = contextvars.ContextVar(
+    "studio_training_pending_batch", default = None
+)
+
+
+def _batch_members_for_start(training_kwargs: dict) -> Optional[list[dict]]:
+    pending = _PENDING_BATCH.get()
+    if pending is None:
+        return None
+    first_run_id, others = pending
+    return [{"run_id": first_run_id, **training_kwargs}, *others]
+
+
+async def start_training_batch(
+    requests: list[TrainingStartRequest], current_subject: str, via_api_key: bool
+) -> list[TrainingJobResponse]:
+    """Start compatible LoRA requests as one multi-LoRA run; internal, not a route.
+
+    Every member takes every per-request check; the shared ones (busy, inference conflict, install, VRAM, launch)
+    run once, through start_training for the first member, whose job id becomes the batch id. One response per
+    member, carrying that member's own run id.
+    """
+    if len(requests) < 2:
+        raise ValueError("A training batch needs at least two requests.")
+    if any(request.resume_from_checkpoint or request.start_request_id for request in requests):
+        raise ValueError("A training batch cannot resume or carry a start_request_id.")
+    run_ids = [
+        f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{_uuid.uuid4().hex[:8]}" for _ in requests
+    ]
+    others = []
+    for run_id, request in zip(run_ids[1:], requests[1:]):
+        await _prepare_training_request(request, via_api_key)
+        try:
+            admitted = await _admit_training_request(request, current_subject, via_api_key)
+        except ValueError as e:
+            raise HTTPException(status_code = 400, detail = str(e))
+        others.append({"run_id": run_id, **admitted.training_kwargs})
+    token = _PENDING_BATCH.set((run_ids[0], others))
+    try:
+        started = await start_training(
+            requests[0], current_subject = current_subject, via_api_key = via_api_key
+        )
+    finally:
+        _PENDING_BATCH.reset(token)
+    if started.status == "error" or not started.job_id:
+        return [started.model_copy() for _ in requests]
+    return [
+        TrainingJobResponse(
+            job_id = run_id,
+            status = started.status,
+            message = started.message,
+            error = started.error,
+        )
+        for run_id in run_ids
+    ]
 
 
 @router.post("/stop", response_model = TrainingStopResponse)
@@ -2825,7 +3171,11 @@ def _build_training_status(
         error = error_message,
         warnings = warnings,
         details = details,
+        parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
+        memory_peaks = (
+            getattr(progress, "memory_peaks", None) if progress and exposes_owner_state else None
+        ),
     )
 
 
@@ -3016,6 +3366,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                memory_peaks = getattr(progress, "memory_peaks", None) if progress else None,
             )
 
         def format_sse(
@@ -3389,8 +3740,44 @@ def diffusion_dataset_interlock():
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
 
 
+def _refuse_a_foreign_export() -> None:
+    """Starting training stops the export worker; another account's running export refuses the start instead."""
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        from core.export import get_export_backend
+        from core.training.account_jobs import job_is_foreign
+
+        exp_backend = get_export_backend()
+        foreign = exp_backend.is_export_active() and job_is_foreign(exp_backend)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not check the export worker's account: %s", e)
+        return
+    if foreign:
+        raise ManagedEngineStillRunning(
+            "Another account's export is running. Wait for it to finish, then start training."
+        )
+
+
+def _free_restyle_for_training() -> None:
+    """The restyle sd-server sits outside the arbiter's owners; a running restyle refuses the start."""
+    from core.inference import video_restyle
+    from routes.training_vram import ManagedEngineStillRunning
+
+    try:
+        idle = video_restyle.runner.unload_if_idle()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not unload the video restyle server for training: %s", e)
+        return
+    if not idle:
+        raise ManagedEngineStillRunning(
+            "A video restyle is running. Cancel it or wait for it to finish."
+        )
+
+
 def _free_gpu_for_diffusion_training() -> None:
     """Frees resident GPU models first; the trainer's SDXL pipeline would OOM beside them."""
+    _refuse_a_foreign_export()
     try:
         from core.export import get_export_backend
         exp_backend = get_export_backend()
@@ -3424,6 +3811,7 @@ def _free_gpu_for_diffusion_training() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not unload Images pipeline for diffusion training: %s", e)
 
+    _free_restyle_for_training()
     try:
         from core.inference import gpu_arbiter
         from core.inference.video import get_video_backend
@@ -3567,7 +3955,9 @@ async def start_diffusion_training(
 
     # Refuse while an LLM training run holds the GPU (symmetric with start_training).
     try:
-        if get_training_backend().is_training_active():
+        llm_backend = get_training_backend()
+        await _await_finished_worker_exit(llm_backend)
+        if llm_backend.is_training_active():
             raise HTTPException(
                 status_code = 409,
                 detail = (
@@ -3582,6 +3972,11 @@ async def start_diffusion_training(
 
     # Contain dataset and output paths BEFORE spawning; the trainer would resolve them against its cwd.
     config = body.model_dump()
+    # Unset leaves the trainer default (UNSLOTH_DIT_BLOCK_SWAP); a count travels as the trainer's string form.
+    if config.get("block_swap") is None:
+        config.pop("block_swap", None)
+    else:
+        config["block_swap"] = str(config["block_swap"])
     # An API key with no token of its own must not reach the operator's saved HF login.
     config["allow_ambient"] = via_api_key is not True
     try:
@@ -3600,10 +3995,15 @@ async def start_diffusion_training(
                 ),
             )
         config["output_dir"] = str(out_dir)
-        # Persistent cond cache gets the same containment; blank means in-memory, never the outputs root.
+        # Persistent cond cache gets the same containment; blank means the default cache, never the outputs root.
+        from core.training.diffusion_train_extras import cond_cache_is_off
+
         cond_cache = str(config.get("cond_cache_dir") or "").strip()
+        cond_cache_off = cond_cache_is_off(cond_cache)
+        if cond_cache_off:
+            cond_cache = ""
         cond_cache_dir = resolve_output_dir(cond_cache) if cond_cache else None
-        # A cache resolving to the trained-models dir is disabled, not one flat safetensors per latent there.
+        # A cache resolving to the trained-models dir falls back to the default, not one flat safetensors per latent there.
         if cond_cache_dir is not None and Path(cond_cache_dir).resolve() == root:
             cond_cache_dir = None
         config["cond_cache_dir"] = str(cond_cache_dir) if cond_cache_dir is not None else None
@@ -3621,19 +4021,29 @@ async def start_diffusion_training(
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
-    # Only the DiT trainer reads cond_cache_dir; check the RESOLVED family.
+    # The SDXL trainer never reads cond_cache_dir; check the RESOLVED family.
     if cond_cache and normalized_cfg.resolved_family == "sdxl":
         raise HTTPException(
             status_code = 400,
             detail = (
                 "cond_cache_dir is not supported for the sdxl family: its trainer uses a "
                 "per-run in-memory latent cache and would ignore the persistent one. Omit it, "
-                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, qwen-image, "
-                "z-image, krea-2), which reuses conditioning across runs."
+                "or train a DiT family (flux.1, flux.2-klein, flux.2-dev, flux.3-klein-base, "
+                "qwen-image, z-image, krea-2) or MiniMax-H3, which reuse conditioning across runs."
             ),
         )
 
-    # H3 restrictions (batch > 1, non-bf16, weighting, compile, cond cache) must 400 before eviction.
+    # Unset: this account's default persistent cache, resolved HERE because the trainer child does not carry the
+    # account context. SDXL keeps its in-memory cache; an off value or UNSLOTH_DIFFUSION_TRAIN_COND_CACHE=0 reaches
+    # the trainer as "off", so it never falls back to a default of its own.
+    if cond_cache_off:
+        config["cond_cache_dir"] = "off"
+    elif config["cond_cache_dir"] is None and normalized_cfg.resolved_family != "sdxl":
+        from core.training.diffusion_train_extras import default_cond_cache_dir
+        default_cache = default_cond_cache_dir()
+        config["cond_cache_dir"] = str(default_cache) if default_cache is not None else "off"
+
+    # H3 restrictions (batch > 1, non-bf16, weighting, compile) must 400 before eviction.
     from core.training.diffusion_train_common import h3_train_unsupported_reason
 
     _h3_reason = h3_train_unsupported_reason(normalized_cfg)
@@ -3644,10 +4054,17 @@ async def start_diffusion_training(
     from core.training.diffusion_train_common import training_precision_preflight_error
 
     _precision_reason = training_precision_preflight_error(
-        normalized_cfg.resolved_family, normalized_cfg.base_precision
+        normalized_cfg.resolved_family, normalized_cfg.base_precision, cfg = normalized_cfg
     )
     if _precision_reason:
         raise HTTPException(status_code = 400, detail = _precision_reason)
+
+    # The trainer refuses these only after the base loads; refuse a block_swap it cannot honour here.
+    from core.training.diffusion_block_swap import block_swap_start_error
+
+    _swap_reason = block_swap_start_error(normalized_cfg)
+    if _swap_reason:
+        raise HTTPException(status_code = 400, detail = _swap_reason)
 
     # Trainer child imports the pipeline in this interpreter; refuse a broken import before GPU teardown.
     from core.training.diffusion_train_common import training_pipeline_import_error
@@ -3697,6 +4114,7 @@ async def start_diffusion_training(
         _assert_trusted_base_model(
             config.get("base_model", ""),
             allow_modular = normalized_cfg.resolved_family in MODULAR_BASE_FAMILIES,
+            family = normalized_cfg.resolved_family,
         )
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
@@ -4219,11 +4637,6 @@ async def upload_diffusion_dataset(
     _interlock: None = Depends(diffusion_dataset_interlock),
 ):
     """repeat uploads accumulate in one Unsloth dataset folder; pass its name as ``data_dir`` to /diffusion/start."""
-    import os
-    import tempfile
-
-    from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
-
     _require_diffusion_dataset_mutable()
     cleaned = _clean_diffusion_dataset_name(name)
     if cleaned.casefold() in _reserved_diffusion_dataset_names():
@@ -4242,8 +4655,63 @@ async def upload_diffusion_dataset(
                 "then upload again."
             ),
         )
+    return await _run_holding_import_lock(
+        _lock, _store_diffusion_dataset_upload, folder, cleaned, files, create_only
+    )
+
+
+async def _run_holding_import_lock(_lock: "threading.Lock", fn, *args):
+    """Runs ``fn(*args, _lock, cancelled)`` on a worker that releases ``_lock``, so a cancel never frees it mid-import."""
+    cancelled = threading.Event()
+    guard = threading.Lock()
+    started = False
+
+    def run():
+        nonlocal started
+        with guard:
+            if cancelled.is_set():
+                return None
+            started = True
+        return fn(*args, _lock, cancelled)
+
+    worker = asyncio.ensure_future(asyncio.to_thread(run))
+    try:
+        return await asyncio.shield(worker)
+    except BaseException:
+        with guard:
+            cancelled.set()
+            if not started:
+                _lock.release()
+                raise
+        # Keep the request (interlock, open uploads) alive until the worker stops at its next chunk read.
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except BaseException:
+                pass
+        raise
+
+
+def _read_upload_chunk(f: UploadFile, cancelled: "threading.Event") -> bytes:
+    """A cancelled request stops staging at the next chunk."""
+    if cancelled.is_set():
+        raise asyncio.CancelledError()
+    return f.file.read(1024 * 1024)
+
+
+def _store_diffusion_dataset_upload(
+    folder: Path,
+    cleaned: str,
+    files: list[UploadFile],
+    create_only: bool,
+    _lock: "threading.Lock",
+    cancelled: "threading.Event",
+) -> "DiffusionDatasetUploadResponse":
+    """Validates, stages and commits one upload slice; called with ``_lock`` held and releases it."""
     created_folder = False
     try:
+        from utils.upload_limits import get_upload_limit_bytes, get_upload_limit_label
+
         if create_only:
             occupied = (
                 next(
@@ -4288,6 +4756,8 @@ async def upload_diffusion_dataset(
         seen_names: set = set()
         first_name_by_casefold: dict = {}
         media_names_by_stem_cf: dict = {}
+        # Listed lazily, once; iterdir order keeps the reported clash the first listed match.
+        existing_media_by_stem_cf: Optional[dict] = None
         for f in files:
             # Path.name does not split on a backslash on POSIX, so fold them first.
             filename = Path((f.filename or "").replace("\\", "/")).name.strip().replace("\x00", "")
@@ -4326,8 +4796,20 @@ async def upload_diffusion_dataset(
                     # A casefold-equal name is exempt unless the stems match exactly.
                     return other.stem == stem or other_name.casefold() != fname_cf
 
+                if existing_media_by_stem_cf is None:
+                    existing_media_by_stem_cf = {}
+                    for p in folder.iterdir():
+                        other = Path(p.name)
+                        if other.suffix.lower() in _DIFFUSION_DATASET_MEDIA_EXTS:
+                            existing_media_by_stem_cf.setdefault(other.stem.casefold(), []).append(
+                                p
+                            )
                 clash = next(
-                    (p.name for p in folder.iterdir() if p.is_file() and _shares_sidecar(p.name)),
+                    (
+                        p.name
+                        for p in existing_media_by_stem_cf.get(stem_cf, ())
+                        if p.is_file() and _shares_sidecar(p.name)
+                    ),
                     None,
                 )
                 if clash is None:
@@ -4374,7 +4856,7 @@ async def upload_diffusion_dataset(
                 tmp = folder / f".upload-{_uuid.uuid4().hex}.part"
                 staged.append((tmp, dest))
                 with open(tmp, "wb") as out:
-                    while chunk := await f.read(1024 * 1024):
+                    while chunk := _read_upload_chunk(f, cancelled):
                         total_bytes += len(chunk)
                         if total_bytes > limit_bytes:
                             raise HTTPException(
@@ -4549,8 +5031,9 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
         if not meta_path.is_file():
             continue
         # Tolerate a bad upload (invalid UTF-8, or non-object JSON): skip the record so these endpoints do not 500.
+        # split("\n"), not splitlines(): JSON keeps U+2028, U+2029 and U+0085 raw inside a string.
         try:
-            lines = meta_path.read_text(encoding = "utf-8").splitlines()
+            lines = meta_path.read_text(encoding = "utf-8").split("\n")
         except (OSError, UnicodeError):
             continue
         for line in lines:
@@ -4570,6 +5053,38 @@ def _load_metadata_captions(folder: Path) -> dict[str, str]:
             if key and value is not None:
                 out[str(key)] = str(value)
     return out
+
+
+_IMAGE_SIZE_CACHE_MAX = 8192
+_image_size_cache: "OrderedDict[str, tuple[tuple, tuple[int, int]]]" = OrderedDict()
+_image_size_cache_lock = threading.Lock()
+
+
+def _dataset_image_size(image_path: Path, info: Optional[os.stat_result]) -> tuple[int, int]:
+    """Header size (0x0 if unreadable), reused while the file's stat ``info`` is unchanged."""
+    key = None
+    name = str(image_path)
+    if info is not None:
+        # POSIX: any write moves ctime, even with mtime restored; a replace moves the inode.
+        key = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        with _image_size_cache_lock:
+            hit = _image_size_cache.get(name)
+            if hit is not None and hit[0] == key:
+                _image_size_cache.move_to_end(name)
+                return hit[1]
+    try:
+        from PIL import Image
+        with Image.open(image_path) as im:
+            size = im.size
+    except Exception:  # noqa: BLE001 -- lists as 0x0 rather than 500; not cached, so retried
+        return 0, 0
+    if key is not None:
+        with _image_size_cache_lock:
+            _image_size_cache[name] = (key, size)
+            _image_size_cache.move_to_end(name)
+            while len(_image_size_cache) > _IMAGE_SIZE_CACHE_MAX:
+                _image_size_cache.popitem(last = False)
+    return size
 
 
 def _image_record(
@@ -4603,18 +5118,15 @@ def _image_record(
             caption = meta
             source = "metadata"
     try:
-        size_bytes = image_path.stat().st_size
+        info = image_path.stat()
+        size_bytes = info.st_size
     except OSError:
+        info = None
         size_bytes = 0
     is_clip = image_path.suffix.lower() in _DIFFUSION_DATASET_CLIP_EXTS
     width = height = 0
     if not is_clip:
-        try:
-            from PIL import Image
-            with Image.open(image_path) as im:
-                width, height = im.size
-        except Exception:  # noqa: BLE001 -- an unreadable image still lists (0x0) rather than 500
-            pass
+        width, height = _dataset_image_size(image_path, info)
     return DiffusionDatasetImageRecord(
         filename = image_path.name,
         caption = caption,
@@ -4996,11 +5508,23 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
             ],
         )
     )
+    from hub.utils.dataset_cache import resolved_dataset_snapshot_file
+
+    def _in_cache(path: Path) -> Optional[Path]:
+        # Tool sandboxes can write the Hub cache: an entry that leads out of it (a planted link) is skipped.
+        try:
+            return resolved_dataset_snapshot_file(snap, path.relative_to(snap).as_posix())
+        except ValueError:
+            return None
+
     # Map basename -> caption from every jsonl carrying file_name + caption column.
     captions: dict[str, str] = {}
     # read_text on a companion raises and fails the whole import.
     for jf in drop_appledouble_metadata(sorted(snap.rglob("*.jsonl"))):
-        for line in jf.read_text(encoding = "utf-8").splitlines():
+        jf = _in_cache(jf)
+        if jf is None:
+            continue
+        for line in jf.read_text(encoding = "utf-8").split("\n"):
             line = line.strip()
             if not line:
                 continue
@@ -5027,8 +5551,11 @@ def _materialize_imagefolder_jsonl(entry: dict, dest: Path, cap: int) -> int:
     for src in images:
         if written >= cap:
             break
+        resolved = _in_cache(src)
+        if resolved is None:
+            continue
         stem = f"img_{written:04d}"
-        shutil.copyfile(src, dest / f"{stem}{src.suffix.lower()}")
+        shutil.copyfile(resolved, dest / f"{stem}{src.suffix.lower()}")
         cap_text = captions.get(src.name)
         if cap_text:
             (dest / f"{stem}.txt").write_text(cap_text.strip(), encoding = "utf-8")

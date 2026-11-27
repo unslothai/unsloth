@@ -4,10 +4,10 @@
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import {
   KIND_ICONS,
-  type LibraryItem,
   fileKind,
   isModelItem,
-} from "@/features/library";
+} from "@/features/library/file-kind";
+import type { LibraryItem } from "@/features/library/api";
 import type { IconSvgElement } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 

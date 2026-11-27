@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-process verdict on whether the Hub endpoint answers. After one transport failure, cached-load Hub calls use
-their fallback for ``TTL_SECONDS`` instead of each waiting out a timeout. HTTP answers never set the verdict.
-"""
+"""Per-process: transport failure (not HTTP) makes cached Hub calls use fallback for TTL_SECONDS"""
 
 from __future__ import annotations
 
@@ -52,6 +50,26 @@ def endpoint() -> str:
         return str(constants.ENDPOINT)
     except Exception:  # noqa: BLE001
         return ""
+
+
+def offline_mode() -> bool:
+    """The user asked for offline mode (HF_HUB_OFFLINE or TRANSFORMERS_OFFLINE): nothing may ask the Hub, so a media
+    load reads only the cache, as a ``local_files_only`` one does. Another thread's short force_hf_offline window
+    does not count: the load would stay cache-only for its whole run and could not fetch a missing file. Never
+    raises."""
+    try:
+        from utils.utils import force_hf_offline_active, hf_user_offline
+        if hf_user_offline():
+            return True
+        if force_hf_offline_active():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from huggingface_hub import constants
+        return bool(constants.HF_HUB_OFFLINE)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def hub_unreachable(at: Optional[str] = None) -> bool:

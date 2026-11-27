@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Head-to-head: PyTorch (diffusers GGUF) vs native stable-diffusion.cpp.
-
-Same Z-Image GGUF transformer, same VAE + text encoder, same resolution / steps /
-seed, both resident (no CPU offload) on the same GPU. Reports per-engine compute
-latency (model already loaded) so the denoise + VAE + TE work is compared fairly;
-for sd.cpp it also reports the one-shot wall time (compute + the per-call model
-reload, which a persistent sd-server would remove).
-
-PyTorch runs first (load / warmup / median), is unloaded, then sd.cpp runs.
-"""
+"""PyTorch vs sd.cpp on the same resident Z-Image GGUF; sd.cpp wall time adds a per-call model reload."""
 
 from __future__ import annotations
 

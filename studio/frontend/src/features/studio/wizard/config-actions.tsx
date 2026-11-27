@@ -7,11 +7,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useTrainingConfigStore } from "@/features/training";
+// eslint-disable-next-line no-restricted-imports -- through the barrel, js-yaml would load at startup.
 import {
   parseYamlConfig,
   serializeConfigToYaml,
-  useTrainingConfigStore,
-} from "@/features/training";
+} from "@/features/training/lib/yaml-config";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {
@@ -21,8 +22,8 @@ import {
 } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  Archive04Icon,
-  CleanIcon,
+  FloppyDiskIcon,
+  UndoIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -158,7 +159,7 @@ export function ConfigActions() {
             className="h-9 cursor-pointer rounded-full"
             onClick={handleSaveConfig}
           >
-            <HugeiconsIcon icon={Archive04Icon} className="size-3.5" />
+            <HugeiconsIcon icon={FloppyDiskIcon} className="size-3.5" />
             {t("studio.wizard.saveYaml")}
           </Button>
         </TooltipTrigger>
@@ -175,7 +176,7 @@ export function ConfigActions() {
             onClick={handleResetConfig}
             disabled={!selectedModel}
           >
-            <HugeiconsIcon icon={CleanIcon} className="size-3.5" />
+            <HugeiconsIcon icon={UndoIcon} className="size-3.5" />
             {t("studio.wizard.resetDefaults")}
           </Button>
         </TooltipTrigger>

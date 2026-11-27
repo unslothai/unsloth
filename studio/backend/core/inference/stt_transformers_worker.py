@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whisper (Transformers) dictation in a spawn child, and the handle for it.
-
-A CUDA context costs ~700 MiB on a current card and is never returned while the
-process that created it lives, so an in-process load left the backend that much
-heavier for good: unloading the model frees the weights and nothing else (the
-rule is written down in core/inference/gpu_arbiter.py). whisper.cpp and
-llama.cpp dictation already serve from their own processes; this puts the
-Transformers engine on the same footing, so an idle unload ends a process and
-the context goes with it.
-
-Both sides live here: ``run_stt_worker`` is the child entrypoint (imported by
-name in the child, so it must stay at module scope for Windows spawn), and
-``WhisperWorker`` is the parent-side handle the sidecar holds instead of a
-model object.
-"""
+"""Whisper dictation in spawn child (CUDA context dies with it); run_stt_worker must be module-level."""
 
 from __future__ import annotations
 
@@ -97,6 +83,13 @@ def load_whisper(
 ) -> tuple:
     """Loads Whisper from the local Hub cache; local_files_only keeps the Model Hub the only download path, and a cache miss raises SttModelNotDownloadedError."""
     import torch
+
+    _ensure_backend_on_path()
+    from utils.transformers_backports import install as guard_transformers_parsing
+
+    # This child never imports unsloth: install its tokenizer / config back-ports before the
+    # repo's tokenizer files are parsed, so they cannot name a host file as the vocabulary.
+    guard_transformers_parsing()
     from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
     dtype = getattr(torch, dtype_name, None) or torch.float32
@@ -150,7 +143,9 @@ def transcribe_window(
         generated = model.generate(features, **kwargs)
     consumed = len(segment)
     if return_timestamps:
-        raw_tokens = [int(token) for token in generated[0]]
+        row = generated[0]
+        # One host copy: iterating an accelerator tensor syncs once per token.
+        raw_tokens = row.tolist() if hasattr(row, "tolist") else [int(token) for token in row]
         indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
         if end:
             consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND

@@ -57,6 +57,19 @@ def test_fused_flux_rope_switch_is_on_for_a_tag_only_rocm_wheel(amd_sdk_wheel):
     assert rf._switch_on(rf.FUSED_ROPE_ENV) is True
 
 
+def test_vae_canvas_graph_replicas_see_a_tag_only_rocm_wheel(amd_sdk_wheel):
+    from core.inference import diffusion_vae_canvas as vc
+    assert vc._is_rocm() is True
+
+
+def test_vae_canvas_rocm_check_does_not_fall_back_on_a_cuda_build(monkeypatch):
+    from core.inference import diffusion_vae_canvas as vc
+
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+cu130", raising = False)
+    assert vc._is_rocm() is False
+
+
 def test_render_thread_stays_off_on_a_tag_only_rocm_wheel(amd_sdk_wheel):
     from core.inference import diffusion_render_thread as rt
     assert rt.enabled() is False
@@ -72,6 +85,7 @@ def test_nvidia_only_paths_decline_on_a_tag_only_rocm_wheel(amd_sdk_wheel, monke
     from core.inference import (
         diffusion_compile_config,
         diffusion_flux2_rope,
+        diffusion_flux3_rope,
         diffusion_nvfp4_install,
         diffusion_render_thread,
         video_nvenc,
@@ -81,6 +95,7 @@ def test_nvidia_only_paths_decline_on_a_tag_only_rocm_wheel(amd_sdk_wheel, monke
     assert video_nvenc.nvenc_gpu() is None
     assert diffusion_compile_config._device_capability() is None
     assert diffusion_flux2_rope.wanted(torch.float16, "cuda") is False
+    assert diffusion_flux3_rope.wanted("cuda") is False
     reason = diffusion_nvfp4_install._host_refusal("cuda")
     assert reason is not None and "ROCm" in reason
     assert diffusion_render_thread.enabled() is False
@@ -119,8 +134,19 @@ def _is_version_lookup(node: ast.AST) -> bool:
 def _raw_hip_reads(path: Path) -> list[int]:
     """Lines of ``torch.version.hip`` / ``getattr(torch.version, "hip", ...)`` reads in code (not comments)."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    # Inside an f-string the read labels a cache key with the build string; it gates nothing.
+    # Inside an f-string, or stringified straight into a dict value ({"hip": str(torch.version.hip)}), the
+    # read labels a cache key or stack fingerprint with the build string; it gates nothing.
     labels = {id(n) for js in ast.walk(tree) if isinstance(js, ast.JoinedStr) for n in ast.walk(js)}
+    for d in ast.walk(tree):
+        if isinstance(d, ast.Dict):
+            for value in d.values:
+                if (
+                    isinstance(value, ast.Call)
+                    and isinstance(value.func, ast.Name)
+                    and value.func.id == "str"
+                    and len(value.args) == 1
+                ):
+                    labels.update(id(n) for n in ast.walk(value.args[0]))
     lines = []
     for node in ast.walk(tree):
         if id(node) in labels:
@@ -140,6 +166,23 @@ def _raw_hip_reads(path: Path) -> list[int]:
         ):
             lines.append(node.lineno)
     return sorted(set(lines))
+
+
+@pytest.mark.parametrize(
+    "source, reads",
+    [
+        ('stack = {"hip": str(getattr(torch.version, "hip", None))}', []),
+        ('stack = {"hip": str(torch.version.hip)}', []),
+        ('key = f"hip={torch.version.hip}"', []),
+        ('if str(torch.version.hip) != "None":\n    pass', [1]),
+        ('stack = {"hip": torch.version.hip}', [1]),
+        ('rocm = bool(getattr(torch.version, "hip", None))', [1]),
+    ],
+)
+def test_raw_hip_reads_tells_labels_from_gates(tmp_path, source, reads):
+    path = tmp_path / "diffusion_x.py"
+    path.write_text(source, encoding = "utf-8")
+    assert _raw_hip_reads(path) == reads
 
 
 def test_no_diffusion_or_video_gate_reads_version_hip_directly():

@@ -143,6 +143,8 @@ export interface TrainingConfigState {
   drafterCapability: DrafterCapability | null;
   packing: boolean;
   trainOnCompletions: boolean;
+  /** Explicit user/YAML choices, separate from automatic model and dataset defaults. */
+  trainingToggleChoices: { packing?: boolean; trainOnCompletions?: boolean };
   gradientCheckpointing: GradientCheckpointing;
   offloadLayers: OffloadLayers;
   offloadVramGb: number | null;
@@ -168,6 +170,8 @@ export interface TrainingConfigState {
   trainOnCompletionsDefaultPendingFor: string | null;
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
+  /** Train split row count from the dataset check; null until checked or when unknown. */
+  datasetTotalRows: number | null;
   isDatasetAudio: boolean;
   datasetCheckFailed: boolean;
   trustRemoteCode: boolean;

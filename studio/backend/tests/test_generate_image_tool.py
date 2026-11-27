@@ -313,6 +313,69 @@ def _response(tmp_path, monkeypatch):
     return DiffusionGenerateResponse(images = [GalleryImage(**record)])
 
 
+def test_selected_retired_generator_can_render_on_its_replacement(
+    engine, server_loop, keepwarm, monkeypatch, tmp_path
+):
+    from core.inference import chat_media_swap, media_auto_switch
+    from core.inference.media_model_index import MediaModelPick
+
+    retired = "unsloth/flux-3-image-klein"
+    replacement = "black-forest-labs/flux-3-image-klein"
+    engine.status_dict["repo_id"] = replacement
+    pick = MediaModelPick(retired, str(tmp_path / "retired"), None, "pipeline")
+    monkeypatch.setattr(media_auto_switch, "_resolve_pick", lambda *_: pick)
+    token = chat_media_swap.request_image_model.set(retired)
+    try:
+        result = tool.run_generate_image({"prompt": "kite"}, workdir = str(tmp_path))
+    finally:
+        chat_media_swap.request_image_model.reset(token)
+
+    assert result.startswith("Generated")
+    assert engine.calls[0]["expected_load"].repo_id == replacement
+
+
+@pytest.mark.parametrize("same_repo", [False, True])
+def test_selected_generator_replacement_during_admission_refuses_render(
+    engine, server_loop, keepwarm, monkeypatch, tmp_path, same_repo
+):
+    from core.inference import chat_media_swap, media_auto_switch
+    from core.inference.diffusion_families import (
+        DiffusionModelReplacedError,
+        load_identity,
+        require_pinned_checkpoint,
+    )
+
+    monkeypatch.setattr(media_auto_switch, "_resolve_pick", lambda *_: None)
+    selected = engine.status_dict["repo_id"]
+    replacement = selected if same_repo else "org/replacement"
+    engine.status_dict["gguf_filename"] = "original.gguf"
+    pins = []
+
+    async def replace_during_admission(_):
+        engine.status_dict["repo_id"] = replacement
+        engine.status_dict["gguf_filename"] = "replacement.gguf"
+
+    def generate(*, expected_load, **kwargs):
+        pins.append(expected_load.repo_id)
+        actual = load_identity(replacement, None, engine.status_dict["family"])
+        if expected_load != actual:
+            raise DiffusionModelReplacedError(expected_load, actual)
+        require_pinned_checkpoint(actual, engine.status_dict["gguf_filename"])
+        pytest.fail("The tool rendered with the replacement generator")
+
+    monkeypatch.setattr(media_keepwarm, "begin_request", replace_during_admission)
+    monkeypatch.setattr(engine, "generate", generate)
+    token = chat_media_swap.request_image_model.set(selected)
+    try:
+        result = tool.run_generate_image({"prompt": "kite"}, workdir = str(tmp_path))
+    finally:
+        chat_media_swap.request_image_model.reset(token)
+
+    assert result.startswith("Error:")
+    assert pins == [selected]
+    assert keepwarm["end"] == 1
+
+
 def test_omitted_settings_are_not_sent_and_sizes_snap(engine, server_loop, monkeypatch, tmp_path):
     response = _response(tmp_path, monkeypatch)
 
@@ -483,9 +546,7 @@ def test_the_same_prompt_twice_is_two_renders():
 def test_stopping_a_queued_call_never_cancels_the_render_ahead_of_it(
     engine, server_loop, keepwarm, monkeypatch, tmp_path
 ):
-    # Same account, two surfaces: a render already holds the engine (still before step 0, so
-    # progress reads idle) when the chat call arrives and queues behind it. Stop on the chat must
-    # leave that render alone and drop only its own queued run.
+    # A render holds the engine first, so stopping the chat must cancel only its own queued run.
     _alice_loaded(monkeypatch)
     lock = threading.Lock()
     other_cancel = threading.Event()

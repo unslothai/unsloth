@@ -9,7 +9,7 @@ import { Route as rootRoute } from "./__root";
 export const Route = createRoute({
   getParentRoute: () => rootRoute,
   path: "/audio",
-  staticData: { title: "Audio" },
+  staticData: { titleKey: "shell.navigation.audio" },
   validateSearch: validateAudioSearch,
   beforeLoad: () => requireAuth(),
   component: () => null,

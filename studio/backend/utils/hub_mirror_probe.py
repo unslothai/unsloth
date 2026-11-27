@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Log a warning when a custom Hub endpoint redirects to huggingface.co (hf-mirror.com does outside
-mainland China), which huggingface_hub otherwise follows silently. No token, no redirect followed."""
+"""Warns when a custom Hub endpoint redirects to huggingface.co, which huggingface_hub would follow
+silently; sends no token and follows no redirect"""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import httpx
 
 from loggers import get_logger
 from utils.hf_endpoint import is_loopback_host
+from utils.utils import hf_env_offline
 
 logger = get_logger(__name__)
 
@@ -91,8 +92,7 @@ def should_probe(endpoint: str) -> bool:
     host = urlsplit(endpoint or "").hostname
     if not host or is_official_host(host) or is_loopback_host(host):
         return False
-    off = ("1", "true", "yes", "on")
-    if os.environ.get("HF_HUB_OFFLINE", "").strip().lower() in off:
+    if hf_env_offline():
         return False
     return os.environ.get(PROBE_ENV, "").strip().lower() not in ("0", "false", "no", "off")
 

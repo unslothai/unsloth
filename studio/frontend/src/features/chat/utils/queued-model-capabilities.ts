@@ -9,6 +9,7 @@ export type QueuedModelCapabilities = Pick<
   | "audioType"
   | "hasAudioInput"
   | "hasVideoInput"
+  | "speaks"
 >;
 
 export function mergeQueuedModelCapabilities(

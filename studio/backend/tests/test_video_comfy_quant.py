@@ -98,7 +98,9 @@ def test_h3_keeps_the_pruned_model_float32_tensors():
         ("wan2.2_ti2v_5B_fp16.safetensors", False, None),
         ("minimax_h3_fl2va_pruned_bf16.safetensors", True, "fl2va"),
         ("minimax_h3_fl2va_pruned_nvfp4.safetensors", False, None),
-        ("minimax_h3_fl2va_pruned_w6a8.safetensors", False, None),
+        ("minimax_h3_fl2va_pruned_w6a8.safetensors", True, "fl2va"),
+        ("minimax_h3_image_pruned_w4a8.safetensors", True, "fl2va"),
+        ("minimax_h3_fl2va_pruned_w4a4.safetensors", False, None),
     ],
 )
 def test_h3_single_file_names(name, ok, task):
@@ -413,20 +415,25 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(True)) == {
         "int8_backend": "torchao",
         "fp8_backend": "torchao",
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
-    # either plan offloading the DiT means the hooks move it: int8 takes the torchao-free twin, fp8 has no GEMM
-    # and stays stored as fp8, widened per layer
+    # Offloaded: int8 takes the torchao-free twin; fp8 has no GEMM, so it stays stored as fp8.
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False)) == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
     assert vid._video_comfy_backends(fam, "b", None, _plan(True), keep = False) == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": False,
         "fp8_widen_chosen": False,
     }
@@ -438,6 +445,24 @@ def test_video_backends_follow_studio_rules(monkeypatch):
     assert (
         vid._video_comfy_backends(fam, "b", None, _plan(True), _plan(False))["fp8_storage"] is False
     )
+
+
+@pytest.mark.parametrize("required, store", [(1800, True), (1700, False)])
+def test_mps_video_stores_fp8_only_past_the_resident_margin(monkeypatch, required, store):
+    """MPS never offloads, so a plan past 0.85 of its budget is what makes fp8 storage pay."""
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV, raising = False)
+    monkeypatch.setattr(vid, "comfy_int8_backend", lambda *a, **k: None)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    plan = types.SimpleNamespace(
+        offload_policy = "none",
+        device_memory = types.SimpleNamespace(device = "mps", is_unified = True),
+        estimates = {"resident_required_mib": required, "safe_device_budget_mib": 2000},
+    )
+    mps = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+    fam = types.SimpleNamespace(name = "wan2.2-ti2v-5b")
+    assert vid._video_comfy_backends(fam, "b", mps, plan)["fp8_storage"] is store
+    # the shortfall check then sees the stored price, not the widened one
+    assert vid._video_comfy_reprice(plan) is store
 
 
 def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monkeypatch):
@@ -462,6 +487,8 @@ def test_a_smaller_offloaded_price_replans_and_keeps_the_offloaded_backends(monk
     assert kept == {
         "int8_backend": "native",
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }
@@ -730,6 +757,12 @@ def test_offloaded_plan_size_prices_fp8_that_only_runs_resident(monkeypatch, tmp
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 2
     monkeypatch.setenv(cq.FP8_STORAGE_ENV, "0")
     assert vid._video_comfy_resident_mib(fam, "b", None, path, scan, offload = True) == 3
+    monkeypatch.delenv(cq.FP8_STORAGE_ENV)
+    mps = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16)
+    monkeypatch.setattr(vid, "comfy_fp8_backend", lambda *a, **k: None)
+    # MPS has no fp8 GEMM: resident widens, the re-price stores
+    assert vid._video_comfy_resident_mib(fam, "b", mps, path, scan) == 3
+    assert vid._video_comfy_resident_mib(fam, "b", mps, path, scan, offload = True) == 2
 
 
 def test_dense_h3_maps_its_timestep_mlp_and_keeps_adaln_at_compute_dtype():
@@ -864,9 +897,8 @@ def test_a_stock_converter_row_reorder_of_kept_codes_is_checked(h3like_file, mon
 def test_a_host_ram_refusal_in_the_narrow_pass_is_not_retried_at_full_width(
     h3like_file, monkeypatch
 ):
-    """The narrow-tag conversion pass retries at full width on any failure it cannot prove, but a host RAM
-    refusal is final: the full-width float64 tags (and a converter's unchecked joins over them) would only
-    allocate more."""
+    """The narrow-tag pass retries at full width on unprovable failures, but a host RAM refusal is
+    final: full-width float64 tags and unchecked converter joins would only allocate more."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -968,9 +1000,8 @@ def test_the_up_front_estimate_skips_tensors_the_key_filter_never_reads(tmp_path
 def test_a_full_width_tag_retry_that_does_not_fit_is_refused_before_converting(
     h3like_file, monkeypatch
 ):
-    """The narrow-tag pass failing for an ordinary reason retries at full float64 width, which a converter
-    can materialize at 8 bytes per weight element before any checked helper runs: that peak is checked
-    first, and a retry that does not fit is refused without calling the converter again."""
+    """A narrow-tag failure retries at full float64 width, which a converter can materialize at 8
+    bytes per element, so that peak is checked first; a retry that does not fit is refused."""
     import core.inference.diffusion_single_file_converters as conv
     import core.inference.diffusion_small_host as small_host
 
@@ -1098,6 +1129,8 @@ def test_a_resident_video_dit_that_fits_only_stored_gets_fp8_storage(tmp_path, m
     assert picked == {
         "int8_backend": None,
         "fp8_backend": None,
+        "nvfp4_backend": None,
+        "mxfp8_backend": None,
         "fp8_storage": True,
         "fp8_widen_chosen": False,
     }

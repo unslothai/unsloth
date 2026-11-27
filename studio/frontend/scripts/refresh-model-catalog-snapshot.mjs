@@ -25,6 +25,8 @@ const PROVIDER_MAP = {
   huggingface: "huggingface",
   alibaba: "qwen",
   zai: "zai",
+  opencode: "opencode",
+  "opencode-go": "opencode_go",
   "ollama-cloud": "ollama",
   lmstudio: "lmstudio",
 };
@@ -84,6 +86,8 @@ const lines = [
   "  input?: readonly string[];",
   "  /** Published context window in tokens. */",
   "  context?: number;",
+  "  /** YYYY-MM-DD, served by the backend catalog only. */",
+  "  released?: string;",
   "}",
   "",
   "export const MODEL_CATALOG_SNAPSHOT: Readonly<",

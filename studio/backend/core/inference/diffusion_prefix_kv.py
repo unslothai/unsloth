@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Inductor lowers a prefix KV cache's ``k[:, :prefix].clone()`` to a view of the full K/V buffer, pinning
-it for the render; a hook copies the cached tensors out after the prefill forward."""
+"""Prefix KV clone is copied out after prefill: Inductor makes it a view that pins the K/V buffer."""
 
 from __future__ import annotations
 
@@ -95,9 +94,12 @@ def release_prefix_kv(transformer: Any) -> int:
     import torch
 
     seen = getattr(transformer, _SEEN_ATTR, None) if transformer is not None else None
+    # a tensor-parallel denoiser keeps the K/V per card in its own stack; the pipeline's cache objects stay empty
+    from .diffusion_tp2 import release_kv as _release_tp_kv
+
+    released = _release_tp_kv(transformer) if transformer is not None else 0
     if not seen:
-        return 0
-    released = 0
+        return released
     caches = [ref() for ref in seen]
     seen.clear()
     for cache in caches:

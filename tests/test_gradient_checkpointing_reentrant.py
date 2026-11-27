@@ -104,3 +104,15 @@ def test_the_snippet_pins_true_rather_than_deleting_the_key():
         "deleting the key is not enough: a config that never set it leaves "
         "None, and transformers substitutes False"
     )
+
+
+class _RenamedConfig(_Config):
+    def __init__(self, kwargs = None):
+        super().__init__(kwargs = kwargs)
+        self.activation_checkpointing_kwargs = kwargs
+
+
+def test_the_pin_reaches_activation_checkpointing_kwargs():
+    config = _run_post(_RenamedConfig(kwargs = None))
+    assert config.activation_checkpointing_kwargs == {"use_reentrant": True}
+    assert config.gradient_checkpointing_kwargs == {"use_reentrant": True}

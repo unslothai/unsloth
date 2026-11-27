@@ -24,6 +24,7 @@ from importlib.metadata import version as importlib_version
 from importlib.metadata import PackageNotFoundError
 from packaging.version import Version as TrueVersion
 import re
+import json
 import logging
 import textwrap
 import warnings
@@ -35,12 +36,17 @@ import functools
 import inspect
 import types
 
+# Values of UNSLOTH_ENABLE_LOGGING that turn verbose output on, everywhere in Unsloth.
+_UNSLOTH_LOGGING_ON = ("1", "True", "true")
+
+
+def unsloth_logging_enabled():
+    """UNSLOTH_ENABLE_LOGGING read now (the module constant below is read once at import)."""
+    return os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in _UNSLOTH_LOGGING_ON
+
+
 # We cannot do from unsloth_zoo.log import logger since FBGEMM might cause seg faults.
-UNSLOTH_ENABLE_LOGGING = os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") in (
-    "1",
-    "True",
-    "true",
-)
+UNSLOTH_ENABLE_LOGGING = unsloth_logging_enabled()
 logger = logging.getLogger(__name__)
 if UNSLOTH_ENABLE_LOGGING:
     logging.basicConfig(level = logging.INFO, format = "[%(name)s|%(levelname)s]%(message)s")
@@ -420,7 +426,6 @@ def fix_xformers_performance_issue():
 # flash-attn 4 makes flash_attn a namespace package without flash_attn_interface, which breaks
 # `import xformers.ops`; import xformers once with flash_attn hidden from find_spec.
 _FLASH_ATTN_INTERFACE_NAME = "flash_attn_interface"
-_FLASH_ATTN_INTERFACE_MODULE = "flash_attn." + _FLASH_ATTN_INTERFACE_NAME
 _FA4_NAMESPACE_WARNED = [False]
 
 
@@ -965,6 +970,102 @@ def fix_transformers5_legacy_config_types():
         logger.info(f"Unsloth: Failed patching PretrainedConfig.__new__ ({e})")
         return
     logger.info("Unsloth: Patched transformers config classes to accept legacy 4.x value types.")
+
+
+def fix_transformers_config_commit_hash():
+    """transformers 5.18 stopped stamping `config._commit_hash` (huggingface/transformers#47611 resolves the revision
+    once per load and passes it around instead), so a loaded config no longer says which commit it was read at.
+    Unsloth pins remote code, text-only probes, exports and drafts to that commit; restore the stamp."""
+    import os
+
+    try:
+        from transformers import configuration_utils as cu
+        from transformers.utils import hub as tf_hub
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping config commit hash fix ({e})")
+        return
+    resolve_revision = getattr(tf_hub, "resolve_revision", None)
+    base = getattr(cu, "PreTrainedConfig", None) or getattr(cu, "PretrainedConfig", None)
+    if resolve_revision is None or base is None:
+        return  # transformers <= 5.17 records the commit itself.
+    if getattr(base, "_unsloth_commit_hash_patched", False):
+        return
+    probe = "0" * 40
+    try:
+        if getattr(base(_commit_hash = probe), "_commit_hash", None) == probe:
+            return
+    except Exception:
+        pass
+    get_config_dict = getattr(base.__dict__.get("get_config_dict"), "__func__", None)
+    from_dict = getattr(base.__dict__.get("from_dict"), "__func__", None)
+    if get_config_dict is None or from_dict is None:
+        return
+    pinned = getattr(tf_hub, "_pinned_commit_hash", None)
+    extract = getattr(tf_hub, "extract_commit_hash", None)
+
+    def _commit_of(name, revision, subfolder):
+        commit = None
+        try:
+            if pinned is not None:
+                commit = pinned(revision)
+            else:
+                commit = getattr(revision, "resolved", None)
+        except Exception:
+            commit = None
+        if commit is None and extract is not None and os.path.isdir(str(name)):
+            # A local snapshot folder of the Hub cache: 5.17 read the commit off the path.
+            try:
+                path = os.path.join(str(name), subfolder or "", cu.CONFIG_NAME)
+                commit = extract(path, None)
+            except Exception:
+                commit = None
+        return commit if isinstance(commit, str) and commit else None
+
+    def patched_get_config_dict(cls, pretrained_model_name_or_path, **kwargs):
+        # Resolve exactly as transformers does; an already resolved revision is returned as is.
+        try:
+            kwargs["revision"] = resolve_revision(
+                pretrained_model_name_or_path,
+                kwargs.get("revision"),
+                token = kwargs.get("token"),
+                local_files_only = kwargs.get("local_files_only", False),
+                cache_dir = kwargs.get("cache_dir"),
+            )
+        except Exception:
+            pass
+        revision = kwargs.get("revision")
+        subfolder = kwargs.get("subfolder", "")
+        config_dict, unused = get_config_dict(cls, pretrained_model_name_or_path, **kwargs)
+        if isinstance(config_dict, dict):
+            # As 5.17 did: the commit read now, never a stale one saved inside config.json.
+            config_dict["_commit_hash"] = _commit_of(
+                pretrained_model_name_or_path, revision, subfolder
+            )
+        return config_dict, unused
+
+    def patched_from_dict(cls, config_dict, **kwargs):
+        commit = kwargs.get("_commit_hash")
+        if commit is None and isinstance(config_dict, dict):
+            commit = config_dict.get("_commit_hash")
+        output = from_dict(cls, config_dict, **kwargs)
+        config = output[0] if isinstance(output, tuple) else output
+        if isinstance(commit, str) and getattr(config, "_commit_hash", None) is None:
+            try:
+                config._commit_hash = commit
+            except Exception:
+                pass
+        return output
+
+    patched_get_config_dict.__wrapped__ = get_config_dict
+    patched_from_dict.__wrapped__ = from_dict
+    try:
+        base.get_config_dict = classmethod(patched_get_config_dict)
+        base.from_dict = classmethod(patched_from_dict)
+        base._unsloth_commit_hash_patched = True
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching config commit hash ({e})")
+        return
+    logger.info("Unsloth: Patched transformers configs to record the commit they were loaded at.")
 
 
 # Image modules first so their `resize` wins; transformers.utils last, it can shadow names.
@@ -1837,6 +1938,89 @@ def fix_transformers_chat_template_path_traversal():
                 logger.info(f"Unsloth: Failed patching {target.__name__}.{name} ({e})")
 
 
+_GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG = "_unsloth_patched_gemma4_tool_arguments"
+_GEMMA4_TOOL_CALL_MARKER = "<|tool_call>call:"
+
+
+def _gemma4_object_arguments(conversations):
+    """JSON-object string arguments -> dicts; returns the input itself when nothing parses."""
+    import json
+
+    changed = False
+    result = []
+    for conversation in conversations:
+        new_conversation = conversation
+        for i, message in enumerate(conversation):
+            calls = message.get("tool_calls") if isinstance(message, dict) else None
+            if not isinstance(calls, list):
+                continue
+            new_calls = None
+            for j, call in enumerate(calls):
+                function = call.get("function") if isinstance(call, dict) else None
+                arguments = function.get("arguments") if isinstance(function, dict) else None
+                if not isinstance(arguments, str):
+                    continue
+                try:
+                    parsed = json.loads(arguments)
+                # RecursionError: deeply nested input; keep the string as before.
+                except (ValueError, RecursionError):
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                if new_calls is None:
+                    new_calls = list(calls)
+                new_calls[j] = {**call, "function": {**function, "arguments": parsed}}
+            if new_calls is not None:
+                if new_conversation is conversation:
+                    new_conversation = list(conversation)
+                new_conversation[i] = {**message, "tool_calls": new_calls}
+                changed = True
+        result.append(new_conversation)
+    return result if changed else conversations
+
+
+def fix_gemma4_string_tool_arguments():
+    """Gemma 4 templates write call:NAME{key:<|"|>value<|"|>} only for mapping arguments and paste an
+    OpenAI-style JSON string verbatim (Google's raises), so training data with string arguments teaches
+    the wrong call syntax. Decode JSON-object strings before rendering any template with that call syntax;
+    anything else renders as before."""
+    try:
+        from transformers.utils import chat_template_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Gemma 4 tool argument fix ({e})")
+        return
+    original = getattr(chat_template_utils, "render_jinja_template", None)
+    if original is None or getattr(original, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, False):
+        return
+
+    @functools.wraps(original)
+    def render_jinja_template(*args, **kwargs):
+        chat_template = kwargs.get("chat_template", args[3] if len(args) > 3 else None)
+        if isinstance(chat_template, str) and _GEMMA4_TOOL_CALL_MARKER in chat_template:
+            if args:
+                args = (_gemma4_object_arguments(args[0]),) + args[1:]
+            elif "conversations" in kwargs:
+                kwargs["conversations"] = _gemma4_object_arguments(kwargs["conversations"])
+        return original(*args, **kwargs)
+
+    setattr(render_jinja_template, _GEMMA4_TOOL_ARGUMENTS_PATCH_FLAG, True)
+    # Tokenizers and processors call the name they imported, not the module attribute.
+    modules = [chat_template_utils]
+    try:
+        from transformers import tokenization_utils_base
+        modules.append(tokenization_utils_base)
+    except Exception:
+        pass
+    try:
+        from transformers import processing_utils
+        modules.append(processing_utils)
+    except Exception:
+        pass
+    for module in modules:
+        if getattr(module, "render_jinja_template", None) is original:
+            module.render_jinja_template = render_jinja_template
+
+
 _TOKENIZER_VOCAB_PATH_PATCH_FLAG = "_unsloth_patched_tokenizer_config_vocab_paths"
 # Resolved files _from_pretrained reads itself; every other one it hands to the tokenizer class.
 _TOKENIZER_FILES_READ_BY_LOADER = (
@@ -1846,12 +2030,133 @@ _TOKENIZER_FILES_READ_BY_LOADER = (
 )
 
 
+_TOKENIZER_HOST_PATH_PATCH_FLAG = "_unsloth_refuses_tokenizer_host_paths"
+# Loader bookkeeping keys; a locally saved legacy config can hold a real path here.
+_TOKENIZER_CONFIG_PATH_KEYS_IGNORED = frozenset(
+    ("name_or_path", "tokenizer_config_file", "special_tokens_map_file", "added_tokens_file")
+)
+# A string `"vocab": "..."` / `"merges": "..."` in tokenizer.json; real files hold a dict or list.
+_TOKENIZER_JSON_STRING_MODEL_FILE = re.compile(rb'"(?:vocab|merges)"\s*:\s*"')
+
+
+def _tokenizer_value_names_host_file(value, repo_dirs):
+    """True when a config string names an existing file outside the repo folder."""
+    if not isinstance(value, str) or not value or len(value) > 4096 or "\n" in value:
+        return False
+    if not (os.path.isabs(value) or "/" in value or os.sep in value):
+        return False
+    try:
+        if not os.path.isfile(value):
+            return False
+        candidates = {os.path.abspath(value), os.path.realpath(value)}
+    except (OSError, ValueError):
+        return False
+    for repo_dir in repo_dirs:
+        for candidate in candidates:
+            try:
+                if os.path.commonpath([candidate, repo_dir]) == repo_dir:
+                    return False
+            except ValueError:
+                continue
+    return True
+
+
+def _tokenizer_files_naming_host_paths(resolved_vocab_files, caller_kwargs):
+    """Entries of tokenizer_config.json, special_tokens_map.json and tokenizer.json naming a host
+    file outside the repo. Repo-resolved files and caller kwargs are skipped."""
+    files = {k: v for k, v in dict(resolved_vocab_files or {}).items() if isinstance(v, str)}
+    repo_dirs = set()
+    for path in files.values():
+        parent = os.path.dirname(os.path.abspath(path))
+        repo_dirs.update((parent, os.path.realpath(parent)))
+    if not repo_dirs:
+        return []
+    skip = set(_TOKENIZER_CONFIG_PATH_KEYS_IGNORED) | set(resolved_vocab_files or {})
+    skip.update(k for k, v in (caller_kwargs or {}).items() if v is not None)
+    found = []
+    for file_key in ("tokenizer_config_file", "special_tokens_map_file"):
+        path = files.get(file_key)
+        if not path or not os.path.isfile(path):
+            continue
+        try:
+            with open(path, encoding = "utf-8") as handle:
+                data = json.load(handle)
+        except Exception:
+            continue  # transformers reports the broken file itself
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            # *_file keys reach the class only when resolved in the repo (skipped above).
+            if key in skip or key.endswith("_file"):
+                continue
+            values = value if isinstance(value, (list, tuple)) else [value]
+            if any(_tokenizer_value_names_host_file(v, repo_dirs) for v in values):
+                found.append(f"{os.path.basename(path)}:{key}")
+    path = files.get("tokenizer_file")
+    if path and os.path.isfile(path):
+        try:
+            with open(path, "rb") as handle:
+                raw = handle.read()
+            if _TOKENIZER_JSON_STRING_MODEL_FILE.search(raw):
+                model = json.loads(raw).get("model") or {}
+                for key in ("vocab", "merges"):
+                    if _tokenizer_value_names_host_file(model.get(key), repo_dirs):
+                        found.append(f"{os.path.basename(path)}:model.{key}")
+        except Exception:
+            pass
+    return found
+
+
+def fix_transformers_tokenizer_config_host_paths():
+    """Refuse a tokenizer whose own JSON names a host file outside its folder: transformers 5.x
+    opens a string vocab / merges / init_inputs / special token entry or tokenizer.json
+    model.vocab as a path, so a repo could read any host file back as tokens. Idempotent."""
+    try:
+        from transformers.tokenization_utils_base import PreTrainedTokenizerBase
+
+        current = PreTrainedTokenizerBase.__dict__["_from_pretrained"]
+        if not isinstance(current, classmethod):
+            return
+        original = current.__func__
+        function = original
+        while function is not None:
+            if getattr(function, _TOKENIZER_HOST_PATH_PATCH_FLAG, False):
+                return
+            function = getattr(function, "__wrapped__", None)
+        params = list(inspect.signature(original).parameters)
+        if params[1:2] != ["resolved_vocab_files"]:
+            logger.info("Unsloth: Skipping the tokenizer host path guard (unknown signature)")
+            return
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the tokenizer host path guard ({e})")
+        return
+
+    @functools.wraps(original)
+    def _from_pretrained(cls, resolved_vocab_files, *args, **kwargs):
+        found = _tokenizer_files_naming_host_paths(resolved_vocab_files, kwargs)
+        if found:
+            raise ValueError(
+                "Unsloth: Refusing to load this tokenizer: "
+                + ", ".join(found)
+                + " names a file outside the tokenizer folder. Remove that entry from the file."
+            )
+        return original(cls, resolved_vocab_files, *args, **kwargs)
+
+    setattr(_from_pretrained, _TOKENIZER_HOST_PATH_PATCH_FLAG, True)
+    try:
+        PreTrainedTokenizerBase._from_pretrained = classmethod(_from_pretrained)
+    except Exception as e:
+        logger.info(f"Unsloth: Failed installing the tokenizer host path guard ({e})")
+
+
 def fix_transformers_tokenizer_config_vocab_file_override():
     """Back-port of the 5.17.0 vocab file precedence: below it `_from_pretrained` keeps a
     `vocab_file` / `merges_file` / `tokenizer_file` from tokenizer_config.json over the file it
     resolved inside the repo, and the tokenizer opens that path as given, even outside the repo.
     save_pretrained never writes these keys. Hand the resolved paths over as keyword arguments,
-    which apply after the config, so only an explicit caller path overrides them."""
+    which apply after the config, so only an explicit caller path overrides them.
+    Also installs the host path guard for the keys not covered here."""
+    fix_transformers_tokenizer_config_host_paths()
     try:
         import transformers
 
@@ -1892,6 +2197,72 @@ def fix_transformers_tokenizer_config_vocab_file_override():
         logger.info(f"Unsloth: Failed patching PreTrainedTokenizerBase._from_pretrained ({e})")
 
 
+_MISTRAL_REGEX_HUB_PATCH_FLAG = "_unsloth_mistral_regex_hub_guard"
+
+
+def _raised_in_frame(exc, name):
+    tb = exc.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_name == name:
+            return True
+        tb = tb.tb_next
+    return False
+
+
+def fix_transformers_mistral_regex_hub_error():
+    """Back-port of the 5.6.0 guard: below it every tokenizer with a vocab over 100k loaded by repo id
+    asks the Hub for its tags (an anonymous model_info) to spot a Mistral base, and a 429 or outage
+    there fails the load even with the files cached. Treat that failure as not Mistral, as 5.6 does."""
+    try:
+        import transformers  # noqa: F401
+    except Exception:
+        return
+    owners = []
+    for module_name, class_name in (
+        ("transformers.tokenization_utils_base", "PreTrainedTokenizerBase"),
+        ("transformers.tokenization_utils_tokenizers", "TokenizersBackend"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            owner = getattr(module, class_name)
+            current = owner.__dict__.get("_patch_mistral_regex")
+            if not isinstance(current, classmethod):
+                continue
+            original = current.__func__
+            if getattr(original, _MISTRAL_REGEX_HUB_PATCH_FLAG, False):
+                continue
+            source = inspect.getsource(original)
+            start = source.find("def is_base_mistral")
+            if start < 0 or "try:" in source[start : start + 120]:
+                continue
+            owners.append((owner, original))
+        except Exception as e:
+            logger.info(f"Unsloth: Skipping the Mistral regex Hub guard for {class_name} ({e})")
+
+    for owner, original in owners:
+
+        def _patch_mistral_regex(
+            cls,
+            tokenizer,
+            *args,
+            _unsloth_original = original,
+            **kwargs,
+        ):
+            try:
+                return _unsloth_original(cls, tokenizer, *args, **kwargs)
+            except Exception as exc:
+                if not _raised_in_frame(exc, "is_base_mistral"):
+                    raise
+                return tokenizer
+
+        functools.update_wrapper(_patch_mistral_regex, original)
+        setattr(_patch_mistral_regex, _MISTRAL_REGEX_HUB_PATCH_FLAG, True)
+        try:
+            owner._patch_mistral_regex = classmethod(_patch_mistral_regex)
+        except Exception as e:
+            logger.info(f"Unsloth: Failed patching {owner.__name__}._patch_mistral_regex ({e})")
+
+
 _SDPA_MASK_PATCH_FLAG = "_unsloth_patched_sdpa_mask"
 
 
@@ -1919,22 +2290,159 @@ def _sdpa_mask_is_patched(masking_utils):
         return False
 
 
-def _unmask_rows_attending_to_nothing(mask):
-    """Give a query row that attends to no key uniform attention instead.
+def _unmask_rows_attending_to_nothing(
+    mask,
+    *,
+    cache_position = None,
+    q_offset = None,
+    kv_offset = 0,
+):
+    """Let a query row that attends to no key attend to its own position only.
 
     Separated from the wrapper so it can be tested directly on every dtype the
     mask can arrive as, rather than only through a live transformers.
 
+    Only its own key, not every key: in a left-padded training row the last pad
+    query predicts the first real token, so a pad query opened to every key
+    reads that token and the ones after it and the loss sees them. Its own key
+    is causal and always present, so the row is never empty (no NaN) and
+    carries no information from later tokens. Same rule as the fast path's
+    `_pad_queries_attend_self` in models/llama.py.
+
+    The own key is the query's absolute position in the mask's key columns:
+    column `position - kv_offset`, the coordinates `sdpa_mask` itself builds
+    the mask from (`cache_position` on 4.57, `q_offset` on 5.x). Not "the last
+    q_len keys": a preallocated cache (StaticCache, sliding static layers,
+    Unsloth's growable cache) has more key columns than filled slots, so the
+    tail columns are unfilled slots or other positions. Only a direct call with
+    no coordinates falls back to the tail (prefill on top of a dynamic cache).
+    A column outside the key range is clamped into it: the row still gets one
+    key and is never empty.
+
     `None` means transformers chose `is_causal` over a materialised mask. A
-    FLOATING mask is the eager path, which converts to `finfo(dtype).min` and
-    survives softmax's max-subtraction as uniform attention already, so it
-    neither needs this nor would tolerate a boolean `|`. Bool is the normal sdpa
-    result; int is what a caller who passed an int `attention_mask` gets back,
-    and the correction is right for both.
+    FLOATING mask is left alone: `eager_mask` converts the corrected boolean
+    mask itself. Bool is the normal sdpa result; int is what a caller who passed
+    an int `attention_mask` gets back, and the correction is right for both.
+    One dense result (the scatter); the per-row work is [..., q_len, 1].
     """
-    if mask is None or mask.is_floating_point():
+    if mask is None or mask.is_floating_point() or mask.dim() < 2:
         return mask
-    return mask | ~mask.any(dim = -1, keepdim = True)
+    import torch
+
+    q_len, kv_len = mask.shape[-2], mask.shape[-1]
+    if kv_len == 0:
+        return mask
+    attends_to_nothing = ~mask.bool().any(dim = -1, keepdim = True)
+    positions = None
+    if (
+        isinstance(cache_position, torch.Tensor)
+        and cache_position.dim() == 1
+        and cache_position.shape[0] == q_len
+    ):
+        positions = cache_position.to(device = mask.device, dtype = torch.long)
+    else:
+        if q_offset is None:
+            # A direct call with no coordinates: queries are the last q_len keys.
+            if q_len > kv_len:
+                # No key per query to call its own; any key is still better than NaN.
+                return mask | attends_to_nothing
+            q_offset, kv_offset = kv_len - q_len, 0
+        if isinstance(q_offset, torch.Tensor):
+            q_offset = q_offset.to(device = mask.device, dtype = torch.long)
+        positions = torch.arange(q_len, device = mask.device) + q_offset
+    if isinstance(kv_offset, torch.Tensor):
+        kv_offset = kv_offset.to(device = mask.device, dtype = torch.long)
+    columns = (positions - kv_offset).clamp(0, kv_len - 1)
+    index = columns.view(q_len, 1).expand(*mask.shape[:-1], 1)
+    own = mask.gather(-1, index)
+    if mask.dtype == torch.bool:
+        own = own | attends_to_nothing
+    else:
+        own = torch.where(attends_to_nothing, torch.ones_like(own), own)
+    return mask.scatter(-1, index, own)
+
+
+def _mask_coordinates(builder):
+    """Build `(args, kwargs) -> {cache_position, q_offset, kv_offset}` for one mask builder.
+
+    The slots are read from the builder's signature once, at install time, so
+    each call is a few dict lookups. transformers 4.57 passes the query
+    positions as `cache_position`; 5.x passes `q_offset` (an int, or a tensor
+    for static caches) with `q_length`; a transitional 5.x took the positions
+    tensor in the `q_length` slot. Unknown signature: no coordinates, and the
+    helper falls back to the tail.
+    """
+    try:
+        names = list(inspect.signature(builder).parameters)
+    except Exception:
+        names = []
+    slots = {name: i for i, name in enumerate(names)}
+    has_q_offset = "q_offset" in slots
+
+    def coordinates(args, kwargs):
+        def arg(name):
+            i = slots.get(name)
+            if i is not None and i < len(args):
+                return args[i]
+            return kwargs.get(name)
+
+        cache_position = arg("cache_position")
+        q_offset = arg("q_offset")
+        q_length = arg("q_length")
+        if (
+            cache_position is None
+            and getattr(q_length, "dim", None) is not None
+            and q_length.dim() == 1
+        ):
+            cache_position = q_length
+        if cache_position is None and q_offset is None and has_q_offset:
+            q_offset = 0
+        kv_offset = arg("kv_offset")
+        return {
+            "cache_position": cache_position,
+            "q_offset": q_offset,
+            "kv_offset": 0 if kv_offset is None else kv_offset,
+        }
+
+    return coordinates
+
+
+# Families whose eager attention appends the sink as an extra softmax logit in
+# every layer (a finite column). A fully masked row then puts all of its weight
+# on the sink and outputs 0 (as flex attention does), finite in every dtype, so
+# upstream's all-min row is right for them and opening a key would change the
+# loss. None of them support sdpa, so their sdpa mask is only ever built for
+# eager. Not here, so they get the single own key like sink-free models:
+# - granite_swa / granitemoe_swa scale the output by sigmoid(lse - sink) after a
+#   plain softmax: in fp16 an all-min row overflows to -inf, the softmax is NaN
+#   and the zero scale cannot recover it (NaN pad rows and NaN grads).
+# - mimo_v2_flash has sinks only in its sliding layers; its full layers are
+#   sink-free, where the all-min row is NaN in fp16 the same way.
+# A family missing here still gets a single own key: causal and finite, only
+# not bitwise upstream on pad rows.
+_ATTENTION_SINK_MODEL_TYPES = frozenset(
+    {
+        "gpt_oss",
+        "openai_privacy_filter",
+        "flint",
+        "hy_v4",
+        "hy_v4_vl",
+        "hy_v4_vl_text",
+        "deepseek_v4",
+        "deepseek_v41",
+        "deepseek_v41_text",
+        "inkling2",
+        "inkling2_text",
+    }
+)
+
+
+def _config_has_attention_sinks(config):
+    model_type = getattr(config, "model_type", None)
+    if not isinstance(model_type, str):
+        return False
+    model_type = model_type.lower()
+    return model_type in _ATTENTION_SINK_MODEL_TYPES or model_type.startswith("inkling")
 
 
 def _left_padded_probe_mask(torch):
@@ -1979,7 +2487,7 @@ def _sdpa_mask_leaves_rows_fully_masked():
     sdpa_mask = getattr(masking_utils, "sdpa_mask", None)
     if sdpa_mask is None:
         return False
-    # Unwrap first, or the installed patch reports the bug fixed and a reload drops it.
+    # Probe the underlying implementation if the module binding is wrapped (ours, after install).
     sdpa_mask = getattr(sdpa_mask, "__wrapped__", sdpa_mask)
     # Query arg is q_length on 5.x, cache_position on 4.57.6; ask the signature, since a TypeError would falsely answer no bug.
     kwargs = {
@@ -2030,23 +2538,32 @@ def fix_transformers_fully_masked_rows():
     are byte-identical, so it is deterministic. Reported as unsloth #9708.
 
     A fully masked row makes SDPA produce NaN, and the NaN then spreads along
-    the row through `0 * NaN` where the next layer mixes values. Restoring the
-    correction gives those rows uniform attention instead. They are pad
-    positions whose outputs are discarded, so this does not change any result
-    that is read -- which is what transformers' own docstring said when it did
-    this: "in order to avoid `nan` propagation (this does not change the final
-    result)".
+    the row through `0 * NaN` where the next layer mixes values. The correction
+    lets such a row attend to its own key only (see
+    `_unmask_rows_attending_to_nothing`), not to every key as transformers' old
+    `_unmask_unattended` did: in a left-padded training row the last pad
+    query's logits predict the first real token whenever that label is kept,
+    so a pad query that sees every key reads that token and the later ones, and
+    the loss and the gradients of a left-padded batch then depend on future
+    tokens.
 
-    Self-neutralising: `mask | ~mask.any(-1)` contributes nothing once a row
-    attends to something, so if a future transformers restores the guard this
-    wrapper becomes a no-op rather than permanent damage. The eager path is
-    unaffected either way -- `eager_mask` converts to `finfo(dtype).min` and a
-    uniform-min row survives softmax's max-subtraction as uniform attention.
+    Self-neutralising: the correction contributes nothing once a row attends to
+    something, so if a future transformers restores the guard this wrapper
+    becomes a no-op rather than permanent damage.
+
+    Both bindings are replaced, the `"sdpa"` registry entry and the module
+    global `sdpa_mask`, so `eager_mask` (which builds from the global) and a
+    custom mask registered as `register("name", sdpa_mask)` get the same rows.
+    Eager needs it too: an all-min eager row is uniform attention over every
+    key (the same future-token leak), and in fp16 `score + finfo.min`
+    overflows to -inf once every score in the row is below about -16, which
+    makes the row NaN. The exception is attention sinks (gpt-oss, Inkling, see
+    `_ATTENTION_SINK_MODEL_TYPES`): there an all-min row puts all of its weight
+    on the sink and outputs 0, as flex does, so those keep upstream's rows.
     """
     if not _sdpa_mask_leaves_rows_fully_masked():
         return
     try:
-        import torch
         from transformers import masking_utils
     except Exception as e:
         logger.info(f"Unsloth: Skipping the fully-masked-row fix ({e})")
@@ -2057,10 +2574,15 @@ def fix_transformers_fully_masked_rows():
 
     original = masking_utils.sdpa_mask
     original = getattr(original, "__wrapped__", original)
+    coordinates = _mask_coordinates(original)
 
     @functools.wraps(original)
     def sdpa_mask(*args, **kwargs):
-        return _unmask_rows_attending_to_nothing(original(*args, **kwargs))
+        mask = original(*args, **kwargs)
+        # Sink models (eager only): keep upstream's all-min row, the sink takes its weight.
+        if _config_has_attention_sinks(kwargs.get("config")):
+            return mask
+        return _unmask_rows_attending_to_nothing(mask, **coordinates(args, kwargs))
 
     # Set explicitly: the probe and tests read __wrapped__.
     sdpa_mask.__wrapped__ = original
@@ -2068,7 +2590,7 @@ def fix_transformers_fully_masked_rows():
     setattr(sdpa_mask, _SDPA_MASK_PATCH_FLAG, True)
 
     try:
-        # Both bindings: eager_mask reads the module global; the interface captured the original.
+        # Both bindings: eager_mask and `register("name", sdpa_mask)` aliases read the module global.
         masking_utils.sdpa_mask = sdpa_mask
         interface = getattr(masking_utils, "ALL_MASK_ATTENTION_FUNCTIONS", None)
         if interface is not None:
@@ -2122,6 +2644,121 @@ def fix_transformers_flash_attention_mrope_packed_sequence():
     logger.info(
         "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
         "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
+_PACKED_ROWS_PATCH_FLAG = "_unsloth_patched_mrope_packed_rows"
+_PACKED_ROWS_CHECKED = [None, None, False]
+
+
+def _packed_row_varlen_kwargs(query, attention_mask, kwargs):
+    """cu_seqlens from an Unsloth packed row whose layers got mRoPE ids, else None."""
+    if kwargs.get("packed_seq_lengths") is None:
+        return None
+    import torch
+
+    position_ids = kwargs.get("position_ids")
+    if (
+        attention_mask is not None
+        or kwargs.get("cu_seq_lens_q") is not None
+        or not isinstance(position_ids, torch.Tensor)
+        or position_ids.dim() <= 2
+        or query.dim() != 4
+        or query.shape[0] != 1
+    ):
+        return None
+    return _packed_row_boundaries(kwargs, query.device, query.shape[1])
+
+
+def _packed_row_boundaries_eager(kwargs, device, total):
+    """Host-side packed-row boundaries, outside any compiled graph: max_seqlen as a guarded
+    constant recompiled once per distinct length."""
+    from .utils.packing import cover_padded_cu_seqlens, get_packed_info_from_kwargs
+
+    info = get_packed_info_from_kwargs(kwargs, device)
+    if info is None:
+        return None
+    cu_seqlens = info[1]
+    # One host read per batch, not per layer: lengths past the row cannot be honoured.
+    checked = _PACKED_ROWS_CHECKED
+    if checked[0] is not cu_seqlens or checked[1] != total:
+        checked[:] = [cu_seqlens, total, int(cu_seqlens[-1]) <= total]
+    if not checked[2]:
+        return None
+    # A pad_to_multiple_of tail gets its own segment so no document attends to it.
+    cu_seqlens, max_seqlen = cover_padded_cu_seqlens(info, total)
+    return {
+        "cu_seq_lens_q": cu_seqlens,
+        "cu_seq_lens_k": cu_seqlens,
+        "max_length_q": max_seqlen,
+        "max_length_k": max_seqlen,
+    }
+
+
+# _packed_row_boundaries_eager under torch.compiler.disable, built when the patch is installed.
+_PACKED_ROW_BOUNDARIES_DISABLED = None
+
+
+def _packed_row_boundaries(kwargs, device, total):
+    import torch
+
+    disabled = _PACKED_ROW_BOUNDARIES_DISABLED
+    if disabled is not None and torch.compiler.is_compiling():
+        from .utils.packing import _PACKED_INFO_CACHE, _cache_hit
+
+        entry = _PACKED_INFO_CACHE.get(device)
+        if (
+            entry is not None
+            and entry["seq_lengths"] is kwargs.get("packed_seq_lengths")
+            and _cache_hit(entry)
+            and "row_shape" in entry
+        ):
+            covered, max_seqlen = entry["row_shape"].shape
+            if covered > total:
+                return None
+            cu_seqlens = entry["result"][1]
+            if covered < total:
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_full((1,), total)])
+                max_seqlen = max(max_seqlen, total - covered)
+            return {
+                "cu_seq_lens_q": cu_seqlens,
+                "cu_seq_lens_k": cu_seqlens,
+                "max_length_q": max_seqlen,
+                "max_length_k": max_seqlen,
+            }
+        return disabled(kwargs, device, total)
+    return _packed_row_boundaries_eager(kwargs, device, total)
+
+
+def fix_transformers_flash_attention_mrope_packed_rows():
+    """Qwen3.5 / Qwen3.5-MoE on transformers 5.3 give decoder layers 3-row mRoPE ids, which cannot mark
+    document starts: take a packed row's boundaries from `packed_seq_lengths` instead."""
+    try:
+        from transformers.integrations import flash_attention as fa_integration
+    except Exception:
+        return
+    current = getattr(fa_integration, "_flash_attention_forward", None)
+    if current is None or getattr(current, _PACKED_ROWS_PATCH_FLAG, False):
+        return
+    global _PACKED_ROW_BOUNDARIES_DISABLED
+    if _PACKED_ROW_BOUNDARIES_DISABLED is None:
+        import torch
+        _PACKED_ROW_BOUNDARIES_DISABLED = torch.compiler.disable(_packed_row_boundaries_eager)
+
+    @functools.wraps(current)
+    def _flash_attention_forward(
+        query_states, key_states, value_states, attention_mask, *args, **kwargs
+    ):
+        varlen = _packed_row_varlen_kwargs(query_states, attention_mask, kwargs)
+        if varlen is not None:
+            kwargs.update(varlen)
+        return current(query_states, key_states, value_states, attention_mask, *args, **kwargs)
+
+    setattr(_flash_attention_forward, _PACKED_ROWS_PATCH_FLAG, True)
+    fa_integration._flash_attention_forward = _flash_attention_forward
+    logger.info(
+        "Unsloth: Patching transformers flash attention so packed rows with mRoPE layer "
+        "position ids keep their documents apart"
     )
 
 
@@ -2307,6 +2944,24 @@ def _flex_mask_reads_padding_values(masking_utils, flex_attention_mask):
         masking_utils.create_block_mask = builder
 
 
+def _keyword_arguments(signature, args, kwargs):
+    """`args` + `kwargs` as keywords alone, or None when they do not bind (or need *args)."""
+    try:
+        bound = signature.bind(*args, **kwargs)
+    except TypeError:
+        return None
+    keywords = {}
+    for name, value in bound.arguments.items():
+        kind = signature.parameters[name].kind
+        if kind is inspect.Parameter.VAR_KEYWORD:
+            keywords.update(value)
+        elif kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.POSITIONAL_ONLY):
+            return None
+        else:
+            keywords[name] = value
+    return keywords
+
+
 def fix_transformers_flex_mask_graph_breaks():
     """While dynamo traces, always apply the padding mask (all-ones gives an equal BlockMask) instead
     of branching on `fast_all`, and drop `_compile`, whose deprecation warnings.warn breaks the graph."""
@@ -2344,9 +2999,16 @@ def fix_transformers_flex_mask_graph_breaks():
         if not _flex_mask_reads_padding_values(masking_utils, current):
             return
         original = current
+        signature = inspect.signature(original)
 
         @functools.wraps(original)
         def flex_attention_mask(*args, **kwargs):
+            if args:
+                # A wrapper above may forward by position (unsloth_zoo's binds and passes bound.args).
+                keywords = _keyword_arguments(signature, args, kwargs)
+                if keywords is None:
+                    return original(*args, **kwargs)
+                args, kwargs = (), keywords
             attention_mask = kwargs.get("attention_mask")
             if (
                 args
@@ -2774,14 +3436,103 @@ def _bnb_deserialize_ops_without_reverse():
     return tuple(broken)
 
 
+def _bare_params4bit_names(model):
+    """Names of the bitsandbytes 4-bit parameters quantized in place outside a Linear4bit (fused MoE expert
+    stacks, zoo moe_utils_bnb4bit), or an empty set when bitsandbytes is unavailable."""
+    try:
+        from bitsandbytes.nn import Linear4bit, Params4bit
+    except Exception:
+        return set()
+    if (
+        not isinstance(Params4bit, type)
+        or not isinstance(Linear4bit, type)
+        or not callable(getattr(model, "named_modules", None))
+    ):
+        return set()
+    names = set()
+    # Every alias (a shared module or parameter): the state dict being saved names each of them.
+    for module_name, module in model.named_modules(remove_duplicate = False):
+        if isinstance(module, Linear4bit):
+            continue
+        for name, param in module.named_parameters(recurse = False, remove_duplicate = False):
+            if isinstance(param, Params4bit) and getattr(param, "quant_state", None) is not None:
+                names.add(f"{module_name}.{name}" if module_name else name)
+    return names
+
+
+def _converter_matches(conversion, names):
+    """True when `conversion` is a WeightConverter with operations whose reverse (the one save_pretrained applies)
+    matches one of `names`, by transformers' own rules (scope prefix, name boundaries, capture groups)."""
+    operations = getattr(conversion, "operations", None)
+    targets = getattr(conversion, "target_patterns", None)
+    if not operations or not targets or not names:
+        return False
+    if type(conversion).__name__ != "WeightConverter":
+        return False
+    try:
+        # reverse_transform() would build the reverse ops, which a deserializer cannot: same patterns, forward ops.
+        reverse = conversion.copy(
+            conversion._original_target_patterns,
+            conversion._original_source_patterns,
+            operations = list(operations),
+        )
+        return any(reverse.rename_source_key(name)[1] is not None for name in names)
+    except Exception:
+        pass
+    for pattern in targets:
+        try:
+            regex = re.compile(pattern)
+        except (re.error, TypeError):
+            return False
+        if any(regex.search(name) for name in names):
+            return True
+    return False
+
+
+def _packed_4bit(value):
+    """A tensor as a bitsandbytes 4-bit stack stores it: packed [n, 1] bytes."""
+    shape = getattr(value, "shape", None)
+    return shape is not None and len(shape) == 2 and shape[1] == 1
+
+
+def _dense_param_names(
+    model,
+    skip,
+    state_dict = None,
+):
+    """Names saved as dense tensors: the state dict being saved (parameters and persistent buffers), less the 4-bit
+    stacks in `skip` and their QuantState entries; a stack in `skip` whose saved tensor is dense counts as dense.
+    Without a state dict, the model's parameters not in `skip`."""
+    if isinstance(state_dict, dict):
+        names = set()
+        for name, value in state_dict.items():
+            if not isinstance(name, str):
+                continue
+            if name in skip:
+                if not _packed_4bit(value):
+                    names.add(name)
+            elif not any(name.startswith(f"{s}.") for s in skip):
+                names.add(name)
+        return names
+    if not callable(getattr(model, "named_parameters", None)):
+        return set()
+    return {n for n, _ in model.named_parameters(remove_duplicate = False) if n not in skip}
+
+
 def fix_transformers_bnb_prequantized_save():
-    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
-    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
-    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
-    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    """transformers 5.x `save_pretrained` reverses the load's weight converters, and two kinds cannot run in
+    reverse on bitsandbytes 4-bit weights:
+
+    - the `Bnb{4,8}bitDeserialize` converter a pre-quantized load attaches has no `reverse_op`
+      (NotImplementedError, #638; upstream PR #45743 closed unmerged). Probe-gated on `reverse_op` raising.
+    - a model converter that builds a fused expert stack (Inkling 2: NVFP4 dequantize + Interleave of
+      `w13_weight` into `gate_up_proj`) would run its inverse on the packed bytes and on the QuantState entries
+      beside them once zoo quantized the stack in place, which raises or writes garbage. Such a stack was
+      quantized in the model's layout and zoo's pre-quantized expert loaders read it back in that layout, so its
+      converter is skipped and the stack is written under the model's own name (the renames still apply).
+
+    Quantized modules already emit the checkpoint layout, so both are skipped on save."""
     broken_ops = _bnb_deserialize_ops_without_reverse()
-    if not broken_ops:
-        return
     try:
         from transformers import core_model_loading, modeling_utils
     except Exception as e:
@@ -2793,15 +3544,53 @@ def fix_transformers_bnb_prequantized_save():
 
     def _is_bnb_deserialize(conversion):
         operations = getattr(conversion, "operations", None)
-        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+        return (
+            bool(broken_ops)
+            and bool(operations)
+            and all(isinstance(op, broken_ops) for op in operations)
+        )
+
+    def _skipped(
+        model,
+        conversions,
+        state_dict = None,
+    ):
+        bare = None
+        dense = None
+        skipped = []
+        for conversion in conversions:
+            if _is_bnb_deserialize(conversion):
+                skipped.append(conversion)
+                continue
+            if type(conversion).__name__ != "WeightConverter" or not getattr(
+                conversion, "operations", None
+            ):
+                continue
+            if bare is None:
+                bare = _bare_params4bit_names(model)
+                dense = _dense_param_names(model, bare, state_dict) if bare else set()
+                # A stack the caller saves dense (a supplied state dict) keeps its converter.
+                bare -= dense
+            if not bare or not _converter_matches(conversion, bare):
+                continue
+            # A converter whose target also matches a dense parameter (one stack skipped from quantization)
+            # still has to run for it: keep it, and let a mixed save fail loudly as before.
+            if _converter_matches(conversion, dense):
+                continue
+            skipped.append(conversion)
+        return skipped
 
     @functools.wraps(original)
     def revert_weight_conversion(model, *args, **kwargs):
         conversions = getattr(model, "_weight_conversions", None)
-        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+        if not isinstance(conversions, list):
+            return original(model, *args, **kwargs)
+        state_dict = kwargs.get("state_dict", args[0] if args else None)
+        skipped = _skipped(model, conversions, state_dict)
+        if not skipped:
             return original(model, *args, **kwargs)
         # An empty list, never None: None makes transformers rebuild the default mapping.
-        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        model._weight_conversions = [c for c in conversions if not any(c is x for x in skipped)]
         try:
             return original(model, *args, **kwargs)
         finally:
@@ -2815,8 +3604,8 @@ def fix_transformers_bnb_prequantized_save():
         if modeling_utils.__dict__.get("revert_weight_conversion") is original:
             modeling_utils.revert_weight_conversion = revert_weight_conversion
         logger.info(
-            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
-            "bitsandbytes model can be saved"
+            "Unsloth: Patching transformers `revert_weight_conversion` so a bitsandbytes 4-bit model "
+            "(pre-quantized, or with fused 4-bit expert stacks) can be saved"
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
@@ -2915,23 +3704,48 @@ def _rope_theta_snapshot(config):
     return snapshot or None
 
 
-def _carry_per_layer_rope_theta(config, parameters, carried):
+def _rope_labels_naming_no_base(config, value):
+    """Labels of a NESTED incoming ``rope_scaling`` whose entry states no ``rope_theta``.
+
+    Read before the upstream setter runs: from transformers 5.21.0 that setter calls
+    ``standardize_rope_params``, which ``setdefault``s the ONE global ``rope_theta`` into
+    every nested entry in place, so afterwards a filled-in default looks caller-stated.
+    """
+    if not isinstance(value, dict) or not _rope_parameters_are_per_layer(config, value):
+        return None
+    return frozenset(
+        label
+        for label, entry in value.items()
+        if isinstance(entry, dict) and entry.get("rope_theta", None) is None
+    )
+
+
+def _carry_per_layer_rope_theta(
+    config,
+    parameters,
+    carried,
+    unnamed = None,
+):
     """Put each layer type's base back into a per-layer replacement that lost it.
 
     A top-level ``rope_theta`` would make the dict read as flat, so the base goes back
     into each nested entry. Copies throughout, never the caller's dicts in place. An
-    entry naming its own base is left alone. ``None`` means nothing was written -- no nested
-    snapshot, OR every entry already named its base, OR refused; never "fall through as scalar".
+    entry naming its own base is left alone; ``unnamed`` lists the labels the caller gave
+    no base, so a global default transformers filled in there is not mistaken for one.
+    ``None`` means nothing was written -- no nested snapshot, OR every entry already named
+    its base, OR refused; never "fall through as scalar".
     """
     if not isinstance(carried, dict) or not carried:
         return None
+    unnamed = unnamed or ()
     replacement = {}
     changed = False
     for layer_type, entry in parameters.items():
         if (
             isinstance(entry, dict)
-            and entry.get("rope_theta", None) is None
+            and (entry.get("rope_theta", None) is None or layer_type in unnamed)
             and carried.get(layer_type, None) is not None
+            and entry.get("rope_theta", None) != carried[layer_type]
         ):
             entry = dict(entry)
             entry["rope_theta"] = carried[layer_type]
@@ -2946,7 +3760,11 @@ def _carry_per_layer_rope_theta(config, parameters, carried):
     return carried
 
 
-def _carry_rope_theta_across_assignment(config, carried):
+def _carry_rope_theta_across_assignment(
+    config,
+    carried,
+    unnamed = None,
+):
     """Keep the RoPE base frequency across a ``rope_scaling`` replacement.
 
     Separated from the wrapper so every parameter shape is testable without a live
@@ -2972,7 +3790,7 @@ def _carry_rope_theta_across_assignment(config, carried):
     per_layer = _rope_parameters_are_per_layer(config, parameters)
     if per_layer:
         # Per-layer rope bases are restored from the nested snapshot; the global attribute is used only when none exists.
-        restored = _carry_per_layer_rope_theta(config, parameters, carried)
+        restored = _carry_per_layer_rope_theta(config, parameters, carried, unnamed)
         if restored is not None:
             return restored
         if isinstance(carried, dict):
@@ -3016,7 +3834,44 @@ def _carry_rope_theta_across_assignment(config, carried):
     return base
 
 
+# transformers 5 warns on every `rope_scaling` write; the probe below writes it on purpose.
+_ROPE_SCALING_DEPRECATION_MESSAGE = r"`?rope_scaling`? is deprecated"
+
+
+def assign_rope_scaling(config, value):
+    """``config.rope_scaling = value`` for Unsloth's own writes, without transformers 5's FutureWarning.
+
+    The caller handed Unsloth a ``rope_scaling`` (or Unsloth extended the context itself), so
+    a warning about the config attribute's name is not something the user can act on. The
+    setter still runs (it standardises ``rope_parameters``); only that one message is
+    filtered, only for this assignment. A user's own ``config.rope_scaling = ...`` still warns.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        config.rope_scaling = value
+
+
 def _transformers_rope_scaling_assignment_drops_theta():
+    """Run the probe below without printing transformers' ``rope_scaling`` FutureWarning.
+
+    The probe has to write the deprecated alias, because the alias setter is what it
+    measures, so the warning it raises at ``import unsloth`` says nothing about the
+    user's code. Only that one message is filtered, only for the probe's duration.
+    """
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message = _ROPE_SCALING_DEPRECATION_MESSAGE,
+            category = FutureWarning,
+        )
+        return _probe_rope_scaling_assignment_drops_theta()
+
+
+def _probe_rope_scaling_assignment_drops_theta():
     """Does replacing ``config.rope_scaling`` on THIS build lose the base frequency?
 
     Measured, not inferred from a version: the move into ``rope_parameters``, the alias
@@ -3443,6 +4298,180 @@ def fix_transformers_fp8_unscaled_checkpoint_linears():
     quantizer_cls._process_model_before_weight_loading = _process_model_before_weight_loading
 
 
+_QUANTIZED_COMPANION_SUFFIXES = (
+    "_packed",
+    "_scale",
+    "_shape",
+    "_global_scale",
+    "_zero_point",
+    "_scale_inv",
+)
+
+
+def fix_transformers_quantizer_unquantized_converters():
+    """Keep a model converter over a tensor the pre-quantized checkpoint stores unquantized.
+
+    For packed formats the quantizer's rewritten copy only matches ``weight_packed`` / ``weight_scale``, so 16-bit
+    tensors were left randomly initialized. Converters match first-wins, so the original is appended after."""
+    try:
+        from transformers.quantizers.base import HfQuantizer
+        from transformers.core_model_loading import WeightConverter
+    except Exception:
+        return
+    classes = [HfQuantizer]
+    try:
+        from transformers.quantizers.quantizer_compressed_tensors import (
+            CompressedTensorsHfQuantizer,
+        )
+        classes.append(CompressedTensorsHfQuantizer)
+    except Exception:
+        pass
+
+    def sources_of(converter):
+        patterns = getattr(converter, "_original_source_patterns", None) or getattr(
+            converter, "source_patterns", ()
+        )
+        return [pattern.rstrip("$") for pattern in patterns if isinstance(pattern, str)]
+
+    def captures_companions(converter):
+        # transformers <= 5.20 searches source patterns unanchored: `.weight` would also take a quantized
+        # tensor's `.weight_global_scale` / `.weight_zero_point` / ... and corrupt the restored pipeline.
+        rename = getattr(converter, "rename_source_key", None)
+        if rename is None:
+            return False
+        for source in sources_of(converter):
+            for suffix in _QUANTIZED_COMPANION_SUFFIXES:
+                try:
+                    if rename((source + suffix).replace("*", "0"))[1] is not None:
+                        return True
+                except Exception:
+                    return True
+        return False
+
+    def restorable(converter):
+        if not captures_companions(converter):
+            return converter
+        return WeightConverter(
+            source_patterns = [source + "$" for source in sources_of(converter)],
+            target_patterns = list(
+                getattr(converter, "_original_target_patterns", None) or converter.target_patterns
+            ),
+            operations = list(converter.operations),
+        )
+
+    for cls in classes:
+        method = cls.__dict__.get("update_weight_conversions")
+        if method is None or getattr(method, "_unsloth_keeps_unquantized", False):
+            continue
+
+        def make(method):
+            @functools.wraps(method)
+            def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+                # transformers 5.21+ passes the model; earlier builds did not.
+                updated = method(self, weight_conversions, *args, **kwargs)
+                try:
+                    updated = list(updated)
+                    kept = {id(converter) for converter in updated}
+                    loaded = {
+                        source
+                        for converter in updated
+                        if isinstance(converter, WeightConverter)
+                        for source in sources_of(converter)
+                    }
+                    restored = [
+                        restorable(converter)
+                        for converter in weight_conversions
+                        if isinstance(converter, WeightConverter)
+                        and id(converter) not in kept
+                        and not any(source in loaded for source in sources_of(converter))
+                    ]
+                except Exception:
+                    return updated
+                return updated + restored if restored else updated
+
+            update_weight_conversions._unsloth_keeps_unquantized = True
+            return update_weight_conversions
+
+        cls.update_weight_conversions = make(method)
+    _pass_unquantized_through_compressed_tensors_dequantize()
+
+
+def _pass_unquantized_through_compressed_tensors_dequantize():
+    # transformers 5.23 also feeds the plain `.weight` sources to the dequantize op, whose packed branch keeps only
+    # `*weight_packed` keys: the shards vanish and the Concatenate after it fails. Plain sources without a packed or
+    # scale companion pass through untouched, as its FP8 branch already does for weights that ship no scale.
+    try:
+        from transformers.integrations import compressed_tensors as ct_integration
+    except Exception:
+        return
+    op_cls = getattr(ct_integration, "CompressedTensorsDequantize", None)
+    convert = getattr(op_cls, "convert", None)
+    if convert is None or getattr(convert, "_unsloth_passes_unquantized", False):
+        return
+
+    @functools.wraps(convert)
+    def convert_keeping_unquantized(self, input_dict, *args, **kwargs):
+        if (
+            not isinstance(input_dict, dict)
+            or "weight" in input_dict
+            or "weight_scale" in input_dict
+        ):
+            return convert(self, input_dict, *args, **kwargs)
+        plain, mixed = {}, []
+        for key in input_dict:
+            if not isinstance(key, str) or not key.endswith(".weight"):
+                continue
+            stem = key[: -len("weight")]
+            if f"{stem}weight_packed" in input_dict:
+                # One pattern collected both 16-bit and packed shards: the packed branch would drop the 16-bit ones.
+                mixed.append(key)
+            elif f"{stem}weight_scale" not in input_dict:
+                plain[key] = input_dict[key]
+        if mixed:
+            raise ValueError(
+                "Unsloth: this compressed-tensors checkpoint stores some tensors of one converter pattern "
+                f"unquantized and others packed ({', '.join(sorted(mixed))}), which cannot be loaded together. "
+                "Quantize all of them or none."
+            )
+        if not plain:
+            return convert(self, input_dict, *args, **kwargs)
+        dtype = _converter_target_dtype(args, kwargs)
+        if dtype is not None:
+            # As the rest of the load: a bf16 checkpoint tensor lands in the parameter's dtype.
+            plain = {key: _cast_floating(value, dtype) for key, value in plain.items()}
+        rest = {key: value for key, value in input_dict.items() if key not in plain}
+        out = dict(convert(self, rest, *args, **kwargs) or {}) if rest else {}
+        out.update(plain)
+        return out
+
+    convert_keeping_unquantized._unsloth_passes_unquantized = True
+    op_cls.convert = convert_keeping_unquantized
+
+
+def _converter_target_dtype(args, kwargs):
+    """dtype of the parameter a conversion op fills (`full_layer_name` on `model`), else None."""
+    model = kwargs.get("model")
+    name = kwargs.get("full_layer_name")
+    if name is None and len(args) > 2:
+        name = args[2]
+    if model is None or not isinstance(name, str):
+        return None
+    try:
+        return model.get_parameter(name).dtype
+    except Exception:
+        return None
+
+
+def _cast_floating(value, dtype):
+    import torch
+
+    if isinstance(value, (list, tuple)):
+        return type(value)(_cast_floating(v, dtype) for v in value)
+    if isinstance(value, torch.Tensor) and value.is_floating_point() and dtype.is_floating_point:
+        return value.to(dtype)
+    return value
+
+
 def _cast_fp8_dequantize_to_model_dtype(op_cls):
     # transformers 5.4 dequantizes to the scale's fp32; cast to the replaced parameter's dtype.
     convert = getattr(op_cls, "convert", None)
@@ -3815,9 +4844,13 @@ def fix_transformers_rope_scaling_drops_theta():
             carried = _rope_theta_snapshot(self)
         except Exception:
             carried = None
+        try:
+            unnamed = _rope_labels_naming_no_base(self, value)
+        except Exception:
+            unnamed = None
         result = original(self, value)
         try:
-            _carry_rope_theta_across_assignment(self, carried)
+            _carry_rope_theta_across_assignment(self, carried, unnamed)
         except Exception:
             pass
         return result
@@ -4283,6 +5316,87 @@ def fix_vllm_lora_tokenizer_module():
         "Unsloth: Installed `vllm.transformers_utils.tokenizer` compatibility "
         "stub for newer vLLM versions"
     )
+
+
+# TRL >= 1.11 imports vllm.distributed.weight_transfer.nccl_engine at module scope whenever vLLM is importable, but
+# vLLM added it in 0.16, so `from trl import GRPOTrainer` fails on vLLM 0.11.2 - 0.15.x. Only TRL's vLLM server
+# client (vllm_mode="server") uses it; fast_inference does not. A finder appended after the real ones serves
+# placeholders that raise on use, only when the real modules are missing.
+_VLLM_WEIGHT_TRANSFER_MODULES = (
+    "vllm.distributed.weight_transfer",
+    "vllm.distributed.weight_transfer.nccl_engine",
+)
+_VLLM_WEIGHT_TRANSFER_STUB_SENTINEL = "__unsloth_vllm_weight_transfer_stub__"
+_VLLM_WEIGHT_TRANSFER_MESSAGE = (
+    "Unsloth: TRL's vLLM server weight transfer needs vLLM >= 0.16, but this vLLM has no "
+    "`vllm.distributed.weight_transfer`. Upgrade vLLM, or use fast_inference = True (colocated vLLM)."
+)
+
+
+class _VllmWeightTransferUnavailableMeta(type):
+    def __getattr__(cls, name):
+        # TRL calls static methods on the class (trainer_init, trainer_send_weights): fail at the call.
+        if name.startswith("__"):
+            raise AttributeError(name)
+
+        def _unavailable(*args, **kwargs):
+            raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+        return _unavailable
+
+
+class _VllmWeightTransferUnavailable(metaclass = _VllmWeightTransferUnavailableMeta):
+    def __init__(self, *args, **kwargs):
+        raise ImportError(_VLLM_WEIGHT_TRANSFER_MESSAGE)
+
+
+class _VllmWeightTransferStubLoader(importlib.abc.Loader):
+    def create_module(self, spec):
+        import types
+
+        module = types.ModuleType(spec.name)
+        module.__file__ = f"<unsloth stub: {spec.name}>"
+        setattr(module, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+        if spec.name == _VLLM_WEIGHT_TRANSFER_MODULES[0]:
+            module.__path__ = []
+            module.__package__ = spec.name
+        else:
+            module.__package__ = spec.name.rpartition(".")[0]
+            for name in ("NCCLTrainerSendWeightsArgs", "NCCLWeightTransferEngine"):
+                setattr(module, name, type(name, (_VllmWeightTransferUnavailable,), {}))
+        return module
+
+    def exec_module(self, module):
+        return None
+
+
+class _VllmWeightTransferStubFinder(importlib.abc.MetaPathFinder):
+    def __init__(self):
+        setattr(self, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, True)
+
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
+        if fullname not in _VLLM_WEIGHT_TRANSFER_MODULES:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _VllmWeightTransferStubLoader(),
+            is_package = fullname == _VLLM_WEIGHT_TRANSFER_MODULES[0],
+        )
+
+
+def fix_vllm_weight_transfer_module():
+    if importlib.util.find_spec("vllm") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _VLLM_WEIGHT_TRANSFER_STUB_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so the real module on vLLM >= 0.16 always wins.
+    sys.meta_path.append(_VllmWeightTransferStubFinder())
 
 
 def fix_vllm_guided_decoding_params():
@@ -5016,10 +6130,48 @@ def patch_enable_input_require_grads():
         PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
+    def _sub_model_hook(owner):
+        # transformers >= 5 hooks every sub-model; a frozen tower's backward is wasted, downstream still gets grad.
+        def make_inputs_require_grads(module, input, output):
+            if not torch.compiler.is_compiling():
+                trains = any(p.requires_grad for p in owner.parameters())
+            else:
+                # Traced (Unsloth compiles some towers, e.g. Gemma 3's SigLIP): read the flag the outer model's
+                # eager pre-hook keeps (_refresh_tower_trains). Setting it changes the module's attribute dict, so
+                # a later unfreeze retraces on every torch; a parameter's requires_grad alone does not (torch
+                # 2.10 skips those tensor guards). Without the flag, keep the grad as before.
+                trains = getattr(owner, "_unsloth_tower_trains", None)
+                trains = True if trains is None else trains
+            if trains:
+                return outer_hook(module, input, output)
+
+        return make_inputs_require_grads
+
+    def _refresh_tower_trains(owners):
+        # Before the outer forward: record whether each hooked tower trains, writing only on a change.
+        def refresh(module, args):
+            if torch.compiler.is_compiling():
+                # The outer call is traced too, where a requires_grad read may be unguarded (torch 2.10): clear the
+                # flag, so the traced embedding hook keeps the grad, as before.
+                for owner in owners:
+                    owner._unsloth_tower_trains = None
+                return
+            for owner in owners:
+                trains = any(p.requires_grad for p in owner.parameters())
+                if owner.__dict__.get("_unsloth_tower_trains") is not trains:
+                    owner._unsloth_tower_trains = trains
+
+        return refresh
+
+    outer_hook = make_inputs_require_grads
+
     @functools.wraps(original)
     def _patched_enable_input_require_grads(self):
         hooks = []
+        owners = []  # sub-models whose input-grad hook depends on whether they train
         seen_modules = set()
+        # Read per call, so setting the env after `import unsloth` still applies.
+        keep_frozen_towers = os.environ.get("UNSLOTH_FROZEN_TOWER_INPUT_GRAD", "0") == "1"
 
         for module in self.modules():
             if not (
@@ -5050,8 +6202,17 @@ def patch_enable_input_require_grads():
                 continue
 
             seen_modules.add(embedding_id)
-            hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
+            hook = (
+                make_inputs_require_grads
+                if module is self or keep_frozen_towers
+                else _sub_model_hook(module)
+            )
+            if hook is not make_inputs_require_grads:
+                owners.append(module)
+            hooks.append(input_embeddings.register_forward_hook(hook))
 
+        if owners:
+            hooks.append(self.register_forward_pre_hook(_refresh_tower_trains(owners)))
         self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
@@ -5105,6 +6266,63 @@ def fix_transformers_voxtral_realtime_inplace_audio_add():
 
     forward._unsloth_inplace_audio_fix = True
     cls.forward = forward
+
+
+def _torch_pickle_load_unsafe():
+    """torch < 2.6 can run code from a .bin / .pt even with weights_only=True (CVE-2025-32434)."""
+    try:
+        import torch
+        return TrueVersion(torch.__version__.split("+")[0]) < TrueVersion("2.6")
+    except Exception:
+        return False
+
+
+def refuse_pickle_checkpoint_on_old_torch(path = None):
+    """Raise before torch.load reads a pickled checkpoint (adapter_model.bin, pytorch_model.bin)
+    on torch < 2.6, where weights_only=True is bypassable (CVE-2025-32434). No-op on torch >= 2.6."""
+    if not _torch_pickle_load_unsafe():
+        return
+    name = os.path.basename(str(path)) if path is not None else "a pickled checkpoint"
+    raise RuntimeError(
+        f"Unsloth: refusing to load `{name}` with torch {__import__('torch').__version__}: torch < 2.6 "
+        "can execute code hidden in .bin / .pt files even with weights_only=True (CVE-2025-32434). "
+        "Upgrade to torch >= 2.6, or use a checkpoint saved as .safetensors "
+        "(for LoRA adapters: adapter_model.safetensors)."
+    )
+
+
+def patch_peft_bin_load_old_torch():
+    """PEFT's load_peft_weights reads adapter_model.bin via torch_load(weights_only=True) with no
+    torch version check, so on torch < 2.6 a Hub LoRA repo could run code (CVE-2025-32434).
+    Refuse there; safetensors adapters never reach torch_load. No-op on torch >= 2.6. Idempotent."""
+    if not _torch_pickle_load_unsafe() or importlib.util.find_spec("peft") is None:
+        return
+    try:
+        import peft.utils.save_and_load as peft_save_and_load
+    except Exception:
+        return
+    torch_load = getattr(peft_save_and_load, "torch_load", None)
+    if torch_load is None or getattr(torch_load, "_unsloth_old_torch_guard", False):
+        return
+
+    @functools.wraps(torch_load)
+    def _guarded_peft_torch_load(f, *args, **kwargs):
+        refuse_pickle_checkpoint_on_old_torch(f)
+        return torch_load(f, *args, **kwargs)
+
+    _guarded_peft_torch_load._unsloth_old_torch_guard = True
+    peft_save_and_load.torch_load = _guarded_peft_torch_load
+    # Modules that did `from peft.utils.save_and_load import torch_load` hold their own reference.
+    for module in list(sys.modules.values()):
+        try:
+            if (
+                getattr(module, "__name__", "").startswith("peft.")
+                and getattr(module, "torch_load", None) is torch_load
+            ):
+                module.torch_load = _guarded_peft_torch_load
+        except Exception:
+            pass
+    logger.info("Unsloth: refusing PEFT adapter_model.bin loads on torch < 2.6 (CVE-2025-32434).")
 
 
 def patch_unsafe_trainer_rng_load():
@@ -5829,6 +7047,31 @@ def _probe_torchvision_binary(
         ) from error
 
 
+def _torch_in_torchvision_declared_range(torch_version_raw):
+    """True when the installed torchvision's metadata declares a torch range (not only an exact == pin)
+    that contains the installed torch. Exact pins stay with the table / formula below."""
+    try:
+        from packaging.requirements import Requirement
+        requires = importlib_distribution("torchvision").requires or []
+        torch_v = TrueVersion(str(torch_version_raw))
+    except Exception:
+        return False
+    for line in requires:
+        try:
+            requirement = Requirement(line)
+        except Exception:
+            continue
+        if requirement.name.lower() != "torch":
+            continue
+        if requirement.marker is not None and not requirement.marker.evaluate({"extra": ""}):
+            continue
+        specifiers = list(requirement.specifier)
+        if not specifiers or all(s.operator in ("==", "===") for s in specifiers):
+            return False
+        return requirement.specifier.contains(torch_v, prereleases = True)
+    return False
+
+
 def torchvision_compatibility_check():
     # Allow skipping via environment variable for custom environments
     if os.environ.get("UNSLOTH_SKIP_TORCHVISION_CHECK", "0").lower() in ("1", "true"):
@@ -5860,6 +7103,11 @@ def torchvision_compatibility_check():
         (2, 5): (0, 20),
         (2, 4): (0, 19),
     }
+
+    # torchvision 0.29.1+ declares a torch range, not an exact pin, which the minor formula below would refuse.
+    if _torch_in_torchvision_declared_range(torch_version_raw):
+        _probe_torchvision_binary(torch_version_raw, torchvision_version_raw, tv_v.release[:3])
+        return
 
     torch_release = torch_v.release
     if len(torch_release) < 2:
@@ -7022,11 +8270,21 @@ def fix_triton_compiled_kernel_missing_attrs():
     )
 
 
+def _set_torch_config(config_module, name, value):
+    # torch >= 2.12 keeps config assignments per thread; checkpoint recomputes compile on autograd's device thread.
+    try:
+        from unsloth_zoo.torch_config import set_torch_config
+    except Exception:
+        setattr(config_module, name, value)
+        return
+    set_torch_config(config_module, name, value)
+
+
 def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass):
     # Warm FX / AOTAutograd caches would return barrier-free kernels: a no-op pass's uuid keys them.
     if custom_graph_pass is None:
         # torch < 2.6 keys no custom pass: skip the FX graph cache rather than reuse racy kernels.
-        inductor_config.fx_graph_cache = False
+        _set_torch_config(inductor_config, "fx_graph_cache", False)
         return
     marker = "unsloth-inductor-readback-barrier-v1"
 
@@ -7041,14 +8299,16 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
 
     existing = getattr(inductor_config, "post_grad_custom_post_pass", None)
     if existing is None:
-        inductor_config.post_grad_custom_post_pass = ReadbackBarrierCacheKey()
+        _set_torch_config(inductor_config, "post_grad_custom_post_pass", ReadbackBarrierCacheKey())
         return
     # A pre-set pass keys the cache by its uuid alone; raw callables / uuid-less passes bypass it.
     if isinstance(existing, (list, tuple)):
         if any(getattr(p, "_unsloth_readback_barrier", False) for p in existing):
             return
-        inductor_config.post_grad_custom_post_pass = type(existing)(
-            [*existing, ReadbackBarrierCacheKey()]
+        _set_torch_config(
+            inductor_config,
+            "post_grad_custom_post_pass",
+            type(existing)([*existing, ReadbackBarrierCacheKey()]),
         )
         return
     if getattr(existing, "_unsloth_readback_barrier", False):
@@ -7073,9 +8333,13 @@ def _key_inductor_caches_on_readback_barrier(inductor_config, custom_graph_pass)
             return self.inner(graph, *args, **kwargs)
 
         def uuid(self):
-            return (marker, self.inner.uuid())
+            # None is the inner pass opting out of the FX cache: keep it, never key a stale graph.
+            inner_uuid = self.inner.uuid()
+            return None if inner_uuid is None else (marker, inner_uuid)
 
-    inductor_config.post_grad_custom_post_pass = ReadbackBarrierKeyedPass(existing)
+    _set_torch_config(
+        inductor_config, "post_grad_custom_post_pass", ReadbackBarrierKeyedPass(existing)
+    )
 
 
 def fix_inductor_reduction_readback_race():
@@ -7140,6 +8404,132 @@ def fix_inductor_reduction_readback_race():
     )
 
 
+def fix_inductor_triton_wrapper_eager_vals():
+    """torch < 2.13: Inductor asserts equal node counts when tracing a mutating Triton kernel decomposition with
+    eager and Inductor values; dynamic shapes can differ (pytorch/pytorch#181735, Gemma2 GEGLU backward). On that
+    assertion retrace with Inductor values and attach eager values, as torch >= 2.13 does."""
+    try:
+        import torch
+        from torch._inductor import pattern_matcher as pm
+    except Exception:
+        return
+    match_cls = getattr(pm, "Match", None)
+    original = getattr(match_cls, "replace_by_example", None)
+    if original is None or getattr(original, "_unsloth_triton_eager_vals", False):
+        return
+    try:
+        source = inspect.getsource(inspect.unwrap(original))
+    except Exception:
+        return
+    # torch >= 2.13 no longer propagates eager values for Triton kernels inside replace_by_example.
+    if "graph_with_eager_vals" not in source or "triton_kernel_wrapper_functional" not in source:
+        return
+    hops = getattr(torch.ops, "higher_order", None)
+    functional = getattr(hops, "triton_kernel_wrapper_functional", None)
+    mutation = getattr(hops, "triton_kernel_wrapper_mutation", None)
+    if functional is None or mutation is None:
+        return
+
+    @functools.wraps(original)
+    def replace_by_example(self, replacement_fn, args, *rest, **kwargs):
+        try:
+            return original(self, replacement_fn, args, *rest, **kwargs)
+        except AssertionError:
+            nodes = getattr(self, "nodes", None) or []
+            if len(nodes) != 1 or nodes[0].target is not functional:
+                raise
+            hop = nodes[0]
+            eager = hop.meta.get("eager_input_vals")
+            if eager is None:
+                raise
+        # The failed attempt only traced, so the graph is unchanged.
+        graph = hop.graph
+        before = set(graph.find_nodes(op = "call_function", target = mutation))
+        del hop.meta["eager_input_vals"]
+        try:
+            out = original(self, replacement_fn, args, *rest, **kwargs)
+        except BaseException:
+            hop.meta["eager_input_vals"] = eager
+            raise
+        inserted = [
+            n for n in graph.find_nodes(op = "call_function", target = mutation) if n not in before
+        ]
+        if len(inserted) == 1:
+            _, eager_kwargs = eager
+            inserted[0].meta["eager_input_vals"] = (
+                (),
+                {k: v for k, v in eager_kwargs.items() if k != "tensors_to_clone"},
+            )
+        else:
+            logger.warning(
+                f"Unsloth: Inductor inserted {len(inserted)} Triton kernel nodes for one decomposition; "
+                "their eager-mode strides were not attached."
+            )
+        STATS_TRITON_EAGER_VALS["fallbacks"] += 1
+        return out
+
+    replace_by_example._unsloth_triton_eager_vals = True
+    match_cls.replace_by_example = replace_by_example
+    logger.info(
+        "Unsloth: Patched Inductor's Triton kernel decomposition for dynamic size-1 dims (pytorch#181735)."
+    )
+
+
+STATS_TRITON_EAGER_VALS = {"fallbacks": 0}
+
+
+def _same_tensor(tensor):
+    return tensor
+
+
+def _detached_tensor(tensor):
+    # Nothing backpropagates the example score_mod forward; an identity pack saves an op's output
+    # (tanh soft-capping) on its own node, a cycle gc cannot break, so every call leaked that graph.
+    return tensor.detach()
+
+
+def fix_flex_attention_eager_saved_tensor_hooks():
+    """Eager flex_attention traces its score_mod backward in create_fw_bw_graph during forward; inside a
+    non-reentrant checkpoint (DDP) that trace unpacks through the checkpoint's hooks and restarts the
+    recompute mid forward. The traced graph owns no activations, so trace it under our own hooks
+    (detaching pack, identity unpack)."""
+    try:
+        import torch
+        flex_hop = importlib.import_module("torch._higher_order_ops.flex_attention")
+    except Exception:
+        return
+    original = getattr(flex_hop, "create_fw_bw_graph", None)
+    # Without the getter (torch < 2.7, some 2.7 wheels) the active hooks cannot be read: always use ours.
+    top_hooks = getattr(torch._C._autograd, "_top_saved_tensors_default_hooks", None)
+    if original is None:
+        return
+    if getattr(original, "_unsloth_saved_hooks_free", False):
+        return
+
+    @functools.wraps(original)
+    def create_fw_bw_graph(*args, **kwargs):
+        try:
+            active = top_hooks is None or top_hooks(False) is not None
+        except Exception:
+            active = False
+        if not active:
+            return original(*args, **kwargs)
+        hooks = torch.autograd.graph.saved_tensors_hooks(_detached_tensor, _same_tensor)
+        try:
+            # Raises while saved-tensor hooks are disabled; those calls keep torch's behaviour.
+            hooks.__enter__()
+        except Exception:
+            return original(*args, **kwargs)
+        try:
+            return original(*args, **kwargs)
+        finally:
+            hooks.__exit__(None, None, None)
+
+    create_fw_bw_graph._unsloth_saved_hooks_free = True
+    create_fw_bw_graph._unsloth_original = original
+    flex_hop.create_fw_bw_graph = create_fw_bw_graph
+
+
 def fix_dynamo_config_thread_visibility():
     """torch 2.12 made torch._dynamo/_inductor config overrides thread-local
     (ContextVars), so `config.recompile_limit = 1024` set on the main thread is
@@ -7161,6 +8551,10 @@ def fix_dynamo_config_thread_visibility():
         from contextvars import ContextVar
     except Exception:
         return
+    try:
+        from torch.utils._config_module import _UNSET_SENTINEL as _unset
+    except Exception:
+        _unset = None
 
     try:
         probe = getattr(_dynamo_config, "_config", {}).get("recompile_limit", None)
@@ -7173,7 +8567,8 @@ def fix_dynamo_config_thread_visibility():
     except Exception:
         return
 
-    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config")
+    # functorch too: pp_schedules.split_backward_scope turns donated_buffer off for every thread during a step.
+    mirrored_modules = ("torch._dynamo.config", "torch._inductor.config", "torch._functorch.config")
 
     # config.patch()/load_config() writes are thread-local by design; a per-thread depth counter
     # keeps them out of the global default.
@@ -7242,6 +8637,22 @@ def fix_dynamo_config_thread_visibility():
         _patched_load_config.__unsloth_patched__ = True
         ConfigModule.load_config = _patched_load_config
 
+    # The get_hash() / config view caches are ContextVars too: fresh ones make every thread recompute, else
+    # Inductor's FX-graph cache key goes stale (as unsloth_zoo.torch_config._invalidate_caches).
+    _cache_vars = (
+        ("_hash_dirty_var", True),
+        ("_hash_cache_var", None),
+        ("_get_dict_dirty_keys_var", None),
+        ("_get_dict_cache_var", None),
+    )
+
+    def _invalidate_config_caches(module):
+        module_dict = module.__dict__
+        module_name = module_dict.get("__name__", "torch_config")
+        for attr, default in _cache_vars:
+            if isinstance(module_dict.get(attr, None), ContextVar):
+                original_setattr(module, attr, ContextVar(f"{module_name}.{attr}", default = default))
+
     @functools.wraps(original_setattr)
     def _patched_setattr(self, name, value):
         original_setattr(self, name, value)
@@ -7253,6 +8664,10 @@ def fix_dynamo_config_thread_visibility():
                 entry = self.__dict__["_config"].get(name, None)
                 if entry is not None and entry.alias is None:
                     entry.default = value
+                    # A process-wide value (set_torch_config, TORCHINDUCTOR_* env) shadows default: replace it too.
+                    if _unset is not None and entry.env_value_default is not _unset:
+                        entry.env_value_default = value
+                    _invalidate_config_caches(self)
             except Exception:
                 pass
 
@@ -7530,6 +8945,10 @@ _SDPA_CUDNN_D256_FLAG = "_unsloth_avoids_cudnn_d256_masked_backward"
 _SDPA_CUDNN_D256_WARNED = False
 
 
+# NaN dQ reproduces on SM100; SM90 runs the same head_dim-256 kernels, guarded without a repro.
+_SDPA_CUDNN_D256_MAJORS = (9, 10)
+
+
 def _sdpa_cudnn_d256_sm100_devices():
     try:
         import torch
@@ -7538,14 +8957,14 @@ def _sdpa_cudnn_d256_sm100_devices():
         return frozenset(
             i
             for i in range(torch.cuda.device_count())
-            if torch.cuda.get_device_capability(i)[0] == 10
+            if torch.cuda.get_device_capability(i)[0] in _SDPA_CUDNN_D256_MAJORS
         )
     except Exception:
         return frozenset()
 
 
 def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
-    """True for the calls whose cuDNN backward returns NaN dQ on SM100 (no-grad never reaches it)."""
+    """True for the calls whose cuDNN backward returns NaN dQ on SM100 / SM90 (no-grad never reaches it)."""
     import torch
 
     if attn_mask is None or not torch.is_grad_enabled():
@@ -7566,7 +8985,7 @@ def _sdpa_needs_cudnn_d256_detour(sm100_devices, query, key, attn_mask):
 
 
 def fix_cudnn_sdpa_d256_masked_backward():
-    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100.
+    """Run masked head_dim-256 SDPA training without cuDNN attention on SM100 and SM90.
 
     torch 2.14 (cuDNN 9.24) first dispatches such calls to cuDNN, whose backward returns NaN dQ
     (bf16 / fp16); torch <= 2.13 never picks cuDNN here, so the detour is a no-op
@@ -7605,7 +9024,7 @@ def fix_cudnn_sdpa_d256_masked_backward():
                 if not _SDPA_CUDNN_D256_WARNED:
                     _SDPA_CUDNN_D256_WARNED = True
                     logger.warning(
-                        "Unsloth: head_dim 256 attention with a mask is training on an SM100 GPU; "
+                        "Unsloth: head_dim 256 attention with a mask is training on an SM90 / SM100 GPU; "
                         "running it without cuDNN attention, whose backward returns NaN gradients "
                         "there (set UNSLOTH_ALLOW_CUDNN_SDPA_D256=1 to keep cuDNN)."
                     )
@@ -7617,8 +9036,337 @@ def fix_cudnn_sdpa_d256_masked_backward():
     setattr(scaled_dot_product_attention, _SDPA_CUDNN_D256_FLAG, True)
     F.scaled_dot_product_attention = scaled_dot_product_attention
     logger.info(
-        "Unsloth: SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
+        "Unsloth: SM90 / SM100 GPU found; masked head_dim 256 SDPA training will avoid cuDNN attention "
         f"(devices {sorted(sm100_devices)})"
+    )
+
+
+_SDPA_GRAD_LAYOUT_FLAG = "_unsloth_gives_sdpa_backward_the_output_layout"
+_SDPA_GRAD_LAYOUT_FUNCTION = []
+# Eager outputs whose backward is cuDNN's; flash / efficient / math outputs stay untouched.
+_SDPA_GRAD_LAYOUT_NODES = frozenset(("ScaledDotProductCudnnAttentionBackward0",))
+
+
+def _cudnn_sdpa_backward_cache_ignores_grad_layout(torch_version, cudnn_version):
+    """torch 2.6 - 2.13 key the cuDNN backward plan without grad_output strides (fixed in
+    pytorch/pytorch#191576); cuDNN < 9.5.1 always copies grad_output to the output layout."""
+    try:
+        torch_version = TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return False
+    if not (TrueVersion("2.6") <= torch_version < TrueVersion("2.14")):
+        return False
+    return cudnn_version is not None and int(cudnn_version) >= 90501
+
+
+def _sdpa_grad_to_layout(stride, grad):
+    if grad.stride() == stride:
+        return grad
+    return grad.new_empty_strided(grad.size(), stride).copy_(grad)
+
+
+def _sdpa_grad_layout_function():
+    if _SDPA_GRAD_LAYOUT_FUNCTION:
+        return _SDPA_GRAD_LAYOUT_FUNCTION[0]
+    import torch
+
+    try:
+        import torch._dynamo.config as dynamo_config
+
+        # torch 2.6 Dynamo bans grad.stride() in a traced backward: a graph break per SDPA call.
+        stride_banned = "stride" in dynamo_config._autograd_backward_strict_mode_banned_ops
+    except Exception:
+        stride_banned = False
+
+    class _GradInOutputLayout(torch.autograd.Function):
+        # setup_context + generate_vmap_rule: torch.func.grad / vmap / jacrev keep working.
+        generate_vmap_rule = True
+
+        @staticmethod
+        def forward(out):
+            # Not a view: view outputs reject in-place consumers; Inductor drops the clone.
+            return out.clone()
+
+        @staticmethod
+        def setup_context(ctx, inputs, output):
+            ctx.out_stride = inputs[0].stride()
+
+        @staticmethod
+        def backward(ctx, grad):
+            if stride_banned and torch.compiler.is_compiling():
+                return grad.new_empty_strided(grad.size(), ctx.out_stride).copy_(grad)
+            return _sdpa_grad_to_layout(ctx.out_stride, grad)
+
+    _SDPA_GRAD_LAYOUT_FUNCTION.append(_GradInOutputLayout)
+    return _GradInOutputLayout
+
+
+def fix_cudnn_sdpa_backward_grad_layout():
+    """Force SDPA grad_output into the output's layout, which the plan key does cover, so two
+    same-shape backwards with different grad layouts cannot share a stale plan (wrong grads)."""
+    if os.environ.get("UNSLOTH_SKIP_CUDNN_SDPA_GRAD_LAYOUT_FIX", "0") == "1":
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return
+        if not _cudnn_sdpa_backward_cache_ignores_grad_layout(
+            torch.__version__, torch.backends.cudnn.version()
+        ):
+            return
+        grad_in_output_layout = _sdpa_grad_layout_function()
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA backward layout fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, False):
+        return
+
+    original = F.scaled_dot_product_attention
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(*args, **kwargs):
+        out = original(*args, **kwargs)
+        # Plain tensors only: a DTensor gradient cannot be copied into a plain empty_strided buffer.
+        if type(out) is torch.Tensor and out.requires_grad and out.is_cuda and not out.is_nested:
+            if torch.compiler.is_compiling():
+                # Dynamo graph-breaks on a hook on an intermediate; the Function traces inline.
+                return grad_in_output_layout.apply(out)
+            if type(out.grad_fn).__name__ in _SDPA_GRAD_LAYOUT_NODES:
+                # A hook keeps out a plain tensor: a Function output is a view, so in-place
+                # ops on it would raise.
+                out.register_hook(functools.partial(_sdpa_grad_to_layout, out.stride()))
+        return out
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_GRAD_LAYOUT_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        f"Unsloth: torch {torch.__version__} reuses cuDNN SDPA backward plans across gradient "
+        "layouts; SDPA gradients are given the output's layout"
+    )
+
+
+_SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
+_SDPA_CUDNN_KNOWN_BAD_WARNED = set()
+# Backend flags are process-wide: refcount wrapped calls in flight so overlapping calls never see cuDNN back on early.
+_SDPA_CUDNN_HELD = [0]
+_SDPA_CUDNN_LOCK = threading.Lock()
+_SDPA_CUDNN_DECODE = "decode"
+_SDPA_CUDNN_DQ_NAN = "dq_nan"
+
+
+def _torch_release(torch_version):
+    try:
+        return TrueVersion(TrueVersion(str(torch_version)).base_version)
+    except Exception:
+        return None
+
+
+def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
+    """pytorch#193893: cuDNN 9.19 - 9.25.0 (not 9.24.1) one-row decode on SM 10.x / 11.x is wrong.
+    torch 2.14 refuses it (pytorch#194963); <= 2.13 cu128+ wheels ship 9.19 / 9.20."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.14") or cudnn_version is None:
+        return False
+    cudnn_version = int(cudnn_version)
+    if cudnn_version < 91900 or cudnn_version > 92500 or 92400 < cudnn_version < 92500:
+        return False
+    return int(capability[0]) in (10, 11)
+
+
+def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
+    """pytorch#196678: cuDNN < 9.26 on SM90 gives NaN dQ for non-causal s_kv % 128 == 64.
+    torch 2.15 refuses it (pytorch#196861)."""
+    release = _torch_release(torch_version)
+    if release is None or release >= TrueVersion("2.15") or cudnn_version is None:
+        return False
+    return int(cudnn_version) < 92600 and tuple(int(x) for x in capability[:2]) == (9, 0)
+
+
+def _sdpa_cudnn_known_bad_devices():
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+            return frozenset(), frozenset()
+        cudnn_version = torch.backends.cudnn.version()
+        capabilities = [
+            torch.cuda.get_device_capability(i) for i in range(torch.cuda.device_count())
+        ]
+    except Exception:
+        return frozenset(), frozenset()
+    decode = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_decode_corrupts(torch.__version__, cudnn_version, cap)
+    )
+    dq_nan = frozenset(
+        i
+        for i, cap in enumerate(capabilities)
+        if _cudnn_sdpa_dq_nan(torch.__version__, cudnn_version, cap)
+    )
+    return decode, dq_nan
+
+
+def _sdpa_cudnn_dq_nan_length(key):
+    # Compiling: _sdpa_cudnn_off tests the value, so a dynamic length adds no guard.
+    import torch
+    return torch.compiler.is_compiling() or key.shape[-2] % 128 == 64
+
+
+def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
+    """The known cuDNN bug this call would hit, mirroring torch's later guards; None if none."""
+    import torch
+
+    if not getattr(query, "is_cuda", False) or getattr(query, "is_nested", False):
+        return None
+    index = query.device.index
+    if index not in decode_devices and index not in dq_devices:
+        return None
+    dtype = query.dtype
+    # Autocast casts fp32 SDPA inputs to half before dispatch.
+    if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+    if dtype not in (torch.float16, torch.bfloat16) or query.dim() < 2:
+        return None
+    if index in decode_devices and query.shape[-2] == 1:
+        return _SDPA_CUDNN_DECODE
+    if (
+        index in dq_devices
+        and not is_causal
+        and query.requires_grad
+        and torch.is_grad_enabled()
+        and getattr(key, "dim", lambda: 0)() >= 2
+        and _sdpa_cudnn_dq_nan_length(key)
+    ):
+        return _SDPA_CUDNN_DQ_NAN
+    return None
+
+
+class _SdpaCudnnPolicy(types.ModuleType):
+    """Dynamo folds SDPA backend flags without a guard, but guards a module attribute by value:
+    reading the policy here makes a compiled graph recompile when the policy flips its backend."""
+
+    @property
+    def cudnn_off(self):
+        import torch
+        cuda = torch.backends.cuda
+        # A held switch counts as on, so another thread's matching call also takes it.
+        return (cuda.cudnn_sdp_enabled() or _SDPA_CUDNN_HELD[0] > 0) and (
+            cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
+        )
+
+
+_SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
+
+
+def _sdpa_cudnn_off(key_length = None):
+    """Turn cuDNN SDPA off unless it is the only backend; a symbolic key_length counts as a hit.
+    The count rises before the flag drops, so an unlocked policy read never sees cuDNN off."""
+    import torch
+
+    if not (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64):
+        return False
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 0 and not _SDPA_CUDNN_POLICY.cudnn_off:
+            return False
+        _SDPA_CUDNN_HELD[0] += 1
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(False)
+    return True
+
+
+def _sdpa_cudnn_restore(switch):
+    import torch
+    if not switch:
+        return
+    with _SDPA_CUDNN_LOCK:
+        if _SDPA_CUDNN_HELD[0] == 1:
+            torch._C._set_sdp_use_cudnn(True)
+        _SDPA_CUDNN_HELD[0] -= 1
+
+
+_SDPA_CUDNN_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+_SDPA_CUDNN_MESSAGES = {
+    _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
+    "returns wrong attention there, pytorch#193893)",
+    _SDPA_CUDNN_DQ_NAN: "training with a key length of 64 mod 128 on this H100 / H200 (cuDNN "
+    "< 9.26 returns NaN query gradients there, pytorch#196678)",
+}
+
+
+def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwargs):
+    """allow_in_graph: one eager-graph node whose finally runs even if SDPA raises; AOTAutograd
+    traces through it, so the traced SDPA avoids cuDNN."""
+    import torch
+
+    switch = _sdpa_cudnn_off(key_length)
+    try:
+        if switch and not torch.compiler.is_compiling() and bug not in _SDPA_CUDNN_KNOWN_BAD_WARNED:
+            _SDPA_CUDNN_KNOWN_BAD_WARNED.add(bug)
+            logger.warning(
+                f"Unsloth: running SDPA without cuDNN attention for {_SDPA_CUDNN_MESSAGES[bug]}. "
+                "Upgrade to torch 2.15 / cuDNN 9.26, or set UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1."
+            )
+        return _SDPA_CUDNN_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _sdpa_cudnn_restore(switch)
+
+
+def fix_cudnn_sdpa_known_bad_shapes():
+    """Keep SDPA off cuDNN for the calls torch 2.14 / 2.15 later refuse (pytorch#193893, #196678),
+    only when a visible device is affected and another backend is enabled.
+    UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
+    if os.environ.get("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", "0") == "1":
+        return
+    decode_devices, dq_devices = _sdpa_cudnn_known_bad_devices()
+    if not decode_devices and not dq_devices:
+        return
+    try:
+        import torch
+        import torch._dynamo
+        import torch.nn.functional as F
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the cuDNN SDPA known-bad-shape fix ({e})")
+        return
+    if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
+        return
+
+    # Switch, SDPA and restore stay one graph call: a trailing restore node would be skipped on a raise.
+    torch._dynamo.allow_in_graph(_sdpa_without_cudnn)
+    original = F.scaled_dot_product_attention
+    token = f"sdpa_{len(_SDPA_CUDNN_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    _SDPA_CUDNN_ORIGINALS[token] = original
+
+    @functools.wraps(original)
+    def scaled_dot_product_attention(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        dropout_p = 0.0,
+        is_causal = False,
+        *args,
+        **kwargs,
+    ):
+        bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
+        # Compiled, this policy read is a guard.
+        if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
+            key_length = key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None
+            return _sdpa_without_cudnn(
+                token, bug, key_length, query, key, value, attn_mask, dropout_p, is_causal,
+                *args, **kwargs,
+            )  # fmt: skip
+        return original(query, key, value, attn_mask, dropout_p, is_causal, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = original
+    setattr(scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, True)
+    F.scaled_dot_product_attention = scaled_dot_product_attention
+    logger.info(
+        "Unsloth: cuDNN SDPA known-bad shapes avoided "
+        f"(decode devices {sorted(decode_devices)}, NaN dQ devices {sorted(dq_devices)})"
     )
 
 
@@ -7710,6 +9458,155 @@ def fix_rocm_windows_fused_sdpa():
         f"Unsloth: this Windows ROCm torch cannot run {names} attention; using {fallback} "
         "instead (set UNSLOTH_ALLOW_ROCM_FUSED_SDPA=1 to keep them)."
     )
+
+
+# Shared with Studio's studio/backend/core/_rocm_windows_sdpa.py: whichever installs first wins.
+_ROCM_WINDOWS_WIDE_HEAD_FLAG = "_unsloth_windows_rocm_wide_head_guard"
+ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM = 256
+# Device types the guard pins; ROCm GPUs are "cuda" in torch. Tests add "cpu" to compile on CPU.
+_ROCM_WINDOWS_WIDE_HEAD_DEVICE_TYPES = ("cuda",)
+
+
+def _is_windows_rocm_torch():
+    """Windows host whose torch is a ROCm build (torch.version.hip, or only a +rocm version tag)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import torch
+    except Exception:
+        return False
+    if getattr(getattr(torch, "version", None), "hip", None):
+        return True
+    return "rocm" in str(getattr(torch, "__version__", "")).lower()
+
+
+def _sdpa_has_flag(fn, flag):
+    """``flag`` on ``fn`` or anything it wraps (later SDPA wrappers keep ``__wrapped__``)."""
+    for _ in range(32):
+        if fn is None:
+            return False
+        if getattr(fn, flag, False):
+            return True
+        fn = getattr(fn, "__wrapped__", None)
+    return False
+
+
+def _sdpa_head_too_wide(query, value):
+    """Shape and device reads only: a compiled graph specializes on them, no graph break."""
+    import torch
+    return (
+        isinstance(query, torch.Tensor)
+        and query.device.type in _ROCM_WINDOWS_WIDE_HEAD_DEVICE_TYPES
+        and max(
+            query.shape[-1], value.shape[-1] if isinstance(value, torch.Tensor) else 0
+        ) > ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM
+    )  # fmt: skip
+
+
+_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
+
+
+# Backend flags are process-wide: the first wide-head call in flight saves them and pins math, the last restores them,
+# so an overlapping call (another thread) never sees the fused kernels back early nor saves the math-only state.
+_ROCM_WINDOWS_WIDE_HEAD_HELD = [0, None]  # calls in flight, the backends saved by the first
+_ROCM_WINDOWS_WIDE_HEAD_LOCK = threading.Lock()
+
+
+def _rocm_windows_math_on():
+    from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
+    with _ROCM_WINDOWS_WIDE_HEAD_LOCK:
+        if _ROCM_WINDOWS_WIDE_HEAD_HELD[0] == 0:
+            _ROCM_WINDOWS_WIDE_HEAD_HELD[1] = _cur_sdpa_kernel_backends()
+        # Re-pinned on every entry: another thread's sdpa_kernel may have changed the flags since the first.
+        _sdpa_kernel([SDPBackend.MATH])
+        _ROCM_WINDOWS_WIDE_HEAD_HELD[0] += 1
+
+
+def _rocm_windows_math_off():
+    from torch.nn.attention import _sdpa_kernel
+    with _ROCM_WINDOWS_WIDE_HEAD_LOCK:
+        _ROCM_WINDOWS_WIDE_HEAD_HELD[0] -= 1
+        if _ROCM_WINDOWS_WIDE_HEAD_HELD[0] == 0:
+            _sdpa_kernel(_ROCM_WINDOWS_WIDE_HEAD_HELD[1])
+            _ROCM_WINDOWS_WIDE_HEAD_HELD[1] = None
+
+
+def _sdpa_math_only(token, query, key, value, *args, **kwargs):
+    """allow_in_graph so the restore uses run-time backends; inlined it would restore trace-time ones."""
+    _rocm_windows_math_on()
+    try:
+        return _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token](query, key, value, *args, **kwargs)
+    finally:
+        _rocm_windows_math_off()
+
+
+def rocm_windows_wide_head_sdpa(sdpa):
+    """``sdpa`` with heads wider than 256 pinned to math; already guarded -> ``sdpa`` itself."""
+    if _sdpa_has_flag(sdpa, _ROCM_WINDOWS_WIDE_HEAD_FLAG):
+        return sdpa
+    import torch
+    import torch._dynamo
+    from torch.overrides import handle_torch_function, has_torch_function
+
+    torch._dynamo.allow_in_graph(_sdpa_math_only)
+    token = (
+        f"sdpa_{len(_ROCM_WINDOWS_WIDE_HEAD_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
+    )
+    _ROCM_WINDOWS_WIDE_HEAD_ORIGINALS[token] = sdpa
+
+    @functools.wraps(sdpa)
+    def scaled_dot_product_attention(query, key, value, *args, **kwargs):
+        # Modes see func = this wrapper (is F.sdpa), so F-based matchers still match; tensor subclasses
+        # go to torch's builtin below, as nested jagged tensors only match that.
+        if (
+            not torch.compiler.is_compiling()
+            and torch._C._is_torch_function_mode_enabled()
+            and has_torch_function((query, key, value))
+        ):
+            return handle_torch_function(
+                scaled_dot_product_attention,
+                (query, key, value),
+                query,
+                key,
+                value,
+                *args,
+                **kwargs,
+            )
+        if _sdpa_head_too_wide(query, value):
+            return _sdpa_math_only(token, query, key, value, *args, **kwargs)
+        return sdpa(query, key, value, *args, **kwargs)
+
+    scaled_dot_product_attention.__wrapped__ = sdpa
+    setattr(scaled_dot_product_attention, _ROCM_WINDOWS_WIDE_HEAD_FLAG, True)
+    return scaled_dot_product_attention
+
+
+def fix_rocm_windows_wide_head_sdpa():
+    """Windows ROCm: run SDPA with a head wider than 256 on the math backend.
+
+    torch 2.11.0+rocm7.14.0 on gfx1151 runs head dim 512 through flash/efficient kernels and gets it
+    wrong; Linux ROCm refuses them. Not probe-gated: corruption depends on seq len, mask and GQA, so
+    one probe shape can pass. UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA=1 opts out. True if installed.
+    """
+    if os.environ.get("UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA", "0") == "1":
+        return False
+    if not _is_windows_rocm_torch():
+        return False
+    try:
+        import torch.nn.functional as F
+        current = F.scaled_dot_product_attention
+        guarded = rocm_windows_wide_head_sdpa(current)
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the Windows ROCm wide-head SDPA fix ({e})")
+        return False
+    if guarded is current:
+        return True
+    F.scaled_dot_product_attention = guarded
+    logger.info(
+        "Unsloth: Windows ROCm: attention heads wider than "
+        f"{ROCM_WINDOWS_WIDEST_FUSED_HEAD_DIM} run on the SDPA math backend"
+    )
+    return True
 
 
 def patch_openspiel_env_async():
@@ -9094,9 +10991,13 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "qwen3_omni_moe_text": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # transformers (main, November 2026) aliases Sarvam's MLA MoE to the qwen2_moe conversion.
+    "sarvam_mla": "qwen2_moe",
     # Keyed by class name, not model type: transformers (main, October 2026) aliases the
     # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
     "UnlimitedOcrTextModel": "qwen2_moe",
+    # Same shape: transformers (main, November 2026) aliases the dots3-note text model's class.
+    "Dots3NoteTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose conversion family is NOT one of the two fused ones, so peft's
@@ -9590,6 +11491,35 @@ def _moe_linear_targets_to_restore(twc, model, before, peft_config):
     return restore
 
 
+def _narrow_regex_leaf_targets(model, before, peft_config):
+    """PEFT >= 0.22 converts a regex target_modules to the bare leaf names it resolves to, so a regex scoped
+    to one layer's projections puts LoRA on every layer's namesakes. A leaf that names only Linears, some of
+    which the regex did not match, goes back to exactly the modules the regex matched."""
+    after = peft_config.target_modules
+    if not isinstance(before, str) or before.lower() == "all-linear":
+        return
+    if after is None or isinstance(after, str):
+        return
+    modules = list(model.named_modules())
+    matched = {name for name, _ in modules if re.fullmatch(before, name)}
+    narrowed = set()
+    for target in after:
+        if not isinstance(target, str) or "." in target:
+            narrowed.add(target)
+            continue
+        hits = [(name, module) for name, module in modules if name.rpartition(".")[-1] == target]
+        if not hits or not all(_is_lora_linear_target(module) for _, module in hits):
+            narrowed.add(target)  # a parameter / non-Linear namesake: PEFT's own scoping applies
+            continue
+        names = {name for name, _ in hits}
+        if names <= matched:
+            narrowed.add(target)
+        else:
+            narrowed.update(names & matched)
+    if narrowed:
+        peft_config.target_modules = narrowed
+
+
 def _patch_peft_moe_keep_linear_targets(twc):
     original_convert = getattr(twc, "convert_peft_config_for_transformers", None)
     if original_convert is None or getattr(
@@ -9604,6 +11534,10 @@ def _patch_peft_moe_keep_linear_targets(twc):
         result = original_convert(peft_config, model, *args, **kwargs)
         if before is None or not hasattr(model, "named_modules"):
             return result
+        try:
+            _narrow_regex_leaf_targets(model, before, peft_config)
+        except Exception as exc:
+            logger.warning("Unsloth: could not keep a regex LoRA target to its matches: %s", exc)
         try:
             restore = _moe_linear_targets_to_restore(twc, model, before, peft_config)
         except Exception as exc:
@@ -9771,28 +11705,31 @@ def _torch_rocm_device_props():
 
 
 def _iter_hipinfo_paths():
-    """Yield existing hipInfo.exe paths: PATH, interpreter scripts dir (venv
-    and conda layouts), then HIP SDK / AMD installer locations."""
+    """Yield existing hipInfo.exe paths: PATH, then HIP SDK / AMD installer locations.
+    The interpreter's scripts dir is skipped: AMD torch wheels put an unsigned uv launcher
+    there that Smart App Control blocks."""
     import shutil
     import sysconfig
 
+    skip_dirs = set()
+    try:
+        for d in (sysconfig.get_path("scripts"), os.path.dirname(sys.executable or "")):
+            if d:
+                skip_dirs.add(os.path.normcase(os.path.normpath(d)))
+    except Exception:
+        pass
     candidates = []
     try:
-        resolved = shutil.which("hipinfo.exe")
-        if resolved:
-            candidates.append(resolved)
+        # The first PATH hit outside the skipped dirs, not just which()'s first hit.
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            entry = entry.strip().strip('"')
+            if entry and os.path.normcase(os.path.normpath(entry)) not in skip_dirs:
+                resolved = shutil.which("hipinfo.exe", path = entry)
+                if resolved:
+                    candidates.append(resolved)
+                    break
     except Exception:
         pass
-    try:
-        scripts_dir = sysconfig.get_path("scripts")
-        if scripts_dir:
-            candidates.append(os.path.join(scripts_dir, "hipInfo.exe"))
-    except Exception:
-        pass
-    executable_dir = os.path.dirname(sys.executable or "")
-    if executable_dir:
-        candidates.append(os.path.join(executable_dir, "hipInfo.exe"))
-        candidates.append(os.path.join(executable_dir, "Scripts", "hipInfo.exe"))
     for env_key in ("HIP_PATH", "ROCM_PATH"):
         root = os.environ.get(env_key, "").strip()
         if root:
@@ -10558,6 +12495,52 @@ _VLLM_COMPILED_EXTENSIONS = (
     "vllm._moe_C",
     "vllm._rocm_C",
 )
+
+
+# Importing vllm.platforms.cuda turns cuDNN SDPA off process-wide (a torch 2.5.0 workaround, diffusers#9704,
+# fixed in 2.5.1). Unsloth's import probes vLLM, so restore the caller's value after import and re-apply
+# vLLM's only on Unsloth loads. Known-bad cuDNN cases are avoided per call (fix_cudnn_sdpa_known_bad_shapes).
+_CUDNN_SDPA_BEFORE_IMPORT = [None]
+_CUDNN_SDPA_OFF_FOR_LOADS = [False]
+
+
+def _cudnn_sdpa_enabled():
+    torch = sys.modules.get("torch")
+    if torch is None:
+        return None
+    try:
+        return bool(torch.backends.cuda.cudnn_sdp_enabled())
+    except Exception:
+        return None
+
+
+def snapshot_cudnn_sdpa_before_import():
+    """torch not imported yet means torch's default (on)."""
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is None:
+        enabled = _cudnn_sdpa_enabled()
+        _CUDNN_SDPA_BEFORE_IMPORT[0] = True if enabled is None else enabled
+
+
+def restore_cudnn_sdpa_after_import():
+    if _CUDNN_SDPA_BEFORE_IMPORT[0] is not True or _cudnn_sdpa_enabled() is not False:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(True)
+    except Exception as e:
+        logger.info(f"Unsloth: could not restore cuDNN SDPA after import ({e})")
+        return
+    _CUDNN_SDPA_OFF_FOR_LOADS[0] = True
+
+
+def apply_cudnn_sdpa_for_unsloth_load():
+    if not _CUDNN_SDPA_OFF_FOR_LOADS[0] or _cudnn_sdpa_enabled() is not True:
+        return
+    try:
+        import torch
+        torch.backends.cuda.enable_cudnn_sdp(False)
+    except Exception:
+        pass
 
 
 def disable_broken_vllm(error = None):
@@ -11344,10 +13327,143 @@ def fix_torchao_pytree_register_constant():
     return True
 
 
-# vLLM inspects architectures in a separate process that imports torchao itself, never sees a
-# parent monkey-patch, and fails the same way. sitecustomize is the one hook reaching a process
-# we do not launch: site imports it at startup off the inherited PYTHONPATH. A .pth would need
-# a real site directory, which a library has no business writing into.
+# Newest torchao release whose Python API supports each torch minor (pytorch/ao#2919); newer torch has no ceiling.
+_TORCHAO_NEWEST_FOR_TORCH = {
+    (2, 4): (0, 12),
+    (2, 5): (0, 12),
+    (2, 6): (0, 13),
+    (2, 7): (0, 15),
+    (2, 8): (0, 16),
+}
+
+# What importing transformers / peft pulls from torchao at module scope (transformers 5 quantizer_torchao, peft lora).
+_TORCHAO_IMPORT_TIME_MODULES = (
+    "torchao",
+    "torchao.quantization",
+    "torchao.prototype.safetensors.safetensors_support",
+)
+
+# "<torchao>|<torch>" metadata versions; the subprocess sitecustomize hides torchao only on an exact match.
+_TORCHAO_DISABLED_ENV = "UNSLOTH_TORCHAO_DISABLED_FOR"
+
+TORCHAO_DISABLED_FOR_OLD_TORCH = False
+
+
+def _release_pair(version_string):
+    match = re.match(r"\s*(\d+)\.(\d+)", str(version_string))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def _is_torchao_torch_skew_error(error):
+    """Only torch's own missing-name wording; any other torchao failure stays visible."""
+    message = str(error)
+    if isinstance(error, AttributeError):
+        return message.startswith("module 'torch") and "has no attribute" in message
+    if isinstance(error, ImportError):
+        return "cannot import name" in message and "from 'torch" in message
+    return False
+
+
+def _hide_torchao_from_dependents():
+    """Make torchao read as not installed, as `disable_torchaudio_if_cuda_mismatched` does."""
+    for name in [n for n in list(sys.modules) if n == "torchao" or n.startswith("torchao.")]:
+        sys.modules.pop(name, None)
+    # find_spec returns None and `import torchao` raises ModuleNotFoundError: every guard takes its no-torchao branch.
+    sys.modules["torchao"] = None
+    # Libraries imported before unsloth cached the answer.
+    for module_name, flag_names in (
+        ("transformers.utils.import_utils", ("_torchao_available",)),
+        ("transformers.utils", ()),
+        ("peft.import_utils", ()),
+        ("diffusers.utils.import_utils", ("_torchao_available",)),
+    ):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for flag_name in flag_names:
+            if hasattr(module, flag_name):
+                try:
+                    setattr(module, flag_name, False)
+                except Exception:
+                    pass
+        check = getattr(module, "is_torchao_available", None)
+        if check is None:
+            continue
+        try:
+            check.cache_clear()
+        except AttributeError:
+            pass
+        try:
+            setattr(module, "is_torchao_available", lambda *args, **kwargs: False)
+        except Exception:
+            pass
+
+
+def disable_torchao_if_torch_too_old():
+    """Treat a torchao built for a newer torch as not installed instead of failing `import unsloth`.
+
+    unsloth_zoo's uncapped `torchao>=0.13.0` resolves 0.18 on torch 2.6, whose import reads
+    `torch.float4_e2m1fn_x2` (torch 2.7+). Disables only on a real missing torch name.
+    """
+    global TORCHAO_DISABLED_FOR_OLD_TORCH
+    if TORCHAO_DISABLED_FOR_OLD_TORCH:
+        _hide_torchao_from_dependents()
+        return True
+    try:
+        if "torchao" in sys.modules or importlib.util.find_spec("torchao") is None:
+            return False
+        torchao_version = importlib_version("torchao")
+        torchao_release = _release_pair(torchao_version)
+        import torch
+
+        torch_version = str(torch.__version__)
+        newest = _TORCHAO_NEWEST_FOR_TORCH.get(_release_pair(torch_version))
+    except Exception:
+        return False
+    if newest is None or torchao_release is None or torchao_release <= newest:
+        return False
+    reason = None
+    for module_name in _TORCHAO_IMPORT_TIME_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except Exception as error:
+            if _is_torchao_torch_skew_error(error):
+                reason = str(error).split("\n", 1)[0]
+                break
+            if isinstance(error, ModuleNotFoundError) and str(
+                getattr(error, "name", "")
+            ).startswith("torchao"):
+                # An older torchao without this submodule: nothing imports it there.
+                continue
+            return False
+    if reason is None:
+        return False
+    TORCHAO_DISABLED_FOR_OLD_TORCH = True
+    _hide_torchao_from_dependents()
+    try:
+        os.environ[_TORCHAO_DISABLED_ENV] = (
+            f"{importlib_version('torchao')}|{importlib_version('torch')}"
+        )
+    except Exception:
+        pass
+    # unsloth_zoo needs torchao>=0.13, so below that only a newer torch is installable.
+    remedy = (
+        f'    pip install "torchao<{newest[0]}.{newest[1] + 1}"\nor a newer torch.'
+        if newest >= (0, 13)
+        else '    pip install --upgrade "torch>=2.6"'
+    )
+    print(
+        f"Unsloth: torchao=={torchao_version} does not support torch=={torch_version} "
+        f"({reason}), so torchao is disabled for this process and everything that does "
+        f"not use it keeps working. QAT, torchao float8 and torchao-quantized checkpoints "
+        f"need a torchao that matches this torch:\n{remedy}"
+    )
+    return True
+
+
+# vLLM's separate process imports torchao itself, never sees a parent monkey-patch and fails the
+# same way; sitecustomize is the one hook reaching a process we do not launch (site imports it off
+# the inherited PYTHONPATH); a .pth needs a real site directory a library should not write into.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 
@@ -11403,8 +13519,9 @@ def _subprocess_sitecustomize_source():
     every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
-predates the symbols torchao 0.18 imports unconditionally, in processes
-unsloth did not launch (notably vLLM's model-architecture inspector)."""
+predates the symbols torchao 0.18 imports unconditionally, or hides a torchao
+the parent disabled, in processes unsloth did not launch (notably vLLM's
+model-architecture inspector)."""
 import os
 import sys
 
@@ -11585,6 +13702,15 @@ class _TorchaoImportHook:
 # module object alive here: the finder below outlives this file's execution.
 _SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
+# The parent disabled a torchao too new for its torch; hide it here only for the same torchao and torch.
+try:
+    _expected = os.environ.get("UNSLOTH_TORCHAO_DISABLED_FOR")
+    if _expected:
+        import importlib.metadata as _md
+        if _expected == "%s|%s" % (_md.version("torchao"), _md.version("torch")):
+            sys.modules["torchao"] = None
+except Exception:
+    pass
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
@@ -11679,12 +13805,30 @@ def _torch_really_has(F, name):
     return not getattr(symbol, "__unsloth_placeholder__", False)
 
 
+def _child_torchao_symbol_fix_needed():
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return False
+        import torch.nn.functional as F
+
+        # Our own in-process patches do not count as torch having the symbols.
+        return not (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        )
+    except Exception:
+        return False
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    A no-op unless the fix is needed: returns early when torchao is absent,
-    old enough to guard its own import, or when torch already has the symbols.
-    Nothing is written and PYTHONPATH is untouched on a healthy pair.
+    A no-op unless the symbol fix is needed (torchao 0.18+ on a torch missing its
+    symbols) or `disable_torchao_if_torch_too_old` disabled torchao here. Nothing is
+    written and PYTHONPATH is untouched on a healthy pair.
 
     The generated file inlines the symbol fix rather than importing unsloth: a
     sitecustomize runs at the start of every subprocess on the machine, so an
@@ -11696,24 +13840,7 @@ def propagate_torchao_fix_to_subprocesses():
 
     Returns the directory added to PYTHONPATH, or None.
     """
-    if importlib.util.find_spec("torchao") is None:
-        return None
-    try:
-        if Version(importlib_version("torchao")) < Version("0.18.0"):
-            return None
-    except Exception:
-        return None
-    try:
-        import torch.nn.functional as F
-
-        # Nothing to do only when both the functional symbols and the aten op are missing; our own in-process patches do not count.
-        if (
-            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-            and _aten_grouped_mm_library is None
-            and not _torch_op_is_missing("aten", "_grouped_mm")
-        ):
-            return None  # this torch is new enough; nothing to do
-    except Exception:
+    if not TORCHAO_DISABLED_FOR_OLD_TORCH and not _child_torchao_symbol_fix_needed():
         return None
 
     try:
@@ -11745,9 +13872,9 @@ def propagate_torchao_fix_to_subprocesses():
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(
-            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
-            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
-            "inspector) can import torchao too.",
+            "Unsloth: torchao %s does not match this torch. Added a "
+            "sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) get the same torchao fix.",
             importlib_version("torchao"),
         )
     return directory
@@ -11826,6 +13953,8 @@ _TORCHAO_INTMM_MODULES = (
 _TORCHAO_INTMM_MODULE = _TORCHAO_INTMM_MODULES[0]  # kept for callers that named the old home
 _TORCHAO_INTMM_SENTINEL = "__unsloth_torchao_intmm_patch__"
 _TORCHAO_INT_MM_ENV = "UNSLOTH_TORCHAO_INT_MM_FIX"
+# "0": copy a transposed int8 weight row-major before cuBLASLt, as torchao does (see _make_safe_int_mm)
+_TORCHAO_INT_MM_TRANSPOSED_ENV = "UNSLOTH_TORCHAO_INT_MM_TRANSPOSED"
 
 # The copy below hard-codes torchao's cuBLAS guards and fp32 fallback: ALL must be in the installed source.
 _TORCHAO_SAFE_INT_MM_MARKERS = (
@@ -11852,12 +13981,24 @@ def _is_fake_tensor(x):
         return False
 
 
+def _is_rocm_torch(torch) -> bool:
+    # AMD SDK / Radeon wheels leave torch.version.hip unset and carry the ROCm tag in __version__.
+    return bool(
+        getattr(getattr(torch, "version", None), "hip", None)
+        or "rocm" in str(getattr(torch, "__version__", "") or "").lower()
+    )
+
+
 def _make_safe_int_mm(mod, original):
     """A FULL copy of torchao 0.17.0's body, not a wrapper: its very first statement IS the probe."""
     import torch
 
     out_dtype = mod.out_dtype
     dynamo_is_compiling = mod.dynamo_is_compiling
+    # ROCm (hipBLASLt) keeps torchao's row-major copy; the TN layout below is only checked on cuBLASLt.
+    keep_transposed = os.environ.get(
+        _TORCHAO_INT_MM_TRANSPOSED_ENV, "1"
+    ).strip() != "0" and not _is_rocm_torch(torch)
 
     @functools.wraps(original)
     def safe_int_mm(input: torch.Tensor, mat2: torch.Tensor) -> torch.Tensor:
@@ -11878,12 +14019,15 @@ def _make_safe_int_mm(mod, original):
         bad_dimensions_for_cublas = not (j_is_nonzero_multiple_of_8 and k_is_nonzero_multiple_of_8)
 
         if device_cpu or bad_dimensions_for_cublas:
+            # back to the operand's card: a bare device type is the current card
             return torch.matmul(input.cpu().to(torch.int32), mat2.cpu().to(torch.int32)).to(
-                input.device.type
+                input.device
             )
 
-        if not mat2.is_contiguous():  # silently gives incorrect result without this
-            mat2 = mat2.contiguous()
+        # Keep torchao's ``qdata.t()`` as is (cuBLASLt TN): a row-major copy picks the NN kernel, which on sm89 reads
+        # past the end of ``input`` when M is not a 64-multiple (illegal address), and copies the weight every call.
+        if not mat2.is_contiguous() and not (keep_transposed and mat2.t().is_contiguous()):
+            mat2 = mat2.contiguous()  # silently gives incorrect result without this
         if (not input.is_contiguous()) and (
             input.shape[0] % 8 != 0
         ):  # gives cryptic error without this
@@ -12569,6 +14713,44 @@ def fix_transformers_longcat_lsa_config():
     if UNSLOTH_ENABLE_LOGGING:
         logger.info(
             "Unsloth: LongcatCausalLM configs without a model_type load on transformers' longcat_flash."
+        )
+
+
+def fix_transformers_deepseek_v41_native():
+    """On AutoConfig's unknown-architecture error for deepseek_v41, register the native implementation and retry."""
+    try:
+        import importlib.util
+        from transformers import AutoConfig
+    except Exception:
+        return
+    try:
+        if importlib.util.find_spec("transformers.models.deepseek_v41") is not None:
+            return
+    except Exception:
+        pass
+    current = AutoConfig.__dict__.get("from_pretrained")
+    original = getattr(current, "__func__", None)
+    if original is None or getattr(original, "_unsloth_deepseek_v41", False):
+        return
+
+    def from_pretrained(cls, pretrained_model_name_or_path, *args, **kwargs):
+        try:
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+        except (ValueError, KeyError) as error:
+            if "deepseek_v41" not in str(error):
+                raise
+            from .models.deepseek_v41 import register_deepseek_v41
+
+            if register_deepseek_v41() is None:
+                raise
+            return original(cls, pretrained_model_name_or_path, *args, **kwargs)
+
+    from_pretrained._unsloth_deepseek_v41 = True
+    from_pretrained.__wrapped__ = original
+    AutoConfig.from_pretrained = classmethod(from_pretrained)
+    if UNSLOTH_ENABLE_LOGGING:
+        logger.info(
+            "Unsloth: deepseek_v41 configs load on Unsloth's native DeepSeek-V4.1 implementation."
         )
 
 

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-MTok pricing tables and ``calculate_cost`` (usage block -> USD).
-
-Sources: Anthropic prompt-caching docs (5m write 1.25x, 1h write 2x,
-read 0.1x), web search ($10/1000), code execution; OpenAI pricing page.
-"""
+"""Per-MTok prices; calculate_cost maps usage to USD, cache writes 1.25x (5m) or 2x (1h), reads 0.1x."""
 
 from __future__ import annotations
 

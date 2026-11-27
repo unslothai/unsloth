@@ -5,8 +5,8 @@ import { ChevronLeftStandardIcon } from "@/lib/chevron-icons";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   PlusSignIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -97,7 +97,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
                 index: index + 1,
               })}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
             </Button>
           </div>
         ))}

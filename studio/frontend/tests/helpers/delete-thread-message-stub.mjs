@@ -10,3 +10,4 @@ const unexpected = (name) => () => {
 export const listChatMessages = unexpected("listChatMessages");
 export const ensureStoredChatThread = unexpected("ensureStoredChatThread");
 export const syncStoredChatMessages = unexpected("syncStoredChatMessages");
+export const saveStoredChatMessage = unexpected("saveStoredChatMessage");

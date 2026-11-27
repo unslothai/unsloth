@@ -183,6 +183,8 @@ const state: any = {
   loadedContextLength: null,
   modelLoading: false,
   runningByThreadId: {},
+  chatFullAccessGrants: {},
+  chatFullAccessPreviousMode: null,
   queuedSettingsEpoch: 0,
   // The subset decoding on the local llama-server: the recount must not share it with a decode.
   localRunByThreadId: {},

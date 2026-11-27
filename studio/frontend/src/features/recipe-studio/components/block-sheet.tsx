@@ -20,9 +20,9 @@ import {
   DocumentAttachmentIcon,
   PlusSignIcon,
   Search01Icon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
+import { Settings01Icon } from "@/lib/hugeicons-derived";
 import {
   ArrowLeftIcon,
 } from "lucide-react";
@@ -148,7 +148,7 @@ const MODEL_ROOT_GROUP: RootGroup = {
   kind: "model",
   title: "Models",
   description: "Connect a provider and pick which model powers your AI steps.",
-  icon: Settings02Icon,
+  icon: Settings01Icon,
 };
 const MODEL_SETUP_TYPES = new Set<BlockType>(["model_provider", "model_config"]);
 const ROOT_GROUPS_WITH_SEED_FIRST: RootGroup[] = [

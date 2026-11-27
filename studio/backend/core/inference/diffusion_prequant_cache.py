@@ -1,24 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Local cache of runtime-quantized denoisers for families with no hosted pre-quant, written in the hosted
-artifacts' exact container + metadata so the next load takes the hosted path from a local file.
-
-KEY: sha256 of every source shard's safetensors header plus content identity (Hub blob name, else stat; two uploads
-of one architecture share a header), component, scheme, POLICY_VERSION, class, Linear filter, ConvRot, fp8
-fast-accum and torch / torchao minors. The multi-GB payload is never read for the key.
-
-TRUST: only Studio writes the root (safetensors, no pickle), so files under its exact realpath count as allowlisted.
-
-COMMIT: artifact then manifest, each via temp + os.replace; the manifest is the commit point.
-
-ENV:
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE         0 disables lookups and saves (default on)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR     cache root (default <studio cache>/diffusion_prequant_cache)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_MAX_GB  LRU budget in GB (default 40; 0 disables eviction)
-  UNSLOTH_DIFFUSION_PREQUANT_CACHE_ASYNC   0 writes a pipeline load's build before the load returns (default: on a
-                                           background thread once the load is published)
-"""
+"""Runtime-quantized denoiser cache, hosted artifact format; only Studio writes it (safetensors, no
+pickle), so files under its exact realpath are allowlisted; manifest is commit point"""
 
 from __future__ import annotations
 
@@ -182,8 +166,7 @@ def read_header_bytes(path: Any) -> Optional[bytes]:
 
 
 def _content_identity(real: str, st: Any) -> str:
-    """Payload identity: the Hub blob name (its sha256), else stat incl. inode + ctime, which a size/mtime-preserving
-    replacement still changes."""
+    """Hub blob sha256 name, else stat with inode and ctime, which catch size/mtime-preserving swaps."""
     name = os.path.basename(real)
     if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
         return "blob:" + name
@@ -308,12 +291,6 @@ def source_shards(
     return None
 
 
-def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
-    for found in _shard_sets_in(base, component, cache_dir):
-        return found
-    return None
-
-
 def _shard_sets_in(base: str, component: str, cache_dir: Optional[str]):
     candidates = [str(base)]
     try:
@@ -365,6 +342,7 @@ def key_parts(
     component: str,
     source_fp: str,
     base: Optional[str] = None,
+    quant_device: Optional[str] = None,
 ) -> dict:
     """Everything besides the source weights that changes the quantized bytes this cache would hold."""
     from .diffusion_transformer_quant import (
@@ -376,9 +354,12 @@ def key_parts(
         divisible_for_scheme,
         exclude_tokens_for_scheme,
         int8_convrot_enabled,
+        streamed_weight_only_layout,
     )
 
     group, suffixes = convrot_spec_for_scheme(scheme, family)
+    # Only when set (streamed qwen-image int8), so every other build keeps its existing key.
+    extra = streamed_weight_only_layout(scheme, family)
     return {
         "policy": POLICY_VERSION,
         "family": str(family or ""),
@@ -395,8 +376,39 @@ def key_parts(
         if group and int8_convrot_enabled(family)
         else None,
         "fast_accum": _resolve_fast_accum(None) if scheme == TQ_FP8 else None,
+        **extra,
+        **_nvfp4_parts(scheme, quant_device),
         **_toolchain(),
     }
+
+
+def _nvfp4_parts(scheme: str, quant_device: Optional[str] = None) -> dict:
+    """The NVFP4 converter's identity: the weight quantiser's method, byte version and the device type it ran on
+    (4over6 compares fp32 reductions, so a CPU and a CUDA build differ in a few blocks). Empty for every other scheme,
+    so int8 / fp8 entries keep their keys."""
+    if scheme != "nvfp4":
+        return {}
+    from .diffusion_nvfp4_weight_quant import QUANTIZER_VERSION, resolve_method
+
+    return {
+        "nvfp4_weight_quant": resolve_method(),
+        "nvfp4_quantizer": QUANTIZER_VERSION,
+        "nvfp4_quant_device": quant_device,
+    }
+
+
+_NVFP4_QUANT_DEVICES = ("cpu", "cuda")
+
+
+def _nvfp4_policy_build(fam: Any, base: Optional[str]) -> bool:
+    """Whether an nvfp4 load of ``fam`` on ``base`` takes a per-layer policy (mixed nvfp4 / fp8 / bf16). Those builds
+    are not cached; only the whole-model build is. Unanswerable counts as a policy build, so it is not cached."""
+    try:
+        from .diffusion_nvfp4_policy import resolve_policy
+        name = getattr(fam, "name", fam if isinstance(fam, str) else None)
+        return resolve_policy(name, base) is not None
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def cache_key(parts: dict) -> str:
@@ -405,8 +417,10 @@ def cache_key(parts: dict) -> str:
     ).hexdigest()[:32]
 
 
-# Only schemes whose runtime and hosted builds are identical (nvfp4 converts per family at load; mxfp8 has no twin).
-CACHEABLE_SCHEMES = ("int8", "fp8")
+# Schemes whose runtime build round-trips through the hosted loader bit for bit (mxfp8 has no twin). nvfp4 is the
+# whole-model build only: a family with a per-layer nvfp4 policy is not cached (``_nvfp4_policy_build``), and its key
+# carries the weight quantiser's method and version (``_nvfp4_parts``).
+CACHEABLE_SCHEMES = ("int8", "fp8", "nvfp4")
 
 
 def _key_for(
@@ -416,11 +430,21 @@ def _key_for(
     component: str,
     base_id: Optional[str] = None,
     shards: Optional[list] = None,
+    quant_device: Optional[str] = None,
 ) -> Optional[tuple[str, dict]]:
     """``base`` is where the dense shards are found (or ``shards`` themselves); ``base_id`` the base model the artifact
-    is recorded and validated against (default ``base``)."""
+    is recorded and validated against (default ``base``). ``quant_device``: the device type an nvfp4 quantize runs on
+    ("cpu" / "cuda"); nvfp4 is keyed only with one."""
     if scheme not in CACHEABLE_SCHEMES:
         return None
+    if scheme == "nvfp4":
+        from .diffusion_nvfp4_flag import nvfp4_blocked
+        if quant_device not in _NVFP4_QUANT_DEVICES:
+            return None
+        if nvfp4_blocked(scheme) or _nvfp4_policy_build(
+            fam, base_id if base_id is not None else base
+        ):
+            return None
     if shards is None:
         shards = source_shards(base, component)
     if not shards:
@@ -435,6 +459,7 @@ def _key_for(
         component = component,
         source_fp = fp,
         base = base_id if base_id is not None else base,
+        quant_device = quant_device,
     )
     return cache_key(parts), parts
 
@@ -464,8 +489,10 @@ def lookup(
     component: str = "transformer",
     logger: Any = None,
     source_base: Optional[str] = None,
+    quant_device: Optional[str] = None,
 ) -> Optional[str]:
-    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises."""
+    """Path of a cached artifact for this exact source + scheme, or None. Local reads only, never raises.
+    ``quant_device``: where this load would quantize nvfp4 ("cpu" / "cuda"); without it nvfp4 is a miss."""
     if not enabled() or scheme not in CACHEABLE_SCHEMES:
         return None
     try:
@@ -483,7 +510,9 @@ def lookup(
             if not candidate or tuple(candidate) in seen:
                 continue
             seen.add(tuple(candidate))
-            keyed = _key_for(fam, scheme, source, component, shards = candidate)
+            keyed = _key_for(
+                fam, scheme, source, component, shards = candidate, quant_device = quant_device
+            )
             # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
             if keyed is not None and (cache_root() / keyed[0] / MANIFEST_NAME).is_file():
                 key, shards = keyed[0], candidate
@@ -605,7 +634,6 @@ _REMOTE_MEMO: dict[tuple, tuple] = {}
 _GONE = "gone"
 # Shared hub_reachability verdict: after one failure, lookups answer "unknown" (local snapshot stands) for the TTL.
 _UNREACHABLE = _reach._UNREACHABLE
-_connection_failed = _reach.connection_failed
 _endpoint = _reach.endpoint
 
 
@@ -628,6 +656,16 @@ def _hub_coords(path: Any) -> Optional[tuple[str, str, str, str]]:
     )
 
 
+def _plain_link_target(target: str) -> str:
+    """``os.readlink`` on Windows returns an absolute target as an extended-length path (``\\\\?\\C:\\...``), and
+    ``realpath`` keeps that prefix, so it never equals the plain ``blobs`` directory. Strip it back to the plain form."""
+    if target.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + target[8:]
+    if target.startswith("\\\\?\\"):
+        return target[4:]
+    return target
+
+
 def _repo_blob_name(path: str, blobs_dir: str) -> str:
     """Name of the ``<repo>/blobs`` entry a snapshot file links to, i.e. its etag. huggingface_hub >= 1.32 links that
     entry on to a shared store (``<cache>/blobs/<xx>/<xet hash>``), so only the first hop into ``blobs_dir`` counts."""
@@ -637,7 +675,7 @@ def _repo_blob_name(path: str, blobs_dir: str) -> str:
         if os.path.normcase(os.path.realpath(os.path.dirname(current))) == blobs:
             return os.path.basename(current)
         try:
-            target = os.readlink(current)
+            target = _plain_link_target(os.readlink(current))
         except (OSError, ValueError):
             break  # not a link: a copied file (no symlinks) or the chain's end
         current = os.path.join(os.path.dirname(current), target)
@@ -1144,11 +1182,14 @@ def save_runtime_quant(
     logger: Any = None,
     cancel_check: Optional[Any] = None,
     defer: bool = False,
+    host_snapshot: bool = False,
+    nvfp4_readback: bool = False,
 ) -> Any:
     """Persist a just-quantized transformer; returns the artifact path or None (logged). Never raises.
     ``base_repo`` is recorded as ``base_model_id``; ``source_base`` is where the dense weights were read (a mirror).
     ``defer`` runs every check now and returns a ``PendingWrite`` owning host tensors only; falls back to the
-    synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0."""
+    synchronous write when the build is off-host, RAM is short, another write runs, or ASYNC=0.
+    ``host_snapshot``: copy a device build to host now and write after the load; if it cannot defer, skip it."""
     if not enabled():
         return None
     t0 = time.perf_counter()
@@ -1176,7 +1217,8 @@ def save_runtime_quant(
         if info.get("native"):
             _log(logger, "info", "skipped (native weight-only layers have no safetensors layout)")
             return None
-        if info.get("lora"):
+        # A video load's bake merges adapters into the dense weights before quantising: same keys, different model.
+        if info.get("lora") or getattr(transformer, "_unsloth_loras_baked", False):
             _log(logger, "info", "skipped (baked LoRA adapters)")
             return None
         import torch
@@ -1185,7 +1227,23 @@ def save_runtime_quant(
             _log(logger, "info", f"skipped (model dtype {info.get('dtype')} is not bfloat16)")
             return None
         recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
-        keyed = _key_for(fam, scheme, source_base or base_repo, component, base_id = recorded_base)
+        quant_device = None
+        if scheme == "nvfp4":
+            if not nvfp4_readback:
+                _log(logger, "info", "skipped (this load path never reads an nvfp4 entry back)")
+                return None
+            quant_device = info.get("nvfp4_quant_device")
+            if quant_device not in _NVFP4_QUANT_DEVICES:
+                _log(logger, "info", "skipped (nvfp4 weights were quantized across devices)")
+                return None
+        keyed = _key_for(
+            fam,
+            scheme,
+            source_base or base_repo,
+            component,
+            base_id = recorded_base,
+            quant_device = quant_device,
+        )
         if keyed is None:
             _log(logger, "info", "skipped (dense source shards not found locally)")
             return None
@@ -1212,8 +1270,22 @@ def save_runtime_quant(
                     "skipped (fp8 quantized with a forced non-default accumulate mode)",
                 )
                 return None
+        wo_keys = ("weight_only_name_tokens", "weight_only_mode", "weight_only_outliers")
+        wanted_wo = {k: parts[k] for k in wo_keys if k in parts}
+        if {k: info[k] for k in wo_keys if k in info} != wanted_wo:
+            _log(logger, "info", "skipped (weight-only modulation state differs from the key)")
+            return None
+        if wanted_wo and wanted_wo["weight_only_mode"] != "wo":
+            _log(logger, "info", "skipped (diagnostic W8A8 modulation mode)")
+            return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
+            return None
+        if (
+            "nvfp4_weight_quant" in parts
+            and info.get("nvfp4_weight_quant") != parts["nvfp4_weight_quant"]
+        ):
+            _log(logger, "info", "skipped (nvfp4 weight quantiser differs from the key)")
             return None
         if not stack.enter_context(_writer_lock(cache_root(), key)):
             _log(logger, "info", "skipped (no cross-process lock available for the build)")
@@ -1289,6 +1361,13 @@ def save_runtime_quant(
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
+        if "nvfp4_weight_quant" in parts:
+            metadata["nvfp4_weight_quant"] = parts["nvfp4_weight_quant"]
+            metadata["nvfp4_quantizer"] = parts["nvfp4_quantizer"]
+            metadata["nvfp4_quant_device"] = parts["nvfp4_quant_device"]
+        if wanted_wo:
+            metadata["weight_only_name_tokens"] = list(wanted_wo["weight_only_name_tokens"])
+            metadata["weight_only_outliers"] = int(wanted_wo["weight_only_outliers"])
         metadata.update(_rotation(transformer, info))
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
@@ -1296,7 +1375,7 @@ def save_runtime_quant(
         job = _WriteJob(key, root / key, flat, header, parts, nbytes, t0, logger)
         flat = header = None
         if defer:
-            why = _defer_blocker(job)
+            why = _defer_blocker(job, host_snapshot = host_snapshot, cancel_check = cancel_check)
             if why is None:
                 state_dict = None
                 pending = PendingWrite(job, stack.pop_all())
@@ -1309,6 +1388,13 @@ def save_runtime_quant(
                     f"source shards, pins {job.pinned_map_bytes / 2**30:.2f} GiB of mappings)",
                 )
                 return pending
+            if host_snapshot and async_enabled():
+                _log(
+                    logger,
+                    "info",
+                    f"skipped ({why}; a resident build is never written inside the load)",
+                )
+                return None
             _log(logger, "info", f"writing {key} before the load returns ({why})")
         state_dict = None
         return job.run(cancel_check)
@@ -1401,6 +1487,19 @@ class _WriteJob:
         fd, stamp = entry
         return _FileSlice(fd, file_offset + int(t.data_ptr()) - lo, t, stamp)
 
+    def snapshot_to_host(self, cancel_check: Optional[Any] = None) -> None:
+        """Copy to host so the writer never touches the device (a render may be capturing a CUDA graph)."""
+        out: dict = {}
+        for name, t in self.flat.items():
+            if cancel_check is not None:
+                cancel_check()
+            if isinstance(t, _FlatRef):
+                t = t.tensor()
+            if getattr(getattr(t, "device", None), "type", "cpu") != "cpu":
+                t = t.detach().to("cpu")
+            out[name] = t
+        self.flat = out
+
     def close(self) -> None:
         fds, self.fds = self.fds, {}
         for fd, _stamp in fds.values():
@@ -1482,7 +1581,9 @@ def _cgroup_memory_bytes() -> tuple[Optional[int], Optional[int]]:
                     for ln in (node / "memory.stat").read_text(encoding = "utf-8").splitlines()
                     if ln.strip()
                 )
-                avail = max(0, limit - used + int(stat.get("file", 0)))
+                # ``file`` counts tmpfs / shared memory too (cgroup-v2 docs); only the rest is reclaimable page cache.
+                reclaimable = max(0, int(stat.get("file", 0)) - int(stat.get("shmem", 0)))
+                avail = max(0, limit - used + reclaimable)
                 if best[1] is None or avail < best[1]:
                     best = (limit, avail)
         except (OSError, ValueError):
@@ -1508,22 +1609,39 @@ def _host_memory_bytes() -> tuple[Optional[int], Optional[int]]:
     return total, avail
 
 
-def _defer_blocker(job: _WriteJob) -> Optional[str]:
+def _defer_blocker(
+    job: _WriteJob,
+    host_snapshot: bool = False,
+    cancel_check: Optional[Any] = None,
+) -> Optional[str]:
     """Why ``job`` must be written now, or None: it must be wholly on the host and what it keeps alive must fit."""
     if not async_enabled():
         return f"{ENV_ASYNC}=0"
     with _lock:
         if any(not p.done() for p in _BACKGROUND):
             return "another background cache write is running"
+    off_host = 0
     for t in job.tensors():
         if isinstance(t, _FlatRef):
             t = t.tensor()
         device = getattr(t, "device", None)
         if getattr(device, "type", None) != "cpu":
-            return f"the build is on {device}, not the host"
+            if not host_snapshot:
+                return f"the build is on {device}, not the host"
+            off_host += _tensor_bytes(t)
     total, avail = _host_memory_bytes()
     if total is None:
         return "host memory unknown"
+    if off_host:
+        reserve = max(_ASYNC_RESERVE_BYTES, int(total * _ASYNC_RESERVE_FRACTION))
+        if avail < off_host + reserve:
+            return (
+                f"host RAM short for a host copy of the build: {avail / 2**30:.1f} GiB available, the copy is "
+                f"{off_host / 2**30:.1f} GiB and needs {reserve / 2**30:.1f} GiB spare"
+            )
+        job.snapshot_to_host(cancel_check)
+        job.resolve()
+        return None
     if not job.release:
         job.resolve()
     keeps = job.held_bytes + job.pinned_map_bytes

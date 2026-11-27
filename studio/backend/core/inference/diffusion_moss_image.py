@@ -4,36 +4,12 @@
 # The transformer, scheduler and pipeline below are a port of OpenMOSS-Team's ``pipeline_moss_image.py``
 # (Apache-2.0, https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT), keeping its state-dict names and numerics.
 
-"""MOSS-Image (OpenMOSS-Team/MOSS-Image-SFT and -Base) as an in-tree diffusers pipeline.
-
-The official repos ship the transformer and scheduler as remote code (``model_index.json`` points both at the repo's
-``pipeline_moss_image.py``), and Studio never runs repo code: no ``trust_remote_code``, no ``custom_pipeline``. So the
-model lives here and the pipeline is assembled per component from safetensors and JSON only: ``MOSSImageTransformer``
-(this file) from ``transformer/``, the Qwen3.5 text encoder (``transformers.Qwen3_5Model``, transformers >= 5.3) from
-``text_encoder/``, the FLUX.2 small-decoder VAE (``diffusers.AutoencoderKLFlux2``) from ``vae/`` and the tokenizer.
-
-Numerics follow the reference op for op (fp32 RMSNorm with the weight applied after the cast, fp64 timestep sinusoid,
-fp32 RoPE phases cast to the activation dtype, fp32 noise, CFG and Euler update, fp32 VAE decode); the tests check the
-port bit for bit against the reference file on a tiny random model. What differs is only how the same values are
-reached:
-
-- RoPE tables are built once per (height, width, text length) and reused (the reference rebuilt them per forward).
-- The text refiner (two unmodulated text blocks) does not read the latent or the timestep, so the pipeline runs it
-  once per prompt per render (``refine_text``) and hands the refined tokens to every step (``refined_text``), unless
-  the transformer carries offload hooks (then every step refines, as the reference does).
-- One sample at its full text length takes no boolean-mask indexing and no ``torch.all`` mask check, so the forward
-  is free of host syncs (CUDA-graph capturable); the pipeline passes no mask when every row has the same length.
-- Attention goes through diffusers' dispatcher (``set_attention_backend`` reaches it), whose native backend is the
-  same ``scaled_dot_product_attention`` call.
-
-Sampling defaults follow ComfyUI's MOSS-Image workflow (the baseline): 1024x1024, 50 steps, CFG 3, shift 5, Euler
-over ``sgm_uniform`` sigmas, skip-layer guidance on block 22 for the negative pass, empty negative prompt. The
-reference pipeline snaps its sigmas to the 1000-point training grid instead; ``sigma_schedule = "training_grid"`` on
-the scheduler (or ``UNSLOTH_MOSS_SIGMAS=training_grid``) selects that.
-"""
+"""MOSS-Image in-tree diffusers pipeline, no remote code; numerics bit-identical to reference, only
+default sigmas differ"""
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 from typing import Any, Callable, Optional
@@ -43,6 +19,9 @@ from torch import nn
 from torch.nn import functional as F
 
 from loggers import get_logger
+
+# MOSS feeds its Qwen3.5 encoder text only; re-exported for callers of this module.
+from .diffusion_te_vision import drop_vision_tower  # noqa: F401
 
 logger = get_logger(__name__)
 
@@ -58,9 +37,24 @@ SIGMA_SCHEDULES = ("sgm_uniform", "training_grid")
 FUSED_QKV_ATTR = "_unsloth_moss_fused_qkv"
 LINEAR_RUNNER_ATTR = "_unsloth_moss_linear"
 QK_ROPE_ATTR = "_unsloth_moss_qk_rope"
+# q / k / v on one ConvRot rotation + act quant (``diffusion_int8_gemm.shared_rotq_linears``)
+SHARED_QKV_ATTR = "_unsloth_moss_shared_qkv"
+# SiTU-GLU product + ConvRot rotation + act quant of the down projection in one kernel (``int8_gemm.situ_linear``)
+SITU_DOWN_ATTR = "_unsloth_moss_situ_down"
 # Kill switch for the per-render text-refiner cache (``refine_text``): 0 refines on every step like the reference.
 TEXT_CACHE_ENV = "UNSLOTH_MOSS_TEXT_CACHE"
+# Kill switch for the layer-major batched forward of an offloaded DiT: 0 runs each row through every block in turn.
+LAYER_MAJOR_ENV = "UNSLOTH_MOSS_LAYER_MAJOR"
+# Hooks that only move a block's weights and arguments; any other hook on a block keeps the per-sample forward.
+_ROW_SAFE_HOOKS = frozenset(
+    {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
+)
+_LAYER_MAJOR_STATS: dict = {"forwards": 0, "rows": 0, "serial": {}}
 DEFAULT_UNCOND_SKIP_LAYERS = (22,)
+# SFT skips nothing; Base skips block 22 for the first half of the sigma schedule. Env 0 = block 22 every step.
+REFERENCE_SKIP_ENV = "UNSLOTH_MOSS_REFERENCE_SKIP"
+BASE_UNCOND_SKIP_END = 0.5
+_UNSET = object()
 
 
 def _env_off(name: str) -> bool:
@@ -70,8 +64,30 @@ def _env_off(name: str) -> bool:
 def _compute_dtype(linear: nn.Module) -> torch.dtype:
     """The dtype a Linear's input is cast to: the reference casts to ``weight.dtype``, which is the storage dtype under
     diffusers' ``GGUFLinear`` (uint8), so a ``compute_dtype`` the layer declares wins. Same dtype for a plain Linear."""
+    # A PEFT wrapper's ``weight`` is its base storage (uint8 under nf4).
+    get_base = getattr(linear, "get_base_layer", None)
+    if callable(get_base):
+        linear = get_base()
     declared = getattr(linear, "compute_dtype", None)
-    return declared if isinstance(declared, torch.dtype) else linear.weight.dtype
+    if isinstance(declared, torch.dtype):
+        return declared
+    # A layer kept at its stored dtype under diffusers' layerwise casting (the small-host route's dense denoiser)
+    # widens its weight in a pre-forward hook: the input has to arrive in that compute dtype, not the stored one.
+    get_hook = getattr(getattr(linear, "_diffusers_hook", None), "get_hook", None)
+    if callable(get_hook):
+        try:
+            hooked = getattr(get_hook("layerwise_casting"), "compute_dtype", None)
+        except Exception:  # noqa: BLE001
+            hooked = None
+        if isinstance(hooked, torch.dtype):
+            return hooked
+    weight = getattr(linear, "weight", None)
+    if weight is None:
+        # The small-host route's ``Int8WeightLinear``: int8 ``qweight``, ``scale`` stored in the compute dtype.
+        scale = getattr(linear, "scale", None)
+        if torch.is_tensor(scale) and scale.is_floating_point():
+            return scale.dtype
+    return weight.dtype
 
 
 class _RMSNorm(nn.Module):
@@ -130,10 +146,13 @@ def _rotate(x, tables):
 
 
 class _AttnProcessor:
-    """Holds the attention backend diffusers' ``set_attention_backend`` assigns (None = the dispatcher's active one)."""
+    """Holds the attention backend diffusers' ``set_attention_backend`` assigns (None = the dispatcher's active one).
+    The blocks call this module's ``dispatch_attention_fn`` with it, so the INT8 attention route
+    (``diffusion_int8_attention_dispatch``) can take the calls."""
 
     _attention_backend = None
     _parallel_config = None
+    _calls_dispatch_attention_fn = True
 
 
 def _dispatch_attention():
@@ -144,7 +163,8 @@ def _dispatch_attention():
     return dispatch_attention_fn
 
 
-_DISPATCH = _dispatch_attention()
+# Read from the module globals on every call: the INT8 attention route swaps this name for its wrapper.
+dispatch_attention_fn = _dispatch_attention()
 
 
 def _attention(
@@ -159,12 +179,12 @@ def _attention(
     q = _rotate(q.reshape(shape), tables)
     k = _rotate(k.reshape(shape), tables)
     v = v.reshape(shape)
-    if _DISPATCH is None:
+    if dispatch_attention_fn is None:
         out = F.scaled_dot_product_attention(
             q.to(v.dtype).transpose(1, 2), k.to(v.dtype).transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2)
     else:
-        out = _DISPATCH(q.to(v.dtype), k.to(v.dtype), v, backend = backend)
+        out = dispatch_attention_fn(q.to(v.dtype), k.to(v.dtype), v, backend = backend)
     return out.flatten(2)
 
 
@@ -176,12 +196,12 @@ def _attention_heads_first(
 ):
     """Attention over already normalised and rotated [B, H, S, D] q / k / v (the dispatcher takes [B, S, H, D] views)."""
     q, k, v = q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-    if _DISPATCH is None:
+    if dispatch_attention_fn is None:
         out = F.scaled_dot_product_attention(
             q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
         ).transpose(1, 2)
     else:
-        out = _DISPATCH(q, k, v, backend = backend)
+        out = dispatch_attention_fn(q, k, v, backend = backend)
     return out.flatten(2)
 
 
@@ -199,6 +219,7 @@ class _TextBlock(nn.Module, _AttentionMixin):
     def __init__(self, dim, ffn_dim, heads):
         super().__init__()
         self.heads = heads
+        self.head_dim = dim // heads
         self.processor = _AttnProcessor()
         self.norm1, self.norm2 = _RMSNorm(dim), _RMSNorm(dim)
         self.q_norm, self.k_norm = _RMSNorm(dim // heads), _RMSNorm(dim // heads)
@@ -236,6 +257,7 @@ class _Block(nn.Module, _AttentionMixin):
     def __init__(self, dim, ffn_dim, heads):
         super().__init__()
         self.heads = heads
+        self.head_dim = dim // heads
         self.processor = _AttnProcessor()
         self.norm1, self.norm2 = _RMSNorm(dim), _RMSNorm(dim)
         self.q_norm, self.k_norm = _RMSNorm(dim // heads), _RMSNorm(dim // heads)
@@ -256,9 +278,19 @@ class _Block(nn.Module, _AttentionMixin):
             # only while q / k / v are still the modules it was built from (a LoRA wrapper replaces them)
             if self.proj["q"] is q and self.proj["k"] is k and self.proj["v"] is v:
                 return (linear(y) if run is None else run(linear, y)).chunk(3, -1)
+        shared = self.__dict__.get(SHARED_QKV_ATTR) if torch.compiler.is_compiling() else None
+        if shared is not None:
+            # None unless all three are swapped ConvRot int8 Linears (checked per call)
+            out = shared(y, (self.proj["q"], self.proj["k"], self.proj["v"]))
+            if out is not None:
+                return out[0], out[1], out[2]
         return self._linear("q", y), self._linear("k", y), self._linear("v", y)
 
     def forward(self, x, rope, modulation):
+        if isinstance(x, (list, tuple)):
+            # Layer-major rows: one call so an offload hook uploads weights once; each row runs solo.
+            forward = type(self).forward
+            return tuple(forward(self, *row) for row in zip(x, rope, modulation))
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
         y = self.norm1(x) * (1 + scale_a[:, None]) + shift_a[:, None]
         dtype = _compute_dtype(self.proj["q"])
@@ -277,7 +309,11 @@ class _Block(nn.Module, _AttentionMixin):
         x = x + self._linear("o", attn) * gate_a[:, None]
         y = self.norm2(x) * (1 + scale_f[:, None]) + shift_f[:, None]
         hidden, gate = self._linear("ffn_up_gate", y.to(dtype)).chunk(2, -1)
-        return x + self._linear("ffn_down", _situ(hidden, gate)) * gate_f[:, None]
+        situ_down = self.__dict__.get(SITU_DOWN_ATTR) if torch.compiler.is_compiling() else None
+        down = situ_down(self.proj["ffn_down"], gate, hidden) if situ_down is not None else None
+        if down is None:
+            down = self._linear("ffn_down", _situ(hidden, gate))
+        return x + down * gate_f[:, None]
 
 
 class _RoPE(nn.Module):
@@ -333,19 +369,118 @@ class _RoPE(nn.Module):
         return torch.cat((phase.sin(), phase.cos()), -2).flatten(-2).unsqueeze(0)
 
     def tables(self, height, width, text_length, device, dtype):
-        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key."""
+        """``((cos, sin) for image + text, (cos, sin) for the text alone)`` in ``dtype``, cached per key.
+
+        Uncached during CUDA graph capture: a replay reads them at fixed addresses, and an evicted entry's memory is reused."""
         device = torch.device(device)
+        if _capturing(device):
+            return self._build(height, width, text_length, device, dtype)
         key = (int(height), int(width), int(text_length), device.type, device.index, dtype)
         hit = self._tables.get(key)
         if hit is not None:
             return hit
-        rope = self.forward(height, width, text_length, device).to(dtype)
-        full = _rope_tables(rope)
-        text = _rope_tables(rope[:, height * width :])
+        full, text = self._build(height, width, text_length, device, dtype)
         if len(self._tables) >= self._MAX_CACHED:
             self._tables.pop(next(iter(self._tables)))
         entry = self._tables[key] = (full, text)
         return entry
+
+    def _build(self, height, width, text_length, device, dtype):
+        rope = self.forward(height, width, text_length, device).to(dtype)
+        return _rope_tables(rope), _rope_tables(rope[:, height * width :])
+
+
+def _capturing(device) -> bool:
+    if device.type != "cuda":
+        return False
+    try:
+        if torch.compiler.is_compiling():
+            return False
+        with torch.cuda.device(device):
+            return bool(torch.cuda.is_current_stream_capturing())
+    except Exception:  # noqa: BLE001 - a build without CUDA graphs never records one
+        return False
+
+
+def _bound_to(fn, module) -> bool:
+    return (
+        getattr(fn, "__func__", None) is type(module).forward
+        and getattr(fn, "__self__", None) is module
+    )
+
+
+def _passes_rows(layer) -> bool:
+    """Whether ``layer`` reaches ``_Block.forward`` through weight-moving offload hooks only."""
+    if getattr(layer, "_compiled_call_impl", None) is not None:
+        return False
+    if layer._forward_hooks or layer._forward_pre_hooks:
+        return False
+    instance = layer.__dict__.get("forward")
+    if instance is None:
+        return True
+    # The outermost forward must be the hook wrapper itself, not something installed over it.
+    wrapper = getattr(getattr(instance, "func", None), "__qualname__", "")
+    if not isinstance(instance, functools.partial) or instance.args[:1] != (layer,):
+        return False
+    registry = layer.__dict__.get("_diffusers_hook")
+    refs = list(getattr(registry, "_fn_refs", None) or ())
+    if refs:
+        names = set(getattr(registry, "_hook_order", None) or ())
+        if not wrapper.startswith("HookRegistry.register_hook.") or not names <= _ROW_SAFE_HOOKS:
+            return False
+        if any(ref.original_forward is not None for ref in refs):
+            return False
+        return _bound_to(refs[0].forward, layer)
+    old = layer.__dict__.get("_old_forward")  # accelerate's add_hook_to_module
+    return (
+        wrapper.startswith("add_hook_to_module.")
+        and getattr(layer, "_hf_hook", None) is not None
+        and _bound_to(old, layer)
+    )
+
+
+def layer_major_refusal(transformer) -> Optional[str]:
+    """Why a batch cannot run layer-major (one upload per block per call, rows bit-identical to solo), else None."""
+    if _env_off(LAYER_MAJOR_ENV):
+        return f"{LAYER_MAJOR_ENV}=0"
+    if transformer.gradient_checkpointing and torch.is_grad_enabled():
+        return "gradient checkpointing"
+    if (
+        torch.compiler.is_compiling()
+        or getattr(transformer, "_compiled_call_impl", None) is not None
+    ):
+        return "compiled denoiser"
+    if not _offloaded(transformer):
+        return "resident weights"
+    if not all(_passes_rows(layer) for layer in transformer.layers):
+        return "a block runs compiled, graphed or hooked"
+    return None
+
+
+# Measured layer-major verdicts per card; ``serves`` only if the G2c, row-0 and speed gates passed. Others render alone.
+MEASURED_BATCH_WINS: dict = {
+    # bf16 group offload, 1024 px, 10 steps; torch 2.14.1, diffusers 0.42.1: N=2 1.98x, N=4 2.42x vs serial.
+    "NVIDIA A100-SXM4-80GB": {"serves": True, "speed_lo": 1.98, "g2c_upper": 0.0, "g2c_n": 24},
+}
+
+
+def coalesce_key(pipe) -> Optional[tuple]:
+    """Batch key for a layer-major load on a card with a serving verdict, else None (render alone)."""
+    transformer = getattr(pipe, "transformer", None)
+    if transformer is None or layer_major_refusal(transformer) is not None:
+        return None
+    device = torch.device(pipe._execution_device)
+    card = torch.cuda.get_device_name(device) if device.type == "cuda" else device.type
+    verdict = MEASURED_BATCH_WINS.get(card) or {}
+    return ("moss-image layer-major",) if verdict.get("serves") is True else None
+
+
+def layer_major_stats(reset: bool = False) -> dict:
+    """``forwards`` / ``rows`` served layer-major, and ``serial`` batches by refusal reason."""
+    out = {**_LAYER_MAJOR_STATS, "serial": dict(_LAYER_MAJOR_STATS["serial"])}
+    if reset:
+        _LAYER_MAJOR_STATS.update(forwards = 0, rows = 0, serial = {})
+    return out
 
 
 def _model_bases():
@@ -355,6 +490,7 @@ def _model_bases():
 
 
 _ModelMixin, _ConfigMixin = _model_bases()
+from diffusers.loaders import PeftAdapterMixin as _PeftAdapterMixin  # noqa: E402  (LoRA: load_lora_adapter)
 from diffusers.configuration_utils import register_to_config  # noqa: E402
 
 
@@ -367,7 +503,7 @@ def _float64_device(device):
     return torch.device("cpu")
 
 
-class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
+class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
     """MOSS-Image DiT: a text refiner, then 42 single-stream joint blocks over [image ; text] sharing one AdaLN.
 
     Each sample runs at its true text length, text refinement included, so padded tokens never reach attention."""
@@ -375,6 +511,8 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
     _repeated_blocks = ["_Block", "_TextBlock"]
     _no_split_modules = ["_Block", "_TextBlock"]
     _skip_layerwise_casting_patterns = ["rope", "norm"]
+    # Only LoRA training checkpoints; inference runs under no_grad.
+    _supports_gradient_checkpointing = True
 
     @register_to_config
     def __init__(
@@ -404,6 +542,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias = False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
+        self.gradient_checkpointing = False
 
     def load_training_state_dict(
         self,
@@ -479,6 +618,19 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
             if mask.shape != text_in.shape[:2] or not torch.all((mask == 0) | (mask == 1)):
                 raise ValueError("encoder_attention_mask must be a binary [B, S] mask.")
         device = hidden_states.device
+        if batch > 1:
+            refusal = layer_major_refusal(self)
+            if refusal is None:
+                sample = self._layer_major(
+                    hidden_states, timestep, text_in, mask, refined_text, skip_layers
+                )
+                if not return_dict:
+                    return (sample,)
+                from diffusers.models.modeling_outputs import Transformer2DModelOutput
+
+                return Transformer2DModelOutput(sample = sample)
+            serial = _LAYER_MAJOR_STATS["serial"]
+            serial[refusal] = serial.get(refusal, 0) + 1
         mod, head = self._time_modulation(timestep, batch, device)
         dtype = self._activation_dtype()
         outputs = []
@@ -497,8 +649,13 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
             text = self.text_embedder(context, text_tables) if refined_text is None else context
             x = torch.cat((video, text.to(video.dtype)), 1)
             sample_mod = mod[index : index + 1]
+            checkpointed = self.gradient_checkpointing and torch.is_grad_enabled()
             for layer_index, layer in enumerate(self.layers):
-                if layer_index not in skip_layers:
+                if layer_index in skip_layers:
+                    continue
+                if checkpointed:
+                    x = self._gradient_checkpointing_func(layer, x, full_tables, sample_mod)
+                else:
                     x = layer(x, full_tables, sample_mod)
             x = self.final_norm_video(x[:, : height * width].to(self.final_norm_video.weight.dtype))
             x = x * (1 + head[index : index + 1, 1, None]) + head[index : index + 1, 0, None]
@@ -510,6 +667,48 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin):
         from diffusers.models.modeling_outputs import Transformer2DModelOutput
 
         return Transformer2DModelOutput(sample = sample)
+
+    def _layer_major(self, hidden_states, timestep, text_in, mask, refined_text, skip_layers):
+        """Per-sample forward, layer loop outer: AdaLN runs at batch 1 too so each row is bit-identical to solo."""
+        batch, _, height, width = hidden_states.shape
+        device = hidden_states.device
+        times = torch.as_tensor(timestep, device = device, dtype = torch.float32).reshape(-1)
+        times.expand(batch)  # the per-sample path's shape check
+        if times.numel() == 1:
+            per_row = [self._time_modulation(timestep, 1, device)] * batch
+        else:
+            per_row = [self._time_modulation(times[index], 1, device) for index in range(batch)]
+        xs, tables, mods = [], [], []
+        for index in range(batch):
+            if mask is None:
+                context = text_in[index : index + 1]
+            else:
+                context = text_in[index : index + 1, mask[index].bool()]
+            length = context.shape[1]
+            if length == 0:
+                raise ValueError("Each sample needs at least one valid text token.")
+            video = hidden_states[index : index + 1].flatten(2).transpose(1, 2)
+            video = self.video_embedder(video.to(_compute_dtype(self.video_embedder)).contiguous())
+            full_tables, text_tables = self.rope.tables(height, width, length, device, video.dtype)
+            text = self.text_embedder(context, text_tables) if refined_text is None else context
+            xs.append(torch.cat((video, text.to(video.dtype)), 1))
+            tables.append(full_tables)
+            mods.append(per_row[index][0])
+        xs, tables, mods = tuple(xs), tuple(tables), tuple(mods)
+        for layer_index, layer in enumerate(self.layers):
+            if layer_index in skip_layers:
+                continue
+            xs = layer(xs, tables, mods)
+        outputs = []
+        for index, x in enumerate(xs):
+            head = per_row[index][1]
+            x = self.final_norm_video(x[:, : height * width].to(self.final_norm_video.weight.dtype))
+            x = x * (1 + head[:, 1, None]) + head[:, 0, None]
+            x = self.final_linear_video(x.to(_compute_dtype(self.final_linear_video)))
+            outputs.append(x.transpose(1, 2).reshape(1, -1, height, width))
+        _LAYER_MAJOR_STATS["forwards"] += 1
+        _LAYER_MAJOR_STATS["rows"] += batch
+        return torch.cat(outputs)
 
 
 from diffusers import FlowMatchEulerDiscreteScheduler  # noqa: E402
@@ -615,6 +814,30 @@ class MOSSImageScheduler(FlowMatchEulerDiscreteScheduler):
 from diffusers import DiffusionPipeline  # noqa: E402
 
 
+def is_base_checkpoint(identity: Optional[str]) -> bool:
+    folded = "".join(c for c in str(identity or "").lower() if c.isalnum())
+    return "mossimagebase" in folded
+
+
+def reference_uncond_skip(identity: Optional[str]) -> tuple[tuple[int, ...], float]:
+    """``(uncond_skip_layers, uncond_skip_end)`` for a checkpoint."""
+    if _env_off(REFERENCE_SKIP_ENV):
+        return DEFAULT_UNCOND_SKIP_LAYERS, 1.0
+    if is_base_checkpoint(identity):
+        return DEFAULT_UNCOND_SKIP_LAYERS, BASE_UNCOND_SKIP_END
+    return (), 1.0
+
+
+def percent_to_sigma(percent: float, shift: float) -> float:
+    """As ComfyUI ``ModelSamplingDiscreteFlow.percent_to_sigma`` (multiplier 1)."""
+    if percent <= 0.0:
+        return 1.0
+    if percent >= 1.0:
+        return 0.0
+    t = 1.0 - percent
+    return shift * t / (1 + (shift - 1) * t)
+
+
 def _offloaded(module: Any) -> bool:
     """Accelerate / diffusers offload hooks move weights per call: the pre-refined text path calls a submodule outside
     the forward, so an offloaded transformer keeps the reference per-step refine."""
@@ -684,6 +907,47 @@ class MOSSImagePipeline(DiffusionPipeline):
     @property
     def interrupt(self) -> bool:
         return self._interrupt
+
+    # LoRA on the transformer only; diffusion_lora_files folds alpha and splits fused qkv first.
+    def load_lora_weights(
+        self,
+        state_dict,
+        adapter_name: Optional[str] = None,
+        **_kwargs,
+    ):
+        metadata = None
+        if not isinstance(state_dict, dict):
+            from diffusers.utils.state_dict_utils import _load_sft_state_dict_metadata
+            from safetensors.torch import load_file
+
+            # lora_alpha / rank of a diffusers-saved adapter live only in the file's metadata.
+            metadata = _load_sft_state_dict_metadata(str(state_dict))
+            state_dict = load_file(str(state_dict))
+        converted = {}
+        for key, value in state_dict.items():
+            for prefix in ("diffusion_model.", "model.diffusion_model.", "transformer."):
+                if key.startswith(prefix):
+                    key = key[len(prefix) :]
+                    break
+            converted["transformer." + key] = value
+        self.transformer.load_lora_adapter(
+            converted, adapter_name = adapter_name, prefix = "transformer", metadata = metadata
+        )
+
+    def set_adapters(
+        self,
+        adapter_names,
+        adapter_weights = None,
+    ):
+        self.transformer.set_adapters(adapter_names, weights = adapter_weights)
+
+    def get_list_adapters(self) -> dict:
+        config = getattr(self.transformer, "peft_config", None) or {}
+        return {"transformer": list(config)} if config else {}
+
+    def unload_lora_weights(self):
+        if getattr(self.transformer, "peft_config", None):
+            self.transformer.unload_lora()
 
     @torch.no_grad()
     def encode_prompt(
@@ -760,7 +1024,9 @@ class MOSSImagePipeline(DiffusionPipeline):
         max_sequence_length = 4096,
         output_type = "pil",
         return_dict = True,
-        uncond_skip_layers = DEFAULT_UNCOND_SKIP_LAYERS,
+        uncond_skip_layers = _UNSET,
+        uncond_skip_start = 0.0,
+        uncond_skip_end = None,
         slg_layers = None,
         slg_scale = 0.0,
         slg_start = 0.0,
@@ -769,12 +1035,25 @@ class MOSSImagePipeline(DiffusionPipeline):
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs = ("latents",),
     ):
-        """Generate images. ``uncond_skip_layers`` (default block 22) skips those zero-based blocks in the negative
-        branch only (two forwards per step); None / () disables it. ``slg_layers`` with ``slg_scale > 0`` adds a third,
-        skipped positive forward and the fp32 correction ``slg_scale * (cond - cond_skip)``. Both are active where
+        """Generate images. ``uncond_skip_layers`` skips those zero-based blocks in the negative branch only (two
+        forwards per step); None / () disables it. Unset: block 22, or ``reference_uncond_skip`` of the loader's
+        checkpoint. ``uncond_skip_start`` / ``uncond_skip_end`` bound it in sigma-percent. ``slg_layers`` with ``slg_scale > 0`` adds a third, skipped positive forward and the
+        fp32 correction ``slg_scale * (cond - cond_skip)``. Both are also gated by
         ``slg_start <= step_index / num_steps < slg_stop``."""
         self._interrupt = False
         depth = len(self.transformer.layers)
+        if uncond_skip_layers is _UNSET:
+            identity = getattr(self, "_unsloth_checkpoint", None)
+            if identity is None:
+                uncond_skip_layers, policy_end = DEFAULT_UNCOND_SKIP_LAYERS, 1.0
+            else:
+                uncond_skip_layers, policy_end = reference_uncond_skip(identity)
+            if uncond_skip_end is None:
+                uncond_skip_end = policy_end
+        if uncond_skip_end is None:
+            uncond_skip_end = 1.0
+        if not 0 <= uncond_skip_start <= uncond_skip_end <= 1:
+            raise ValueError("Require 0 <= uncond_skip_start <= uncond_skip_end <= 1.")
         uncond_skip = _validate_skip_layers(uncond_skip_layers, depth, "uncond_skip_layers")
         slg = _validate_skip_layers(slg_layers, depth, "slg_layers")
         # Tuples, not frozensets: a CUDA graph keys plain values, not objects.
@@ -852,10 +1131,21 @@ class MOSSImagePipeline(DiffusionPipeline):
             self.scheduler.set_timesteps(num_inference_steps, device = device)
         timesteps = self.scheduler.timesteps
         num_steps = len(timesteps)
+        uncond_window = None
+        if uncond_skip_kw and (uncond_skip_start > 0 or uncond_skip_end < 1):
+            shift = float(getattr(self.scheduler.config, "shift", 5.0))
+            high = percent_to_sigma(uncond_skip_start, shift)
+            low = percent_to_sigma(uncond_skip_end, shift)
+            uncond_window = [
+                low <= sigma <= high for sigma in self.scheduler.sigmas[:num_steps].tolist()
+            ]
         for step_index, timestep in enumerate(self.progress_bar(timesteps)):
             if self._interrupt:
                 continue
             skip_active = slg_start <= step_index / num_steps < slg_stop
+            uncond_skip_active = skip_active and (
+                uncond_window is None or uncond_window[step_index]
+            )
             # CFG combines fp32 predictions, even when the DiT runs in bf16.
             # return_dict=False: a CUDA-graph replay hands back a tuple, never a dataclass.
             prediction = self.transformer(latents, timestep, **cond_kw, return_dict = False)[
@@ -864,7 +1154,7 @@ class MOSSImagePipeline(DiffusionPipeline):
             conditional = prediction
             if do_cfg:
                 skip_kwargs = (
-                    {"skip_layers": uncond_skip_kw} if uncond_skip_kw and skip_active else {}
+                    {"skip_layers": uncond_skip_kw} if uncond_skip_kw and uncond_skip_active else {}
                 )
                 uncond = self.transformer(
                     latents, timestep, **uncond_kw, **skip_kwargs, return_dict = False
@@ -985,19 +1275,6 @@ def _tokenizer_class(repo_id: str, common: dict[str, Any]) -> Any:
     return cls if isinstance(cls, type) else transformers.AutoTokenizer
 
 
-def drop_vision_tower(text_encoder: Any) -> bool:
-    """Free Qwen3.5's vision tower (~0.4 B params): MOSS feeds the encoder text only, and the text forward never touches
-    it (images enter only through ``pixel_values``). True when it was dropped."""
-    visual = getattr(text_encoder, "visual", None)
-    if not isinstance(visual, nn.Module):
-        return False
-    try:
-        text_encoder.visual = None
-    except Exception:  # noqa: BLE001 - a frozen module keeps its tower
-        return False
-    return True
-
-
 def _conv_offload_hook(conv: Any) -> Any:
     registry = getattr(conv, "_diffusers_hook", None)
     get = getattr(registry, "get_hook", None)
@@ -1060,12 +1337,21 @@ def load_moss_image_pipeline(
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
     vae_dtype: Any = None,
+    checkpoint: Optional[str] = None,
+    vae: Any = None,
+    storage_dtypes: Optional[dict] = None,
+    with_transformer: bool = True,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
     Loads safetensors and JSON only, per subfolder; the repo's ``pipeline_moss_image.py`` is never imported.
     ``transformer`` / ``text_encoder`` let a quantised or pre-cast build hand in a component. The VAE decodes in fp32
-    unless ``vae_dtype`` says otherwise (the reference and ComfyUI's MOSS launcher both decode in fp32)."""
+    unless ``vae_dtype`` says otherwise (the reference and ComfyUI's MOSS launcher both decode in fp32). ``checkpoint``
+    (else ``repo_id``) picks SFT or Base skip defaults. ``storage_dtypes`` (component -> dtype name, the small-host
+    route's ``SmallHostDecision.storage_dtypes``) loads those components at their stored dtype instead of ``dtype``, so
+    they stay memory-mapped until the route converts them; a float32 load on an fp16-only card otherwise widens the
+    9B encoder and the DiT in host RAM first (54 GB, more than a 51 GB Colab T4 High-RAM). ``with_transformer=False``
+    leaves ``pipe.transformer`` None (LoRA training loads it after encoding)."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     assert_transformers_supported()
@@ -1081,32 +1367,44 @@ def load_moss_image_pipeline(
         repo_id, subfolder = "tokenizer", **common
     )
     check_cancelled()
+    stored = {
+        name: getattr(torch, str(dt).replace("torch.", ""))
+        for name, dt in (storage_dtypes or {}).items()
+    }
     if text_encoder is None:
-        text_encoder = load_moss_image_text_encoder(repo_id, dtype, **common)
+        text_encoder = load_moss_image_text_encoder(
+            repo_id, stored.get("text_encoder", dtype), **common
+        )
         check_cancelled()
     else:
         # A pre-cast build (the hosted int8 ConvRot encoder) carries the vision tower and needs the same guard.
         drop_vision_tower(text_encoder)
         install_gdn_offload_guard(text_encoder)
-    if transformer is None:
+    if transformer is None and with_transformer:
         transformer = MOSSImageTransformer.from_pretrained(
-            repo_id, subfolder = "transformer", torch_dtype = dtype, **common
+            repo_id, subfolder = "transformer", torch_dtype = stored.get("transformer", dtype), **common
         )
         check_cancelled()
-    transformer.eval()
-    vae = diffusers.AutoencoderKLFlux2.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
-    )
+    if transformer is not None:
+        transformer.eval()
+    if vae is None:
+        vae = diffusers.AutoencoderKLFlux2.from_pretrained(
+            repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
+        )
+    else:
+        vae = vae.to(vae_dtype or torch.float32)
     check_cancelled()
     scheduler = MOSSImageScheduler.from_pretrained(repo_id, subfolder = "scheduler", **common)
     logger.info("diffusion.moss_image: assembled pipeline from %s per component", repo_id)
-    return MOSSImagePipeline(
+    pipe = MOSSImagePipeline(
         transformer = transformer,
         scheduler = scheduler,
         text_encoder = text_encoder,
         tokenizer = tokenizer,
         vae = vae,
     )
+    pipe._unsloth_checkpoint = str(checkpoint or repo_id)
+    return pipe
 
 
 def in_tree_class(name: str) -> Optional[type]:

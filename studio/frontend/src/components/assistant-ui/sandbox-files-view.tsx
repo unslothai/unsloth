@@ -4,27 +4,21 @@
 import {
   Download01Icon,
   FileEmpty02Icon,
-  FolderOpenIcon,
 } from "@hugeicons/core-free-icons";
+import { FolderOpenIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
 
-import { authFetch, getAuthToken } from "@/features/auth";
-import { apiUrl, isTauri } from "@/lib/api-base";
-import { downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { formatBytes } from "@/features/hub";
+import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled } from "@/lib/native-files";
 import { cn } from "@/lib/utils";
 
 import { FileContextMenu, loadSandboxFile } from "./link-context-menu";
-import { sandboxFilePath, type SandboxFile } from "./sandbox-files";
+import { saveSandboxFile } from "./sandbox-download";
+import type { SandboxFile } from "./sandbox-files";
 import { revealSandbox } from "./sandbox-reveal";
-
-function formatSize(size: number | null): string {
-  if (size === null || size === undefined || Number.isNaN(size)) return "";
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
 
 function SandboxFileRow({
   sessionId,
@@ -35,21 +29,10 @@ function SandboxFileRow({
 }) {
   const [busy, setBusy] = useState(false);
 
-  // Streamed to disk rather than buffered: artifacts can be gigabytes. The bearer goes in the query.
   const save = useCallback(async () => {
     setBusy(true);
     try {
-      const path = sandboxFilePath(sessionId, file.name);
-      // The URL bearer is never refreshed, so authFetch refreshes first; the HEAD confirms the file.
-      const probe = await authFetch(apiUrl(path), { method: "HEAD" });
-      if (!probe.ok) throw new Error(`Download refused (${probe.status})`);
-      const token = getAuthToken();
-      const separator = path.includes("?") ? "&" : "?";
-      // Absolute: the native command rejects a relative URL.
-      const url = apiUrl(
-        token ? `${path}${separator}token=${encodeURIComponent(token)}` : path,
-      );
-      await downloadUrlStreaming(url, file.name);
+      await saveSandboxFile(sessionId, file.name);
     } catch (error) {
       if (!isDownloadCancelled(error)) {
         toast.error(`Could not save ${file.name}.`);
@@ -77,8 +60,8 @@ function SandboxFileRow({
       >
         <HugeiconsIcon icon={FileEmpty02Icon} className="size-3.5 shrink-0" />
         <span className="truncate font-mono">{file.name}</span>
-        {file.size !== null && (
-          <span className="text-muted-foreground">{formatSize(file.size)}</span>
+        {file.size != null && (
+          <span className="text-muted-foreground">{formatBytes(file.size)}</span>
         )}
         <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />
       </button>
@@ -134,8 +117,7 @@ export function SandboxFiles({
 }) {
   if (!sessionId || files.length === 0) return null;
   return (
-    // No divider: the row sits outside the collapsible content, so on a collapsed card a rule
-    // would separate the header from nothing.
+    // No divider: the row is outside the collapsible, so collapsed cards keep no stray rule.
     <div className={cn("mt-2", className)}>
       <SandboxFolderLabel
         sessionId={sessionId}

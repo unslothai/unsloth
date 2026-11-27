@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth dependency checks shared by the CLI commands.
-
-The wheel ships studio/ and studio.backend*, so train / export / chat /
-inference / studio all work after a plain `pip install unsloth` right up to the
-point they import the backend. studio_backend_imports() turns the resulting
-traceback into one sentence and the two commands that fix it.
-
-Also loads studio/install_manifest.py for `unsloth studio verify-install`.
-"""
+"""Dependency checks: studio_backend_imports() explains import failures; loads install_manifest.py."""
 
 from __future__ import annotations
 
@@ -213,6 +205,47 @@ def _managed_root(extra_roots: Sequence[Path]) -> Optional[Path]:
     return None
 
 
+# Mirror of studio/install_manifest.py (loaded by path, not importable here); a test pins them.
+_METADATA_TEXT_FILES = frozenset(("METADATA", "PKG-INFO", ""))
+_SINGLE_READ_TYPE = None
+
+
+def _header_block(text: str) -> str:
+    cut = -1
+    for separator in ("\n\n", "\r\n\r\n"):
+        at = text.find(separator)
+        if at != -1 and (cut == -1 or at + len(separator) < cut):
+            cut = at + len(separator)
+    return text if cut == -1 else text[:cut]
+
+
+def _single_read(dist):
+    global _SINGLE_READ_TYPE
+    from importlib.metadata import PathDistribution
+
+    if type(dist) is not PathDistribution:
+        return dist
+    if _SINGLE_READ_TYPE is None:
+
+        class _SingleReadDistribution(PathDistribution):
+            def read_text(self, filename):
+                text = super().read_text(filename)
+                if text and filename in _METADATA_TEXT_FILES:
+                    return _header_block(text)
+                return text
+
+            @property
+            def metadata(self):
+                cached = self.__dict__.get("_unsloth_metadata")
+                if cached is None:
+                    cached = super().metadata
+                    self.__dict__["_unsloth_metadata"] = cached
+                return cached
+
+        _SINGLE_READ_TYPE = _SingleReadDistribution
+    return _SINGLE_READ_TYPE(dist._path)
+
+
 def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
     """Installed versions and metadata conflicts inside another venv.
 
@@ -231,6 +264,7 @@ def _distributions_in(root: Path) -> Optional[tuple[Dict[str, str], set[str]]]:
     for dist in Distribution.discover(context = DistributionFinder.Context(path = paths)):
         path = getattr(dist, "_path", None)
         stem = os.path.basename(os.fspath(path)) if path is not None else ""
+        dist = _single_read(dist)
         try:
             name = dist.metadata.get("Name")
             if name:
@@ -416,6 +450,8 @@ _SHARED_NON_RUNTIME_ROOTS = frozenset(
 # setup.ps1/setup.sh run `npm install` inside the installed tree, shrinking the lockfile.
 _INSTALLER_REWRITTEN_NAMES = frozenset(("package-lock.json",))
 
+_MANAGED_LAUNCHER_NAME = "unsloth.exe"
+
 
 def _shared_non_runtime(rel: str) -> bool:
     """A row under a top-level dir several wheels write into.
@@ -441,8 +477,22 @@ def _installer_rewritten(rel: str) -> bool:
 
     Only the size is unreliable. The file disappearing is still damage, so the
     row is kept and only its size dropped.
+
+    So does the managed Scripts/unsloth.exe: when setup publishes none, the update
+    restores a staged copy an older uv may have written with a smaller trampoline
+    than RECORD records (#16897). validate_launcher() already runs it.
     """
-    return rel.replace("\\", "/").rsplit("/", 1)[-1] in _INSTALLER_REWRITTEN_NAMES
+    parts = [p for p in rel.replace("\\", "/").split("/") if p and p != "."]
+    if not parts:
+        return False
+    if parts[-1] in _INSTALLER_REWRITTEN_NAMES:
+        return True
+    return (
+        len(parts) >= 2
+        and ".." in parts
+        and parts[-2].lower() == "scripts"
+        and parts[-1].lower() == _MANAGED_LAUNCHER_NAME
+    )
 
 
 def _installed_distribution_groups():
@@ -460,6 +510,7 @@ def _installed_distribution_groups():
 
     groups: Dict[str, list] = {}
     for dist in distributions(**_scan_paths()):
+        dist = _single_read(dist)
         try:
             name = dist.metadata.get("Name")
         except Exception:

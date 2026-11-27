@@ -23,7 +23,7 @@ import {
 import { useT } from "@/i18n";
 import type { DatasetSource } from "@/types/training";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   CheckmarkCircle02Icon,
   Database02Icon,
 } from "@hugeicons/core-free-icons";
@@ -590,7 +590,7 @@ export function DatasetPreviewDialog({
             <div className="py-20 flex flex-col items-center justify-center gap-3">
               <div className="rounded-lg corner-squircle bg-destructive/10 p-3">
                 <HugeiconsIcon
-                  icon={AlertCircleIcon}
+                  icon={Alert02Icon}
                   className="size-5 text-destructive"
                 />
               </div>
@@ -656,7 +656,7 @@ export function DatasetPreviewDialog({
               {data.warning && !isRawFormat && !isDecisionModel && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-700 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-400 mb-4 flex items-start gap-2.5">
                   <HugeiconsIcon
-                    icon={AlertCircleIcon}
+                    icon={Alert02Icon}
                     className="size-4 shrink-0 mt-0.5"
                   />
                   <span>{data.warning}</span>

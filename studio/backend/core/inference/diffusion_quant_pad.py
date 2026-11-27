@@ -1,26 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pad an int8 Linear's activation rows up to ``torch._int_mm``'s floor, instead of skipping it.
-
-``aten::_int_mm`` asserts ``self.size(0) > 16``. torchao's EAGER path never trips this, because
-``safe_int_mm`` checks the cuBLAS dimension constraints at runtime and falls back to a widened
-``torch.matmul``; inductor lowers the same quantized linear straight to ``_int_mm``, so under
-``torch.compile`` any quantized Linear invoked with a small activation row count raises
-
-    RuntimeError: self.size(0) needs to be greater than 16, but got 10
-
-Until now the fix was to leave those Linears dense bf16 (``_INT8_FAMILY_EXCLUDE_NAME_TOKENS`` in
-``diffusion_transformer_quant``). That works, but it forfeits the weight-memory saving on a DiT's
-whole conditioning front end. This is the alternative: pad the flattened row count up to
-``pad_to``, run the GEMM, slice the result back. The module becomes compilable with no change to
-the quantization config, and the rows the caller asked for are returned BITWISE unchanged.
-
-Exact because pad rows REPLICATE row 0 (a zero row gives scale 0 and NaN) and the activation scale
-is PER ROW; ``wrap_small_m_linears`` RAISES on a granularity it cannot prove per row, since a
-half-padded transformer crashes. ``ZeroRowSafeLinear`` answers an EMPTY activation itself (nvfp4).
-Wrapping reparents the Linear, so do it AFTER loading; ``PadToMinM`` is state-dict transparent.
-"""
+"""Pads int8 Linear rows up to torch._int_mm's >16 floor, pad rows repeat row 0 (zero row gives
+NaN); wrap after loading, since it reparents the Linear; wrap raises on non-per-row granularity"""
 
 from __future__ import annotations
 

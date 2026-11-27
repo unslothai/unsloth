@@ -1,17 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF embedder over the bundled llama.cpp, served via HTTP (no torch).
-
-Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated ``llama-server --embedding``
-subprocess on its own port and calls its OpenAI-style ``/v1/embeddings`` + ``/tokenize``, fully
-isolated from the chat backend.
-
-Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU server fails);
-``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers (no torch), copying the
-instance-coupled bits locally, since constructing a ``LlamaCppBackend`` runs an ``__init__`` reaper
-that kills any Unsloth llama-server, so each request re-spawns ours if it died.
-"""
+"""Opt-in GGUF embedder (RAG_EMBED_BACKEND=llama-server, no torch): own llama-server --embedding
+subprocess on /v1/embeddings and /tokenize; auto falls back to CPU if GPU fails, RAG_EMBED_DEVICE
+forces; each request respawns it if dead; only llama_cpp static helpers, no LlamaCppBackend()."""
 
 from __future__ import annotations
 
@@ -21,14 +13,17 @@ from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_m
 import atexit
 import logging
 import os
+import socket
 import struct
 import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
+from typing import Iterable
 
 import httpx
 import numpy as np
@@ -60,6 +55,9 @@ _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11
 
 # Matches llama.cpp's -ub default; a longer embedding prompt is refused with a 500.
 _UBATCH_SIZE = 512
+_TOKEN_COUNT_CACHE_SIZE = 4096
+_TOKENIZE_BATCH = 256
+_TOKENIZE_BATCH_CHARS = 262144
 
 
 def _skip_gguf_value(f, vtype: int) -> None:
@@ -107,6 +105,17 @@ def _gguf_context_length(path: str) -> int | None:
 
 _GGUF_POOLING = {1: "mean", 2: "cls", 3: "last"}
 _GGUF_POOLING_DEFAULT = {"nomic-bert": "mean", "nomic-bert-moe": "mean"}
+
+
+@lru_cache(maxsize = 8)
+def _embed_host(host: str) -> str:
+    # One address for bind, URL and owner check: a multi-address name can bind one and dial another.
+    try:
+        ips = [a[4][0] for a in socket.getaddrinfo(host, None, type = socket.SOCK_STREAM)]
+    except OSError:
+        return host
+    v4 = [ip for ip in ips if ":" not in ip]
+    return (v4 or ips or [host])[0]
 
 
 @lru_cache(maxsize = 32)
@@ -217,7 +226,8 @@ class LlamaServerBackend:
 
     @property
     def _base_url(self) -> str:
-        return f"http://{config.EMBED_HOST}:{self._port}"
+        host = _embed_host(config.EMBED_HOST)
+        return f"http://{f'[{host}]' if ':' in host else host}:{self._port}"
 
     def _auth_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
@@ -525,12 +535,9 @@ class LlamaServerBackend:
                 return self._adopt_model_path(cached, desired)
             # Typed: the same condition the ST path raises, and /v1/embeddings answers it
             # with a 409. Bare, it fell into the catch-all as a 502 naming nothing.
-            from .embeddings import EmbeddingModelDownloadRequiredError
+            from .embeddings import EmbeddingModelDownloadRequiredError, download_required_message
 
-            raise EmbeddingModelDownloadRequiredError(
-                f"Embedding model {model!r} is not downloaded yet. "
-                "Finish its Settings download before indexing documents."
-            )
+            raise EmbeddingModelDownloadRequiredError(download_required_message(model))
         return self._resolve_uncached_model_path(desired, candidates)
 
     @staticmethod
@@ -675,6 +682,9 @@ class LlamaServerBackend:
             return True
         from core.inference.llama_cpp import LlamaCppBackend
 
+        # A SYCL build is unsized by design (#17787), so an empty probe is not "no GPU".
+        if LlamaCppBackend._is_sycl_only_backend():
+            return True
         # [(idx, free_mib)], honors CVD
         gpus = LlamaCppBackend._get_gpu_free_memory(for_llama_server = True)
         return any(free >= LlamaServerBackend._MIN_GPU_FREE_MIB for _, free in gpus)
@@ -700,7 +710,7 @@ class LlamaServerBackend:
             "-m",
             model_path,
             "--host",
-            config.EMBED_HOST,
+            _embed_host(config.EMBED_HOST),
             "--port",
             str(port),
             "--embedding",
@@ -735,7 +745,10 @@ class LlamaServerBackend:
                 env["PATH"] = ";".join(path_dirs) + ";" + env.get("PATH", "")
             else:
                 # Path(binary).parent, unresolved: resolving would move the first LD_LIBRARY_PATH entry of every symlinked install.
-                self._add_linux_cuda_libs(env, str(Path(binary).parent))
+                from utils.prebuilt.runtime_libs import oneapi_lib_dirs
+                self._add_linux_cuda_libs(
+                    env, str(Path(binary).parent), oneapi_lib_dirs(_binary_lib_dir(binary))
+                )
             _pinned = self._arch_gated_gpu_ids(binary)
             if _pinned:
                 from core.inference.llama_cpp import LlamaCppBackend
@@ -758,7 +771,11 @@ class LlamaServerBackend:
         return env
 
     @staticmethod
-    def _add_linux_cuda_libs(env: dict[str, str], binary_dir: str) -> None:
+    def _add_linux_cuda_libs(
+        env: dict[str, str],
+        binary_dir: str,
+        extra_dirs: Iterable[str] = (),
+    ) -> None:
         """Best-effort LD_LIBRARY_PATH so the prebuilt binary finds CUDA libs."""
         import glob
         import platform
@@ -792,6 +809,7 @@ class LlamaServerBackend:
             lib_dirs.extend(tegra + system_dirs + pip_dirs)
         else:
             lib_dirs.extend(pip_dirs + system_dirs)
+        lib_dirs.extend(extra_dirs)
         existing = env.get("LD_LIBRARY_PATH", "")
         joined = ":".join(lib_dirs)
         env["LD_LIBRARY_PATH"] = f"{joined}:{existing}" if existing else joined
@@ -924,6 +942,8 @@ class LlamaServerBackend:
         interval: float = 0.5,
     ) -> bool:
         """Poll /health until 200; bail early if the process exits."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
         deadline = time.monotonic() + timeout
         url = f"{self._base_url}/health"
         while time.monotonic() < deadline:
@@ -934,7 +954,9 @@ class LlamaServerBackend:
             try:
                 # trust_env=False: a proxy that 503s 127.0.0.1 must not block this probe.
                 if httpx.get(url, timeout = 2.0, trust_env = False).status_code == 200:
-                    return True
+                    return LlamaCppBackend._health_listener_is_ours(
+                        self._process, self._port, _embed_host(config.EMBED_HOST)
+                    )
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
             time.sleep(interval)
@@ -1239,17 +1261,99 @@ class LlamaServerBackend:
             self.dim(model_name = model_name)
 
     def token_counter(self, *, model_name = None):
-        """Count tokens via the GGUF's /tokenize so chunk sizing matches the
-        embedder. Cached per text."""
+        """Count tokens via the GGUF's /tokenize, cached per text. ``many`` sends a content array:
+        tokenize_mixed tokenizes each string alone, so -1 markers split the reply per text."""
+        memo: OrderedDict[str, int] = OrderedDict()
+        memo_lock = threading.Lock()
+        batching = True
 
-        @lru_cache(maxsize = 4096)
+        def _remember(text: str, n: int) -> None:
+            with memo_lock:
+                memo[text] = n
+                memo.move_to_end(text)
+                if len(memo) > _TOKEN_COUNT_CACHE_SIZE:
+                    memo.popitem(last = False)
+
+        def _lookup(text: str) -> int | None:
+            with memo_lock:
+                n = memo.get(text)
+                if n is not None:
+                    memo.move_to_end(text)
+                return n
+
+        def _count_one(text: str) -> int:
+            data = self._post(
+                "/tokenize",
+                {"content": text, "add_special": False},
+                model_name = model_name,
+            )
+            return len(data.get("tokens", []))
+
         def _count(text: str) -> int:
-            with self._operation():
+            n = _lookup(text)
+            if n is None:
+                n = _count_one(text)
+                _remember(text, n)
+            return n
+
+        def _count_batch(keys: list[str]) -> list[int] | None:
+            try:
                 data = self._post(
                     "/tokenize",
-                    {"content": text, "add_special": False},
+                    {"content": [x for key in keys for x in (-1, key)][1:], "add_special": False},
                     model_name = model_name,
                 )
-                return len(data.get("tokens", []))
+            except RuntimeError as e:
+                # A build that refuses the array answers with a status; anything else still raises.
+                if not isinstance(e.__cause__, httpx.HTTPStatusError):
+                    raise
+                return None
+            counts, run = [], 0
+            for token in data.get("tokens", []):
+                if token == -1:
+                    counts.append(run)
+                    run = 0
+                else:
+                    run += 1
+            counts.append(run)
+            return counts if len(counts) == len(keys) else None
 
+        def _count_many(texts) -> list[int]:
+            nonlocal batching
+            texts = list(texts)
+            out = [0] * len(texts)
+            misses: dict[str, list[int]] = {}
+            for i, text in enumerate(texts):
+                n = _lookup(text)
+                if n is None:
+                    misses.setdefault(text, []).append(i)
+                else:
+                    out[i] = n
+            keys = list(misses)
+            start = 0
+            while start < len(keys):
+                # Bounded batches, so a query encode waiting on _serve_lock never waits out a whole document.
+                end, chars = start, 0
+                while (
+                    end < len(keys)
+                    and end - start < _TOKENIZE_BATCH
+                    and (end == start or chars + len(keys[end]) <= _TOKENIZE_BATCH_CHARS)
+                ):
+                    chars += len(keys[end])
+                    end += 1
+                batch = keys[start:end]
+                counts = None
+                if batching and len(batch) > 1:
+                    counts = _count_batch(batch)
+                    batching = counts is not None
+                if counts is None:
+                    counts = [_count_one(key) for key in batch]
+                for key, n in zip(batch, counts):
+                    _remember(key, n)
+                    for i in misses[key]:
+                        out[i] = n
+                start = end
+            return out
+
+        _count.many = _count_many
         return _count

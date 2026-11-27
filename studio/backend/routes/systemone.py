@@ -10,6 +10,7 @@ import base64
 import binascii
 import json
 import math
+import threading
 import time
 from typing import Any, Optional, Union
 from uuid import uuid4
@@ -18,9 +19,6 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from starlette.concurrency import run_in_threadpool
-from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
-from fastmcp.server.middleware import Middleware
 from pydantic import BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject, security
@@ -162,6 +160,14 @@ async def system_one(
                 "permission_error",
                 "Keyless requests can only use the configured Decision API model; send an API key to pick another.",
             )
+        from core.inference.load_policy import LoadPolicy, current_load_policy
+
+        if current_load_policy() is LoadPolicy.NEVER:
+            raise _error(
+                403,
+                "permission_error",
+                "Inference only API keys can only use the configured Decision API model.",
+            )
         # Another checkpoint downloads into the shared cache and evicts the owner's resident model,
         # which the owner-only settings, unload and resolve routes already keep from other accounts.
         if not is_owner_context():
@@ -248,11 +254,55 @@ def _validate_audio(audio: list[str]) -> None:
                 f"All audio clips together must be at most {MAX_AUDIO_BYTES // 1024**2} MiB",
             )
         try:
-            base64.b64decode(data, validate = True)
+            raw = base64.b64decode(data, validate = True)
         except (binascii.Error, ValueError):
             raise _error(
                 422, "invalid_request_error", f"audio[{index}] is not valid base64"
             ) from None
+        if _is_playlist(raw):
+            raise _error(422, "invalid_request_error", f"audio[{index}] is a playlist")
+
+
+_STATE_MEDIA_PARTS = ("image_url", "input_image", "input_audio", "audio_url", "video_url")
+
+
+def _is_playlist(raw: bytes) -> bool:
+    from utils.media_playlist import PlaylistRefused, refuse_playlist
+    try:
+        refuse_playlist(raw)
+    except PlaylistRefused:
+        return True
+    return False
+
+
+def _state_media(value: Any, depth: int = 0):
+    """Media payloads in a chat-message state: llama.cpp loads these like the images field."""
+    if depth > 32:
+        return
+    if isinstance(value, list):
+        for item in value:
+            yield from _state_media(item, depth + 1)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            if key in _STATE_MEDIA_PARTS:
+                inner = item.get("url", item.get("data")) if isinstance(item, dict) else item
+                if isinstance(inner, str):
+                    yield inner
+            else:
+                yield from _state_media(item, depth + 1)
+
+
+def _refuse_state_playlists(state: JSONContent) -> None:
+    # The images and audio fields are checked above; FFmpeg would open the files a playlist in the state names.
+    for url in _state_media(state):
+        data = url.partition(",")[2] if url.startswith("data:") else url
+        cleaned = "".join(ch for ch in data if ch.isalnum() or ch in "+/")
+        try:
+            raw = base64.b64decode(cleaned + "=" * (-len(cleaned) % 4))
+        except (binascii.Error, ValueError):
+            continue
+        if _is_playlist(raw):
+            raise _error(422, "invalid_request_error", "Media in the state must not be a playlist")
 
 
 MAX_IMAGE_PIXELS = 4096 * 4096
@@ -297,6 +347,8 @@ async def _decide(
         raise _error(422, "invalid_request_error", f"At most {MAX_QUESTIONS} questions per request")
     for name, question in questions.items():
         _validate(name, question)
+    if not isinstance(state, str):
+        _refuse_state_playlists(state)
     if images:
         _validate_images(images)
         if isinstance(checkpoint, catalog.Connection):
@@ -366,7 +418,13 @@ async def _connection_decide(
     except ValueError as exc:
         raise _error(503, "api_usage_error", str(exc)) from None
     api_key = await arun_as(OWNER, _connection_key(provider_id, config))
-    client = ExternalProviderClient(config["provider_type"], base_url, api_key)
+    headers = config.get("extra_headers")
+    client = ExternalProviderClient(
+        config["provider_type"],
+        base_url,
+        api_key,
+        **({"extra_headers": headers} if headers else {}),
+    )
     try:
         result = await client.create_decision(connection.model, state, questions)
     except httpx.HTTPStatusError as exc:
@@ -383,7 +441,7 @@ async def _connection_decide(
 
 
 async def _connection_key(provider_id: str, config: dict) -> str:
-    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled", "extra_headers")
     async with provider_config_guard(provider_id):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         if current is None or any(current.get(f) != config.get(f) for f in routing_fields):
@@ -418,7 +476,13 @@ async def refresh_listed_decision_models() -> None:
                 None,
                 prefer_saved_key = True,
             )
-            client = ExternalProviderClient(row["provider_type"], row["base_url"], api_key, 10.0)
+            client = ExternalProviderClient(
+                row["provider_type"],
+                row["base_url"],
+                api_key,
+                10.0,
+                **({"extra_headers": row["extra_headers"]} if row.get("extra_headers") else {}),
+            )
             models = await arun_as(OWNER, client.list_decision_models())
         except Exception:
             models = []
@@ -471,18 +535,6 @@ def _upstream_error(name: str, response: httpx.Response) -> HTTPException:
     return _error(502, "api_error", message)
 
 
-class DecisionsAvailability(Middleware):
-    async def on_list_tools(self, context, call_next):
-        if not await asyncio.to_thread(systemone_settings.get_enabled):
-            return []
-        return await call_next(context)
-
-
-decisions_mcp = FastMCP("Unsloth Decisions")
-decisions_mcp.add_middleware(DecisionsAvailability())
-
-
-@decisions_mcp.tool
 async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[str, Any]:
     """Ask Unsloth's decision model typed questions about a state (text or JSON).
     questions maps a name you pick to {"type", "instructions", "criteria"}, for example
@@ -496,7 +548,38 @@ async def decide(state: JSONContent, questions: dict[str, QuestionIn]) -> dict[s
         result.pop("_backend", None)
         return result
     except HTTPException as exc:
+        from fastmcp.exceptions import ToolError
         raise ToolError(exc.detail["message"]) from None
+
+
+def _build_decisions_mcp():
+    from fastmcp import FastMCP
+    from fastmcp.server.middleware import Middleware
+
+    class DecisionsAvailability(Middleware):
+        async def on_list_tools(self, context, call_next):
+            if not await asyncio.to_thread(systemone_settings.get_enabled):
+                return []
+            return await call_next(context)
+
+    mcp = FastMCP("Unsloth Decisions")
+    mcp.add_middleware(DecisionsAvailability())
+    mcp.tool(decide)
+    return mcp
+
+
+_decisions_mcp_lock = threading.Lock()
+
+
+def __getattr__(name: str) -> Any:
+    if name != "decisions_mcp":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    with _decisions_mcp_lock:
+        mcp = globals().get("decisions_mcp")
+        if mcp is None:
+            mcp = _build_decisions_mcp()
+            globals()["decisions_mcp"] = mcp
+    return mcp
 
 
 class RequireStudioAuth:

@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { documentKind, isMarkdown } from "@/components/file-viewer";
-import { attachmentTextLanguage } from "@/features/chat";
+import { attachmentTextLanguage } from "@/features/chat/attachment-content";
 import { mediaKind } from "./media-kind";
 import { REACT_PREVIEW_TYPE } from "./react-preview-type";
 

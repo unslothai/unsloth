@@ -11,11 +11,13 @@ import {
 } from "@/components/ui/tooltip";
 import { useAudioWorkspaceStore } from "@/features/audio/stores/audio-workspace-store";
 import { hasAuthToken, mustChangePassword } from "@/features/auth";
-import { useSettingsDialogStore } from "@/features/settings";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { MicIcon } from "@/lib/mic-icon";
 import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
 import { SparkleIcon } from "@/lib/sparkle-icon";
 import { cn } from "@/lib/utils";
@@ -23,12 +25,10 @@ import {
   Cancel01Icon,
   DatabaseIcon,
   DragDropVerticalIcon,
-  Image01Icon,
-  LockIcon,
-  Message01Icon,
-  Mic01Icon,
+  FlimSlateIcon,
+  ImageIcon,
+  LockKeyIcon,
   RemoveCircleIcon,
-  Video01Icon,
 } from "@hugeicons/core-free-icons";
 import { Volume02Icon } from "@/lib/volume-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -55,12 +55,15 @@ import { useLoadedModels } from "./use-loaded-models";
 
 const COLLAPSED_KEY = LOADED_MODELS_PREFERENCE_KEYS.collapsed;
 
-const KIND_ICONS: Record<LoadedModelKind, typeof SparkleIcon> = {
-  text: Message01Icon,
+// stt draws the filled MicIcon used everywhere else, which HugeiconsIcon would outline.
+const KIND_ICONS: Record<
+  Exclude<LoadedModelKind, "stt">,
+  typeof SparkleIcon
+> = {
+  text: MessageCircleIcon,
   tts: Volume02Icon,
-  image: Image01Icon,
-  video: Video01Icon,
-  stt: Mic01Icon,
+  image: ImageIcon,
+  video: FlimSlateIcon,
   embedding: DatabaseIcon,
 };
 
@@ -154,11 +157,15 @@ function LoadedModelRow({
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
           >
             <span className={ROW_ICON_CLASS}>
-              <HugeiconsIcon
-                icon={KIND_ICONS[entry.kind]}
-                strokeWidth={1.75}
-                className="size-[calc(15px*var(--ui-space-scale,1))]"
-              />
+              {entry.kind === "stt" ? (
+                <MicIcon className="size-[calc(15px*var(--ui-space-scale,1))]" />
+              ) : (
+                <HugeiconsIcon
+                  icon={KIND_ICONS[entry.kind]}
+                  strokeWidth={1.75}
+                  className="size-[calc(15px*var(--ui-space-scale,1))]"
+                />
+              )}
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-ui-12p5 font-medium text-foreground">
@@ -242,11 +249,9 @@ export function LoadedModelsIndicator({
   const dismissed = useLoadedModelsDismissed();
   const reachable = canShowIndicator(pathname);
   const enabled = showIndicator && !dismissed && reachable;
-  // Dismissal is not part of this: a card the user closed must still hear the
-  // load that brings it back. Reachability is, because it carries the auth gate
-  // -- tracking on /login polls four protected endpoints every 5s, and each 401
-  // runs authFetch's refresh-then-redirect ladder against a session that does
-  // not exist yet.
+  // Dismissal is not part of this (a closed card must still hear the load that brings it back), but
+  // reachability is: tracking on /login polls four protected endpoints every 5s before any session
+  // exists, and each 401 runs authFetch's refresh-then-redirect ladder.
   const { entries, polledEntries, ejecting, heldByOther, eject } =
     useLoadedModels(enabled, showIndicator && reachable);
   const [collapsed, setCollapsed] = usePersistedToggle(COLLAPSED_KEY);
@@ -332,7 +337,8 @@ export function LoadedModelsIndicator({
     <div
       ref={panelRef}
       className={cn(
-        "pointer-events-none",
+        // See floating-monitor.tsx: a drop must not flash at the start spot under reduce motion.
+        "pointer-events-none transition-none",
         position && "fixed z-[9999] w-fit",
         !position &&
           (positioned
@@ -367,7 +373,7 @@ export function LoadedModelsIndicator({
               className="menu-soft-surface menu-soft-edgeless pointer-events-auto flex h-9 cursor-grab touch-none items-center gap-1.5 rounded-full pl-2.5 pr-3 font-heading text-muted-foreground transition-colors hover:text-foreground active:cursor-grabbing"
             >
               <HugeiconsIcon
-                icon={cardState === "otherAccount" ? LockIcon : SparkleIcon}
+                icon={cardState === "otherAccount" ? LockKeyIcon : SparkleIcon}
                 strokeWidth={1.75}
                 className="size-[calc(15px*var(--ui-space-scale,1))]"
               />
@@ -465,7 +471,7 @@ export function LoadedModelsIndicator({
           <div className="flex max-h-[min(272px,42dvh)] min-h-0 flex-col gap-0.5 overflow-y-auto">
             {cardState === "otherAccount" && (
               <NoteRow
-                icon={LockIcon}
+                icon={LockKeyIcon}
                 title={t("floatingPanels.loadedModels.otherAccount")}
                 detail={t("floatingPanels.loadedModels.otherAccountDetail")}
               />

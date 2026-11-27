@@ -68,10 +68,12 @@ export type MetaToken =
   | { kind: "format"; label: string; tone: FormatTone }
   | { kind: "size"; label: string }
   | { kind: "param"; label: string }
+  | { kind: "resident"; label: string }
   | { kind: "text"; label: string };
 
 const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
 const META_APPROX_RE = /^~/;
+const META_RUN_RE = /\bto run$/i;
 const META_PARAM_RE = /^\d+(?:\.\d+)?[MB]$/i;
 const META_WHITESPACE_RE = /\s+/;
 
@@ -80,6 +82,10 @@ const META_WHITESPACE_RE = /\s+/;
 export function classifyMetaToken(raw: string): MetaToken | null {
   const t = raw.trim();
   if (!t) return null;
+  // Before the size test, which "12.2 GB to run" (an audio.cpp estimate) also matches.
+  if (META_RUN_RE.test(t)) {
+    return { kind: "resident", label: t.replace(META_RUN_RE, "").trim() };
+  }
   if (META_SIZE_RE.test(t) || META_APPROX_RE.test(t)) {
     return { kind: "size", label: t };
   }
@@ -99,12 +105,14 @@ export function parseMetaTokens(meta?: string | null): {
   formats: { label: string; tone: FormatTone }[];
   param?: string;
   size?: string;
+  resident?: string;
   texts: string[];
 } {
   const formats: { label: string; tone: FormatTone }[] = [];
   const texts: string[] = [];
   let param: string | undefined;
   let size: string | undefined;
+  let resident: string | undefined;
   if (!meta) return { formats, texts };
   for (const part of meta.split("·")) {
     const token = classifyMetaToken(part);
@@ -115,9 +123,11 @@ export function parseMetaTokens(meta?: string | null): {
       size ??= token.label;
     } else if (token.kind === "param") {
       param ??= token.label;
+    } else if (token.kind === "resident") {
+      resident ??= token.label;
     } else {
       texts.push(token.label);
     }
   }
-  return { formats, param, size, texts };
+  return { formats, param, size, resident, texts };
 }

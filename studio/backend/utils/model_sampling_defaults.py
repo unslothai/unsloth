@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-model sampling defaults a user saved; a request that leaves a field unset gets them before the
-model's recommendation. Not stored in the launch overrides: a row there counts as a load override
-and shadows a broader one."""
+"""Saved per-model sampling defaults fill unset request fields before the model's recommendation;
+kept out of launch overrides, where a row would count as a load override and shadow broader ones."""
 
 from __future__ import annotations
 

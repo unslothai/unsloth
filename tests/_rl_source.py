@@ -26,9 +26,11 @@ WRAPPER_NAMES = (
     "_replace_outputs_logits",
     "_minimise_logits_kwarg",
     "_drop_spare_hidden_states",
+    "_cp_last_hidden_state_only",
     "_install_grpo_hidden_states_forward_wrapper",
     "_grpo_pre_head_hidden_divisor",
     "_grpo_hidden_states_reproduce_logits",
+    "_grpo_head_input_match_is_decisive",
 )
 
 OPTIONAL_NAMES = ("_note_grpo_hidden_states_success",)
@@ -40,6 +42,7 @@ CONSTANT_NAMES = (
     "_UNSLOTH_GRPO_HIDDEN_STATES_DEGRADED_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_UNSAFE_ATTR",
     "_UNSLOTH_GRPO_HIDDEN_STATES_VERIFIED_ATTR",
+    "_UNSLOTH_GRPO_HIDDEN_STATES_RETURNS_HEAD_INPUT_ATTR",
 )
 
 
@@ -81,7 +84,12 @@ def load_rl_wrapper(names = WRAPPER_NAMES):
         node
         for node in ast.parse(replacements.read_text(encoding = "utf-8")).body
         if isinstance(node, ast.FunctionDef)
-        and node.name in ("_unsloth_get_model_config", "_unsloth_text_configs")
+        and node.name
+        in (
+            "_unsloth_get_model_config",
+            "_unsloth_text_configs",
+            "_unsloth_forward_returns_hidden_states",
+        )
     ]
     exec(
         compile(ast.Module(body = config_helpers, type_ignores = []), str(replacements), "exec"),

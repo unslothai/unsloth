@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Reaching the media backends, and waiting until nothing a switch would interrupt is running.
-
-Loading a media model is not a private act. The load route takes the GPU through the arbiter,
-whose cross-owner handoff unloads whichever owner holds it, so a switch can cancel a video
-generation or terminate a streaming chat completion that has nothing to do with the request that
-asked for it. The drain here waits all of that out first, and refuses rather than interrupting.
-"""
+"""Waits for unrelated work to drain or refuses; arbiter handoff would cancel video or chat streams."""
 
 from __future__ import annotations
 
@@ -64,6 +58,12 @@ def chat_busy(count_pending: bool = True) -> bool:
         counted = other_inference_request_count(
             current_request_counted = True, include_pending = count_pending
         )
+        from core.inference.load_policy import parent_chat_counted
+
+        # A chat tools call runs inside its chat, which waits on this switch: that chat, when it is
+        # counted at all (an external-provider chat is not), is never its own blocker.
+        if parent_chat_counted():
+            counted -= 1
         # counted once, since a request parked on a switch lock is a waiter inside its own switch
         return max(0, counted - max(0, parked - 1)) > 0
     except Exception:  # noqa: BLE001

@@ -48,7 +48,7 @@ jobs:
             secret_name: KAGGLE_API_TOKEN_2
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43
         with:
           egress-policy: audit
 
@@ -57,27 +57,34 @@ jobs:
           # Only the posting step gets GH_TOKEN; checkout would persist the job token into .git.
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '3.12'
 
       - name: Install the Kaggle client
         # kaggle 1.7.4.5's authenticate() cannot read KAGGLE_API_TOKEN.
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       - name: Collect this account's kernels
         id: collect
         env:
           # Index by name: a ternary would hand over the other account's token when this one is empty.
           KAGGLE_API_TOKEN: ${{ secrets[matrix.secret_name] }}
+          # Through env, never ${{ }} in the script: the dispatch input is free text beside the token.
+          MAX_AGE_HOURS: ${{ inputs.max_age_hours || '3' }}
         # --require-auth: a broken token here must be red; an EMPTY token (single-account repo) only warns.
         # --no-delete: the last step releases kernels after statuses post.
         run: |
+          if ! printf '%s' "$MAX_AGE_HOURS" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+            echo "::error::max_age_hours must be a number of hours, got '$MAX_AGE_HOURS'"
+            exit 1
+          fi
           python .github/scripts/kaggle_t4_ci/collect.py \
             --outdir kaggle_collected \
             --require-auth \
             --no-delete \
-            --max-age-hours '${{ inputs.max_age_hours || '3' }}' \
+            --max-age-hours "$MAX_AGE_HOURS" \
             --target-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       # Post first, delete second, so a failed post leaves the kernel for the next pass.

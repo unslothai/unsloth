@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TrainingMethod } from "@/types/training";
+import { formatBytes } from "../hub/lib/format.ts";
 
 export type ExportMethod = "merged" | "lora" | "gguf";
 
@@ -22,7 +23,7 @@ export const EXPORT_METHODS: {
   {
     value: "lora",
     title: "LoRA Only",
-    description: "Lightweight adapter files (~100 MB). Needs base model.",
+    description: "Lightweight adapter files. Needs base model.",
     tooltip:
       "Exports only the trained adapter. Pair with the base model at inference time to save storage.",
   },
@@ -213,7 +214,6 @@ export function mergedFormatPayload(value: string): {
   return { formatType: "16-bit (FP16)", compressedMethod: opt.value };
 }
 
-/** GGUF quants FastFlowLM's Q4NX converter packs directly for the AMD Ryzen AI NPU. */
 export const Q4NX_SOURCE_QUANTS = ["q4_0", "q4_1", "q4_k_m"];
 
 /** Approximate llama.cpp bits per weight; GGUF size ~= fp16_bytes * bpw / 16. */
@@ -236,21 +236,6 @@ export const GGUF_BPW: Record<string, number> = {
 
 const FP16_BPW = 16;
 
-/** Base-1024 to match the model picker; the base-1000 hub formatBytes would disagree. */
-export function formatModelSize(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) {
-    return "";
-  }
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  // bytes < 1 would give a negative index.
-  const i = Math.max(
-    0,
-    Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1),
-  );
-  const value = bytes / 1024 ** i;
-  return `${value.toFixed(value < 10 ? 1 : 0)} ${units[i]}`;
-}
-
 export function estimateQuantBytes(
   fp16Bytes: number | null | undefined,
   quant: string,
@@ -270,7 +255,7 @@ export function formatQuantSize(
   quant: string,
 ): string {
   const bytes = estimateQuantBytes(fp16Bytes, quant);
-  return bytes == null ? "" : `~${formatModelSize(bytes)}`;
+  return bytes == null ? "" : `~${formatBytes(bytes)}`;
 }
 
 export function buildQuantSizeLabels(
@@ -282,6 +267,9 @@ export function buildQuantSizeLabels(
   }
   return out;
 }
+
+export const MOE_GGUF_ADAPTER_HINT =
+  "This adapter trains MoE expert weights. If your llama.cpp cannot convert those yet, the export stops and says so; the full-model GGUF export works either way.";
 
 export function getEstimatedSize(
   method: ExportMethod | null,
@@ -297,13 +285,13 @@ export function getEstimatedSize(
     for (const b of perQuant) {
       total += b ?? 0;
     }
-    const label = `~${formatModelSize(total)}`;
+    const label = `~${formatBytes(total)}`;
     return quantLevels.length === 1
       ? label
       : `${label} (${quantLevels.length} files)`;
   }
   if (method === "merged") {
-    return fp16Bytes && fp16Bytes > 0 ? `~${formatModelSize(fp16Bytes)}` : "";
+    return fp16Bytes && fp16Bytes > 0 ? `~${formatBytes(fp16Bytes)}` : "";
   }
   if (method === "lora") {
     // Adapter size is bounded by LoRA rank, not the base model size.
@@ -389,4 +377,10 @@ export function adapterCompatibilityTip(
 // The image LoRA route reports a path relative to the exports folder unless the user typed an absolute one.
 export function savedLabel(path: string): string {
   return /^([a-zA-Z]:[\\/]|[\\/])/.test(path) ? path : `exports/${path}`;
+}
+
+export type ExportTab = "llm" | "diffusion-lora" | "q4nx";
+
+export function resolveExportTab(tab: ExportTab, hasNpu: boolean): ExportTab {
+  return tab === "q4nx" && !hasNpu ? "llm" : tab;
 }

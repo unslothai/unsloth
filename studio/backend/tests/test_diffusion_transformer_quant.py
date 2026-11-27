@@ -904,18 +904,33 @@ def test_exclude_tokens_for_scheme():
     assert exclude_tokens_for_scheme(TQ_MXFP8) == ()
 
 
-def test_exclude_tokens_for_scheme_family():
-    # Qwen-Image never pads its text stream, so short prompts hit M < 16 in torch._int_mm.
+def test_exclude_tokens_for_scheme_family(monkeypatch):
     from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
         _INT8_EXCLUDE_NAME_TOKENS,
         _QWENIMAGE_INT8_EXCLUDES,
         exclude_tokens_for_scheme,
     )
 
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
     for fam in ("qwen-image", "qwen-image-edit"):
         assert (
-            exclude_tokens_for_scheme(TQ_INT8, fam)
+            exclude_tokens_for_scheme(TQ_INT8, fam, baked = True)
             == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+        )
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image-edit")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    assert (
+        exclude_tokens_for_scheme(TQ_INT8, "qwen-image")
+        == _INT8_EXCLUDE_NAME_TOKENS + _QWENIMAGE_INT8_EXCLUDES
+    )
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    with int8_text_stream_scope(True):
+        assert exclude_tokens_for_scheme(TQ_INT8, "qwen-image") == _INT8_EXCLUDE_NAME_TOKENS + (
+            "txt_in",
         )
     for token in ("txt_in", "add_q_proj", "to_add_out", "txt_mlp"):
         assert token in _QWENIMAGE_INT8_EXCLUDES
@@ -1160,12 +1175,29 @@ def test_pad_and_exclude_sets_never_overlap():
             ), f"{family}: {pad_token!r} is both padded and excluded"
 
 
-def test_only_minimax_h3_pads_today():
-    """Only MiniMax-H3 pads: other published int8 checkpoints bake the exclusion set into metadata."""
-    from core.inference.diffusion_transformer_quant import TQ_INT8, pad_tokens_for_scheme
+def test_only_minimax_h3_pads_today(monkeypatch):
+    """Only MiniMax-H3 pads its own tokens; streamed qwen-image builds pad the text stream they
+    quantise, while resident builds and the kill switch pad nothing."""
+    from core.inference.diffusion_transformer_quant import (
+        INT8_TEXT_STREAM_ENV,
+        TQ_INT8,
+        pad_tokens_for_scheme,
+        runtime_quant_tokens_for_scheme,
+    )
 
+    from core.inference.diffusion_transformer_quant import int8_text_stream_scope
+
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV, raising = False)
     for family in ("qwen-image", "qwen-image-edit", "hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
         assert pad_tokens_for_scheme(TQ_INT8, family) == ()
+    with int8_text_stream_scope(True):
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == runtime_quant_tokens_for_scheme(
+            TQ_INT8, "qwen-image"
+        )
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image")
+        monkeypatch.setenv(INT8_TEXT_STREAM_ENV, "0")
+        assert pad_tokens_for_scheme(TQ_INT8, "qwen-image") == ()
+    monkeypatch.delenv(INT8_TEXT_STREAM_ENV)
     assert pad_tokens_for_scheme(TQ_INT8, "z-image") == ()
     assert pad_tokens_for_scheme(TQ_INT8, None) == ()
 
@@ -1179,9 +1211,8 @@ def test_only_int8_pads():
 
 
 def test_quantize_transformer_pads_after_quantising(monkeypatch):
-    """The padding runs on the RUNTIME dense-quantise path too, not only on the prequant one,
-    and it runs AFTER quantize_ (it reparents Linears that must already hold quantized weights).
-    """
+    """Padding also runs on the runtime dense-quantise path, after quantize_, since it reparents
+    Linears that must already hold quantized weights."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_INT8})
     order = []
@@ -1204,9 +1235,8 @@ def test_quantize_transformer_pads_after_quantising(monkeypatch):
 
 
 def test_quantize_transformer_refuses_when_padding_cannot_be_proven(monkeypatch):
-    """A half-padded transformer compiles on the modules that were wrapped and crashes inside
-    ``_int_mm`` on the ones that were not, so a raise from the padding must fail the whole
-    quantise and send the caller to GGUF -- not be swallowed into a partially padded model."""
+    """A half-padded transformer crashes inside _int_mm, so a padding failure must fail the whole
+    quantise and fall back to GGUF, not be swallowed."""
     _stub_torch(monkeypatch, cc = (10, 0))
     _allow(monkeypatch, {TQ_INT8})
     tqz = types.ModuleType("torchao.quantization")

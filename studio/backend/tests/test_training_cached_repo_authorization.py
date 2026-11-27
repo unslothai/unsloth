@@ -71,9 +71,7 @@ def test_snapshot_symlink_into_blobs_still_names_its_repo(cache_root):
 
 
 def test_cached_private_dataset_path_is_attributed_to_the_dataset_repo(cache_root):
-    """A dataset snapshot passed where a model is expected must still be authorized: such a repo
-    can hold config.json plus weights, and matching only "models--" skipped the check entirely.
-    """
+    """A dataset snapshot passed as a model must be authorized; matching only models-- skipped it."""
     from hub.utils.hf_cache_state import cached_repo_id_for_path, cached_repo_ref_for_path
 
     snapshot = _make_repo(cache_root, "datasets--org--private-data")
@@ -468,7 +466,7 @@ def test_a_disabled_eval_path_is_not_authorized(monkeypatch, cache_root):
 
     import routes.training as training_routes
 
-    source = inspect.getsource(training_routes.start_training)
+    source = inspect.getsource(training_routes._admit_training_request)
     marker = "request.local_eval_datasets if evaluation_enabled(request.eval_steps) else []"
     assert marker in source
 
@@ -511,7 +509,7 @@ def test_a_streaming_start_skips_the_cached_dataset_check():
 
     import routes.training as training_routes
 
-    source = inspect.getsource(training_routes.start_training)
+    source = inspect.getsource(training_routes._admit_training_request)
     assert "not request.dataset_streaming" in source
     guarded = source.split("not request.dataset_streaming", 1)[1]
     assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]
@@ -557,7 +555,7 @@ def test_the_shadowed_dataset_gate_is_wired_into_the_start():
 
     import routes.training as training_routes
 
-    source = inspect.getsource(training_routes.start_training)
+    source = inspect.getsource(training_routes._admit_training_request)
     assert "_hf_dataset_is_the_source(request)" in source
     guarded = source.split("_hf_dataset_is_the_source(request)", 1)[1]
     assert "_refuse_unauthorized_cached_dataset" in guarded.split("\n\n", 1)[0]

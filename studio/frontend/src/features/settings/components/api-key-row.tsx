@@ -12,8 +12,8 @@ import { type Locale, formatRelativeTime, useLocale, useT } from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Refresh01Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
@@ -128,6 +128,14 @@ export function ApiKeyRow({
         >
           {apiKey.name}
         </span>
+        {apiKey.access === "inference" && (
+          <span
+            className="shrink-0 rounded-full border px-1.5 text-ui-11 text-muted-foreground"
+            title={t("settings.apiKeys.accessInferenceHint")}
+          >
+            {t("settings.apiKeys.accessInferenceBadge")}
+          </span>
+        )}
       </div>
       <code className="font-mono text-ui-11 text-muted-foreground max-sm:hidden">
         {prefix}…
@@ -175,7 +183,7 @@ export function ApiKeyRow({
             onClick={() => onRevoke(apiKey)}
             className="text-destructive focus:text-destructive"
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
+            <HugeiconsIcon icon={TrashIcon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.revokeToken")}
           </DropdownMenuItem>
         </DropdownMenuContent>

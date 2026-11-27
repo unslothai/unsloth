@@ -42,8 +42,7 @@ def test_every_id_shape_resolves_to_published_sampling(model_id):
 
 
 def test_family_entry_is_registered_in_patterns():
-    """A family dict with no matching pattern never resolves: get_family_inference_params
-    iterates ``patterns``, not ``families``."""
+    """get_family_inference_params iterates patterns, so a families-only entry never resolves."""
     import json
 
     path = _backend_root / "assets" / "configs" / "inference_defaults.json"
@@ -61,8 +60,7 @@ def test_family_lookup_is_case_insensitive_and_org_stripped():
 
 
 def test_top_k_is_within_the_api_bound():
-    """InferenceRequest bounds top_k at 100, so a family default above it would be
-    rejected by validation before it ever reached llama-server."""
+    """Request validation caps top_k at 100, so a larger family default would be rejected."""
     from models.inference import ChatCompletionRequest
 
     field = ChatCompletionRequest.model_fields["top_k"]
@@ -72,8 +70,7 @@ def test_top_k_is_within_the_api_bound():
 
 
 def test_unrelated_families_are_untouched():
-    """The pattern is distinctive, but substring matching means a new entry can
-    shadow an existing one. Spot-check the neighbours it sits between."""
+    """Substring matching lets a new pattern shadow an existing one, so check its neighbours."""
     assert _resolve("unsloth/gemma-2-9b-it")["top_k"] == 64
     assert _resolve("unsloth/Llama-4-Scout-17B-16E-Instruct")["top_k"] == -1
     assert _resolve("unsloth/Qwen3-8B")["temperature"] == 0.6

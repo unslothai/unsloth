@@ -10,6 +10,7 @@
 # limitations under the License.
 import os
 import functools
+import inspect
 from contextlib import nullcontext
 import torch
 import torch.nn as nn
@@ -17,6 +18,7 @@ import triton
 import triton.language as tl
 from torch.nn import functional as F
 import math
+from typing import List
 from unsloth_zoo.utils import Version
 
 from .indexing import long_indexing
@@ -78,9 +80,31 @@ def _opaque_under_compile(name, fake):
             ValueError,
         ):  # Already registered by an earlier import of this module.
             pass
-        return fn
+        if name not in _EAGER_COUNTED_LOWP_GEMMS:
+            return fn
+        from ..precision import engage
+
+        # Eager calls launch Triton directly and never dispatch the op, so count_lowp_gemms() is told here.
+        @functools.wraps(fn)
+        def counted(*args, **kwargs):
+            if torch.compiler.is_compiling() or not engage._active():
+                return fn(*args, **kwargs)
+            entered = engage.note_lowp_gemm(f"unsloth::{name}")
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                engage.release_lowp_gemm(entered)
+
+        return counted
 
     return decorator
+
+
+_EAGER_COUNTED_LOWP_GEMMS = (
+    "fp8_block_matmul_triton",
+    "fp8_block_small_m_linear",
+    "fp8_block_matmul_torchao",
+)
 
 
 try:
@@ -117,16 +141,20 @@ except:
 
 def _import_torchao_blockwise_gemm():
     # torchao <= 0.17 ships blockwise_fp8_gemm under prototype; 0.18 moved it to torchao.kernel.
+    # A class is not the kernel: on Windows ROCm without torchao, unsloth_zoo stubs every torchao
+    # import with sentinel classes, and calling one raises "blockwise_fp8_gemm() takes no arguments".
     try:
         from torchao.prototype.blockwise_fp8_inference.blockwise_quantization import (
             blockwise_fp8_gemm,
         )
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     try:
         from torchao.kernel.blockwise_quantization import blockwise_fp8_gemm
-        return blockwise_fp8_gemm
+        if callable(blockwise_fp8_gemm) and not isinstance(blockwise_fp8_gemm, type):
+            return blockwise_fp8_gemm
     except Exception:
         pass
     logger.info("Unsloth: Could not find torchao blockwise_fp8_gemm")
@@ -175,8 +203,8 @@ def weight_dequant_kernel(
     y_ptr,
     M,
     N,
-    BLOCK_SIZE: tl.constexpr,
-    EXACT_F16: tl.constexpr = False,
+    BLOCK_SIZE: tl.constexpr,  # fp8 quant block size
+    EXACT_F16: tl.constexpr = False,  # exact fp16 rounding of output
 ):
     pid_m = tl.program_id(axis = 0)
     pid_n = tl.program_id(axis = 1)
@@ -247,11 +275,9 @@ def _has_fbgemm_rowwise():
 
 
 def _scale_mul(x, s, dtype):
-    # fp16: an fp16 scale goes subnormal below 6.1e-5 and overflows above 65504, zeroing or inf-ing
-    # the weight, so multiply by the fp32 scale and round once. fp8 values are exact in fp16, and an
-    # fp16 out= makes TensorIterator compute in fp32 per element without fp32 temporaries. Dynamo
-    # refuses a strided out=; under compile Inductor fuses the fp32 expression instead (same bits).
-    # Other dtypes keep their dtype-native expression.
+    # fp16 scales go subnormal below 6.1e-5 and overflow above 65504, so multiply by the fp32 scale
+    # and round once; an fp16 out= computes fp32 per element (fp8 is exact in fp16), and Dynamo
+    # refuses a strided out= so Inductor fuses it under compile.
     if _scale_dequant_one_pass_ok(x, s, dtype):
         return _scale_dequant_one_pass(x, s, dtype)
     if dtype != torch.float16:
@@ -359,8 +385,8 @@ def act_quant_kernel(
     x_ptr,
     y_ptr,
     s_ptr,
-    BLOCK_SIZE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_SIZE: tl.constexpr,  # fp8 quant block size
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets past 2**31
 ):
     pid = tl.program_id(axis = 0)
     if LONG_INDEXING:
@@ -403,7 +429,8 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
 
 
 # Adapted from sgl-project/sglang python/sglang/srt/layers/quantization/fp8_kernel.py
-@triton.jit
+# M (token rows) runtime: BLOCK_SIZE_M already buckets it; no extra %16 / == 1 variant per prompt length.
+@triton.jit(do_not_specialize = ["M"])
 def _w8a8_block_fp8_matmul(
     A,
     B,
@@ -426,11 +453,11 @@ def _w8a8_block_fp8_matmul(
     stride_As_k,
     stride_Bs_k,
     stride_Bs_n,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    GROUP_SIZE_M: tl.constexpr,  # M tiles per swizzle group
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets past 2**31
 ):
     """Triton-accelerated function used to perform linear operations (dot
     product) on input tensors `A` and `B` with block-wise quantization, and
@@ -520,12 +547,12 @@ def _w8a8_block_fp8_matmul_tma(
     stride_As_k,
     stride_Bs_k,
     stride_Bs_n,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    GROUP_SIZE_M: tl.constexpr,
-    NUM_STAGES: tl.constexpr,
-    OUT_DTYPE: tl.constexpr,
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    GROUP_SIZE_M: tl.constexpr,  # M tiles per swizzle group
+    NUM_STAGES: tl.constexpr,  # pipeline stages
+    OUT_DTYPE: tl.constexpr,  # output dtype
 ):
     # _w8a8_block_fp8_matmul with A, B and C moved by TMA descriptors (out-of-range rows and K tail
     # are zero filled on load, clipped on store) and a pipelined K loop; same per-tile math and order,
@@ -595,11 +622,45 @@ def _fp8_tma_gemm_ok(A, B, C, BLOCK_SIZE_M, block_n, block_k, long_idx):
     return checked
 
 
+# from_tensor re-validates every field per call (~4 us each): validate once per (dtype, block shape).
+_FP8_TMA_DESC_FIELDS = {}
+
+
+def _fp8_tma_descriptor(tensor, rows, cols, block_shape):
+    key = (tensor.dtype, block_shape)
+    fields = _FP8_TMA_DESC_FIELDS.get(key)
+    if fields is None:
+        proto = _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+        # Tensor-independent fields only: caching `base` would keep the first GEMM's tensor alive.
+        fields = {
+            k: v
+            for k, v in (getattr(proto, "__dict__", None) or {}).items()
+            if k not in ("base", "shape", "strides")
+        }
+        _FP8_TMA_DESC_FIELDS[key] = fields
+    # A sliced weight's row pitch is not its width: keep from_tensor's real strides.
+    if (
+        not fields
+        or rows <= 0
+        or cols <= 0
+        or tensor.numel() != rows * cols
+        or not tensor.is_contiguous()
+    ):
+        return _TensorDescriptor.from_tensor(tensor.view(rows, cols), list(block_shape))
+    desc = _TensorDescriptor.__new__(_TensorDescriptor)
+    desc.__dict__.update(fields)
+    desc.base = tensor
+    desc.shape = [rows, cols]
+    desc.strides = [cols, 1]
+    desc.block_shape = list(block_shape)
+    return desc
+
+
 def _launch_fp8_tma_gemm(A, B, C, As, Bs, M, N, K, block_n, block_k):
     BLOCK_SIZE_M = 128
-    a_desc = _TensorDescriptor.from_tensor(A.view(M, K), [BLOCK_SIZE_M, block_k])
-    b_desc = _TensorDescriptor.from_tensor(B, [block_n, block_k])
-    c_desc = _TensorDescriptor.from_tensor(C.view(M, N), [BLOCK_SIZE_M, block_n])
+    a_desc = _fp8_tma_descriptor(A, M, K, (BLOCK_SIZE_M, block_k))
+    b_desc = _fp8_tma_descriptor(B, N, K, (block_n, block_k))
+    c_desc = _fp8_tma_descriptor(C, M, N, (BLOCK_SIZE_M, block_n))
     grid = (triton.cdiv(M, BLOCK_SIZE_M) * triton.cdiv(N, block_n),)
     _w8a8_block_fp8_matmul_tma[grid](
         a_desc,
@@ -704,7 +765,7 @@ def w8a8_block_fp8_matmul_triton(
     B: torch.Tensor,
     As: torch.Tensor,
     Bs: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
     """Block-wise FP8 matmul."""
@@ -795,11 +856,11 @@ def _w8a8_block_fp8_small_m(
     stride_Bs_n,
     stride_Bs_k,
     KB_PER_SPLIT,
-    GROUP_N: tl.constexpr,
-    BLOCK_SIZE_M: tl.constexpr,
-    BLOCK_SIZE_N: tl.constexpr,
-    BLOCK_SIZE_K: tl.constexpr,
-    SPLIT_K: tl.constexpr,
+    GROUP_N: tl.constexpr,  # weight scale block along N
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    SPLIT_K: tl.constexpr,  # split-K factor
 ):
     pid_n = tl.program_id(axis = 0)
     pid_k = tl.program_id(axis = 1)
@@ -870,9 +931,10 @@ def _small_m_config(M, N, K, device):
 
 def can_use_fp8_block_small_m(X, weight, weight_scale, block_size):
     # Eager only: under torch.compile the M bound below would guard on the symbolic M and recompile.
+    # torchao writes bf16 only (fp16 falls to act_quant + Triton GEMM), so fp16 keeps the fused kernel.
     if (
         not _FP8_BLOCK_SMALL_M
-        or fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        or (fp8_block_matmul is not w8a8_block_fp8_matmul_triton and X.dtype != torch.float16)
         or torch.compiler.is_compiling()
     ):
         return False
@@ -954,7 +1016,7 @@ def torchao_block_matmul(
     weight_q: torch.Tensor,
     act_scale: torch.Tensor,
     weight_scale: torch.Tensor,
-    block_size: list[int],
+    block_size: List[int],
     output_dtype: torch.dtype = torch.bfloat16,
 ) -> torch.Tensor:
     # torchao's kernel indexes in int32 too, so route launches past 2**31 elements to the int64 one.
@@ -1001,7 +1063,7 @@ def _prefer_triton_block_matmul_at(device, M):
 def _select_fp8_block_matmul():
     # torchao_block_matmul hands each call to the Triton function where that is faster; pick Triton
     # outright only when every GPU prefers it at every M (sm_89), which also keeps the fused small-M
-    # kernel there (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
+    # kernel there for bf16 (can_use_fp8_block_small_m), as torchao beats it on sm_90 / sm_100 / sm_120.
     if torchao_blockwise_gemm is None:
         return w8a8_block_fp8_matmul_triton
     count = torch.cuda.device_count() if torch.cuda.is_available() else 0
@@ -1079,23 +1141,16 @@ def _rocm_bytes_dequant_arch(device):
 
 
 def _hip_bytes_dequant(device, out_dtype):
-    # fp16 excluded: on gfx1151 the byte decoder rounds fp16 differently from the torch loop.
-    return (
-        _HIP_FP8_BYTES_DEQUANT and out_dtype != torch.float16 and _rocm_bytes_dequant_arch(device)
-    )
+    # fp16 only with the integer rounding: the plain cast fuses into v_fma_mixlo_f16.
+    if out_dtype == torch.float16 and not _fp8_exact_f16_round(out_dtype):
+        return False
+    return _HIP_FP8_BYTES_DEQUANT and _rocm_bytes_dequant_arch(device)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
-    """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
-
-    triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
-    and triton version instead (_rocm_fp8e4nv_kernel_supported).
-
-    kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
-    which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn
-    whatever the weight dtype is, so e5m2 weights hit the same unsupported kernel.
-    """
+    """True when triton here cannot compile this fp8 dtype (fp8e4nv from sm89 on, compared as major
+    and minor; ROCm uses gfx arch and triton version); forwards pass kernel_dtype e4m3fn since
+    act_quant always emits it, even for e5m2 weights."""
     return (
         tensor.is_cuda
         and (tensor.dtype if kernel_dtype is None else kernel_dtype) == torch.float8_e4m3fn
@@ -1151,9 +1206,9 @@ def _fp8_rowwise_gemv_kernel(
     N,
     K,
     stride_wn,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets past 2**31
 ):
     pid = tl.program_id(0)
     # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
@@ -1197,11 +1252,11 @@ def _fp8_rowwise_gemv_rows_kernel(
     N,
     K,
     stride_wn,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    SPLIT_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    BLOCK_M: tl.constexpr,  # rows per program
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    SPLIT_K: tl.constexpr,  # split-K factor
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets past 2**31
 ):
     pid = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -1240,7 +1295,13 @@ def _fp8_rowwise_gemv_rows_kernel(
 
 @triton.jit(do_not_specialize = ["M"])
 def _fp8_rowwise_gemv_rows_reduce(
-    p_ptr, s_ptr, y_ptr, M, N, SPLIT_K: tl.constexpr, BLOCK: tl.constexpr
+    p_ptr,
+    s_ptr,
+    y_ptr,
+    M,
+    N,
+    SPLIT_K: tl.constexpr,  # split-K factor
+    BLOCK: tl.constexpr,  # block size
 ):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N
@@ -1396,12 +1457,12 @@ def _fp8_block_gemv_kernel(
     stride_sk,
     stride_ys,
     stride_ym,
-    GROUP_N: tl.constexpr,
-    GROUP_K: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    LONG_INDEXING: tl.constexpr = False,
+    GROUP_N: tl.constexpr,  # weight scale block along N
+    GROUP_K: tl.constexpr,  # weight scale block along K
+    BLOCK_M: tl.constexpr,  # rows per program
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    LONG_INDEXING: tl.constexpr = False,  # int64 offsets past 2**31
 ):
     pid_n = tl.program_id(0)
     pid_k = tl.program_id(1)
@@ -1594,6 +1655,10 @@ def _with_fp8_block_gemv(block_forward):
 def _fp8_block_small_m_first(X, weight, weight_scale):
     # 100+ SM parts: the fused small-M kernel is faster, so try it first (eager only; compiled uses the GEMV).
     if not (torch.is_grad_enabled() and X.requires_grad):
+        # torchao selected: GEMV first (skips act_quant, beat the fused kernel at K = 14336 on sm_120).
+        gemv_first = fp8_block_matmul is not w8a8_block_fp8_matmul_triton
+        if gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
+            return fp8_block_gemv(X, weight, weight_scale)
         if (
             can_use_fp8_block_small_m(
                 X, weight, weight_scale, _fp8_block_size(weight, weight_scale)
@@ -1602,7 +1667,7 @@ def _fp8_block_small_m_first(X, weight, weight_scale):
             and not _fp8_kernel_unsupported(weight, torch.float8_e4m3fn)
         ):
             return fp8_block_small_m_linear(X, weight, weight_scale)
-        if can_use_fp8_block_gemv(X, weight, weight_scale):
+        if not gemv_first and can_use_fp8_block_gemv(X, weight, weight_scale):
             return fp8_block_gemv(X, weight, weight_scale)
     return fp8_torch_block_quant_forward(X, weight, weight_scale)
 
@@ -1652,12 +1717,12 @@ def _e4m3fn_bytes_dequant_kernel(
     stride_xn,
     stride_sm,
     stride_sn,
-    BLOCK_M_Q: tl.constexpr,
-    BLOCK_N_Q: tl.constexpr,
-    BLOCK_R: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    EXACT_F16: tl.constexpr = False,
+    BLOCK_M_Q: tl.constexpr,  # scale block rows
+    BLOCK_N_Q: tl.constexpr,  # scale block cols
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_C: tl.constexpr,  # cols per program
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    EXACT_F16: tl.constexpr = False,  # exact fp16 rounding of output
 ):
     pid_r = tl.program_id(0)
     pid_c = tl.program_id(1)
@@ -1693,11 +1758,11 @@ def _e4m3fn_scale_dequant_kernel(
     M,
     N,
     stride_s,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    SCALE_ON_COLS: tl.constexpr,
-    ROUND_SCALE: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # rows per program
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    SCALE_ON_COLS: tl.constexpr,  # scale per column (transposed)
+    ROUND_SCALE: tl.constexpr,  # round scale to output dtype
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     # Scale per tensor (stride_s 0), row or column. ROUND_SCALE mirrors x.to(dtype) * s.to(dtype) (fp16 keeps
     # the fp32 scale); e4m3 times a bf16 scale is exact in fp32, so one rounding gives torch's bits.
@@ -1766,9 +1831,8 @@ def _e4m3fn_bytes_dequant(
 
 
 def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dtype):
-    """Blockwise fp8 weight dequant for any shape: triton when the weight tiles
-    evenly into block_size and this GPU can compile its fp8 dtype, else a
-    torch-native per-block scale expansion."""
+    """Blockwise fp8 weight dequant for any shape: triton when weight tiles evenly into block_size
+    and this GPU can compile the fp8 dtype, else a torch scale expansion."""
     m, n = weight.shape
     if weight_scale.dtype not in (torch.float32, torch.float16, torch.bfloat16):
         weight_scale = weight_scale.to(torch.float32)  # e.g. float8_e8m0fnu scales break triton
@@ -1903,34 +1967,108 @@ def _quantize_fp8_per_row(x, scale_ub = None):
     return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
 
 
-def _rowwise_gemm_works(gemm, device):
-    x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+def _clear_failed_probe(device):
+    # A failed probe GEMM must not poison the context: surface any error it left (synchronize), then a kernel
+    # launch check reads, and so resets, the last CUDA error.
+    if torch.device(device).type != "cuda":
+        return
     try:
-        return bool((gemm(x) == 128).all())
+        torch.cuda.synchronize(device)
     except Exception:
+        pass
+    try:
+        torch.ones(1, device = device).add_(1).item()
+    except Exception:
+        pass
+
+
+def _probe_out_of_memory(error):
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(error, oom)) or "out of memory" in str(
+        error
+    ).lower()
+
+
+def _rowwise_gemm_works(gemm, device):
+    # Any other failure means the kernel is missing here ("Rowwise scaling is not currently supported" on the Windows
+    # wheels, cuBLASLt CUBLAS_STATUS_NOT_SUPPORTED on older ones, "cutlass cannot initialize" for FBGEMM on sm120).
+    # Out of memory says nothing about the kernel: None, no verdict, so callers must not cache it.
+    try:
+        x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+        return bool((gemm(x) == 128).all())
+    except Exception as error:
+        if _probe_out_of_memory(error):
+            return None
+        _clear_failed_probe(device)
         return False
 
 
-@functools.lru_cache(maxsize = None)
-def _probe_fp8_rowwise_backend(device):
-    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
-    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; else dequant."""
+_FP8_ROWWISE_BACKENDS = ("fbgemm", "scaled_mm", "tensorwise", "dequant")
+# Forces the rowwise FP8 backend (testing / A/B only): fbgemm, scaled_mm, tensorwise or dequant.
+_FP8_ROWWISE_BACKEND_ENV = os.environ.get("UNSLOTH_FP8_ROWWISE_BACKEND", "").strip().lower()
+
+
+def _select_fp8_rowwise_backend(device):
+    """The first backend whose probe passes, or None when a probe ran out of memory before one did."""
     ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
     if _has_fbgemm_rowwise():
         from unsloth.import_fixes import suppress_cuda_printf
         with suppress_cuda_printf():
-            if _rowwise_gemm_works(
+            works = _rowwise_gemm_works(
                 lambda x: torch.ops.fbgemm.f8f8bf16_rowwise(x, x, ones(128), ones(128)), device
-            ):
-                return "fbgemm"
-    if _rowwise_gemm_works(
+            )
+        if works is not False:
+            return "fbgemm" if works else None
+    works = _rowwise_gemm_works(
         lambda x: torch._scaled_mm(
             x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.bfloat16
         ),
         device,
-    ):
-        return "scaled_mm"
+    )
+    if works is not False:
+        return "scaled_mm" if works else None
+    # Torch builds without the row-wise kernel (the Windows wheels) still run the tensorwise one.
+    works = _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones(()), scale_b = ones(()), out_dtype = torch.float32
+        ),
+        device,
+    )
+    if works is not False:
+        return "tensorwise" if works else None
     return "dequant"
+
+
+# Per device; an out-of-memory probe stores nothing, so the next call probes again.
+_FP8_ROWWISE_BACKEND_BY_DEVICE = {}
+
+
+def _probe_fp8_rowwise_backend(device):
+    """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
+    cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; a torch build
+    without the row-wise _scaled_mm runs the tensorwise one at unit scale plus an fp32 rescale; else dequant."""
+    backend = _FP8_ROWWISE_BACKEND_BY_DEVICE.get(device)
+    if backend is not None:
+        return backend
+    if _FP8_ROWWISE_BACKEND_ENV in _FP8_ROWWISE_BACKENDS:
+        backend = _FP8_ROWWISE_BACKEND_ENV
+    else:
+        backend = _select_fp8_rowwise_backend(device)
+    if backend is None:
+        # Out of memory while probing: dequantize this call and probe again on the next one.
+        return "dequant"
+    if backend == "tensorwise" and _FP8_ROWWISE_BACKEND_ENV != "tensorwise":
+        print(
+            f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; FP8 layers use "
+            "tensorwise _scaled_mm with the row scales applied in float32."
+        )
+    else:
+        logger.info(f"Unsloth: FP8 rowwise backend on {device}: {backend}")
+    _FP8_ROWWISE_BACKEND_BY_DEVICE[device] = backend
+    return backend
+
+
+_probe_fp8_rowwise_backend.cache_clear = _FP8_ROWWISE_BACKEND_BY_DEVICE.clear
 
 
 def _fp8_rowwise_backend(device):
@@ -1940,6 +2078,246 @@ def _fp8_rowwise_backend(device):
 if hasattr(torch._dynamo, "assume_constant_result"):
     # Compiled callers run the probe once at trace time and bake the answer in; an lru_cache wrapper would be traced.
     _fp8_rowwise_backend = torch._dynamo.assume_constant_result(_fp8_rowwise_backend)
+
+
+# torch < 2.14 rowwise CUTLASS takes its output type from the bias dtype: no bias + fp16 out = bf16 bits (garbage).
+# 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
+_SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
+# 2.10-2.13 rowwise CUTLASS writes bf16 bits without a bias; a zero fp16 bias makes it write fp16.
+_SCALED_MM_FP16_BIAS_OUT = torch.__version__ >= "2.10.0" and torch.version.hip is None
+# torch < 2.10 and ROCm < 2.14 cannot write fp16 (bf16 detour overflows to inf), so fp16 dequantizes.
+_SCALED_MM_FP16_ZERO_BIAS = _SCALED_MM_FP16_OUT_BROKEN and _SCALED_MM_FP16_BIAS_OUT
+_SCALED_MM_FP16_DEQUANT_ONLY = _SCALED_MM_FP16_OUT_BROKEN and not _SCALED_MM_FP16_BIAS_OUT
+
+
+_SCALED_MM_FLOAT32_OUT_BY_DEVICE = {}
+
+
+def _probe_scaled_mm_float32_out(device):
+    # cuBLAS and older CUTLASS differ on fp32 output (ATen/native/cuda/ScaledBlas.cpp).
+    works = _SCALED_MM_FLOAT32_OUT_BY_DEVICE.get(device)
+    if works is not None:
+        return works
+    ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
+    works = _rowwise_gemm_works(
+        lambda x: torch._scaled_mm(
+            x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.float32
+        ),
+        device,
+    )
+    if works is None:
+        return False  # out of memory: the safe answer for this call, probed again on the next
+    _SCALED_MM_FLOAT32_OUT_BY_DEVICE[device] = works
+    return works
+
+
+_probe_scaled_mm_float32_out.cache_clear = _SCALED_MM_FLOAT32_OUT_BY_DEVICE.clear
+
+
+def _scaled_mm_float32_out(device):
+    return _probe_scaled_mm_float32_out(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    _scaled_mm_float32_out = torch._dynamo.assume_constant_result(_scaled_mm_float32_out)
+
+
+def _scaled_mm_fp16_dequant_only(dtype):
+    return dtype == torch.float16 and _SCALED_MM_FP16_DEQUANT_ONLY
+
+
+def _scaled_mm_dtype_supported(x):
+    dtype = x.dtype
+    if dtype != torch.float32:
+        return not _scaled_mm_fp16_dequant_only(dtype)
+    # Before torch 2.14 float32 output exists only where the device probe finds cuBLAS, not CUTLASS.
+    return not _SCALED_MM_FP16_OUT_BROKEN or _scaled_mm_float32_out(x.device)
+
+
+def _scaled_mm_out_dtype(dtype):
+    return torch.bfloat16 if _scaled_mm_fp16_dequant_only(dtype) else dtype
+
+
+# Keyed by stream (async fill); never used during CUDA graph capture (eviction under a live graph).
+_SCALED_MM_FP16_ZERO_BIAS_CACHE = {}
+_SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX = 64
+
+
+def _scaled_mm_fp16_bias(x, weight):
+    if not _SCALED_MM_FP16_ZERO_BIAS or x.dtype != torch.float16:
+        return None
+    n = weight.shape[0]
+    device = x.device
+    if torch.compiler.is_compiling():
+        return torch.zeros(n, dtype = torch.float16, device = device)
+    # A fake tensor must not initialize CUDA.
+    cuda = device.type == "cuda" and torch.cuda.is_initialized()
+    if cuda and torch.cuda.is_current_stream_capturing():
+        return torch.zeros(n, dtype = torch.float16, device = device)
+    key = (n, device, torch.cuda.current_stream(device).cuda_stream if cuda else None)
+    bias = _SCALED_MM_FP16_ZERO_BIAS_CACHE.get(key)
+    if bias is None:
+        with torch.inference_mode(False), torch.no_grad():
+            bias = torch.zeros(n, dtype = torch.float16, device = device)
+        if type(bias) is torch.Tensor:  # never cache a fake tensor
+            if len(_SCALED_MM_FP16_ZERO_BIAS_CACHE) >= _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX:
+                _SCALED_MM_FP16_ZERO_BIAS_CACHE.clear()
+            _SCALED_MM_FP16_ZERO_BIAS_CACHE[key] = bias
+    return bias
+
+
+# One float32 1.0 per device, filled and synchronized once: a dict lookup per call, no per-stream state.
+_FP8_UNIT_SCALE_CACHE = {}
+
+
+def _fp8_unit_scale(device):
+    if torch.compiler.is_compiling():
+        return torch.ones((), dtype = torch.float32, device = device)
+    one = _FP8_UNIT_SCALE_CACHE.get(device)
+    if one is not None:
+        return one
+    capturing = device.type == "cuda" and torch.cuda.is_current_stream_capturing()
+    with torch.inference_mode(False), torch.no_grad():
+        one = torch.ones((), dtype = torch.float32, device = device)
+    if type(one) is torch.Tensor and not capturing:  # never cache a fake or graph-pool tensor
+        if device.type == "cuda":
+            torch.cuda.synchronize(device)  # filled before any stream reads it
+        _FP8_UNIT_SCALE_CACHE[device] = one
+    return one
+
+
+@triton.jit
+def _fp8_unit_scale_epilogue_kernel(
+    acc_ptr,
+    sx_ptr,
+    sw_ptr,
+    y_ptr,
+    N,
+    numel,
+    BLOCK: tl.constexpr,  # elements per program
+):
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    acc = tl.load(acc_ptr + offs, mask = mask, other = 0.0)
+    sx = tl.load(sx_ptr + offs // N, mask = mask, other = 0.0)
+    sw = tl.load(sw_ptr + offs % N, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, ((acc * sx) * sw).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+# Opaque under compile, so the compiled wrapper and the direct path run this same kernel (bitwise equal outputs).
+@_opaque_under_compile(
+    "fp8_unit_scale_epilogue",
+    lambda acc, x_scale, weight_scale, dtype: torch.empty(
+        acc.shape, device = acc.device, dtype = dtype
+    ),
+)
+def _fp8_unit_scale_epilogue(
+    acc: torch.Tensor, x_scale: torch.Tensor, weight_scale: torch.Tensor, dtype: torch.dtype
+) -> torch.Tensor:
+    """(acc [M, N] * x_scale [M, 1]) * weight_scale [N, 1] in float32, rounded once to dtype."""
+    if acc.device.type != "cuda" or torch.version.hip is not None:
+        return (acc * x_scale.float() * weight_scale.to(torch.float32).view(1, -1)).to(dtype)
+    acc, x_scale, weight_scale = acc.contiguous(), x_scale.contiguous(), weight_scale.contiguous()
+    out = torch.empty(acc.shape, device = acc.device, dtype = dtype)
+    numel = acc.numel()
+    if numel:
+        with _fp8_triton_device_context(acc, static_device_count = True):
+            _fp8_unit_scale_epilogue_kernel[(triton.cdiv(numel, 1024),)](
+                acc,
+                x_scale,
+                weight_scale,
+                out,
+                acc.shape[1],
+                numel,
+                BLOCK = 1024,
+                num_warps = 4,
+                enable_fp_fusion = True,
+            )
+    return out
+
+
+def _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, out_dtype):
+    """Rowwise FP8 GEMM on the tensorwise torch._scaled_mm, for torch builds without the row-wise kernel (the
+    Windows wheels): unit scales, float32 out, then the per-row and per-column scales in float32, rounded once."""
+    one = _fp8_unit_scale(x_quantized.device)
+    acc = torch._scaled_mm(
+        x_quantized,
+        weight.t(),
+        scale_a = one,
+        scale_b = one,
+        out_dtype = torch.float32,
+        use_fast_accum = True,
+    )
+    acc = acc[0] if isinstance(acc, tuple) else acc
+    return _fp8_unit_scale_epilogue(acc, x_scale, weight_scale, out_dtype)
+
+
+def _parse_fp8_dequant_max_rows(value):
+    try:
+        rows = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return rows if rows >= 0 else None
+
+
+# The scaled_mm backend dequantizes the weight and runs a 16-bit GEMM up to this many rows, and quantizes the
+# activation per row for torch._scaled_mm above it (FBGEMM quantizes at every row count).
+# UNSLOTH_FP8_DEQUANT_MAX_ROWS sets it for every weight.
+_FP8_DEQUANT_MAX_ROWS_ENV = _parse_fp8_dequant_max_rows(
+    os.environ.get("UNSLOTH_FP8_DEQUANT_MAX_ROWS")
+)
+_FP8_DEQUANT_MAX_ROWS = 64 if _FP8_DEQUANT_MAX_ROWS_ENV is None else _FP8_DEQUANT_MAX_ROWS_ENV
+# A 16-bit weight copy larger than L2 makes dequant memory bound (L4, Llama-8B MLP: 1180 us vs 255 us for
+# _scaled_mm at 17-64 rows), while L2-resident weights stay launch bound and dequant wins (Qwen3-1.7B decode).
+_FP8_LARGE_WEIGHT_DEQUANT_MAX_ROWS = 16
+
+
+# Measured on sm89 only (L4); elsewhere (H100 without FBGEMM: 50 MiB L2) the 64 row default stays.
+_FP8_LARGE_WEIGHT_CAPABILITIES = ((8, 9),)
+
+
+@functools.lru_cache(maxsize = None)
+def _probe_fp8_l2_cache_bytes(device):
+    """L2 bytes for the large-weight gate, 0 (gate off) when unknown or on an unmeasured arch."""
+    try:
+        props = torch.cuda.get_device_properties(device)
+        if (props.major, props.minor) not in _FP8_LARGE_WEIGHT_CAPABILITIES:
+            return 0
+        return int(getattr(props, "L2_cache_size", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _fp8_l2_cache_bytes(device):
+    return _probe_fp8_l2_cache_bytes(device)
+
+
+if hasattr(torch._dynamo, "assume_constant_result"):
+    _fp8_l2_cache_bytes = torch._dynamo.assume_constant_result(_fp8_l2_cache_bytes)
+
+
+def _fp8_dequant_max_rows(device, weight_numel):
+    """Largest row count the scaled_mm backend still serves with dequant + 16-bit GEMM for this weight."""
+    if _FP8_DEQUANT_MAX_ROWS_ENV is None:
+        l2 = _fp8_l2_cache_bytes(device)
+        if l2 > 0 and weight_numel * 2 > l2:
+            return _FP8_LARGE_WEIGHT_DEQUANT_MAX_ROWS
+    return _FP8_DEQUANT_MAX_ROWS
+
+
+# Tensorwise backend gate, measured on L4 (bf16, 128-8192 rows): it beats dequant from 4096 x 8192 weights at
+# every row count past the dequant gate (inference 0.38-0.86x, training forward + backward 0.72-0.91x) and from
+# 4096 x 4096 at 2048+ rows (0.70-0.82x; training 1.03x at 512 rows, so the bar sits at 1024). Smaller weights are
+# host bound there (1024 x 1024: 1.2-1.8x slower), so they keep dequant.
+_FP8_TENSORWISE_MIN_NUMEL = 4096 * 4096
+_FP8_TENSORWISE_ANY_ROWS_NUMEL = 4096 * 8192
+_FP8_TENSORWISE_MIN_ROWS = 1024
+
+
+def _fp8_tensorwise_wins(rows, weight_numel):
+    if weight_numel >= _FP8_TENSORWISE_ANY_ROWS_NUMEL:
+        return True
+    return weight_numel >= _FP8_TENSORWISE_MIN_NUMEL and rows >= _FP8_TENSORWISE_MIN_ROWS
 
 
 class FbgemmFp8Linear_matmul(torch.autograd.Function):
@@ -1991,8 +2369,16 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
-            # Decode-sized calls: compiled dequant + GEMV beats quantizing the activation.
-            and x.numel() > 64 * x.shape[-1]
+            # Traced, an always-dequant dtype must not guard on the row count (strict mark_dynamic).
+            and (
+                x.dtype == torch.bfloat16
+                or not torch.compiler.is_compiling()
+                or _scaled_mm_dtype_supported(x)
+            )
+            # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
+            # spills L2.
+            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
+            and _scaled_mm_dtype_supported(x)
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(
@@ -2005,11 +2391,33 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 weight.t(),
                 scale_a = x_scale,
                 scale_b = weight_scale.to(torch.float32).view(1, -1),
-                out_dtype = x.dtype,
+                bias = _scaled_mm_fp16_bias(x, weight),
+                out_dtype = _scaled_mm_out_dtype(x.dtype),
                 use_fast_accum = True,
             )
             output = output + bias if bias is not None else output
-            # FbgemmFp8Linear keeps its bias in float32; only cast when it promoted (a no-op .to() aliases).
+            # FbgemmFp8Linear keeps its bias in float32:
+            # cast only when the dtype differs (a no-op .to() aliases).
+            if output.dtype != x.dtype:
+                output = output.to(x.dtype)
+            output = output.reshape(output_shape)
+            del x_quantized, x_scale
+        elif (
+            backend == "tensorwise"
+            and rowwise
+            and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
+            and x.shape[-1] == weight.shape[1]
+            and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
+            and _fp8_tensorwise_wins(x.numel() // x.shape[-1], weight.numel())
+        ):
+            output_shape = (*x.shape[:-1], -1)
+            x_quantized, x_scale = _quantize_fp8_per_row(
+                x.reshape(-1, x.shape[-1]), getattr(weight, "input_scale_ub", None)
+            )
+            if not weight.is_contiguous():
+                weight = weight.contiguous()
+            output = _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, x.dtype)
+            output = output + bias if bias is not None else output
             if output.dtype != x.dtype:
                 output = output.to(x.dtype)
             output = output.reshape(output_shape)
@@ -2040,7 +2448,7 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
 
 
 @torch_compile
-def fbgemm_fp8_linear(
+def _fbgemm_fp8_linear_compiled(
     X,
     weight,
     weight_scale,
@@ -2049,6 +2457,230 @@ def fbgemm_fp8_linear(
     return FbgemmFp8Linear_matmul.apply(
         X, weight, weight_scale, bias, _fp8_rowwise_backend(X.device)
     )
+
+
+# Rowwise FP8 inference: the compiled wrapper costs 75-95 us host time vs 10-80 us GPU at decode, so launch
+# Inductor's kernels directly (bitwise equal). UNSLOTH_FP8_ROWWISE_DIRECT=0 disables it.
+try:
+    from unsloth_zoo.temporary_patches.common import UNSLOTH_COMPILE_DISABLE as _COMPILE_DISABLED
+except ImportError:
+    _COMPILE_DISABLED = os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") in ("1", "partial")
+
+
+def _fp8_rowwise_direct_enabled(setting, compile_disabled):
+    # With UNSLOTH_COMPILE_DISABLE the wrapper runs eagerly (scale rounded to the activation dtype before the
+    # multiply), so the direct path, which matches the compiled numerics, would change outputs there.
+    if compile_disabled:
+        return False
+    return setting.strip().lower() not in ("0", "false", "no", "off")
+
+
+_FP8_ROWWISE_DIRECT = _fp8_rowwise_direct_enabled(
+    os.environ.get("UNSLOTH_FP8_ROWWISE_DIRECT", "1"), _COMPILE_DISABLED
+)
+# Past this many rows the call is GPU bound and the compiled wrapper costs nothing extra; keep it there.
+_FP8_ROWWISE_DIRECT_MAX_ROWS = 4096
+
+
+@triton.jit
+def _fp8_act_quant_per_row_kernel(
+    x_ptr,
+    y_ptr,
+    s_ptr,
+    ub_ptr,
+    K,
+    stride_xm,
+    HAS_UB: tl.constexpr,  # scale upper bound present
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    ONE_BLOCK: tl.constexpr,  # row fits one BLOCK_K
+):
+    # Same fp32 math Inductor emits for _quantize_fp8_per_row; [1, BLOCK_K] tile is faster than 1D on sm120.
+    row = tl.program_id(0).to(tl.int64)
+    x_row = x_ptr + row * stride_xm
+    y_row = y_ptr + row * K
+    offs = tl.arange(0, BLOCK_K)[None, :]
+    if ONE_BLOCK:
+        x = tl.load(x_row + offs, mask = offs < K, other = 0.0).to(tl.float32)
+        row_max = tl.max(tl.abs(x), axis = 1)
+        nans = tl.sum((x != x).to(tl.int32), axis = 1)
+    else:
+        amax = tl.zeros((1, BLOCK_K), dtype = tl.float32)
+        nan_count = tl.zeros((1, BLOCK_K), dtype = tl.int32)
+        for k in range(0, K, BLOCK_K):
+            xk = tl.load(x_row + k + offs, mask = k + offs < K, other = 0.0).to(tl.float32)
+            amax = tl.maximum(amax, tl.abs(xk))
+            nan_count += (xk != xk).to(tl.int32)
+        row_max = tl.max(amax, axis = 1)
+        nans = tl.sum(nan_count, axis = 1)
+    # torch.amax / clamp propagate NaN; tl.max and tl.maximum drop it by default.
+    row_max = tl.where(nans > 0, float("nan"), row_max)
+    if HAS_UB:
+        row_max = tl.minimum(
+            row_max, tl.load(ub_ptr).to(tl.float32), propagate_nan = tl.PropagateNan.ALL
+        )
+    scale = tl.maximum(row_max / 448.0, 1.0 / (448.0 * 512.0), propagate_nan = tl.PropagateNan.ALL)
+    if ONE_BLOCK:
+        y = tl.maximum(x / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
+        y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+        tl.store(y_row + offs, y.to(tl.float8e4nv), mask = offs < K)
+    else:
+        for k in range(0, K, BLOCK_K):
+            mask = k + offs < K
+            xk = tl.load(x_row + k + offs, mask = mask, other = 0.0).to(tl.float32)
+            y = tl.maximum(xk / scale[:, None], -448.0, propagate_nan = tl.PropagateNan.ALL)
+            y = tl.minimum(y, 448.0, propagate_nan = tl.PropagateNan.ALL)
+            tl.store(y_row + k + offs, y.to(tl.float8e4nv), mask = mask)
+    tl.store(s_ptr + row + tl.arange(0, 1), scale)
+
+
+@triton.jit
+def _fp8_rowwise_dequant_kernel(w_ptr, s_ptr, y_ptr, numel, K, BLOCK: tl.constexpr):  # block size
+    # One fp32 multiply, one rounding, as Inductor fuses it (eager x.to(dtype) * s.to(dtype) rounds twice).
+    offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < numel
+    w = tl.load(w_ptr + offs, mask = mask, other = 0.0).to(tl.float32)
+    s = tl.load(s_ptr + offs // K, mask = mask, other = 0.0).to(tl.float32)
+    tl.store(y_ptr + offs, (w * s).to(y_ptr.dtype.element_ty), mask = mask)
+
+
+def _fp8_rowwise_direct_route(X, weight, weight_scale):
+    """The compiled branch an eager call would take, when the direct path reproduces it; else None."""
+    # Training first: it never takes the direct path, so it pays only these checks.
+    if torch.is_grad_enabled() and (
+        X.requires_grad or weight.requires_grad or weight_scale.requires_grad
+    ):
+        return None
+    if not (
+        _FP8_ROWWISE_DIRECT
+        and X.is_cuda
+        and X.dtype in (torch.bfloat16, torch.float16)
+        and weight.dtype == torch.float8_e4m3fn
+        and weight.dim() == 2
+        and weight_scale.dim() == 2
+        and torch.version.hip is None
+    ):
+        return None
+    N, K = weight.shape
+    if (
+        weight_scale.shape[0] != N
+        or weight_scale.shape[1] != 1
+        or X.shape[-1] != K
+        or N <= 1
+        or X.numel() == 0
+        or X.numel() > _FP8_ROWWISE_DIRECT_MAX_ROWS * K
+        or weight_scale.dtype not in (torch.float32, torch.bfloat16, torch.float16)
+    ):
+        return None
+    if (
+        not weight.is_contiguous()
+        or not weight_scale.is_contiguous()
+        or X.device != weight.device
+        or weight_scale.device != weight.device
+        or _fp8_e4m3fn_unsupported_in_trace(weight)
+    ):
+        return None
+    # The compiled path dequantizes inside autocast's GEMM; a buffer in another dtype could overflow first.
+    # Checked after the cheap gates (it costs a few hundred ns per call); no-argument is_autocast_enabled is CUDA's.
+    if torch.is_autocast_enabled() and torch.get_autocast_dtype("cuda") != X.dtype:
+        return None
+    backend = _fp8_rowwise_backend(X.device)
+    if backend == "fbgemm" and N % 8 == 0 and K % 8 == 0:
+        return None
+    if (
+        (
+            (backend == "tensorwise" and _fp8_tensorwise_wins(X.numel() // K, N * K))
+            or (backend == "scaled_mm" and not _scaled_mm_fp16_dequant_only(X.dtype))
+        )
+        and N % 16 == 0
+        and K % 16 == 0
+        and X.numel() > _fp8_dequant_max_rows(X.device, N * K) * K
+    ):
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        if scale_ub is not None and (
+            not isinstance(scale_ub, torch.Tensor)
+            or scale_ub.numel() != 1
+            or scale_ub.device != X.device
+        ):
+            return None
+        return backend
+    return "dequant"
+
+
+def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
+    K = X.shape[-1]
+    output_shape = (*X.shape[:-1], -1)
+    if route in ("scaled_mm", "tensorwise"):
+        x2 = X.reshape(-1, K)
+        if x2.stride(-1) != 1:
+            x2 = x2.contiguous()
+        M = x2.shape[0]
+        x_quantized = torch.empty((M, K), device = X.device, dtype = torch.float8_e4m3fn)
+        x_scale = torch.empty((M, 1), device = X.device, dtype = torch.float32)
+        scale_ub = getattr(weight, "input_scale_ub", None)
+        block_k = min(triton.next_power_of_2(K), 16384)
+        with _fp8_triton_device_context(X, static_device_count = True):
+            _fp8_act_quant_per_row_kernel[(M,)](
+                x2,
+                x_quantized,
+                x_scale,
+                x_scale if scale_ub is None else scale_ub,
+                K,
+                x2.stride(0),
+                HAS_UB = scale_ub is not None,
+                BLOCK_K = block_k,
+                ONE_BLOCK = block_k >= K,
+                num_warps = 4 if block_k <= 4096 else 16,
+                enable_fp_fusion = True,
+            )
+        if route == "tensorwise":
+            output = _fp8_unit_scale_mm(x_quantized, weight, x_scale, weight_scale, X.dtype)
+        else:
+            output = torch._scaled_mm(
+                x_quantized,
+                weight.t(),
+                scale_a = x_scale,
+                scale_b = (
+                    weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
+                ).view(1, -1),
+                bias = _scaled_mm_fp16_bias(X, weight),
+                out_dtype = _scaled_mm_out_dtype(X.dtype),
+                use_fast_accum = True,
+            )
+    else:
+        W_deq = torch.empty(weight.shape, device = weight.device, dtype = X.dtype)
+        numel = W_deq.numel()
+        with _fp8_triton_device_context(weight, static_device_count = True):
+            _fp8_rowwise_dequant_kernel[(triton.cdiv(numel, 1024),)](
+                weight,
+                weight_scale,
+                W_deq,
+                numel,
+                K,
+                BLOCK = 1024,
+                num_warps = 4,
+                enable_fp_fusion = True,
+            )
+        output = torch_matmul(X, W_deq.t())
+    if bias is not None:
+        output = output + bias
+    # FbgemmFp8Linear keeps its bias in float32:
+    # cast only when the dtype differs (a no-op .to() aliases).
+    if output.dtype != X.dtype:
+        output = output.to(X.dtype)
+    return output.reshape(output_shape) if route != "dequant" else output
+
+
+def fbgemm_fp8_linear(
+    X,
+    weight,
+    weight_scale,
+    bias = None,
+):
+    if not torch.compiler.is_compiling():
+        route = _fp8_rowwise_direct_route(X, weight, weight_scale)
+        if route is not None:
+            return _fp8_rowwise_direct(X, weight, weight_scale, bias, route)
+    return _fbgemm_fp8_linear_compiled(X, weight, weight_scale, bias)
 
 
 class FP8_fbgemm_block_linear(torch.autograd.Function):
@@ -2152,21 +2784,33 @@ def fp8_fbgemm_block_linear(
     return FP8_fbgemm_block_linear.apply(X, weight, weight_scale, bias)
 
 
-def test_has_fbgemm():
+def test_has_fbgemm(device = None):
     # Probe whether the faster FBGEMM works on this GPU: RTX 4090/5090 and SM100 (Blackwell B200/B100)
-    # fail with CUTLASS SM90 kernels.
+    # fail with CUTLASS SM90 kernels. None = not known yet (out of memory): the caller probes again later.
+    device = _fbgemm_probe_device() if device is None else torch.device(device)
     M, N, K = 128, 128, 128
-    xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = "cuda")
+    try:
+        with torch.cuda.device(device):
+            xq = torch.ones(M, K, dtype = torch.float8_e4m3fn, device = device)
+            block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = device)
+    except torch.cuda.OutOfMemoryError:
+        return None
+    except Exception:
+        return (
+            False  # no usable card here: the Triton kernels, as when the import-time probe raised
+        )
     wq = xq
     M, K = xq.shape
     N, _ = wq.shape
-    block_scale = torch.ones(M // 128, K // 128, dtype = torch.float32, device = "cuda")
     has_fbgemm = False
     try:
-        out = torch.ops.fbgemm.f8f8bf16_blockwise(xq, wq, block_scale, block_scale)
-        assert torch.unique(out).item() == 128
+        with torch.cuda.device(device):
+            out = torch.ops.fbgemm.f8f8bf16_blockwise(xq, wq, block_scale, block_scale)
+            assert torch.unique(out).item() == 128
         has_fbgemm = True
         del out
+    except torch.cuda.OutOfMemoryError:
+        has_fbgemm = None
     except Exception as e:
         error_str = str(e).lower()
         # Disable FBGEMM on any CUTLASS/CUDA error (MMA, arch mismatch, launch, etc.)
@@ -2192,43 +2836,112 @@ def test_has_fbgemm():
             )
         has_fbgemm = False
     del block_scale, xq
-    torch.cuda.empty_cache()
+    with torch.cuda.device(device):
+        torch.cuda.empty_cache()
     return has_fbgemm
 
 
-fp8_block_quant_linear = fp8_torch_block_quant_forward
+def _fbgemm_probe_device():
+    """The card this process computes on: one picked with set_device, else LOCAL_RANK's under torchrun (the
+    probe may run before set_device), else the current one. Never a blind GPU 0."""
+    current = torch.cuda.current_device()
+    if current != 0:
+        return torch.device("cuda", current)
+    try:
+        local = int(os.environ.get("LOCAL_RANK", "0"))
+    except ValueError:
+        local = 0
+    return torch.device("cuda", local if 0 <= local < torch.cuda.device_count() else 0)
+
+
+def _fbgemm_block_installed():
+    # >= 1.4.0 is fast and accurate (older versions corrupt some shapes whatever the input values) and
+    # ~15% faster than torchao, but consumer GPUs fail, so it is probed before use.
+    try:
+        import fbgemm_gpu
+        return Version(fbgemm_gpu.__version__) >= Version("1.4.0")
+    except Exception:
+        return False
+
+
 if "UNSLOTH_HAS_FBGEMM" not in os.environ:
     os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
-try:
-    import fbgemm_gpu
+_FBGEMM_BLOCK = []  # [probe result] once known
 
-    # >= 1.4.0 is fast and accurate (older versions corrupt some shapes whatever the input values) and
-    # ~15% faster than torchao, but consumer GPUs fail, so probe it.
-    if Version(fbgemm_gpu.__version__) >= Version("1.4.0"):
-        # Suppress CUDA printf during the probe: on Blackwell (SM100) FBGEMM's SM90 CUTLASS kernel floods
-        # stdout with "Arch conditional MMA" before aborting.
-        from unsloth.import_fixes import suppress_cuda_printf
-        with suppress_cuda_printf():
-            _has_fbgemm = test_has_fbgemm()
-        if _has_fbgemm:
-            os.environ["UNSLOTH_HAS_FBGEMM"] = "1"
-            logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
-            fp8_block_quant_linear = fp8_fbgemm_block_linear
-        else:
-            os.environ["UNSLOTH_HAS_FBGEMM"] = "0"
-except:
-    pass
-# Decode-sized calls take the GEMV whichever block GEMM was selected above.
-if (
-    fp8_block_quant_linear is fp8_torch_block_quant_forward
-    and torch.version.hip is None
-    and _SM_COUNTS
-    and min(_SM_COUNTS) >= 100
-):
-    _fp8_block_small_m_first.__wrapped__ = fp8_torch_block_quant_forward
-    fp8_block_quant_linear = _fp8_block_small_m_first
-else:
-    fp8_block_quant_linear = _with_fp8_block_gemv(fp8_block_quant_linear)
+
+def fbgemm_block_fp8_available():
+    """Whether FBGEMM's block FP8 GEMM works here. Probed once, on first need, on this process's own card: at
+    import it ran on GPU 0, so every torchrun rank opened a CUDA context there. Sets UNSLOTH_HAS_FBGEMM."""
+    if _FBGEMM_BLOCK:
+        return _FBGEMM_BLOCK[0]
+    if not _fbgemm_block_installed() or not torch.cuda.is_available():
+        _FBGEMM_BLOCK.append(False)
+        return False
+    # Suppress CUDA printf during the probe: on Blackwell (SM100) FBGEMM's SM90 CUTLASS kernel floods
+    # stdout with "Arch conditional MMA" before aborting.
+    from unsloth.import_fixes import suppress_cuda_printf
+
+    device = _fbgemm_probe_device()
+    try:
+        # The guard covers suppress_cuda_printf's synchronize too, else it syncs (and opens) the current card.
+        with torch.cuda.device(device), suppress_cuda_printf():
+            has_fbgemm = test_has_fbgemm(device)
+    except torch.cuda.OutOfMemoryError:
+        has_fbgemm = None
+    except Exception:
+        has_fbgemm = False
+    if has_fbgemm is None:
+        return False  # out of memory: not known yet, so not latched
+    _FBGEMM_BLOCK.append(has_fbgemm)
+    os.environ["UNSLOTH_HAS_FBGEMM"] = "1" if has_fbgemm else "0"
+    if has_fbgemm:
+        logger.info(f"Using fbgemm_gpu block quantized FP8 matmul")
+    return has_fbgemm
+
+
+def _pick_fp8_block_quant_linear(block_forward):
+    # Decode-sized calls take the GEMV whichever block GEMM was selected.
+    if (
+        block_forward is fp8_torch_block_quant_forward
+        and torch.version.hip is None
+        and _SM_COUNTS
+        and min(_SM_COUNTS) >= 100
+    ):
+        _fp8_block_small_m_first.__wrapped__ = fp8_torch_block_quant_forward
+        return _fp8_block_small_m_first
+    return _with_fp8_block_gemv(block_forward)
+
+
+def resolve_fp8_block_quant_linear():
+    """Bind fp8_block_quant_linear (and FP8Linear.forward) to the block GEMM for this host, probing FBGEMM if it
+    is installed. The loader calls it before the model is built; it is a no-op once bound."""
+    global fp8_block_quant_linear
+    if fp8_block_quant_linear is not _fp8_block_quant_linear_unresolved:
+        return fp8_block_quant_linear
+    has_fbgemm = fbgemm_block_fp8_available()
+    if not _FBGEMM_BLOCK:
+        # Probe ran out of memory: the Triton / torch route for now, probed again on the next call.
+        return _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)
+    fp8_block_quant_linear = _pick_fp8_block_quant_linear(
+        fp8_fbgemm_block_linear if has_fbgemm else fp8_torch_block_quant_forward
+    )
+    if FP8Linear is not None and getattr(FP8Linear.forward, "_unsloth_fp8_unresolved", False):
+        FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+    return fp8_block_quant_linear
+
+
+def _fp8_block_quant_linear_unresolved(X, weight, weight_scale):
+    # FBGEMM installed, not probed yet. A compiled region cannot probe: the torch route, probed when eager.
+    if torch.compiler.is_compiling():
+        return _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)(X, weight, weight_scale)
+    return resolve_fp8_block_quant_linear()(X, weight, weight_scale)
+
+
+fp8_block_quant_linear = _fp8_block_quant_linear_unresolved
+if not _fbgemm_block_installed():
+    # Nothing to probe: bound now, exactly as before.
+    _FBGEMM_BLOCK.append(False)
+    fp8_block_quant_linear = _pick_fp8_block_quant_linear(fp8_torch_block_quant_forward)
 
 
 # Not torch.compiled, for the same reason as fp8_torch_block_quant_forward.
@@ -2299,6 +3012,8 @@ if FbgemmFp8Linear is not None:
     FbgemmFp8Linear.forward = module_forward_patch(fbgemm_fp8_linear, "weight_scale")
 if FP8Linear is not None:
     FP8Linear.forward = module_forward_patch(fp8_block_quant_linear, "weight_scale_inv")
+    if fp8_block_quant_linear is _fp8_block_quant_linear_unresolved:
+        FP8Linear.forward._unsloth_fp8_unresolved = True
 
 # Fused grouped matmul has no backward: dequant for training, gate on self.training so
 # the checkpoint no-grad forward and its recompute match.
@@ -2345,11 +3060,29 @@ if FP8GroupedLinear is not None:
             grad_bias = gy.sum(1).reshape(-1) if ctx.has_bias else None
             return grad_x, None, None, None, None, grad_bias
 
+    def _fp8_grouped_eval_kernel_ok():
+        """Whether transformers' grouped fp8 eval kernel is usable; newer releases need the optional `kernels` package."""
+        try:
+            import transformers.integrations.finegrained_fp8 as _ff8
+
+            if "lazy_load_kernel" not in inspect.getsource(_ff8):
+                return True
+            from transformers.integrations.hub_kernels import is_kernels_available
+
+            return bool(is_kernels_available())
+        except Exception:
+            return False
+
+    # Read once at import: inspect.getsource inside the forward cannot be traced (fullgraph compiles fail).
+    _FP8_GROUPED_EVAL_KERNEL_OK = _fp8_grouped_eval_kernel_ok()
+
     def _fp8_grouped_forward(self, x):
-        # The upstream eval path runs its own fp8e4nv kernels, so pre-sm89 has to use the
-        # dequant path here too, not only while training.
+        # The upstream eval path runs its own fp8e4nv kernels (Hub kernels on newer transformers), so pre-sm89 and
+        # an install without `kernels` use the dequant path here too, not only while training.
         if self.weight.element_size() > 1 or (
-            not self.training and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            not self.training
+            and not _fp8_kernel_unsupported(self.weight, torch.float8_e4m3fn)
+            and _FP8_GROUPED_EVAL_KERNEL_OK
         ):
             return _fp8_grouped_forward_orig(self, x)
         bias = self.bias if self.has_bias else None

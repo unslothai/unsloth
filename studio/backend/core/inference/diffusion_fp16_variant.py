@@ -1,11 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Read ``.fp16`` weight twins instead of fp32 defaults on fp16 loads (bit-identical after the cast).
-
-fp16 targets only (fp16 -> bf16 rounds differently); needs a single-file twin for EVERY component and no class
-pinning fp32 modules. Kill switch: ``UNSLOTH_DIFFUSION_FP16_VARIANT=0``.
-"""
+"""Reads .fp16 weight twins on fp16 loads only, and only when every component has a single-file twin
+and no class pins fp32 modules; bit-identical after cast; UNSLOTH_DIFFUSION_FP16_VARIANT=0
+disables."""
 
 from __future__ import annotations
 

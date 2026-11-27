@@ -80,7 +80,9 @@ def test_new_model_never_inherits_previous_resident_settings(monkeypatch, reques
         or {"status": "loaded", "model": MODEL},
     )
     start._resolve_model(BASE, "key", requested, start.LoadOptions(max_seq_length = 8192))
-    assert payloads == [{"model_path": requested, "max_seq_length": 8192}]
+    assert payloads == [
+        {"model_path": requested, "max_seq_length": 8192, "use_saved_settings": True}
+    ]
 
 
 def test_named_resident_explicit_automatic_context_wins(monkeypatch):
@@ -132,16 +134,66 @@ def _named_reload_payload(monkeypatch, status, options):
         ),
     ],
 )
-def test_named_resident_with_extras_left_to_server_inheritance(monkeypatch, options, sent):
+def test_named_resident_with_extras_carries_what_they_do_not_override(monkeypatch, options, sent):
     status = {
         "is_gguf": True,
         "gguf_variant": "Q8_0",
-        "requested_context_length": 0,
-        "requested_llama_extra_args": ["--ctx-size", "8192", "--top-k", "20"],
+        "requested_context_length": 4096,
+        "cache_type_kv": "q8_0",
+        "requested_llama_extra_args": ["--ctx-size", "8192", "-ub", "256", "--top-k", "20"],
         "requested_n_batch": 128,
+        "requested_n_ubatch": 64,
     }
     payload = _named_reload_payload(monkeypatch, status, options)
-    assert payload == {"model_path": MODEL, "gguf_variant": "Q8_0", **sent}
+    # The inherited --ctx-size and -ub won those fields, so carrying them would strip the flags.
+    assert payload == {
+        "model_path": MODEL,
+        "gguf_variant": "Q8_0",
+        "cache_type_kv": "q8_0",
+        "n_batch": 128,
+        **sent,
+    }
+
+
+@pytest.mark.parametrize(
+    "mode, extras, mode_carried",
+    [
+        ("off", ["--draft-max", "8"], True),
+        ("off", ["--draft-max", "8", "--spec-type=ngram-mod"], False),
+        ("mtp", ["--draft-max", "8"], False),
+    ],
+)
+def test_named_resident_leaves_spec_settings_to_inherited_spec_flags(
+    monkeypatch, mode, extras, mode_carried
+):
+    status = {
+        "is_gguf": True,
+        "gguf_variant": "Q8_0",
+        "speculative_type": mode,
+        "spec_draft_n_max": 8,
+        "requested_llama_extra_args": extras,
+    }
+    payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(max_seq_length = 8192))
+    # A carried spec field strips every inherited spec flag; only a disabled drafter loses nothing by it.
+    assert ("speculative_type" in payload) is mode_carried
+    assert "spec_draft_n_max" not in payload
+
+
+def test_another_quant_of_the_resident_repo_loads_with_its_saved_settings(monkeypatch):
+    status = {
+        "is_gguf": True,
+        "gguf_variant": "Q8_0",
+        "requested_context_length": 4096,
+        "cache_type_kv": "q8_0",
+    }
+    payload = _named_reload_payload(
+        monkeypatch, status, start.LoadOptions(gguf_variant = "UD-Q4_K_XL")
+    )
+    assert payload == {
+        "model_path": MODEL,
+        "gguf_variant": "UD-Q4_K_XL",
+        "use_saved_settings": True,
+    }
 
 
 @pytest.mark.parametrize("effective", [2, 4])
@@ -193,11 +245,11 @@ def test_named_local_checkpoint_inherits_only_from_itself(
         or {"status": "loaded", "model": model},
     )
     start._resolve_model(BASE, "key", "foo", start.LoadOptions(max_seq_length = 8192))
-    carried = {"load_in_4bit": False, "gpu_ids": [1]} if inherits else {}
+    carried = {"load_in_4bit": False, "gpu_ids": [1]} if inherits else {"use_saved_settings": True}
     assert payloads == [{"model_path": "foo", "max_seq_length": 8192, **carried}]
 
 
 def test_named_resident_status_for_another_model_is_not_inherited(monkeypatch):
     status = {"active_model": "owner/other-GGUF", "load_in_4bit": False, "requested_gpu_ids": [1]}
     payload = _named_reload_payload(monkeypatch, status, start.LoadOptions(max_seq_length = 8192))
-    assert payload == {"model_path": MODEL, "max_seq_length": 8192}
+    assert payload == {"model_path": MODEL, "max_seq_length": 8192, "use_saved_settings": True}

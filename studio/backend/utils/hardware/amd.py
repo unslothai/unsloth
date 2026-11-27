@@ -655,6 +655,20 @@ def amd_kfd_gpu_gfx_targets(
     return targets
 
 
+def hsa_override_gfx_target() -> Optional[str]:
+    """Target ROCr presents for every GPU (11.0.0 -> gfx1100, 9.0.10 -> gfx90a), else None: unset,
+    per-node _<n> set, rejected by libhsakmt (sscanf "%u.%u.%u%c", major <= 63), or no one-digit name."""
+    if any(key.startswith("HSA_OVERRIDE_GFX_VERSION_") for key in os.environ):
+        return None
+    value = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").lstrip()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
+        return None
+    major, minor, step = (int(part) for part in value.split("."))
+    if not 0 < major <= 63 or minor > 9 or step > 15:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
 def _amd_render_node_exists() -> bool:
     """Presence, not openability: /dev/kfd without /dev/dri passes every probe yet initialises nothing."""
     _unreadable = False
@@ -1041,8 +1055,7 @@ def the_vulkan_loader_can_only_load_amd() -> bool:
 
 
 def _loadable_icd_manifests(paths: "list[str] | None" = None) -> "list[str]":
-    """The manifests the loader would both find here and load; ``paths`` asks of a
-    candidate list instead of this host's."""
+    """Manifests the loader would find and load here; paths checks a candidate list instead."""
     return [
         path
         for path in (_vulkan_icd_manifest_paths() if paths is None else paths)
@@ -1549,3 +1562,32 @@ def amd_node_permission_hint(*, needs_kfd: bool = True) -> Optional[str]:
     if trailing_command:
         parts.append(trailing_command)
     return " ".join(parts) or None
+
+
+def _rocm_tools_installed() -> bool:
+    """The probes the llama.cpp resolver uses to find ROCm (install_llama_prebuilt.detect_host)."""
+    return bool(
+        shutil.which("rocminfo")
+        or os.access("/opt/rocm/bin/rocminfo", os.X_OK)
+        or shutil.which("amd-smi")
+    )
+
+
+def rocm_runtime_blocker() -> "tuple[str, str] | None":
+    """Why ROCm cannot run for this Linux user: ("rocm_not_installed" | "rocm_no_access", hint), else None."""
+    if platform.system() != "Linux":
+        return None
+    if not _rocm_tools_installed():
+        return (
+            "rocm_not_installed",
+            "ROCm is not installed, so llama.cpp cannot use the AMD card through it. "
+            "Install ROCm, then reopen Settings.",
+        )
+    if amd_closed_nodes_block_the_runtime():
+        return (
+            "rocm_no_access",
+            amd_node_permission_hint()
+            or "This account cannot open /dev/kfd and an AMD render node (/dev/dri/renderD*). "
+            "Add it to the render and video groups, then log out and back in.",
+        )
+    return None

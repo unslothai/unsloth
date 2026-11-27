@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Export orchestrator: same API as ExportBackend, but delegates all ML work to a persistent
-subprocess spawned on first checkpoint load and reused for later exports. Switching between
-checkpoints that need different transformers versions kills the old subprocess and spawns a new
-one. Pattern follows core/inference/orchestrator.py."""
+"""Same API as ExportBackend; ML runs in a subprocess respawned on transformers version change."""
 
 from core.training.account_jobs import (
     account_process_spec,
@@ -48,8 +45,7 @@ _CLEANUP_TIMEOUT = 30.0
 
 
 def _sweep_reap_staging_of(pid: Optional[int]) -> None:
-    """A worker confirmed dead (cancelled, killed at shutdown, crashed) cannot remove its REAP
-    staging copy, a full model, itself."""
+    """A dead worker cannot remove its REAP staging copy, a full model, so this sweeps it."""
     try:
         from core.export.reap import sweep_reap_staging
         sweep_reap_staging(dead_pid = pid)
@@ -168,6 +164,7 @@ class ExportOrchestrator:
             self._last_op = {
                 "seq": self._op_seq,
                 "kind": self._active_op_kind,
+                "id": self._active_op_id,
                 "status": status,
                 "output_path": output_path if success else None,
                 "error": None if success else (message or None),
@@ -506,6 +503,7 @@ class ExportOrchestrator:
         base_model: Optional[str] = None,
         op_id: Optional[str] = None,
         offload_layers = "auto",
+        adapter_free: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -527,6 +525,7 @@ class ExportOrchestrator:
         sub_config = {
             "checkpoint_path": checkpoint_path,
             "base_model": base_model,
+            "adapter_free": adapter_free,
             "max_seq_length": max_seq_length,
             "load_in_4bit": load_in_4bit,
             "offload_layers": offload_layers,

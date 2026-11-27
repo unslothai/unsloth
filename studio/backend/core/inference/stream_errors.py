@@ -1,28 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Turn a mid-stream llama-server error chunk into something the user can act on.
-
-llama-server can fail a request after the stream has already opened. It sends one
-``{"error": {"message": ...}}`` chunk and closes. Two callers read that stream and both
-handled it badly:
-
-- ``core.research_runs`` raised ``RuntimeError("Local model stream failed")``, discarding
-  whatever the server said. The user saw a generic failure with no cause and no remedy.
-- ``core.inference.llama_cpp``'s chat loops only ever read ``finish_reason`` out of
-  ``choices``. An error chunk carries no ``choices``, so nothing was recorded: the reply
-  was emitted with whatever text had accumulated and no ``incomplete`` stamp, which reads
-  to the user as the model stopping mid-sentence for no reason.
-
-The error worth naming is KV-cache exhaustion. With ``--parallel N --kv-unified``,
-llama.cpp allocates ONE cache of ``n_ctx`` tokens but reports ``n_ctx_slot = n_ctx`` to
-every slot, so N concurrent generations may each be admitted believing they own the whole
-window. When their combined length crosses it, the decode fails and llama.cpp kills every
-task involved, not just the one that tipped it over. Two chats running at once is enough.
-The server's own wording for that is "Context size has been exceeded", which sounds like
-the prompt was too long and sends the user off to shorten a conversation that was never
-the problem.
-"""
+"""Maps mid-stream llama-server errors to KV-cache exhaustion from parallel slots, not a long prompt."""
 
 from typing import Any, Optional
 
@@ -46,6 +25,26 @@ KV_STARVATION_MESSAGE = (
     "chats or research runs generate at the same time, because they all draw on one "
     "shared pool of context. Try again with fewer running at once, or raise the "
     "Context Length in Model settings."
+)
+
+# llama-server's tool-call parser rejecting a reply (b11000+ PEG, older parser, non-JSON args); the text is dropped.
+_TOOL_PARSE_REJECTIONS = (
+    "the model produced output that does not match the expected",
+    "failed to parse input at pos",
+    "failed to parse tool call arguments as json",
+)
+
+# llama-server failing on an attached image or audio clip.
+_MEDIA_FAILURE_MARKERS = (
+    "failed to process mtmd chunk",
+    "failed to load image or audio file",
+)
+
+# Same constraint as KV_STARVATION_MESSAGE: none of isContextLimitError's substrings.
+_MEDIA_FAILURE_HINT = (
+    "The model server could not process an attached image or audio clip. This usually means "
+    "there was not enough free GPU memory or KV cache for it while other chats were generating. "
+    "Try again, attach a smaller image, or lower the Context Length or GPU layers in Model settings."
 )
 
 _OVERSIZE_HINT = "Raise the Context Length in Model settings, or shorten the request."
@@ -131,12 +130,28 @@ def is_context_oversize(message: Optional[str]) -> bool:
     return any(marker in lowered for marker in _OVERSIZE_MARKERS)
 
 
+def is_media_failure(message: Optional[str]) -> bool:
+    """Whether llama-server failed on the request's image or audio rather than on its text."""
+    if not message:
+        return False
+    lowered = message.lower()
+    return any(marker in lowered for marker in _MEDIA_FAILURE_MARKERS)
+
+
+def is_tool_parse_rejection(chunk: Any) -> bool:
+    message = error_message_from_chunk(chunk)
+    return bool(message) and message.lower().startswith(_TOOL_PARSE_REJECTIONS)
+
+
 def describe_stream_error(message: Optional[str], *, prefix: str = "") -> str:
     """Starvation gets its own text; oversize keeps server token counts; other errors pass through unchanged, since a fixed string made them undiagnosable."""
     if is_kv_starvation(message):
         body = KV_STARVATION_MESSAGE
     elif is_context_oversize(message):
         body = f"{message.rstrip('. ')}. {_OVERSIZE_HINT}"
+    elif is_media_failure(message):
+        # Server text kept for bug reports, after the remedy.
+        body = f"{_MEDIA_FAILURE_HINT} (llama-server: {message.rstrip('. ')})"
     elif message:
         body = message
     else:

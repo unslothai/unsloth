@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared pooled httpx.AsyncClient for NON-streaming calls to the local llama-server.
-
-Streaming generation must NOT use this. It relies on ``Connection: close`` and
-``max_keepalive_connections=0`` so a client disconnect tears down the upstream
-socket and stops GPU decode (PR #5749). This pooled client is only for short
-request/response proxy calls (non-streaming completions, embeddings) where
-reusing a connection removes per-request setup cost. Per-request ``timeout`` is
-still passed at each call site.
-"""
+"""Pooled httpx for non-streaming llama-server calls; streaming must bypass it to stop GPU decode."""
 
 from __future__ import annotations
 

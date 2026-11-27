@@ -26,6 +26,7 @@ import {
   canScreenshot,
   exportBookmarksFile,
   importBookmarksFile,
+  importHistoryFile,
   nativeDownloadFolder,
   pickNativeDownloadFolder,
   resetNativeDownloadFolder,
@@ -39,13 +40,15 @@ import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
-import { ArrowUpRight01Icon, Cancel01Icon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
+import { ArrowUpRight01Icon, Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import { BROWSER_USE_DOCS_URL, BrowserAgentSettings } from "./browser-agent-settings";
+import { BrowserCaptureSettings } from "./browser-capture-settings";
 
 const RETENTION_LABELS: Record<number, TranslationKey> = {
   0: "browser.retention.forever",
@@ -83,7 +86,7 @@ function DownloadLocationRow() {
     >
       <div className="flex gap-2">
         {folder?.custom ? (
-          <Button variant="ghost" size="sm" onClick={reset}>
+          <Button variant="outline" size="sm" onClick={reset}>
             {t("browser.downloadLocationReset")}
           </Button>
         ) : null}
@@ -119,6 +122,7 @@ function DownloadSiteRows() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allow">{t("browser.downloadSiteAllow")}</SelectItem>
+                    <SelectItem value="allowAll">{t("browser.downloadSiteAllowAll")}</SelectItem>
                     <SelectItem value="block">{t("browser.downloadSiteBlock")}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -162,6 +166,7 @@ export function BrowserTab() {
   const saveDownloadHistory = useBrowserPrefsStore((state) => state.saveDownloadHistory);
   const askWhereToSave = useBrowserPrefsStore((state) => state.askWhereToSave);
   const askBeforeDownloading = useBrowserPrefsStore((state) => state.askBeforeDownloading);
+  const askBeforeProgramDownloads = useBrowserPrefsStore((state) => state.askBeforeProgramDownloads);
   const annotationScreenshots = useBrowserPrefsStore((state) => state.annotationScreenshots);
   const {
     setOpenLinksInBrowser,
@@ -180,10 +185,12 @@ export function BrowserTab() {
     setSaveDownloadHistory,
     setAskWhereToSave,
     setAskBeforeDownloading,
+    setAskBeforeProgramDownloads,
     setAnnotationScreenshots,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
   const importInput = useRef<HTMLInputElement | null>(null);
+  const historyImportInput = useRef<HTMLInputElement | null>(null);
   const percent = useMemo(
     () => new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }),
     [locale],
@@ -199,6 +206,16 @@ export function BrowserTab() {
       else toast.success(t(count === 1 ? "browser.importBookmarksDoneOne" : "browser.importBookmarksDoneMany", { count }));
     } catch {
       toast.error(t("browser.importBookmarksFailed"));
+    }
+  };
+  const importHistory = async (file: File) => {
+    try {
+      const { added: count, leftOut } = await importHistoryFile(file);
+      if (leftOut > 0) toast.warning(t("browser.importHistoryPartial", { count, leftOut }));
+      else if (count === 0) toast.info(t("browser.importHistoryNone"));
+      else toast.success(t(count === 1 ? "browser.importHistoryDoneOne" : "browser.importHistoryDoneMany", { count }));
+    } catch {
+      toast.error(t("browser.importHistoryFailed"));
     }
   };
   const exportBookmarks = () =>
@@ -490,6 +507,16 @@ export function BrowserTab() {
             onCheckedChange={setAskBeforeDownloading}
           />
         </SettingsRow>
+        <SettingsRow
+          label={t("browser.askBeforeProgramDownloadsSetting")}
+          description={t("browser.askBeforeProgramDownloadsSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.askBeforeProgramDownloadsSetting")}
+            checked={askBeforeProgramDownloads}
+            onCheckedChange={setAskBeforeProgramDownloads}
+          />
+        </SettingsRow>
         <DownloadSiteRows />
         <SettingsRow
           label={t("browser.saveDownloadHistorySetting")}
@@ -510,6 +537,8 @@ export function BrowserTab() {
           </Button>
         </SettingsRow>
       </SettingsSection>
+
+      {isTauri ? <BrowserCaptureSettings /> : null}
 
       <SettingsSection title={t("browser.browsingDataTitle")}>
         <SettingsRow
@@ -543,6 +572,25 @@ export function BrowserTab() {
           </Select>
         </SettingsRow>
         <SettingsRow
+          label={t("browser.importHistorySetting")}
+          description={t("browser.importHistorySettingDescription")}
+        >
+          <Button variant="outline" size="sm" onClick={() => historyImportInput.current?.click()}>
+            {t("browser.importHistory")}
+          </Button>
+          <input
+            ref={historyImportInput}
+            type="file"
+            accept=".json,application/json"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void importHistory(file);
+            }}
+          />
+        </SettingsRow>
+        <SettingsRow
           label={t("browser.historySetting")}
           description={t(canOpenPages ? "browser.historySettingDescription" : "browser.pagesFromChat")}
         >
@@ -557,7 +605,7 @@ export function BrowserTab() {
           )}
         >
           <Button variant="destructive" size="sm" onClick={() => setClearOpen(true)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} data-icon="inline-start" />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} data-icon="inline-start" />
             {t("browser.menu.clearData")}
           </Button>
         </SettingsRow>

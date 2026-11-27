@@ -13,6 +13,9 @@ from pathlib import Path
 
 import pytest
 
+# Every cache home here sits under tmp_path, which macOS treats as a system folder (see conftest).
+pytestmark = pytest.mark.usefixtures("tmp_cache_home_allowed")
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -467,9 +470,7 @@ def test_a_studio_home_that_is_a_file_still_reads_the_database_on_windows(tmp_pa
 
 
 def test_a_studio_home_that_does_not_exist_still_skips_the_database_read(tmp_path):
-    """The other half. The fix above must not widen the skip into the case it exists for: a
-    machine that has never opened Studio has no studio/ directory at all, and falling through
-    there builds the 250 KB database this guard was added to avoid."""
+    """A missing studio/ directory must still skip the read, or the 250 KB database gets built."""
     studio_home = tmp_path / "never-created" / "studio"
 
     answer, was_read = _run_guard_probe(tmp_path, studio_home, tmp_path / "chosen")

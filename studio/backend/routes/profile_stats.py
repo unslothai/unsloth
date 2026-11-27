@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Usage numbers for the Profile settings tab. Read-only aggregation over the local studio.db (see
-``storage.profile_stats_db``). Nothing is uploaded.
-"""
+"""Read-only usage stats for the Profile tab, aggregated from local studio.db; nothing is uploaded."""
 
 import asyncio
 from datetime import date

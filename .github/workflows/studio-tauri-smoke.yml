@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# PR-time Tauri build (Linux debug, unsigned). A second job type-checks `#[cfg(windows)]`
-# code, which Linux strips and cannot cross-compile (`ring` needs MSVC).
+# PR-time Tauri build (Linux debug, unsigned): frontend bundle, Rust unit tests, debug build and
+# repeated launches. The Windows and macOS Rust jobs live in studio-tauri-native-ci.yml, which runs
+# only when something they compile or read changes.
 
 name: Unsloth Tauri CI
 
@@ -81,7 +82,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
 
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
         with:
           # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -219,6 +220,64 @@ jobs:
           fi
           echo "10 of 10 launches reached the backend spawn and stayed up"
 
+      # GPU rendering setting: Off must keep a working transport on X11, and a GPU launch that
+      # dies with Wayland Error 71 before the window is ready must relaunch on the CPU path.
+      # UNSLOTH_TEST_GPU_ERROR71 (debug builds only) sends the real GTK message through the hook.
+      - name: GPU rendering Off and the Error 71 fallback under Xvfb
+        run: |
+          set -u
+          BIN="$PWD/studio/src-tauri/target/debug/unsloth-studio"
+          probe() {
+            name="$1"; shift
+            H="$RUNNER_TEMP/gpu-$name"
+            rm -rf "$H"
+            mkdir -p "$H/.unsloth/studio/unsloth_studio/bin" "$H/.config/ai.unsloth.studio" "$H/xdg"
+            cp "$RUNNER_TEMP/stub/unsloth" "$H/.unsloth/studio/unsloth_studio/bin/unsloth"
+            if [ -n "${SETTING:-}" ]; then
+              printf '%s\n' "$SETTING" > "$H/.config/ai.unsloth.studio/gpu-rendering-v1"
+            fi
+            D=$((90 + ${#name}))
+            Xvfb ":$D" -screen 0 1440x900x24 -nolisten tcp > "launch-logs/xvfb-gpu-$name.log" 2>&1 &
+            XV=$!
+            for _ in $(seq 1 40); do [ -e "/tmp/.X11-unix/X$D" ] && break; sleep 0.25; done
+            (
+              export DISPLAY=":$D" HOME="$H" XDG_RUNTIME_DIR="$H/xdg" XDG_CONFIG_HOME="$H/.config"
+              export G_MESSAGES_DEBUG=all RUST_BACKTRACE=full "$@"
+              unset UNSLOTH_STUDIO_HOME STUDIO_HOME
+              exec "$BIN"
+            ) > "launch-logs/app-gpu-$name.log" 2>&1 &
+            APP=$!
+            for _ in $(seq 1 25); do kill -0 "$APP" 2>/dev/null || break; sleep 1; done
+            up=0
+            kill -0 "$APP" 2>/dev/null && up=1
+            kill -TERM "$APP" 2>/dev/null || true
+            wait "$APP" 2>/dev/null || true
+            kill "$XV" 2>/dev/null || true
+            wait "$XV" 2>/dev/null || true
+            LOG="launch-logs/app-gpu-$name.log"
+            if [ "$up" != 1 ] || ! grep -q "start_managed_server spawned" "$LOG"; then
+              echo "::error::GPU rendering $name launch did not stay up"
+              tail -40 "$LOG"
+              return 1
+            fi
+          }
+
+          mkdir -p launch-logs
+          SETTING=off probe off
+          grep -q "GPU rendering: setting=off" launch-logs/app-gpu-off.log
+          grep -q "GPU rendering off (setting); set WEBKIT_DMABUF_RENDERER_FORCE_SHM=1 WEBKIT_DISABLE_COMPOSITING_MODE=1" \
+            launch-logs/app-gpu-off.log || { echo "::error::Off did not take the X11 CPU path"; exit 1; }
+          echo "Off: X11 CPU path, stayed up"
+
+          SETTING= probe crash UNSLOTH_TEST_GPU_ERROR71=1
+          LOG=launch-logs/app-gpu-crash.log
+          grep -q "Error 71 (Protocol error) dispatching to Wayland display" "$LOG"
+          grep -q "fell back to the CPU path after a launch crash" "$LOG" \
+            || { echo "::error::no CPU fallback after the simulated Error 71"; tail -40 "$LOG"; exit 1; }
+          FLAG="$RUNNER_TEMP/gpu-crash/.config/ai.unsloth.studio/gpu-rendering-unsafe-v1"
+          grep -q "reason=error71" "$FLAG" || { echo "::error::fallback flag not written"; exit 1; }
+          echo "Error 71: fell back to the CPU path, flag written, stayed up"
+
       - name: Upload launch logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
@@ -239,96 +298,3 @@ jobs:
             studio/frontend/dist
           if-no-files-found: warn
           retention-days: 1
-
-  # `cfg(windows)` code (e.g. install.rs path normalizer) is stripped on Linux.
-  windows-unit-tests:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Rust unit tests (windows)
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: '24'
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
-
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: studio/src-tauri -> target
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python scripts/lockfile_supply_chain_audit.py
-
-      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
-      - name: Frontend build (npm ci, vite)
-        working-directory: studio/frontend
-        run: |
-          npm ci --no-fund --no-audit
-          npm run build
-
-      - name: Rust unit tests (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo test --no-fail-fast
-
-      # The browser guard is under `not(debug_assertions)`, so check the release profile.
-      - name: Rust release type check (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo check --all-targets --release
-
-  macos-unit-tests:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Rust unit tests (macos)
-    # macos-26, not macos-15: same hardware class but a much shorter queue tail (measured on
-    # studio-mac-install-matrix). Re-measure if queues change.
-    runs-on: macos-26
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: '24'
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
-
-      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6  # v2.9.2
-        with:
-          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: studio/src-tauri -> target
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python scripts/lockfile_supply_chain_audit.py
-
-      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
-      - name: Frontend build (npm ci, vite)
-        working-directory: studio/frontend
-        run: |
-          npm ci --no-fund --no-audit
-          npm run build
-
-      - name: Rust unit tests (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo test --no-fail-fast
-
-      # The browser guard is under `not(debug_assertions)`, so check the release profile.
-      - name: Rust release type check (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo check --all-targets --release

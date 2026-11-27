@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Copy the shared Windows preflight helpers from install.ps1 into studio/setup.ps1.
-
-install.ps1 has to run standalone, before any repo exists, so it cannot dot-source
-setup.ps1 and instead carries byte-identical copies of a handful of helpers.
-tests/studio/install/test_denied_llama_cpp_preflight.py fails when the two drift.
-Editing one and running this keeps them together, rather than hand-copying and
-finding out from CI.
-
-Usage:
-    python3 scripts/sync_shared_ps1_helpers.py [--check]
-
---check exits 1 without writing when setup.ps1 is out of date, for use in CI.
-"""
+"""Syncs byte-identical helpers from install.ps1 into studio/setup.ps1; --check exits 1 on drift."""
 
 from __future__ import annotations
 

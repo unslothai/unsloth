@@ -36,7 +36,7 @@ const SURFACE = "unsloth-plus-menu sidebar-row-menu sidebar-menu";
 const MENU = `${SURFACE} w-60`;
 // As a chat row's: the pin and the kebab show on hover, and while the menu is open.
 const ACTION =
-  "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
+  "sidebar-row-action sidebar-touch-reveal group-hover/recent-item:opacity-100 group-hover/recent-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto [&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 
 /** Every pinned page, in pin order. */
 export function usePinnedPages(): PinnedPage[] {
@@ -116,7 +116,7 @@ export function PinnedPageRow({
               event.preventDefault();
               setRenaming(true);
             }}
-            className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full py-0 pl-3 pr-4 text-ui-14p5 font-medium leading-ui-19 tracking-nav group-hover/recent-item:pr-16 group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
+            className="sidebar-nav-btn h-[calc(30px*var(--ui-space-scale,1))] cursor-pointer gap-[calc(8.5px*var(--ui-space-scale,1))] rounded-full py-0 pl-3 pr-4 text-ui-14p5 font-medium leading-ui-19 tracking-nav group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action:focus-visible)]:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <SiteFavicon
               url={page.url}

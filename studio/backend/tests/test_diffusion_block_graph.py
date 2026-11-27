@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import contextlib
 import types
 import warnings
 
@@ -714,6 +715,96 @@ def test_pool_bytes_count_only_the_target_card(monkeypatch):
     assert bg.pool_bytes(0) == 100 and bg.pool_bytes() == 1000
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+def test_allocator_snapshot_avoids_tuple_arguments(monkeypatch, legacy):
+    calls = []
+    segments = [{"total_size": 123}]
+
+    def native(*args):
+        calls.append(args)
+        if legacy and args:
+            raise TypeError("takes no arguments")
+        return {"segments": segments}
+
+    fake = types.SimpleNamespace(_C = types.SimpleNamespace(_cuda_memorySnapshot = native))
+    monkeypatch.setattr(cg, "_torch", lambda: fake)
+    assert cg._allocator_segments() is segments
+    assert calls == ([(None,), ()] if legacy else [(None,)])
+
+
+def test_known_pool_is_counted_when_net_reservation_is_zero(monkeypatch):
+    shared = bg._Shared(0)
+    shared.pools.append((7, 1))
+    monkeypatch.setattr(bg, "_LIVE", {shared})
+    segments = [{"device": 0, "segment_pool_id": (7, 1), "total_size": 200, "allocated_size": 80}]
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: segments)
+    monkeypatch.setattr(
+        torch._C, "_cuda_memorySnapshot", lambda *a: {"segments": segments}, raising = False
+    )
+    assert shared.pool_bytes == 0
+    assert bg.pool_bytes(0) == 120
+
+
+def test_capture_reservation_precedes_deferred_cache_release(monkeypatch):
+    _cuda()
+    original = cg._capturing
+
+    @contextlib.contextmanager
+    def capturing():
+        with original():
+            yield
+            cg.release_when_capture_idle(torch.cuda.empty_cache)
+
+    monkeypatch.setattr(cg, "_capturing", capturing)
+    block = Block().cuda()
+    shared = bg._Shared(torch.cuda.current_device(), None)
+    graph = bg.BlockGraph(block, block.forward, shared)
+    x = torch.randn(8192, 64, device = "cuda")
+    try:
+        with torch.inference_mode():
+            graph(x)
+            idle = torch.empty(128 << 20, dtype = torch.uint8, device = "cuda")
+            del idle
+            graph(x)
+            assert graph.stats["captures"] == 1
+            assert shared.pool_bytes > 0
+            assert torch.equal(graph(x), block(x))
+    finally:
+        graph.reset()
+        shared.release()
+
+
+def test_live_segment_outputs_in_a_graph_pool_are_not_subtracted_twice(monkeypatch):
+    mib = 1 << 20
+    shared = bg._Shared(0)
+    monkeypatch.setattr(bg, "_LIVE", {shared})
+    monkeypatch.setattr(torch.cuda, "graph_pool_handle", lambda: (7, 1))
+    shared.graph_pool()
+    shared.pool_bytes = 500 * mib
+    snapshot = [
+        {
+            "device": 0,
+            "segment_pool_id": (7, 1),
+            "total_size": 500 * mib,
+            "allocated_size": 500 * mib,
+        },
+        {"device": 0, "segment_pool_id": (0, 0), "total_size": 100 * mib, "allocated_size": 0},
+    ]
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: snapshot)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: snapshot, raising = False)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *a, **k: 600 * mib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 500 * mib)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(cg, "live_pool_free_bytes", lambda: 0)
+    assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
+    snapshot[0]["allocated_size"] = 250 * mib
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *a, **k: 250 * mib)
+    assert dm.cuda_reusable_cache_bytes(0) == 100 * mib
+    monkeypatch.setattr(torch.cuda, "memory_snapshot", lambda: 1 / 0)
+    monkeypatch.setattr(cg, "_allocator_segments", lambda: 1 / 0, raising = False)
+    assert dm.cuda_reusable_cache_bytes(0) == 0
+
+
 def test_block_graph_pools_are_not_credited_as_reclaimable(monkeypatch):
     target = types.SimpleNamespace(device = "cuda", backend = "cuda")
     snap = dm.DeviceMemory("cuda", "cuda", "dedicated", 1000, 8000)
@@ -1141,6 +1232,20 @@ def test_a_variable_length_denoiser_records_no_block_graphs(monkeypatch):
     assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
 
 
+def test_the_streamk_fp8_refusal_outranks_the_prompt_length_reason(monkeypatch):
+    monkeypatch.delenv(bg.BLOCK_GRAPHS_ENV, raising = False)
+    monkeypatch.delenv(cg.FORCE_FAMILIES_ENV, raising = False)
+    why = "the row-wise fp8 GEMM on this sm_89 card cannot replay in a CUDA graph"
+    monkeypatch.setattr(cg, "fp8_rowwise_capture_refusal", lambda modules, device = None: why)
+    net = type("QwenImageTransformer2DModel", (Net,), {})(blocks = 3)
+    pipe = _pipe_with(net)
+    pipe._unsloth_cuda_graph_reason = "offload active"
+    handles, applied = _arm(pipe, monkeypatch, hooked = True, pinned = True, opt_in = True)
+    assert handles == () and not applied["cuda_graph"]
+    assert cg.status_reason(pipe, False).startswith(why)
+    assert not any(isinstance(b.__dict__.get("forward"), bg.BlockGraph) for b in net.blocks)
+
+
 def test_a_model_offloaded_denoiser_reason_names_both_opt_ins(monkeypatch):
     pipe = _pipe_with(Net(blocks = 3))
     pipe.transformer._hf_hook = types.SimpleNamespace()
@@ -1185,3 +1290,19 @@ def test_a_refused_block_recording_runs_eager_and_records_later(monkeypatch):
     assert handle.stats["captures"] > 0 and handle.stats["fallbacks"] == 0
     assert handle.stats["replays"] > 0
     handle.free()
+
+
+def test_reusable_cache_of_a_non_cuda_device_is_zero(monkeypatch):
+    # A CPU device parsed to index None read the current CUDA card's cache: on a 2-GPU host that ran a CUDA test first,
+    # test_prefix_kv_cache_too_large_for_the_replica_card_stays_on_the_primary saw the cache as free and mirrored it.
+    seen = []
+    monkeypatch.setattr(
+        dm, "cuda_reclaimable_bytes", lambda index = None: seen.append(index) or 4 << 30
+    )
+    assert dm.cuda_reusable_cache_bytes(torch.device("cpu")) == 0
+    assert dm.cuda_reusable_cache_bytes("cpu") == 0
+    assert seen == []
+    assert dm.cuda_reusable_cache_bytes(torch.device("cuda", 1)) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes(0) == 4 << 30
+    assert dm.cuda_reusable_cache_bytes() == 4 << 30
+    assert seen == [1, 0, None]

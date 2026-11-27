@@ -3,6 +3,8 @@
 
 "use client";
 
+import { CodeIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { SandboxFiles } from "./sandbox-files-view";
@@ -10,16 +12,13 @@ import { isSandboxFileList, type SandboxFile } from "./sandbox-files";
 import {
   preferSanitizedFullToolOutput,
   toolResultText,
-  useChatRuntimeStore,
   useChatPreferencesStore,
   useToolAwaitingApproval,
-  useToolOutputFor,
-  useToolPaneScope,
+  useToolOutput,
 } from "@/features/chat";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
-import { CodeIcon } from "lucide-react";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { pythonToolImagePath } from "./python-tool-image-path";
 import { useSandboxImage } from "./use-sandbox-image";
 import { CopyBtn, ToolCodeCell } from "./tool-code-cell";
@@ -39,6 +38,10 @@ interface StructuredResult {
   files?: SandboxFile[];
 }
 
+
+function CodeGlyph(props: { className?: string }) {
+  return <HugeiconsIcon icon={CodeIcon} {...props} />;
+}
 function isStructuredResult(val: unknown): val is StructuredResult {
   if (typeof val !== "object" || val === null) return false;
   const v = val as { files?: unknown };
@@ -102,13 +105,11 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   }
 
   // Prefer the fuller live stream over a truncated result; after a reload only the result remains.
-  const paneScope = useToolPaneScope();
-  const fullOutput = useToolOutputFor(
-    useChatRuntimeStore((s) => s.toolFullOutput),
-    paneScope,
-    toolCallId,
+  const fullOutput = useToolOutput("toolFullOutput", toolCallId);
+  const displayOutput = useMemo(
+    () => preferSanitizedFullToolOutput(fullOutput, output),
+    [fullOutput, output],
   );
-  const displayOutput = preferSanitizedFullToolOutput(fullOutput, output);
 
   // The gate opens only once the call parsed, so pending approval means the script is written.
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
@@ -138,7 +139,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={firstLine ? `Python: ${firstLine}` : "Python"}
         status={status}
-        icon={CodeIcon}
+        icon={CodeGlyph}
       />
       {!collapseByDefault && scriptCell}
       <ToolFallbackContent>

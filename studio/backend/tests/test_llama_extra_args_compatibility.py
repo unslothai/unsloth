@@ -221,6 +221,32 @@ def test_the_override_save_carries_over_without_refusing(monkeypatch):
         assert "--numa" in kept
 
 
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value", ["auto", "all"])
+def test_override_save_and_reload_keep_gpu_layer_keywords(monkeypatch, flag, value):
+    import routes.settings as settings_route
+    import utils.openai_auto_switch_settings as settings
+
+    saved = {}
+    monkeypatch.setattr(settings, "get_model_override", lambda _id: {})
+    monkeypatch.setattr(
+        settings, "set_model_override", lambda model_id, **kwargs: saved.update({model_id: kwargs})
+    )
+    monkeypatch.setattr(settings_route, "set_model_override", settings.set_model_override)
+    monkeypatch.setattr(settings_route, "resolve_model_override_keys", lambda _id: ["local/x"])
+    monkeypatch.setattr(settings_route, "cached_repo_alias_keys", lambda _id: [])
+    args = [flag, value]
+    payload = settings_route.ModelOverridePayload(model_id = "local/x", llama_extra_args = args)
+
+    settings_route.update_openai_auto_switch_override(payload, current_subject = "t")
+
+    assert saved["local/x"]["llama_extra_args"] == args
+    assert (
+        settings.model_override_load_kwargs(saved["local/x"], is_gguf = True)["llama_extra_args"]
+        == args
+    )
+
+
 def test_the_auto_switch_path_sanitizes_a_legacy_override(monkeypatch):
     from utils.openai_auto_switch_settings import model_override_load_kwargs
 

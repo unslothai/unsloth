@@ -2,16 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Refuse backend source that needs a newer interpreter than the matrix floor.
-
-A pull request runs Backend CI on the NEWEST interpreter only. Every older leg still runs on the push to main, so a version-specific break is caught at merge rather than never, but between opening a pull request and merging it nothing executes the backend on the oldest one. This closes as much of that gap as a static check can.
-
-Syntax is the easy half and ``tests/test_python39_compatibility.py`` already covers it by parsing at the version ``pyproject.toml`` declares; it is also not the shape this regression takes. The realistic mistake is reaching for a stdlib name that does not exist yet (``core/research_runs.py`` already uses ``anext``, which is 3.10), which parses perfectly on every version and fails only when the line runs.
-
-So this asks vermin, which reads both syntax and stdlib API availability, and compares the answer against the oldest leg the workflow declares rather than a number written here. Raise the floor and this follows; use a symbol from above it and this fails in seconds on every pull request instead of on main in 23 minutes.
-
-What it cannot do: it does not run anything. Two interpreters that both accept a line can still behave differently on it, and a ``sys.version_info`` branch is only ever parsed here, never taken. That is what the full matrix on main is for.
-"""
+"""Fails on stdlib APIs newer than the oldest CI interpreter (via vermin); syntax checks miss these."""
 
 from __future__ import annotations
 

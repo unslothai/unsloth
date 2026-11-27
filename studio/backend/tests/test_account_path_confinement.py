@@ -277,6 +277,85 @@ def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files
 
 
 @symlinks
+def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_read(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "../../victim.safetensors"}}
+    _write(folder / "deep", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == ["link/../../../victim.safetensors"]
+    _write(
+        folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": "s.safetensors"}}}
+    )
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
+def test_a_module_index_climbing_back_into_the_folder_from_where_it_lands_passes(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "model.safetensors").write_bytes(b"")
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "../model.safetensors"}}
+    _write(folder / "deep", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
+def test_a_module_index_shard_linking_outside_from_where_it_lands_is_flagged(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/..", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    (folder / "deep" / "out").symlink_to(victim, target_is_directory = True)
+    for shard, flagged in (
+        ("out/s.safetensors", "link/../out/s.safetensors"),
+        ("/abs/s.safetensors", "/abs/s.safetensors"),
+        ("C:/s.safetensors", "C:/s.safetensors"),
+    ):
+        _write(folder / "deep", {"model.safetensors.index.json": {"weight_map": {"w": shard}}})
+        assert escaping_weight_references(folder) == [flagged]
+
+
+@symlinks
+def test_a_module_path_climbing_through_a_link_into_a_subfolder_is_judged_where_it_lands(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    victim = tmp_path / "victim"
+    (victim / "child").mkdir(parents = True)
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/../x", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "deep" / "x").mkdir()
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    (folder / "deep" / "x" / "out").symlink_to(victim / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "out/../s.safetensors"}}
+    _write(folder / "deep" / "x", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == ["link/../x/out/../s.safetensors"]
+    index = {"weight_map": {"w": "s.safetensors"}}
+    _write(folder / "deep" / "x", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
     from utils.security.file_security import escaping_weight_references
 
@@ -499,6 +578,7 @@ if os.name != "nt":
     _DOT_NAMED_MODULE_PATHS.append(".\\...")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "Win32 strips trailing dots from folder names")
 @pytest.mark.parametrize("path", _DOT_NAMED_MODULE_PATHS)
 def test_a_dot_named_module_folder_index_outside_the_model_is_flagged(tmp_path, path):
     from utils.security.file_security import escaping_weight_references
@@ -530,3 +610,59 @@ def test_a_normal_module_folder_keeps_its_verdict(tmp_path, path):
         {"model.safetensors.index.json": {"weight_map": {"w": "../../victim/model.safetensors"}}},
     )
     assert escaping_weight_references(folder)
+
+
+def test_a_resume_checkpoint_whose_index_escapes_is_refused(tmp_path):
+    # A one-byte adapter file made the checkpoint look valid while its index named another account's model.
+    from core.training import worker
+
+    checkpoint = _write(
+        tmp_path / "checkpoint-1",
+        {
+            "model.safetensors.index.json": {
+                "weight_map": {"w": "/home/owner/outputs/run/model.safetensors"}
+            }
+        },
+    )
+    (checkpoint / "adapter_model.safetensors").write_bytes(b"x")
+    assert worker._escaping_weights_error({"resume_from_checkpoint": str(checkpoint)})
+    assert (
+        worker._escaping_weights_error({"resume_from_checkpoint": str(_write(tmp_path / "ok", {}))})
+        is None
+    )
+
+
+def test_gguf_export_rechecks_an_index_written_after_the_load(tmp_path):
+    # A full model's GGUF export re-stages its folder from disk, so the check runs again right before.
+    import ast
+    import inspect
+
+    from core.export import export as export_mod
+
+    folder = _write(tmp_path / "m", {"config.json": {"model_type": "llama"}})
+    assert export_mod._restaged_checkpoint_refusal(str(folder)) is None
+    (folder / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {"w": "/home/owner/outputs/run/model.safetensors"}})
+    )
+    assert export_mod._restaged_checkpoint_refusal(str(folder))
+    assert export_mod._restaged_checkpoint_refusal("org/repo") is None
+
+    source = inspect.getsource(export_mod.ExportBackend.export_gguf)
+    tree = ast.parse(source.lstrip())
+    order = [
+        n.func.attr if isinstance(n.func, ast.Attribute) else n.func.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call) and isinstance(n.func, (ast.Attribute, ast.Name))
+    ]
+    lines = {
+        name: [
+            n.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and getattr(n.func, "attr", getattr(n.func, "id", None)) == name
+        ]
+        for name in ("_restaged_checkpoint_refusal", "save_pretrained_gguf", "push_to_hub_gguf")
+    }
+    assert "_restaged_checkpoint_refusal" in order
+    assert min(lines["_restaged_checkpoint_refusal"]) < min(lines["save_pretrained_gguf"])
+    assert max(lines["_restaged_checkpoint_refusal"]) < min(lines["push_to_hub_gguf"])

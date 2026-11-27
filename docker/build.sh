@@ -62,12 +62,13 @@ resolve_git_ref() {
     printf '%s' "$ref" | grep -Eq '^[0-9a-f]{40}$' && { printf '%s' "$ref"; return 0; }
     command -v git >/dev/null 2>&1 || { printf '%s' "$ref"; return 0; }
     # ls-remote fails only when the remote is unreachable; warn and pass the name through.
-    if ! ls_out="$(git ls-remote "$repo" "$ref" 2>/dev/null)"; then
+    # Also ask for ${ref}^{}: an annotated tag's own sha is not a commit, so uv refuses it.
+    if ! ls_out="$(git ls-remote "$repo" "$ref" "${ref}^{}" 2>/dev/null)"; then
         echo "warning: ${repo} unreachable; passing mutable ref '${ref}' (docker may reuse a cached layer)" >&2
         printf '%s' "$ref"
         return 0
     fi
-    sha="$(printf '%s\n' "$ls_out" | awk 'NR==1{print $1}')"
+    sha="$(printf '%s\n' "$ls_out" | awk 'NR==1{s=$1; r=$2} $2==r"^{}"{s=$1} END{print s}')"
     [ -n "$sha" ] || sha="$ref"     # not a branch/tag: a short sha or already-gone ref
     printf '%s' "$sha"
 }

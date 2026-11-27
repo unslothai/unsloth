@@ -161,3 +161,18 @@ test("model access is set with PUT on the account and null clears it", async () 
     { path: "/api/accounts/alice%2Fid/model-access", init: put(null) },
   ]);
 });
+
+test("rename sends the normalized username to the account's username route", async () => {
+  const c = client(() => Response.json({}));
+  await c.api.renameAccount("alice/id", " Alicia ");
+  assert.deepEqual(c.requests, [
+    {
+      path: "/api/accounts/alice%2Fid/username",
+      init: {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "alicia" }),
+      },
+    },
+  ]);
+});

@@ -4,6 +4,7 @@
 """Without load_in_16bit, MXFP4 LoRA must take the packed experts path; matmul_ogs has no backward."""
 
 import ast
+import importlib.util
 import inspect
 import json
 import os
@@ -13,6 +14,22 @@ import types
 from pathlib import Path
 
 import pytest
+
+
+def _load_source_segments():
+    """tests/_shared/source_segments.py, by path: collects without tests/conftest.py too."""
+    name = "unsloth_tests_shared_source_segments"
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).resolve().parent / "_shared" / "source_segments.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+cached_source_segment = _load_source_segments().cached_source_segment
 
 ROOT = Path(__file__).resolve().parents[1]
 VISION = ROOT / "unsloth" / "models" / "vision.py"
@@ -36,11 +53,38 @@ def _dequantize_branch():
     for node in ast.walk(TREE):
         if not isinstance(node, ast.If):
             continue
-        body = "\n".join(ast.get_source_segment(SRC, stmt) or "" for stmt in node.body)
+        body = "\n".join(cached_source_segment(SRC, stmt) or "" for stmt in node.body)
         if 'quantizer_kwargs["dequantize"] = True' in body and len(node.body) == 1:
             found.append(node)
     assert len(found) == 1, "the dequantize branch moved; update this test"
     return found[0]
+
+
+def _locals_read_by(branch):
+    """`name = ...` statements ahead of `branch` in each block enclosing it within its function,
+    outermost first, whose name the branch reads (e.g. `_fp8_full_finetune` from #15367)."""
+    parents = {child: node for node in ast.walk(TREE) for child in ast.iter_child_nodes(node)}
+    read = {
+        n.id for n in ast.walk(branch) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)
+    }
+    levels, node = [], branch
+    while node in parents and not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        parent = parents[node]
+        for _, value in ast.iter_fields(parent):
+            if isinstance(value, list) and any(stmt is node for stmt in value):
+                ahead = value[: next(i for i, stmt in enumerate(value) if stmt is node)]
+                levels.append(
+                    [
+                        stmt
+                        for stmt in ahead
+                        if isinstance(stmt, ast.Assign)
+                        and len(stmt.targets) == 1
+                        and isinstance(stmt.targets[0], ast.Name)
+                        and stmt.targets[0].id in read
+                    ]
+                )
+        node = parent
+    return [stmt for level in reversed(levels) for stmt in level]
 
 
 class _Mxfp4Config:
@@ -197,7 +241,9 @@ def _run_branch(
         "auto_config": types.SimpleNamespace(num_hidden_layers = 24),
     }
     node = _dequantize_branch()
-    code = ast.Module(body = [node], type_ignores = [])
+    # The branch's own locals, computed from the inputs above; a stub given here wins.
+    lifted = [stmt for stmt in _locals_read_by(node) if stmt.targets[0].id not in ns]
+    code = ast.Module(body = [*lifted, node], type_ignores = [])
     ast.fix_missing_locations(code)
     exec(compile(code, str(VISION), "exec"), ns)
     return ns["quantizer_kwargs"].get("dequantize", False)

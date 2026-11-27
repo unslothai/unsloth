@@ -3,7 +3,8 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import {
-  makePinRank,
+  makeRepoPinRank,
+  pinCoversId,
   pinKey,
   usePinnedModelsStore,
 } from "@/features/model-picker";
@@ -209,7 +210,6 @@ export function DiscoverList({
           </>
         ) : suppressEmptyState ? null : searchError ? (
           <NetworkErrorState
-            online={online}
             message={searchError}
             failure={searchFailure}
             onRetry={onRetry}
@@ -242,7 +242,6 @@ export function DiscoverList({
         )
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
-          online={online}
           // The raw SDK error includes the request URL (with the query), so prefer the classified one.
           message={searchFailure ? "" : (searchError ?? "")}
           failure={searchFailure}
@@ -311,10 +310,10 @@ export function DownloadedList({
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
     // Pinned rows order by pin recency, not the active sort.
-    const rank = makePinRank(pinnedIds);
+    const rank = makeRepoPinRank(isDataset ? [] : pinnedIds);
     const pinRank = (item: InventoryItem) => {
       const pinId = inventoryPinId(item.row);
-      return pinId ? rank(pinKey(pinId)) : Number.MAX_SAFE_INTEGER;
+      return pinId ? rank(pinId) : Number.MAX_SAFE_INTEGER;
     };
     if (inventoryTokens.length > 0) {
       return merged
@@ -359,15 +358,15 @@ export function DownloadedList({
           a.index - b.index,
       )
       .map((entry) => entry.item);
-  }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
+  }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds, isDataset]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
   const pinnedCount = useMemo(
     () =>
       inventoryItems.filter((item) => {
-        const pinId = inventoryPinId(item.row);
-        return pinId != null && pinnedSet.has(pinKey(pinId));
+        const pinId = isDataset ? null : inventoryPinId(item.row);
+        return pinId != null && pinCoversId(pinnedIds, pinId);
       }).length,
-    [inventoryItems, pinnedSet],
+    [inventoryItems, pinnedIds, isDataset],
   );
   const pinnedItems = inventoryItems.slice(0, pinnedCount);
   const unpinnedItems = inventoryItems.slice(pinnedCount);

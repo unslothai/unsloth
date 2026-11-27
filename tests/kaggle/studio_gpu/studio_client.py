@@ -139,14 +139,20 @@ class Studio:
 
 
 def health_is_ready(payload: Any) -> bool:
-    """Status healthy is not enough: during hardware detection Unsloth refuses train and export."""
+    """Status healthy is not enough: during hardware detection Unsloth refuses train and export. A deferred
+    detection (no startup hardware warmup) is idle until an authenticated client asks for it, so it counts as up."""
     if not isinstance(payload, dict):
         return False
     if payload.get("status") != "healthy":
         return False
-    if payload.get("hardware_detecting"):
+    if payload.get("hardware_detecting") and not payload.get("hardware_detection_deferred"):
         return False
     return True
+
+
+def hardware_detected(payload: Any) -> bool:
+    """Healthy with the hardware verdict in: what train and export need."""
+    return health_is_ready(payload) and not payload.get("hardware_detecting")
 
 
 def wait_for(

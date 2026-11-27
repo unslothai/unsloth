@@ -9,6 +9,7 @@ CUDA keeps the 32-lane replay and settings it shipped with; ROCm divides by the 
 import ast
 import functools
 import types
+import warnings
 from pathlib import Path
 
 import pytest
@@ -134,3 +135,43 @@ def test_multirow_is_no_longer_gated_off_on_hip():
     )
     assert "version.hip" not in ast.unparse(gate.value)
     assert "_triton_at_least(3, 6)" in ast.unparse(gate.value)
+
+
+@pytest.mark.parametrize("n", [64, 128])
+def test_multirow_self_check_gets_concrete_arguments(n):
+    import torch
+    from torch._dynamo.source import ConstantSource
+    from torch.fx.experimental.symbolic_shapes import ShapeEnv
+
+    env = ShapeEnv()
+    width = env.create_symintnode(env.create_symbol(n, ConstantSource("n_cols")), hint = n)
+    with pytest.raises(TypeError):
+        hash(width)
+    settings, _ = _load(hip = None, lanes = 32)
+    ns = settings.__globals__
+    seen = []
+
+    def self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
+        seen.append((n_cols, multirow))
+        hash((n_cols, multirow))
+        return True
+
+    ns.update(
+        torch = torch,
+        warnings = warnings,
+        _settings = lambda n: (width, 4),
+        _MULTIROW_CHECKED = {},
+        _multirow_self_check = self_check,
+    )
+    names = ("_multirow_disable", "_multirow_checked")
+    exec(compile(ast.Module([FUNCS[name] for name in names], []), str(SOURCE), "exec"), ns)
+    X = types.SimpleNamespace(shape = (8, width), device = torch.device("cpu"), dtype = torch.float32)
+    W = types.SimpleNamespace(dtype = torch.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        multirow = ns["_multirow_checked"](X, W, 1e-6, False)
+    assert ns["_MULTIROW"]
+    assert len(seen) == 1
+    assert type(seen[0][0]) is int
+    assert all(type(v) is int for v in seen[0][1])
+    assert multirow == seen[0][1] == (n, 4096 // n, n // 32, 4)

@@ -5,19 +5,30 @@
 // --strict also fails on missing keys. Run: npm run i18n:check
 
 import { ar } from "./locales/ar.ts";
+import { cs } from "./locales/cs.ts";
 import { de } from "./locales/de.ts";
 import { en } from "./locales/en.ts";
+import { es419 } from "./locales/es-419.ts";
 import { es } from "./locales/es.ts";
+import { fa } from "./locales/fa.ts";
 import { fr } from "./locales/fr.ts";
 import { he } from "./locales/he.ts";
 import { hi } from "./locales/hi.ts";
+import { id } from "./locales/id.ts";
 import { it } from "./locales/it.ts";
 import { ja } from "./locales/ja.ts";
 import { ko } from "./locales/ko.ts";
+import { nl } from "./locales/nl.ts";
+import { pl } from "./locales/pl.ts";
 import { ptBR } from "./locales/pt-br.ts";
 import { ru } from "./locales/ru.ts";
 import { sv } from "./locales/sv.ts";
+import { th } from "./locales/th.ts";
+import { tr } from "./locales/tr.ts";
+import { uk } from "./locales/uk.ts";
+import { vi } from "./locales/vi.ts";
 import { zhCN } from "./locales/zh-CN.ts";
+import { zhTW } from "./locales/zh-TW.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -75,6 +86,10 @@ function checkOverlay(
         errors.push(`${subPath} should be an object, got ${typeof overlaySub}`);
         continue;
       }
+      if (overlaySub === v) {
+        errors.push(`${subPath} reuses the English subtree; translate it`);
+        continue;
+      }
       checkOverlay(v, overlaySub, subPath, errors, missing);
     }
   }
@@ -117,6 +132,17 @@ const overlays: Record<string, Tree> = {
   de: de as unknown as Tree,
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
+  "zh-TW": zhTW as unknown as Tree,
+  "es-419": es419 as unknown as Tree,
+  id: id as unknown as Tree,
+  vi: vi as unknown as Tree,
+  tr: tr as unknown as Tree,
+  pl: pl as unknown as Tree,
+  uk: uk as unknown as Tree,
+  th: th as unknown as Tree,
+  fa: fa as unknown as Tree,
+  cs: cs as unknown as Tree,
+  nl: nl as unknown as Tree,
 };
 
 const requiredOverlayPrefixes = ["picker.", "studio."] as const;

@@ -18,9 +18,13 @@ from core.inference import diffusion_gguf_compile as gc  # noqa: E402
 @pytest.fixture(autouse = True)
 def _clean():
     # Always start and end from a clean, unpatched state so tests do not leak the process-wide patch into each other.
+    from core.inference import diffusion_gguf_exact as ex
+
     gc.uninstall_all()
+    ex.uninstall_exact_dequant()
     yield
     gc.uninstall_all()
+    ex.uninstall_exact_dequant()
 
 
 def test_compiled_dequant_install_uninstall_reversible():

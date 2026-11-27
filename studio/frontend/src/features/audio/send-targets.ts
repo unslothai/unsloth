@@ -48,12 +48,17 @@ export function clipSendTargets(
 }
 
 export const STEM_SEND_TARGETS: readonly SendTarget[] = [
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
+  { id: "clone", workflow: "clone", label: "Clone" },
   { id: "convert", workflow: "convert", label: "Convert" },
-  { id: "music", workflow: "music", label: "Music edit" },
+  { id: "music", workflow: "music", label: "Music" },
   { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "voice", workflow: "voice", label: "Save as voice…" },
 ];
+
+export const STEM_SAVE_VOICE_TARGET: SendTarget = {
+  id: "voice",
+  workflow: "voice",
+  label: "Save as voice…",
+};
 
 /** text goes to speak; edit and clone also require its source audio. */
 export function transcriptSendTargets({

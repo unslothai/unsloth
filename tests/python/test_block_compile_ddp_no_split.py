@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import queue as queue_module
-import socket
 import sys
 
 import pytest
@@ -33,9 +32,8 @@ pytestmark = [
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _run(recompute_miss = False):
@@ -72,7 +70,6 @@ def test_compiled_block_is_not_split_by_ddp_optimizer():
     results = _run()
     for rank, out in results.items():
         assert out["wrapped"] == ["LlamaDecoderLayer"], out
-        # The compiled region ran (not the stock forward) in every layer.
         assert all(out["compiled"]), out
         assert out["splits"] == [], (rank, out["splits"])
         # Only scoped to the block call: the global setting is the user's.

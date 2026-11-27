@@ -74,8 +74,7 @@ def test_the_failure_is_real_without_the_fix(unpatched):
 
 
 def test_the_fix_stands_down_when_transformers_handles_it():
-    """kw_only=True fixed this upstream, so patching anyway would be an untested
-    monkey patch. >= 5.5.1 covers both branches (5.5.1 on 5.5, 5.6.0 on main)."""
+    """kw_only=True upstream since 5.5.1 (5.6.0 on main), so patching there would be untested."""
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
         fix_transformers5_bare_annotation_configs,

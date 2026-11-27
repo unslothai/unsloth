@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { refreshDeviceTypeAfterSystemInfo } from "@/config/env";
 import { useEffect, useMemo, useState } from "react";
 import { disposableTimeoutSignal } from "../features/hub/lib/abort-signals";
 import {
@@ -12,6 +13,7 @@ import {
   type SystemInfoStatus,
   vulkanRetryDelayMs,
 } from "./system-discovery";
+import type { RepairRecommendation } from "@/features/settings/components/repair-recommendation";
 
 export interface GpuDevice {
   index?: number;
@@ -27,7 +29,7 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** Host-backed part of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
-  /** Apple MLX only: Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
+  /** Apple only (MLX, or the "metal" GGUF inventory): Metal's recommendedMaxWorkingSetSize. Absent elsewhere and on older backends. */
   metal_working_set_gb?: number | null;
   /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
   gpu_utilization_pct?: number | null;
@@ -66,6 +68,10 @@ export interface SystemInfoResponse {
   nvfp4_diffusion?: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
   checkpoint_quant_formats?: string[];
+  /** Checkpoint kinds that load but run dequantized to 16-bit here ("fp8_rowwise"). Absent on older backends. */
+  checkpoint_quant_dequant_only?: string[];
+  /** Windows: an existing home older than the managed torch. Null or absent otherwise. */
+  repair_recommendation?: RepairRecommendation | null;
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
   /** GiB VRAM / GiB available RAM per lower-cased repo id. Absent on older backends. */
@@ -89,6 +95,7 @@ export interface SystemInfoResponse {
     available_gb: number;
     percent_used: number;
     process_used_mb: number;
+    process_tree_used_mb?: number;
   };
   disk: {
     total_gb: number;
@@ -104,14 +111,20 @@ export interface SystemInfoResponse {
   gpu: SystemGpuInfo;
   /** Differs from `gpu` when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;
+  /** null where no counter reports the NPU (Linux, no supported NPU). */
+  npu_load_percent?: number | null;
   ml_packages: {
     torch?: string;
     transformers?: string;
+    mlx_lm?: string;
+    mlx_vlm?: string;
   };
 }
 
 let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
+let systemFetchGpuMaxAgeMs: number | undefined;
+let systemFetchProbesMedia = false;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
 let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
@@ -204,29 +217,63 @@ function scheduleVulkanRetry(): void {
   );
 }
 
+export function systemUrl(
+  refreshMemory: boolean,
+  gpuMaxAgeMs?: number,
+  probeMedia = false,
+): string {
+  const params = new URLSearchParams();
+  if (refreshMemory) params.set("refresh_memory", "true");
+  if (probeMedia) params.set("probe_media", "true");
+  if (gpuMaxAgeMs !== undefined && Number.isFinite(gpuMaxAgeMs) && gpuMaxAgeMs > 0) {
+    params.set("gpu_max_age", String(gpuMaxAgeMs / 1000));
+  }
+  const query = params.toString();
+  return query ? `/api/system?${query}` : "/api/system";
+}
+
 export async function fetchSystemInfo({
   force = false,
   refreshMemory = false,
-}: { force?: boolean; refreshMemory?: boolean } = {}): Promise<SystemInfoResponse | null> {
+  gpuMaxAgeMs,
+  probeMedia = false,
+}: {
+  force?: boolean;
+  refreshMemory?: boolean;
+  /** The backend clamps to 1-10 s. */
+  gpuMaxAgeMs?: number;
+  probeMedia?: boolean;
+} = {}): Promise<SystemInfoResponse | null> {
   if (systemFetchPromise) {
-    if (!refreshMemory) return systemFetchPromise;
-    // An in-flight snapshot may predate the resident model.
+    // A pending fetch with a looser GPU bound would hand a fast poll the 10 s cache.
+    const looser =
+      gpuMaxAgeMs !== undefined &&
+      (systemFetchGpuMaxAgeMs === undefined || systemFetchGpuMaxAgeMs > gpuMaxAgeMs);
+    if (!refreshMemory && !looser && (!probeMedia || systemFetchProbesMedia)) {
+      return systemFetchPromise;
+    }
+    // A resident-memory refresh, fresher GPU read or media probe needs more than an ordinary snapshot.
     await systemFetchPromise;
-    return fetchSystemInfo({ force, refreshMemory });
+    return fetchSystemInfo({ force, refreshMemory, gpuMaxAgeMs, probeMedia });
   }
-  if (!force && !refreshMemory && cachedSystem) return cachedSystem;
+  if (!force && !refreshMemory && !probeMedia && cachedSystem) {
+    refreshDeviceTypeAfterSystemInfo({ detectHardware: true });
+    return cachedSystem;
+  }
 
+  systemFetchGpuMaxAgeMs = gpuMaxAgeMs;
+  systemFetchProbesMedia = probeMedia;
   systemFetchPromise = (async () => {
     const timeout = disposableTimeoutSignal(SYSTEM_FETCH_TIMEOUT_MS);
     try {
-      const res = await authFetch(
-        refreshMemory ? "/api/system?refresh_memory=true" : "/api/system",
-        { signal: timeout.signal },
-      );
+      const res = await authFetch(systemUrl(refreshMemory, gpuMaxAgeMs, probeMedia), {
+        signal: timeout.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
       cachedSystem = { ...(data as SystemInfoResponse), status: "ready" };
+      refreshDeviceTypeAfterSystemInfo();
       systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {
@@ -234,6 +281,7 @@ export async function fetchSystemInfo({
     } finally {
       timeout.dispose();
       systemFetchPromise = null;
+      systemFetchProbesMedia = false;
       scheduleVulkanRetry();
     }
   })();
@@ -244,11 +292,13 @@ export async function fetchSystemInfo({
 interface UseSystemInfoOptions {
   pollMs?: number;
   enabled?: boolean;
+  gpuFollowsPoll?: boolean;
 }
 
 export function useSystemInfo({
   pollMs,
   enabled = true,
+  gpuFollowsPoll = false,
 }: UseSystemInfoOptions = {}): SystemInfoResponse {
   const [systemInfo, setSystemInfo] = useState<SystemInfoResponse>(cachedSystem ?? DEFAULT_SYSTEM);
   const [failedPolls, setFailedPolls] = useState(0);
@@ -268,7 +318,7 @@ export function useSystemInfo({
 
     const update = (force: boolean) => {
       inFlight = true;
-      void fetchSystemInfo({ force })
+      void fetchSystemInfo({ force, gpuMaxAgeMs: gpuFollowsPoll ? pollMs : undefined })
         .then((info) => {
           if (cancelled) return;
           setFailedPolls((previous) => nextFailedPolls(previous, info !== null));
@@ -308,7 +358,7 @@ export function useSystemInfo({
       if (timeoutId !== null) window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [enabled, pollMs]);
+  }, [enabled, pollMs, gpuFollowsPoll]);
 
   const stale = enabled && isReadingStale(systemInfo.status, failedPolls, Boolean(pollMs));
   return useMemo(

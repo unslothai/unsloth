@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from core.training.account_jobs import (
+    _dataset_builder_name,
     account_hf_token,
     account_path,
     visible_cached_path,
@@ -65,6 +66,16 @@ _MISSING_DATASET_DETAIL = "This dataset is no longer on disk. Add it again or pi
 def _is_local_dataset_ref(dataset_name: str) -> bool:
     normalized = normalize_path(str(dataset_name or "").strip())
     return Path(normalized).expanduser().is_absolute()
+
+
+def _datasets_reads_locally(dataset_name: str) -> bool:
+    """``load_dataset`` takes its own builder names and any path under the server's cwd ahead of the
+    Hub, and a builder then reads whatever lies under that directory (``pandas`` unpickles it)."""
+    return (
+        not _is_valid_repo_id(dataset_name)
+        or _dataset_builder_name(dataset_name)
+        or Path(dataset_name).exists()
+    )
 
 
 def _image_pixel_count(image) -> int:
@@ -183,6 +194,41 @@ def _serialize_preview_value(value):
         return [_serialize_preview_value(item) for item in value]
 
     return str(value)
+
+
+class _DecodedPreviewRows:
+    """Rows by int index / iteration decode once per request (detectors re-read the same
+    rows and every read re-decodes Image/Audio cells); everything else is the Dataset's."""
+
+    def __init__(self, dataset):
+        self._dataset = dataset
+        self._rows = {}
+
+    def _row(self, index):
+        row = self._rows.get(index)
+        if row is None:
+            row = self._rows[index] = self._dataset[index]
+        return dict(row) if isinstance(row, dict) else row
+
+    def __len__(self):
+        return len(self._dataset)
+
+    def __iter__(self):
+        for index in range(len(self._dataset)):
+            yield self._row(index)
+
+    def __getitem__(self, key):
+        if type(key) is int and 0 <= key < len(self._dataset):
+            return self._row(key)
+        return self._dataset[key]
+
+    def __getattr__(self, name):
+        return getattr(self._dataset, name)
+
+
+def _decode_preview_rows_once(preview_slice):
+    from datasets import Dataset
+    return _DecodedPreviewRows(preview_slice) if type(preview_slice) is Dataset else preview_slice
 
 
 def _serialize_preview_rows(rows):
@@ -452,6 +498,9 @@ def load_preview_slice(
     dataset_exists = dataset_path.exists()
     if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
         raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
+    # Not a local dataset, so every reader below hands the name to ``datasets`` as a Hub id.
+    if not dataset_exists and _datasets_reads_locally(request.dataset_name):
+        raise HTTPException(status_code = 400, detail = "Invalid dataset name")
 
     # Both streaming tiers run on the default prefer_local_cache=false, ahead of the
     # guarded cache reader below, so the gate stands in front of them.
@@ -459,8 +508,7 @@ def load_preview_slice(
         refuse_unauthorized_dataset_preview(
             hf_token,
             request.dataset_name,
-            # A prefer-local request reads the cache or 404s below, either way without
-            # the network, so the probe would be a round trip it had ruled out.
+            # Prefer-local requests read the cache or 404 with no network, so skip the probe.
             offline = bool(request.prefer_local_cache),
         )
     if dataset_exists:
@@ -577,6 +625,23 @@ def load_preview_slice(
     return preview_slice, total_rows
 
 
+def _start_hub_rows_lookup(request: CheckFormatRequest, hf_token):
+    """A getter for the Hub split's row count, or None when the request is not a Hub id read over the network."""
+    if request.prefer_local_cache or _is_local_dataset_ref(request.dataset_name):
+        return None
+    try:
+        if resolve_dataset_path(request.dataset_name).exists() or _datasets_reads_locally(
+            request.dataset_name
+        ):
+            return None
+        from hub.services.datasets.row_counts import start_hub_split_rows
+        return start_hub_split_rows(
+            request.dataset_name, request.subset, request.train_split, hf_token
+        )
+    except Exception:
+        return None
+
+
 def check_format_response(
     request: CheckFormatRequest,
     hf_token: Optional[str] = None,
@@ -592,12 +657,18 @@ def check_format_response(
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
+        # A Hub id's preview streams rows and has no total, so its split size is asked of the Hub
+        # alongside it; the answer is read only after the preview (and its access gate) succeeded.
+        hub_rows = _start_hub_rows_lookup(request, hf_token)
         preview_slice, total_rows = load_preview_slice(
             request,
             hf_token,
             PREVIEW_SIZE,
             allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
         )
+        if total_rows is None and hub_rows is not None:
+            total_rows = hub_rows()
+        preview_slice = _decode_preview_rows_once(preview_slice)
 
         result = check_dataset_format(preview_slice, is_vlm = request.is_vlm)
 
@@ -684,7 +755,7 @@ def check_format_response(
 def ai_assist_mapping_response(
     request: AiAssistMappingRequest, hf_token: Optional[str] = None
 ) -> AiAssistMappingResponse:
-    """User-triggered 7B-model advisor; on failure it falls back to simple column classification."""
+    """User-triggered helper-model advisor; on failure it falls back to simple column classification."""
     hf_token = account_hf_token(hf_token)
     account_path(request.dataset_name, reference = True)
     visible_cached_path(getattr(request, "local_path", None), "dataset")
@@ -720,7 +791,8 @@ def ai_assist_mapping_response(
 
         return AiAssistMappingResponse(
             success = False,
-            warning = "AI could not determine column roles. Please assign them manually.",
+            warning = (result or {}).get("warning")
+            or "AI could not determine column roles. Please assign them manually.",
         )
 
     except Exception as e:

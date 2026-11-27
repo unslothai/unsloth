@@ -86,17 +86,14 @@ def cuda_archs(package: str, platform: str) -> str:
     return SSM_SASS_BY_PLATFORM.get(platform, SSM_SASS)
 
 
-# The Linux tag. The wheel is tagged linux_x86_64 rather than manylinux_*, exactly as upstream
-# tags its own, so pip installs it on any glibc without a floor check; the practical floor is the
-# runner's glibc, which is why the build runs on ubuntu-22.04 (glibc 2.35) and not on
-# ubuntu-latest.
+# Wheel tagged linux_x86_64 rather than manylinux like upstream, so pip accepts any glibc; the
+# practical floor is the runner glibc, hence ubuntu-22.04 (glibc 2.35), not ubuntu-latest.
 PLATFORM_TAG = "linux_x86_64"
 
-# Keyed by the wheel's pip platform tag. No upstream release has ever shipped a Windows wheel.
-# `abi` is torch._C._GLIBCXX_USE_CXX11_ABI, which upstream setup.py copies into the name; the
-# Windows cu130 torch reports True too, and the build asserts it. `pytorch_nvcc` goes into
-# build.ninja unquoted and is the only way to cache nvcc on Windows (_wrap_compiler is a no-op
-# there), hence the space-free paths.
+# Keyed by pip platform tag, and no upstream release ships a Windows wheel; abi is
+# torch._C._GLIBCXX_USE_CXX11_ABI (asserted, Windows cu130 torch reports True too); pytorch_nvcc
+# goes unquoted into build.ninja, the only way to cache nvcc on Windows, so its paths must have no
+# spaces.
 PLATFORMS = {
     "linux_x86_64": {
         "os": "linux",
@@ -282,10 +279,9 @@ ALLOWED_TORCH = tuple(
     )
 )
 
-# cp313 is the default and the only one the dispatch defaults to, because each extra
-# interpreter is a whole extra flash-attn build. 3.11 and 3.12 are here so a run can add them
-# as separate cells when the queue can afford it. 3.14 is deliberately absent: torch publishes
-# a cu130 wheel for it, but nothing in the Unsloth stack is tested on 3.14 yet.
+# cp313 is the default because each extra interpreter is a whole flash-attn build; 3.11 and 3.12 can
+# be added as separate cells; 3.14 is absent since torch has a cu130 wheel for it but nothing in the
+# Unsloth stack is tested on 3.14 yet.
 PYTHON_VERSIONS = ("3.11", "3.12", "3.13")
 
 DEFAULT_PACKAGES = tuple(SPECS)
@@ -798,11 +794,9 @@ def _cmd_size_gate(args: argparse.Namespace) -> int:
     return 0
 
 
-# A fatbin container: magic, version 1, a 16-byte header and the size of the entries after it.
-# Each entry's header starts with kind (1 PTX, 2 ELF), its own header size, the payload size,
-# and the target arch at byte 28. Read straight from the file rather than through cuobjdump,
-# which only reads its host's object format (a Linux cuobjdump says a Windows .pyd "does not
-# contain device code") and names PTX entries sm_XX.ptx, easy to miss with a pattern.
+# Fatbin container: magic, version 1, a 16-byte header, then entries with kind (1 PTX, 2 ELF) and
+# target arch at byte 28; read directly because cuobjdump only reads its host object format and
+# names PTX entries sm_XX.ptx.
 _FATBIN_MAGIC = (0xBA55ED50).to_bytes(4, "little")
 _FATBIN_PTX, _FATBIN_ELF = 1, 2
 

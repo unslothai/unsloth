@@ -4,11 +4,11 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import {
   CornerDownRightIcon,
-  GripVerticalIcon,
   ListEndIcon,
 } from "lucide-react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
+  DragDropVerticalIcon,
   Edit03Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
@@ -213,7 +213,7 @@ export function PromptQueueList({
                 )}
               >
                 {isEditing ? (
-                  <div className="group/queue-editor flex flex-wrap items-center justify-end gap-2 px-1 py-2">
+                  <div className="group/queue-editor has-[textarea:focus-visible]:[--queue-hint-visibility:visible] flex flex-wrap items-center justify-end gap-2 px-1 py-2">
                     <div className="w-full overflow-hidden rounded-lg border-0 bg-muted/40 p-3 has-[:focus-visible]:bg-muted dark:bg-card dark:has-[:focus-visible]:bg-accent">
                       <textarea
                         ref={inputRef}
@@ -278,7 +278,7 @@ export function PromptQueueList({
                     </div>
                     <span
                       aria-hidden="true"
-                      className="invisible mr-auto text-xs font-medium text-foreground group-has-[textarea:focus-visible]/queue-editor:visible"
+                      className="mr-auto text-xs font-medium text-foreground [visibility:var(--queue-hint-visibility,hidden)]"
                     >
                       {t("promptQueue.editingHint")}
                     </span>
@@ -338,7 +338,7 @@ export function PromptQueueList({
                         move(item.id, targets[event.key]);
                       }}
                     >
-                      <GripVerticalIcon className="size-4" />
+                      <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-4" />
                     </TooltipIconButton>
                     <ListEndIcon
                       className="hidden size-4 shrink-0 text-muted-foreground/60 sm:block"
@@ -390,7 +390,7 @@ export function PromptQueueList({
                           setAnnouncement(t("promptQueue.announceRemoved"));
                       }}
                     >
-                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
+                      <HugeiconsIcon icon={TrashIcon} strokeWidth={1.8} />
                     </TooltipIconButton>
                     <NonModalDropdownMenu
                       trigger={(triggerRef) => (

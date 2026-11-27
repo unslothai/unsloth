@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
+import { matchLocaleTag } from "./locale-tags";
 import {
   LOCALES,
   type Locale,
@@ -52,25 +53,8 @@ export function isLocalePreference(value: unknown): value is LocalePreference {
   return value === AUTO_LOCALE || isSupportedLocale(value);
 }
 
-function isTraditionalChinese(lowerTag: string): boolean {
-  if (lowerTag.includes("hant")) return true;
-  if (lowerTag.includes("hans")) return false;
-  const parts = lowerTag.split("-");
-  return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
-}
-
 function matchLocale(tag: string): Locale | null {
-  const locales = Object.keys(LOCALES) as Locale[];
-  const lower = tag.toLowerCase();
-  const exact = locales.find((locale) => locale.toLowerCase() === lower);
-  if (exact) return exact;
-  const language = lower.split("-")[0];
-  // Only Simplified Chinese ships; let Traditional Chinese users fall through.
-  if (language === "zh" && isTraditionalChinese(lower)) return null;
-  return (
-    locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
-    null
-  );
+  return matchLocaleTag(tag, Object.keys(LOCALES)) as Locale | null;
 }
 
 function detectLocale(): Locale {
@@ -80,15 +64,7 @@ function detectLocale(): Locale {
     : navigatorRef?.language
       ? [navigatorRef.language]
       : [];
-  let sawTraditionalChinese = false;
   for (const tag of tags) {
-    const lower = tag.toLowerCase();
-    if (lower.split("-")[0] === "zh" && isTraditionalChinese(lower)) {
-      sawTraditionalChinese = true;
-    } else if (sawTraditionalChinese && lower === "zh") {
-      // Bare zh after a Traditional tag is the browser's base-subtag fallback; skip it.
-      continue;
-    }
     const match = matchLocale(tag);
     if (match) return match;
   }

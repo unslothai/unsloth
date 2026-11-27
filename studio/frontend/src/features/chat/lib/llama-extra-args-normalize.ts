@@ -78,6 +78,12 @@ export function parseGpuLayersOverride(
   if (raw === null) {
     return { kind: "absent" };
   }
+  if (raw === "auto") {
+    return { kind: "value", layers: -1 };
+  }
+  if (raw === "all") {
+    return { kind: "value", layers: 2147483647 };
+  }
   const value = Number.parseInt(raw, 10);
   return Number.isInteger(value) && value >= -1 && String(value) === raw.trim()
     ? { kind: "value", layers: value }

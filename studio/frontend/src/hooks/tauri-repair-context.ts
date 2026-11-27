@@ -20,7 +20,7 @@ export function useTauriRepairController(): TauriRepairController | null {
   return useContext(TauriRepairContext);
 }
 
-/** Off Mac the backend reports `no_torch` only with a usable GPU; `chat_only_hint` marks a Mac the MLX wheels skip. */
+/** Off Mac the full install trains on the GPU, or on the CPU when there is none (`cpu_training`); `chat_only_hint` marks a Mac the MLX wheels skip. */
 export function canUpgradeToFullInstall(
   chatOnlyReason: string | null,
   chatOnlyHint: string | null,
@@ -34,4 +34,17 @@ export function canUpgradeToFullInstall(
     repair !== null &&
     !repair.isExternalServer
   );
+}
+
+/** Not on a GPU-less host (no video device). On a Mac the MLX floor blocks training only: PyTorch MPS still runs video. */
+export function canUpgradeForVideo(
+  chatOnlyReason: string | null,
+  chatOnlyHint: string | null,
+  verdictMeasured: boolean,
+  repair: TauriRepairController | null,
+  host: { deviceType: string | null; cpuTraining: boolean },
+): boolean {
+  if (host.cpuTraining) return false;
+  const hint = host.deviceType === "mac" ? null : chatOnlyHint;
+  return canUpgradeToFullInstall(chatOnlyReason, hint, verdictMeasured, repair);
 }

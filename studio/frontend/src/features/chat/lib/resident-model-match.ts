@@ -8,6 +8,7 @@ import {
   isStandaloneGgufPath,
   modelIdsMatch,
   residentModelIdMatches,
+  withoutNamedQuant,
 } from "@/features/hub/lib/model-identity";
 
 /** Catalog id and load path; they differ when a cached row pins a snapshot dir. */
@@ -23,6 +24,27 @@ export type ResidentModelStatus = {
   gguf_variant?: string | null;
 };
 
+// A standalone file has no quant choice; the backend derives a variant from its name.
+function variantMatchesPick(
+  variant: string | null | undefined,
+  pick: ModelPickNames,
+): boolean {
+  if (!pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)) {
+    return true;
+  }
+  return ggufVariantsMatch(variant, pick.ggufVariant);
+}
+
+export function checkpointMatchesPick(
+  checkpoint: string | null | undefined,
+  variant: string | null | undefined,
+  pick: ModelPickNames,
+): boolean {
+  return (
+    modelIdsMatch(checkpoint, pick.id) && variantMatchesPick(variant, pick)
+  );
+}
+
 /** Each side has two names for one model; matching them avoids a needless reload. */
 export function residentModelMatchesPick(
   status: ResidentModelStatus,
@@ -31,19 +53,15 @@ export function residentModelMatchesPick(
   if (!status.active_model) {
     return false;
   }
-  // A standalone file has no quant choice; the backend derives a variant from its name.
-  const picksItsOwnVariant = !(
-    !pick.ggufVariant && isStandaloneGgufPath(pick.loadPath ?? pick.id)
-  );
-  if (
-    picksItsOwnVariant &&
-    !ggufVariantsMatch(status.gguf_variant, pick.ggufVariant)
-  ) {
+  if (!variantMatchesPick(status.gguf_variant, pick)) {
     return false;
   }
   // Only the raw identifier says which snapshot is resident.
   if (status.model_identifier) {
-    return modelIdsMatch(status.model_identifier, pick.loadPath ?? pick.id);
+    return modelIdsMatch(
+      withoutNamedQuant(status.model_identifier, status.gguf_variant),
+      pick.loadPath ?? pick.id,
+    );
   }
   // An older backend put the raw path in active_model.
   const loadName = pick.loadPath ?? pick.id;

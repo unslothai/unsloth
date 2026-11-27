@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
+import sys
+import threading
+import types
 import weakref
 from typing import Iterator, Optional
 
@@ -34,7 +38,7 @@ except ImportError:
     SDPBackend = None
     sdpa_kernel = None
 
-_CP_BACKENDS = ("ring", "ulysses")
+_CP_BACKENDS = ("auto", "ring", "ulysses")
 _ROTATE_METHODS = ("allgather", "alltoall")
 
 
@@ -45,11 +49,14 @@ def _torch_supports_context_parallel() -> bool:
     ) >= Version("2.7.0")
 
 
-def _ring_sdpa_backends():
-    # The math kernel is not ringed: it would attend over the local shard only.
+def _ring_sdpa_backends(efficient = False):
+    # The math kernel is not ringed: it would attend over the local shard only. The efficient kernel is ringed,
+    # but its load balanced backward returns wrong dq / dk in fp16 / bf16 (torch 2.14); float32 only.
     if SDPBackend is None:
         return None
-    backends = [SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]
+    backends = [SDPBackend.FLASH_ATTENTION]
+    if efficient:
+        backends.append(SDPBackend.EFFICIENT_ATTENTION)
     cudnn = getattr(SDPBackend, "CUDNN_ATTENTION", None)
     op = getattr(torch.ops.aten, "_scaled_dot_product_cudnn_attention", None)
     if cudnn is not None and op is not None:
@@ -64,6 +71,17 @@ def _ring_sdpa_backends():
         if isinstance(handled, dict) and op.default in handled:
             backends.append(cudnn)
     return backends
+
+
+def _compute_dtype(model):
+    config = getattr(model, "config", None)
+    for c in (getattr(config, "text_config", None), config):
+        dtype = getattr(c, "dtype", None) or getattr(c, "torch_dtype", None)
+        if isinstance(dtype, str):
+            dtype = getattr(torch, dtype, None)
+        if isinstance(dtype, torch.dtype):
+            return dtype
+    return getattr(model, "dtype", None)
 
 
 def _cp_replaced_functions():
@@ -96,7 +114,7 @@ def context_parallel_options(config) -> tuple:
         raise ValueError(
             f"Unsloth: context_parallel_size must be a positive integer, got {size!r}."
         )
-    backend = getattr(config, "context_parallel_backend", None) or "ring"
+    backend = getattr(config, "context_parallel_backend", None) or "auto"
     if backend not in _CP_BACKENDS:
         raise ValueError(
             f"Unsloth: context_parallel_backend must be one of {_CP_BACKENDS}, got {backend!r}."
@@ -110,9 +128,156 @@ def context_parallel_options(config) -> tuple:
     return size, backend, rotate_method
 
 
-def _unsupported_attention(config, backend = "ring") -> Optional[str]:
-    # Ring and Llama's forward ignore mask, window and softcap, so both backends refuse them.
+# Their Ulysses forwards (utils/ulysses_deepseek.py) build their own sliding / compressed masks, so
+# only these layer types and the window are exempt; chunked attention and softcap still refuse.
+# transformers >= 5.18 renames V3.2's "deepseek_sparse_attention" to "indexed_attention".
+_ULYSSES_OWN_MASK_LAYER_TYPES = {
+    "deepseek_v32": ("deepseek_sparse_attention", "indexed_attention"),
+    "deepseek_v4": (
+        "sliding_attention",
+        "compressed_sparse_attention",
+        "heavily_compressed_attention",
+    ),
+}
+
+
+# Model types whose Ulysses mixers refuse packed batches, for a model ID string (no modules to walk yet).
+_ULYSSES_HYBRID_PACKING_MODEL_TYPES = {
+    "kimi_linear": "KimiDeltaAttention",
+    "kimi_k3": "KimiDeltaAttention",
+    "minimax": "MiniMaxLightningAttention",
+}
+
+
+def ulysses_packing_blocker(model, model_types = ()) -> Optional[str]:
+    """Class name of the first module refusing packed batches, else None; a model ID uses config types."""
+    from .utils.ulysses_deepseek import (
+        DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+        DEEPSEEK_ULYSSES_MODEL_TYPES,
+    )
+    from .utils.ulysses_hybrid import is_ulysses_kimi_delta, is_ulysses_lightning
+
+    if not isinstance(model, torch.nn.Module):
+        for model_type in model_types or ():
+            if model_type in DEEPSEEK_ULYSSES_MODEL_TYPES:
+                return DEEPSEEK_ULYSSES_MODEL_TYPES[model_type]
+            if model_type in _ULYSSES_HYBRID_PACKING_MODEL_TYPES:
+                return _ULYSSES_HYBRID_PACKING_MODEL_TYPES[model_type]
+            if model_type in INKLING2_MODEL_TYPES:
+                return INKLING2_MODEL_TYPES[model_type]
+        return None
+    for module in model.modules():
+        if (
+            type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+            or is_ulysses_kimi_delta(module)
+            or is_ulysses_lightning(module)
+            or is_ulysses_inkling2_attention(module)
+        ):
+            return type(module).__name__
+    return None
+
+
+def _ddp_ignore_indexer(model, attn_name: str, attention) -> None:
+    # Indexer weights get no gradient (discrete top-k); CP turns find_unused_parameters off, so DDP
+    # must ignore them
+    names = [
+        f"{attn_name}.{sub}.{p}"
+        for sub, module in attention.named_modules()
+        if sub.rsplit(".", 1)[-1] == "indexer"
+        for p, _ in module.named_parameters()
+    ]
+    if names:
+        ignored = set(getattr(model, "_ddp_params_and_buffers_to_ignore", ()))
+        model._ddp_params_and_buffers_to_ignore = sorted(ignored.union(names))
+
+
+def _keep_layer_out_of_block_compile(model, attn_name: str) -> None:
+    # Eager Ulysses is a graph break; if one fp32 MoE grouped_mm layer fails to compile the shared
+    # resume, V3.2 fp32 CP=2 raises CheckpointError (62 vs 61)
+    parent = attn_name.rpartition(".")[0]
+    if not parent:
+        return
+    from .models._block_compile import _OFF
+
+    model.get_submodule(parent).__dict__["_unsloth_block_mode"] = _OFF
+
+
+def _model_heads(model):
+    """Sorted (heads, kv heads) per attention layer kind; per_layer_config first since Gemma 4 global reads raise."""
+    config = getattr(model, "config", None)
+    text = getattr(config, "text_config", None) or config
+    if not isinstance(getattr(text, "num_attention_heads", None), int):
+        return []
+    counts = set()
+    try:
+        # transformers >= 5.15 gives every config a per-layer view; its len() reads num_hidden_layers,
+        # which configs such as remote-code ChatGLM (num_layers) do not define.
+        layers = list(getattr(text, "per_layer_config", None) or ())
+    except (AttributeError, TypeError):
+        layers = []
+    for layer in layers or [text]:
+        heads = getattr(layer, "num_attention_heads", None)
+        heads = heads if isinstance(heads, int) else text.num_attention_heads
+        kv = getattr(layer, "num_key_value_heads", None)
+        counts.add((heads, kv if isinstance(kv, int) and kv > 0 else heads))
+    # Without a per-layer view (older Gemma 4 configs) the global layers' KV count sits beside the sliding
+    # one; a per-layer view already lists what every layer uses, and a config with no global layer uses none.
+    global_kv = getattr(text, "num_global_key_value_heads", None)
+    layer_types = getattr(text, "layer_types", None) or ()
+    if (
+        not layers
+        and isinstance(global_kv, int)
+        and global_kv > 0
+        and getattr(text, "attention_k_eq_v", False)
+        and (not layer_types or "full_attention" in layer_types)
+    ):
+        counts.add((text.num_attention_heads, global_kv))
+    return sorted(counts)
+
+
+def _ulysses_head_plans(
+    model,
+    size: int,
+    tp: int = 1,
+) -> None:
+    # Under tensor parallel each rank holds heads / tp of them (and kv heads / tp, or all when fewer).
+    for heads, kv in _model_heads(model):
+        ulysses_head_plan(heads // tp, kv // tp if kv % tp == 0 else kv, size)
+
+
+def resolve_cp_backend(
+    backend,
+    size: int,
+    model = None,
+    tp: int = 1,
+    rl: bool = False,
+) -> str:
+    """context_parallel_backend = 'auto' (the default): Ulysses, which keeps packing, hybrids, RL, T4 / V100
+    and needs no flash kernels; ring only when the attention heads (per tensor parallel rank) cannot be split
+    over cp. An explicit backend is returned as given (the checks then honour or refuse it)."""
+    backend = backend or "auto"
+    if backend != "auto" or size <= 1:
+        return backend
+    if rl:
+        return "ulysses"
+    try:
+        _ulysses_head_plans(model, size, tp)
+    except ValueError:
+        return "ring"
+    return "ulysses"
+
+
+def _unsupported_attention(
+    config,
+    backend = "ring",
+    generic = False,
+) -> Optional[str]:
+    # Ring and Unsloth's fast Llama forward ignore mask, window and softcap, so they refuse them. Ulysses
+    # around the model's own attention function (`generic`) keeps the window and the softcap.
     allowed = {"full_attention", "linear_attention"} if backend == "ulysses" else {"full_attention"}
+    windows_ok = generic and backend == "ulysses"
+    if windows_ok:
+        allowed = allowed | {"sliding_attention"}
     configs = [config]
     text_config = getattr(config, "text_config", None)
     if text_config is not None and text_config is not config:
@@ -120,7 +285,14 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
     for c in configs:
         if c is None:
             continue
+        own_mask = (
+            _ULYSSES_OWN_MASK_LAYER_TYPES.get(getattr(c, "model_type", None))
+            if backend == "ulysses"
+            else None
+        )
         layer_types = getattr(c, "layer_types", None)
+        if own_mask and layer_types:
+            layer_types = [t for t in layer_types if t not in own_mask]
         if layer_types and any(t not in allowed for t in layer_types):
             kinds = sorted({t for t in layer_types if t not in allowed})
             hint = (
@@ -131,13 +303,15 @@ def _unsupported_attention(config, backend = "ring") -> Optional[str]:
             return f"{', '.join(kinds)} layers{hint}"
         # Any positive window, even with use_sliding_window off: Unsloth's masks read it directly.
         sliding_window = getattr(c, "sliding_window", None)
-        if (isinstance(sliding_window, int) and sliding_window > 0) or getattr(
-            c, "use_sliding_window", None
-        ) is True:
+        if not (own_mask or windows_ok) and (
+            (isinstance(sliding_window, int) and sliding_window > 0)
+            or getattr(c, "use_sliding_window", None) is True
+        ):
             return "sliding window attention"
         if getattr(c, "attention_chunk_size", None):
             return "chunked attention"
-        if getattr(c, "attn_logit_softcapping", None):
+        # DeepSeek's own forwards apply no softcap, so it refuses there even on the generic route.
+        if (own_mask or not windows_ok) and getattr(c, "attn_logit_softcapping", None):
             return "attention logit softcapping"
     return None
 
@@ -152,30 +326,101 @@ def _unregister_cp_sharding_rules() -> None:
     unregister_cp_sharding_rules(clear_the_cache = False)
 
 
-from .device_type import DEVICE_TYPE_TORCH
-from .utils.ulysses import _document_positions, ulysses_head_plan
-from .utils.ulysses_hybrid import (
-    GATED_DELTA_ATTENTION_CLASSES,
-    check_gated_delta_heads,
-    install_hf_attention_wrapper,
-    is_ulysses_gated_delta,
-    wrap_gated_delta_forward,
-)
-
 # A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
+
+
+def _seq_len_rope(module) -> bool:
+    kinds = getattr(module, "rope_type", None)
+    kinds = kinds.values() if isinstance(kinds, dict) else (kinds,)
+    return any(kind in ("dynamic", "longrope") for kind in kinds)
+
+
+def _rope_over_full_positions(module) -> None:
+    """Dynamic/longrope RoPE needs max(position_ids): Ulysses shards append the full max, then drop
+    it; slicing full tables would keep them alive for backward"""
+    forward = module.forward
+
+    @functools.wraps(forward)
+    def full_positions_forward(x, position_ids, *args, **kwargs):
+        manager = get_cp_manager()
+        full = getattr(manager, "full_position_ids", None)
+        local = position_ids.shape[-1]
+        if (
+            not isinstance(full, torch.Tensor)
+            or full.ndim != 2
+            or full.shape != (position_ids.shape[0], local * manager.size)
+        ):
+            return forward(x, position_ids, *args, **kwargs)
+        start = manager.mesh.get_local_rank() * local
+        full = full.to(position_ids.device)
+        ids = torch.cat(
+            [full[:, start : start + local], full.max().expand(full.shape[0], 1)], dim = -1
+        )
+        cos, sin = forward(x, ids, *args, **kwargs)
+        return cos[:, :local], sin[:, :local]
+
+    module.forward = full_positions_forward
+    module._unsloth_cp_full_rope = True
+
+
+# Before the imports below: on the CPU route they bind this from the partially initialised module.
+def get_cp_manager() -> Optional["ContextParallelManager"]:
+    return _ACTIVE_MANAGER
+
+
+from .device_type import DEVICE_TYPE_TORCH
+from .utils.ulysses import _document_positions, ulysses_head_plan
+from .utils.ulysses_inkling2 import (
+    INKLING2_LAYER_TYPES,
+    INKLING2_MODEL_TYPES,
+    check_inkling2_heads,
+    is_ulysses_inkling2_attention,
+    is_ulysses_inkling2_conv,
+    wrap_inkling2_attention_forward,
+    wrap_inkling2_conv_forward,
+)
+from .utils.ulysses_deepseek import (
+    DEEPSEEK_ULYSSES_ATTENTION_CLASSES,
+    wrap_deepseek_attention_forward,
+)
+from .utils.ulysses_hybrid import (
+    GATED_DELTA_ATTENTION_CLASSES,
+    check_ulysses_mixer_heads,
+    install_hf_attention_wrapper,
+    is_hf_registry_attention,
+    is_ulysses_mixer,
+    wrap_ulysses_mixer_forward,
+)
+
+# Inkling 2: sliding window / full attention with relative bias and sinks (utils/ulysses_inkling2.py).
+_ULYSSES_OWN_MASK_LAYER_TYPES.update(
+    {model_type: INKLING2_LAYER_TYPES for model_type in INKLING2_MODEL_TYPES}
+)
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
 _PAD_VALUES = {"labels": -100, "shift_labels": -100, "attention_mask": 0, "input_ids": 0}
+# Only the text buffers above are sharded; image / video / audio features would stay whole on every rank.
+_MULTIMODAL_INPUTS = (
+    "pixel_values",
+    "pixel_values_videos",
+    "image_grid_thw",
+    "video_grid_thw",
+    "input_features",
+)
+
+
+def _multimodal_inputs(inputs: dict) -> list:
+    return sorted(
+        name
+        for name, value in inputs.items()
+        if value is not None and (name in _MULTIMODAL_INPUTS or name.startswith("pixel_values"))
+    )
 
 
 _INSTALLED_MESH = []
 _INSTALLED_PARALLELISM_CONFIG = []
-
-
-def get_cp_manager() -> Optional["ContextParallelManager"]:
-    return _ACTIVE_MANAGER
 
 
 def _stateful_mixers(model) -> list:
@@ -194,34 +439,428 @@ def _positions_restart(position_ids, attention_mask) -> bool:
 
 def _hybrid_config_blocker(model) -> Optional[str]:
     config = getattr(model, "config", None)
-    if getattr(config, "vision_config", None) is not None:
-        # Only text buffers are sharded; image / video features would stay whole on every rank.
-        return "multimodal models"
+    # vision_config is allowed (Qwen3.5 ships one); image / video batches are refused in _prepare_inputs.
     text_config = getattr(config, "text_config", None) or config
-    if getattr(text_config, "output_router_logits", False):
+    if getattr(text_config, "output_router_logits", False) and _cp_router_aux_target(model) is None:
         # The load balancing loss is a product of per-sequence means, not a sum over shards.
         return "the MoE router auxiliary loss (output_router_logits)"
-    if any(isinstance(getattr(m, "experts", None), torch.nn.ModuleList) for m in model.modules()):
+    if any(
+        isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and not _runs_every_expert(m)
+        for m in model.modules()
+    ):
         # Per-expert modules run only for experts the local shard routes to, so with DDP's
         # find_unused_parameters off an expert unused on one rank stalls the gradient reduction.
         return "sparse MoE layers with per-expert modules (transformers 4.x Qwen3-Next)"
     return None
 
 
-def _supports_context_parallel(model, backend = "ring") -> bool:
-    from .models.llama import LlamaAttention_fast_forward
+# Each cp rank sees only its shard's router logits: _cp_load_balancing_loss sums the statistics over the cp group.
+def _cp_router_aux_enabled() -> bool:
+    import os
+    return os.environ.get("UNSLOTH_CP_ROUTER_AUX", "1") != "0"
 
-    modules = [module for name, module in model.named_modules() if name.endswith("self_attn")]
-    forwards = [getattr(type(m).forward, "__func__", type(m).forward) for m in modules]
-    if bool(forwards) and all(f is LlamaAttention_fast_forward for f in forwards):
+
+def _causal_lm(model):
+    if not isinstance(model, torch.nn.Module):
+        return None
+    for module in model.modules():
+        if "router_aux_loss_coef" in vars(module):
+            return module
+    return None
+
+
+def _forward_functions(owner):
+    """Zoo's compiled CausalLM forward delegates to a module-level `<Class>_forward`."""
+    found, todo = (
+        [],
+        [(owner.__dict__.get("forward"), 1), (getattr(type(owner), "forward", None), 1)],
+    )
+    while todo:
+        fn, depth = todo.pop(0)
+        for _ in range(8):
+            fn = getattr(fn, "__func__", fn)
+            code = getattr(fn, "__code__", None)
+            if code is None:
+                break
+            if fn not in found:
+                found.append(fn)
+                scope = getattr(fn, "__globals__", None) or {}
+                if depth > 0:
+                    todo.extend(
+                        (scope[name], depth - 1)
+                        for name in code.co_names
+                        if name.endswith("_forward") and callable(scope.get(name))
+                    )
+            fn = getattr(fn, "__wrapped__", None)
+    return found
+
+
+def _forward_globals(owner):
+    # TRL's fused-head forward names load_balancing_loss_func without defining it: skip such globals.
+    for fn in _forward_functions(owner):
+        if "load_balancing_loss_func" in fn.__code__.co_names and callable(
+            fn.__globals__.get("load_balancing_loss_func")
+        ):
+            return fn.__globals__
+    return None
+
+
+def _cp_router_aux_target(model):
+    """(globals, original load_balancing_loss_func) of the CausalLM forward, or None."""
+    if not _cp_router_aux_enabled():
+        return None
+    inner = _causal_lm(model)
+    config = getattr(inner, "config", None)
+    text = getattr(config, "text_config", None) or config
+    family = str(getattr(text, "model_type", "") or "").removesuffix("_text")
+    from .parallel_capabilities import CP_ROUTER_AUX_FAMILIES
+
+    if inner is None or family not in CP_ROUTER_AUX_FAMILIES:
+        return None
+    scope = _forward_globals(inner)
+    if scope is None:
+        return None
+    original = scope.get("load_balancing_loss_func")
+    original = getattr(original, "_unsloth_cp_original", original)
+    num_experts = getattr(inner, "num_experts", None)
+    top_k = getattr(inner, "num_experts_per_tok", None)
+    if not callable(original) or not isinstance(num_experts, int) or not isinstance(top_k, int):
+        return None
+    from .models.pp_native import _statistics_match_transformers
+
+    if not _statistics_match_transformers(None, num_experts, top_k, reference = original):
+        return None
+    return scope, original
+
+
+class _SumOverGroup(torch.autograd.Function):
+    """All-reduce (sum) whose backward also sums: each shard gets the gradient of all peers' terms."""
+
+    @staticmethod
+    def forward(ctx, x, group):
+        ctx.group = group
+        out = x.detach().clone()
+        dist.all_reduce(out, group = group)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad):
+        grad = grad.contiguous().clone()
+        dist.all_reduce(grad, group = ctx.group)
+        return grad, None
+
+
+def _cp_load_balancing_loss(original):
+    @functools.wraps(original)
+    def load_balancing_loss_func(
+        gate_logits,
+        num_experts = None,
+        top_k = 2,
+        attention_mask = None,
+    ):
+        manager = _ACTIVE_MANAGER
+        scale = getattr(manager, "router_aux_scale", None)
+        if (
+            scale is None
+            or manager.size <= 1
+            or not isinstance(gate_logits, tuple)
+            or not gate_logits
+        ):
+            return original(gate_logits, num_experts, top_k, attention_mask)
+        if not manager.in_training_step:
+            # The 1 / cp offsets the world-size factor training_step puts on the loss; evaluation has none.
+            scale = 1.0
+        from .models.pp_native import _load_balancing_from_statistics, _router_statistics
+
+        if torch.is_grad_enabled() and not any(g.requires_grad for g in gate_logits):
+            # Reentrant checkpointing runs the layers under no_grad: the loss would add a value but no gradient.
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss over the cp group only with "
+                "gradient checkpointing off, Unsloth's checkpointing (use_gradient_checkpointing = 'unsloth', "
+                "which checkpoints MoE models non-reentrantly) or gradient_checkpointing_kwargs = "
+                "{'use_reentrant': False}; reentrant checkpointing would drop its gradient. Or train without "
+                "the auxiliary loss (router_aux_loss_coef = 0.0 in SFTConfig)."
+            )
+        rows = gate_logits[0].shape[0]
+        if attention_mask is not None and (
+            not isinstance(attention_mask, torch.Tensor)
+            or attention_mask.dim() != 2
+            or attention_mask.numel() != rows
+        ):
+            raise ValueError(
+                "Unsloth: context parallelism forms the router auxiliary loss from a 2-D [batch, seq] attention "
+                f"mask of the shard's {rows} tokens, got "
+                f"{tuple(attention_mask.shape) if isinstance(attention_mask, torch.Tensor) else type(attention_mask).__name__}."
+            )
+        # The tokens context parallel appended to reach the cp multiple are not in the one-process batch.
+        real = manager.real_token_mask(rows)
+        mask = None if attention_mask is None else attention_mask.reshape(1, -1).ne(0)
+        if real is not None:
+            real = real.reshape(1, -1).to(gate_logits[0].device)
+            mask = real if mask is None else mask.to(real.device) & real
+        stats = _router_statistics(gate_logits, num_experts, top_k, mask)
+        stats = _SumOverGroup.apply(stats, manager.mesh.get_group())
+        return _load_balancing_from_statistics(stats, num_experts) * scale
+
+    load_balancing_loss_func._unsloth_cp_original = original
+    return load_balancing_loss_func
+
+
+def _router_aux_scale(trainer, size: int) -> float:
+    """Zoo's forward and TRL >= 1.15 already average peers; a plain forward would count it per peer: 1 / cp."""
+    from .models.pp_env import _compute_loss_adds_router_aux
+
+    inner = _causal_lm(getattr(trainer, "model", None))
+    if inner is not None and any(
+        "unsloth_ga_scale_aux_loss" in fn.__code__.co_names for fn in _forward_functions(inner)
+    ):
+        return 1.0
+    compute_loss = getattr(type(trainer), "compute_loss", None)
+    if getattr(compute_loss, "_unsloth_cpu", False) and _compute_loss_adds_router_aux(compute_loss):
+        return 1.0
+    return 1.0 / size
+
+
+def _install_cp_router_aux(trainer, manager) -> None:
+    """Under Ulysses cp, form the router aux loss over the cp group; no-op otherwise."""
+    if not getattr(trainer, "_unsloth_cp_router_aux", False):
+        return
+    target = _cp_router_aux_target(getattr(trainer, "model", None))
+    if target is None or manager.backend != "ulysses":
+        raise RuntimeError("Unsloth: the context parallel router auxiliary loss lost its target.")
+    scope, original = target
+    if getattr(scope.get("load_balancing_loss_func"), "_unsloth_cp_original", None) is not original:
+        scope["load_balancing_loss_func"] = _cp_load_balancing_loss(original)
+    manager.router_aux_scale = _router_aux_scale(trainer, manager.size)
+
+
+def _runs_every_expert(block) -> bool:
+    # Unsloth's train-mode remote MoE (Kimi-Linear) gives unrouted experts zero gradients under CP;
+    # expert parallel blocks (ep_size > 1) keep the remote forward, so they do not.
+    if (getattr(block, "ep_size", 1) or 1) > 1:
+        return False
+    return getattr(getattr(type(block), "forward", None), "_unsloth_remote_moe_shim", False)
+
+
+_EXPERT_TOKENS = "_unsloth_cp_expert_tokens"
+_EXPERT_STEPPED = "_unsloth_cp_expert_stepped"
+
+
+def record_expert_tokens(block, token_counts) -> None:
+    # Per-expert routed token counts (no host sync) since its grad was last None; only graph-building
+    # forwards count (checkpoint recompute double counts, harmless since only > 0 matters).
+    if not torch.is_grad_enabled():
+        return
+    if block.__dict__.pop(_EXPERT_STEPPED, False):
+        # First forward after an optimizer step (and the zero_grad after it).
+        start_expert_window([block])
+    seen = block.__dict__.get(_EXPERT_TOKENS)
+    block.__dict__[_EXPERT_TOKENS] = (
+        token_counts.detach().clone() if seen is None else seen.add_(token_counts)
+    )
+
+
+def forget_expert_tokens(block) -> None:
+    # A graph-building forward without context parallelism (e.g. a later trainer reusing the optimizer):
+    # its experts' None gradients are already the single-process ones, so the step must not drop any.
+    block.__dict__.pop(_EXPERT_TOKENS, None)
+    block.__dict__.pop(_EXPERT_STEPPED, None)
+
+
+def start_expert_window(blocks) -> None:
+    """Forget counts of experts whose grads are None; zero_grad(set_to_none = True) clears all, even
+    after a skipped fp16 step; with set_to_none = False counts carry over"""
+    for block in blocks:
+        seen = block.__dict__.get(_EXPERT_TOKENS)
+        block.__dict__.pop(_EXPERT_STEPPED, None)
+        if seen is None:
+            continue
+        keep = [
+            any(p.grad is not None for p in expert.parameters() if p.requires_grad)
+            for expert in block.experts
+        ]
+        if not any(keep):
+            del block.__dict__[_EXPERT_TOKENS]
+        elif not all(keep):
+            seen.mul_(torch.tensor(keep, dtype = seen.dtype, device = seen.device))
+
+
+def drop_idle_expert_grads(blocks, group = None) -> int:
+    """Set .grad = None on experts no rank routed real tokens to; only blocks a CP forward counted
+    since the last step, so with CP off every gradient is kept"""
+    # Counted: a CP forward ran since the last step (it pops _EXPERT_STEPPED) and no non-CP forward
+    # since (forget_expert_tokens). All CP peers run the same forwards, so they agree on the collective.
+    blocks = [
+        b
+        for b in blocks
+        if b.__dict__.get(_EXPERT_TOKENS) is not None and not b.__dict__.get(_EXPERT_STEPPED)
+    ]
+    if not blocks:
+        return 0
+    counts = []
+    for block in blocks:
+        seen = block.__dict__[_EXPERT_TOKENS]
+        # The next forward starts a new window (start_expert_window), after the trainer's zero_grad.
+        block.__dict__[_EXPERT_STEPPED] = True
+        counts.append(seen.to(torch.long))
+    device = counts[0].device
+    total = torch.cat([c.to(device) for c in counts])
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(total, group = group)
+    idle = total.eq(0).tolist()
+    dropped = 0
+    offset = 0
+    for block in blocks:
+        for expert_index, expert in enumerate(block.experts):
+            if idle[offset + expert_index]:
+                for param in expert.parameters():
+                    param.grad = None
+                dropped += 1
+        offset += len(block.experts)
+    return dropped
+
+
+def install_idle_expert_grad_hook(
+    optimizer,
+    model,
+    group = None,
+    window = None,
+) -> bool:
+    """Step pre-hook after backward; count window advances even when GradScaler skips optimizer.step()."""
+    while not isinstance(optimizer, torch.optim.Optimizer) or (
+        # accelerate's AcceleratedOptimizer subclasses Optimizer but steps the one it wraps.
+        isinstance(getattr(optimizer, "optimizer", None), torch.optim.Optimizer)
+    ):
+        optimizer = getattr(optimizer, "optimizer", None)
+        if optimizer is None:
+            return False
+    blocks = optimizer.__dict__.get("_unsloth_idle_expert_blocks")
+    if blocks is None:
+        if not isinstance(model, torch.nn.Module):
+            return False
+        found = [
+            m
+            for m in model.modules()
+            if isinstance(getattr(m, "experts", None), torch.nn.ModuleList)
+            and _runs_every_expert(m)
+        ]
+        if not found:
+            return False
+        blocks = [weakref.ref(b) for b in found]
+
+        def hook(_optimizer, _args, _kwargs):
+            drop_idle_expert_grads([b for b in (ref() for ref in blocks) if b is not None], group)
+
+        optimizer.__dict__["_unsloth_idle_expert_blocks"] = blocks
+        optimizer.__dict__["_unsloth_idle_expert_hook"] = optimizer.register_step_pre_hook(hook)
+    if window is not None and optimizer.__dict__.get("_unsloth_idle_expert_window") != window:
+        optimizer.__dict__["_unsloth_idle_expert_window"] = window
+        start_expert_window([b for b in (ref() for ref in blocks) if b is not None])
+    return True
+
+
+def _optimizer_window(trainer):
+    # global_step is fixed across accumulation micro-batches and advances on each step attempt.
+    return getattr(getattr(trainer, "state", None), "global_step", None)
+
+
+def _in_media_tower(name: str) -> bool:
+    # CP only takes text batches: vision / audio encoders (Gemma 4's towers name theirs self_attn too) never run.
+    return not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+
+
+def _attention_modules(model) -> list:
+    if not hasattr(model, "named_modules"):
+        return []
+    return [
+        module
+        for name, module in model.named_modules()
+        if name.endswith("self_attn") and not _in_media_tower(name)
+    ]
+
+
+def _uses_unsloth_attention(model, rl = False) -> bool:
+    """Every attention layer runs a forward marked by context_parallel_attention (with rl: marked for DPO / GRPO)."""
+    from .models.llama import running_forward
+    from .utils.attention_dispatch import is_context_parallel_attention
+
+    modules = _attention_modules(model)
+    return bool(modules) and all(
+        is_context_parallel_attention(running_forward(m), rl) for m in modules
+    )
+
+
+def _generic_hf_attention(model) -> bool:
+    """Every attention layer is a Hugging Face forward through ALL_ATTENTION_FUNCTIONS, so Ulysses can run the
+    model's own attention function (scaling, softcap, sliding window, sinks) after the exchange. DeepSeek V3.2 /
+    V4 attention gets its own Ulysses forward instead (utils/ulysses_deepseek.py) under the same model checks."""
+    if not isinstance(model, torch.nn.Module) or _stateful_mixers(model):
+        return False
+    modules = _attention_modules(model)
+    return bool(modules) and all(
+        is_hf_registry_attention(m) or type(m).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+        for m in modules
+    )
+
+
+def _supports_context_parallel(
+    model,
+    backend = "ring",
+    generic = True,
+) -> bool:
+    if _uses_unsloth_attention(model):
         return not _stateful_mixers(model)
+    if backend != "ulysses" or _hybrid_config_blocker(model) is not None:
+        return False
+    if _inkling2_model(model):
+        return _inkling2_ulysses_ready(model)
     mixers = _stateful_mixers(model)
+    if mixers:
+        # Hybrids: the family-specific linear attention forwards, and their HF full attention layers.
+        # Kimi-Linear names its delta attention layers self_attn too; its MLA layers are generic HF attention.
+        return all(is_ulysses_mixer(m) for m, _ in mixers) and all(
+            type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES or is_hf_registry_attention(m)
+            for m in _attention_modules(model)
+            if not is_ulysses_mixer(m)
+        )
+    return generic and _generic_hf_attention(model)
+
+
+def _inkling2_model(model) -> bool:
+    return isinstance(model, torch.nn.Module) and any(
+        is_ulysses_inkling2_attention(m) for m in model.modules()
+    )
+
+
+def _inkling2_loss_takes_kwargs(model) -> bool:
+    """The Inkling 2 CausalLM / ConditionalGeneration forward passes its **kwargs to self.loss_function."""
+    import inspect
+
+    seen = set()
+    while model is not None and id(model) not in seen:
+        seen.add(id(model))
+        if type(model).__name__.startswith("Inkling2") and _inkling2_model(model):
+            try:
+                source = inspect.getsource(inspect.unwrap(type(model).forward))
+            except (OSError, TypeError):
+                return False
+            return any(
+                "self.loss_function(" in line and "**kwargs)" in line
+                for line in source.splitlines()
+            )
+        getter = getattr(model, "get_base_model", None)
+        model = getter() if callable(getter) else getattr(model, "module", None)
+    return False
+
+
+def _inkling2_ulysses_ready(model) -> bool:
+    """Inkling 2: every text attention layer is the Inkling 2 attention (Ulysses forward over head shards) and
+    every stateful mixer is one of its short convolutions (halo exchange on the sequence shard)."""
+    modules = _attention_modules(model)
     return (
-        backend == "ulysses"
-        and bool(mixers)
-        and all(is_ulysses_gated_delta(m) for m, _ in mixers)
-        and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
-        and _hybrid_config_blocker(model) is None
+        bool(modules)
+        and all(is_ulysses_inkling2_attention(m) for m in modules)
+        and all(is_ulysses_inkling2_conv(m) for m, _ in _stateful_mixers(model))
     )
 
 
@@ -229,20 +868,30 @@ def _check_stateful_mixers(model, backend, size) -> None:
     mixers = _stateful_mixers(model)
     if not mixers:
         return
+    if backend == "ulysses" and _inkling2_model(model):
+        unsupported = sorted(
+            {type(m).__name__ for m, _ in mixers if not is_ulysses_inkling2_conv(m)}
+        )
+        if unsupported:
+            raise NotImplementedError(
+                f"Unsloth: Ulysses context parallelism on Inkling 2 does not support {unsupported}."
+            )
+        check_inkling2_heads(model, size)
+        return
     if backend != "ulysses":
         kinds = sorted({type(m).__name__ for m, _ in mixers})
         raise NotImplementedError(
             f"Unsloth: ring context parallelism cannot split the sequential scans of {kinds}; "
             "use context_parallel_backend = 'ulysses'."
         )
-    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_gated_delta(m)})
+    unsupported = sorted({type(m).__name__ for m, _ in mixers if not is_ulysses_mixer(m)})
     if unsupported:
         raise NotImplementedError(
-            "Unsloth: Ulysses context parallelism supports Gated DeltaNet linear attention only, "
-            f"not {unsupported}."
+            "Unsloth: Ulysses context parallelism supports Gated DeltaNet, Kimi delta and "
+            f"Lightning linear attention only, not {unsupported}."
         )
     for module, _ in mixers:
-        check_gated_delta_heads(module, size)
+        check_ulysses_mixer_heads(module, size)
 
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
@@ -251,9 +900,23 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
     return module_args, module_kwargs
 
 
+def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
+    # HF's shard-local mask is None on shards with no document start, a tensor elsewhere; CP attention never
+    # reads it, so always pass None: a compiled layer guards on the argument type and keeps one graph.
+    if get_cp_manager() is not None and module_kwargs.get("attention_mask") is not None:
+        module_kwargs["attention_mask"] = None
+    return module_args, module_kwargs
+
+
 class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
+    router_aux_scale = (
+        None  # set by _install_cp_router_aux: the router aux loss is formed over the cp group
+    )
+    in_training_step = (
+        False  # inside Trainer.training_step (the loss there is multiplied by the world size)
+    )
 
     def __init__(
         self,
@@ -261,11 +924,26 @@ class ContextParallelManager:
         backend: str = "ring",
         rotate_method: str = "allgather",
         fsdp2: bool = False,
+        layout = None,
     ):
         self.size = size
         self.backend = backend
         self.rotate_method = rotate_method
         self.fsdp2 = fsdp2
+        if layout is not None:
+            # UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE with UNSLOTH_CP_SIZE: the cp axis of the one root mesh
+            # (parallel_env.ParallelLayout). Tensor parallel splits the rows over dp only and averages the
+            # gradients over the flattened (dp, cp) mesh, so nothing is installed on the accelerator here.
+            if layout.cp != size:
+                raise RuntimeError(
+                    f"Unsloth: context_parallel_size = {size} but the parallel layout has cp {layout.cp}."
+                )
+            self.layout = layout
+            self.fsdp2 = False
+            self.device_mesh = None
+            self.mesh = layout.cp_mesh
+            return
+        self.layout = None
         world_size = dist.get_world_size()
         # FSDP2 shards parameters over dp_shard x cp flattened (torchtitan, accelerate's dp_shard_cp):
         # CP peers hold different tokens, so their gradients must be reduced like data parallel ones.
@@ -283,30 +961,80 @@ class ContextParallelManager:
         return self.mesh.get_group()
 
     def attach_attention_hooks(self, model: torch.nn.Module) -> None:
+        self._ring_float32 = _compute_dtype(model) == torch.float32
+        if any(
+            isinstance(getattr(m, "experts", None), torch.nn.ModuleList) and _runs_every_expert(m)
+            for m in model.modules()
+        ):
+            # Caller padding counts as expert usage in one process, so the mixers keep its activations.
+            self._match_caller_padding = True
         if self.backend == "ulysses":
             for module, _ in _stateful_mixers(model):
-                if is_ulysses_gated_delta(module):
-                    wrap_gated_delta_forward(module, get_cp_manager)
+                if is_ulysses_mixer(module):
+                    wrap_ulysses_mixer_forward(module, get_cp_manager)
+            # Inkling 2's short convolutions (attention k / v and the residual stream) take a halo from the
+            # previous shard; nested ones inside a key / value projection are walked too.
             for name, module in model.named_modules():
-                if (
+                if not _in_media_tower(name) and is_ulysses_inkling2_conv(module):
+                    wrap_inkling2_conv_forward(module, get_cp_manager)
+            # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
+            generic = not _uses_unsloth_attention(model)
+            for name, module in model.named_modules() if generic else ():
+                if _in_media_tower(name):
+                    continue
+                if _seq_len_rope(module) and not getattr(module, "_unsloth_cp_full_rope", False):
+                    _rope_over_full_positions(module)
+            for name, module in model.named_modules():
+                if _in_media_tower(name):
+                    continue
+                if name.endswith("self_attn") and is_ulysses_inkling2_attention(module):
+                    wrap_inkling2_attention_forward(module, get_cp_manager)
+                elif (
                     name.endswith("self_attn")
-                    and type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                    and type(module).__name__ in DEEPSEEK_ULYSSES_ATTENTION_CLASSES
+                ):
+                    wrap_deepseek_attention_forward(module, get_cp_manager)
+                    _ddp_ignore_indexer(model, name, module)
+                    _keep_layer_out_of_block_compile(model, name)
+                elif name.endswith("self_attn") and (
+                    type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
+                    or (generic and is_hf_registry_attention(module))
                 ):
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
-        for name, module in model.named_modules():
-            if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
+        for name, module in list(model.named_modules()):
+            if not name.endswith("self_attn") or _in_media_tower(name):
+                continue
+            if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
                     _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
                 )
                 module._unsloth_cp_hooked = True
+            # Skip layers with linear_attn: its scan reads the padding mask.
+            layer = model.get_submodule(name.rpartition(".")[0]) if "." in name else None
+            if (
+                layer is not None
+                and not hasattr(layer, "linear_attn")
+                and not getattr(layer, "_unsloth_cp_mask_hooked", False)
+            ):
+                layer.register_forward_pre_hook(
+                    _decoder_layer_pre_forward_hook, with_kwargs = True, prepend = True
+                )
+                layer._unsloth_cp_mask_hooked = True
 
     def _prepare_inputs(self, inputs: dict) -> None:
         input_ids = inputs.get("input_ids")
         if not isinstance(input_ids, torch.Tensor) or inputs.get("inputs_embeds") is not None:
             raise ValueError(
                 "Unsloth: context parallelism needs input_ids batches (not inputs_embeds)."
+            )
+        multimodal = _multimodal_inputs(inputs)
+        if multimodal:
+            raise ValueError(
+                "Unsloth: context parallelism shards text tokens only; batches with image / video "
+                f"inputs ({', '.join(multimodal)}) are not supported. Train on text-only data, or "
+                "use context_parallel_size = 1."
             )
         bsz, seq_len = input_ids.shape
         packed_seq_lengths = inputs.get("packed_seq_lengths")
@@ -321,7 +1049,7 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
-        if inputs.get("output_router_logits"):
+        if inputs.get("output_router_logits") and getattr(self, "router_aux_scale", None) is None:
             raise ValueError(
                 "Unsloth: context parallelism does not support the MoE router auxiliary loss "
                 "(output_router_logits): it is a product of per-sequence means, not a sum over shards."
@@ -367,6 +1095,18 @@ class ContextParallelManager:
             labels = mask_packed_boundary_labels(labels, packed_seq_lengths)
             inputs["shift_labels"] = F.pad(labels, (0, 1), value = -100)[:, 1:].contiguous()
         pad = (-seq_len) % (self.size if ulysses else 2 * self.size)
+        padded = self.__dict__.get("_padded_input_ids")
+        prepared = not pad and padded is not None and padded[0]() is input_ids
+        # Before alignment padding and sharding: LongRoPE picks its factors from the caller's positions.
+        positions = inputs.get("position_ids")
+        self.position_bound = (
+            positions[:, : padded[1] if prepared else seq_len].amax()
+            if isinstance(positions, torch.Tensor)
+            else None
+        )
+        if prepared:
+            return  # prepared already (prediction_step, then apply): keep the real length
+        self._padded_input_ids = None
         if pad:
             for name in _BUFFER_NAMES:
                 tensor = inputs.get(name)
@@ -377,6 +1117,62 @@ class ContextParallelManager:
                     inputs[name] = torch.cat([tensor, extra.to(tensor.dtype)], dim = 1)
                 else:
                     inputs[name] = F.pad(tensor, (0, pad), value = _PAD_VALUES.get(name, 0))
+            # The appended tokens are not in the single-process batch: the MoE must not count their routes.
+            self._padded_input_ids = (weakref.ref(inputs["input_ids"]), seq_len)
+
+    def _real_tokens(self, input_ids) -> Optional[torch.Tensor]:
+        # [batch, padded seq] True on tokens of the caller's batch, None when nothing was appended.
+        padded = self.__dict__.get("_padded_input_ids")
+        if padded is None or padded[0]() is not input_ids:
+            return None
+        positions = torch.arange(input_ids.shape[1], device = input_ids.device)
+        return positions.lt(padded[1]).expand(input_ids.shape[0], -1).contiguous()
+
+    def _note_real_tokens(self, local_ids, local) -> None:
+        # Same-size forwards OR their masks: counting a pad as real is harmless, a real token as pad
+        # is not. Also under no_grad: evaluate() inside torch.no_grad() must not count the cp pads.
+        if not isinstance(local_ids, torch.Tensor):
+            return
+        masks = self.__dict__.setdefault("_real_token_masks", {})
+        key = local_ids.numel()
+        flat = None if local is None else local.reshape(-1)
+        if key not in masks:
+            masks[key] = flat
+        elif masks[key] is not None:
+            masks[key] = None if flat is None else masks[key] | flat
+
+    def real_token_mask(self, num_tokens: int) -> Optional[torch.Tensor]:
+        """Flat [num_tokens] bool mask of the local shard's tokens that are in the caller's batch (not
+        context parallel padding), or None when all are. Valid through backward, for recompute."""
+        return self.__dict__.get("_real_token_masks", {}).get(num_tokens)
+
+    def _clear_real_tokens(self) -> None:
+        self.__dict__.pop("_real_token_masks", None)
+        self.__dict__.pop("_caller_pad_lengths", None)
+
+    def _note_caller_padding(self, mask) -> None:
+        # Real length per row of the caller's mask, keyed by the full sequence shape the mixers see.
+        if not getattr(self, "_match_caller_padding", False) or not isinstance(mask, torch.Tensor):
+            return
+        if mask.ndim != 2:
+            return
+        padded = self.__dict__.get("_padded_input_ids")
+        caller_len = mask.shape[1] if padded is None else padded[1]
+        lengths = tuple(int(n) for n in mask.ne(0).sum(1).tolist())
+        if all(n >= caller_len for n in lengths):
+            return  # no caller padding: the appended tokens are not counted (real_token_mask)
+        store = self.__dict__.setdefault("_caller_pad_lengths", {})
+        key = tuple(mask.shape)
+        seen = store.get(key)
+        # Same shape, different padding in one step: the longer length never treats a real token as pad.
+        store[key] = lengths if seen is None else tuple(max(a, b) for a, b in zip(seen, lengths))
+
+    def caller_pad_lengths(self, bsz: int, total: int) -> Optional[tuple]:
+        """Leading real tokens per row, None if unpadded; set only where MoE expert counts see
+        caller padding."""
+        store = self.__dict__.get("_caller_pad_lengths")
+        # Hashing the (bsz, total) key specialises a compiled layer's shard length: look up only when set.
+        return store.get((bsz, total)) if store else None
 
     @contextlib.contextmanager
     def _rotate_method_scope(self) -> Iterator[None]:
@@ -399,11 +1195,18 @@ class ContextParallelManager:
     def _ulysses_shard(self, inputs: dict) -> None:
         # Contiguous shards; packed_seq_lengths stays global.
         rank = self.mesh.get_local_rank()
+        self.full_position_ids = inputs.get("position_ids")  # for _rope_over_full_positions
+        self._note_caller_padding(inputs.get("attention_mask"))
+        real = self._real_tokens(inputs.get("input_ids"))
+        if real is not None:
+            local = real.shape[1] // self.size
+            real = real[:, rank * local : (rank + 1) * local]
         for name in _BUFFER_NAMES:
             tensor = inputs.get(name)
             if isinstance(tensor, torch.Tensor) and tensor.ndim > 1:
                 local = tensor.shape[1] // self.size
                 inputs[name] = tensor[:, rank * local : (rank + 1) * local].contiguous()
+        self._note_real_tokens(inputs.get("input_ids"), real)
 
     @contextlib.contextmanager
     def _ulysses_scope(self, inputs: dict) -> Iterator[None]:
@@ -413,14 +1216,33 @@ class ContextParallelManager:
         # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
         self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
+            if isinstance(self.packed_seq_lengths, torch.Tensor):
+                # Build the cached packed entry outside compile: dynamo does not guard its identity check
+                # (stale documents). Inside the try, so a raise here still restores the manager.
+                from .utils.packing import get_packed_info_from_kwargs
+                get_packed_info_from_kwargs(
+                    {"packed_seq_lengths": self.packed_seq_lengths}, inputs["input_ids"].device
+                )
             yield
         finally:
             _ACTIVE_MANAGER = previous
             self.packed_seq_lengths = None
+            self.full_position_ids = None
+            # ulysses_deepseek: this step's gathered positions.
+            self._deepseek_full_position_ids = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
         self._prepare_inputs(inputs)
+        self._clear_real_tokens()
+        try:
+            with self._apply(inputs):
+                yield
+        finally:
+            self._clear_real_tokens()
+
+    @contextlib.contextmanager
+    def _apply(self, inputs: dict) -> Iterator[None]:
         if self.backend == "ulysses":
             with self._ulysses_scope(inputs):
                 yield
@@ -430,13 +1252,16 @@ class ContextParallelManager:
             for name in _BUFFER_NAMES
             if isinstance(inputs.get(name), torch.Tensor) and inputs[name].ndim > 1
         ]
+        real = self._real_tokens(inputs.get("input_ids"))
+        if real is not None:
+            buffers.append(real)  # sharded in place with the batch's load-balanced layout
         global _ACTIVE_MANAGER
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
         # torch < 2.13 leaves its CP dispatcher installed when the step raises.
         sdpa = F.scaled_dot_product_attention
         dispatcher = getattr(DTensor, "_op_dispatcher", None)
         handlers = getattr(dispatcher, "_custom_op_handlers", None)
-        ring_backends = _ring_sdpa_backends()
+        ring_backends = _ring_sdpa_backends(self.__dict__.get("_ring_float32", False))
         registry = _cp_replaced_functions()
         wrappers = set(registry) if registry is not None else None
         raised = False
@@ -455,6 +1280,7 @@ class ContextParallelManager:
                     no_restore_buffers = set(buffers),
                 ),
             ):
+                self._note_real_tokens(inputs.get("input_ids"), real)
                 yield
         except BaseException:
             raised = True
@@ -595,18 +1421,67 @@ def _restore_parallelism_config(state) -> None:
         _INSTALLED_PARALLELISM_CONFIG.clear()
 
 
+def _release_accelerator_state(state) -> None:
+    """Put back the AcceleratorState mesh / parallelism config a CP trainer installed (no-op otherwise)."""
+    if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
+        # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
+        state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
+        _INSTALLED_MESH.clear()
+    _restore_parallelism_config(state)
+
+
+@contextlib.contextmanager
+def _cp_state_scope(self):
+    """CP state sits on AcceleratorState only during the entry point; nested calls restore it only
+    when the outermost call returns"""
+    depth = self.__dict__.get("_unsloth_cp_state_depth", 0)
+    self._unsloth_cp_state_depth = depth + 1
+    _install_accelerator_state(self)
+    try:
+        yield
+    finally:
+        self._unsloth_cp_state_depth = depth
+        if depth == 0 and getattr(self, "_context_parallel_manager", None) is not None:
+            _release_accelerator_state(getattr(getattr(self, "accelerator", None), "state", None))
+
+
+def _bind_instance_methods(trainer, methods: dict) -> None:
+    """Bind the CP wrappers on this trainer only (types.MethodType); the class keeps its methods."""
+    import types
+
+    bound = {name: types.MethodType(fn, trainer) for name, fn in methods.items() if fn is not None}
+    trainer.__dict__.update(bound)
+    trainer.__dict__["_unsloth_cp_bound_methods"] = bound
+
+
+def _bind_cp_methods(trainer):
+    """Bind the CP wrappers of the trainer's (patched) class on a trainer built without __init__ (tests)."""
+    _bind_instance_methods(trainer, getattr(type(trainer), "_unsloth_cp_methods"))
+    return trainer
+
+
+def _unbind_instance_methods(trainer) -> None:
+    """Drop the CP wrappers bound by _bind_instance_methods; an attribute Unsloth re-wrapped since (it then
+    holds our bound method inside, which passes through without a manager) is left alone."""
+    bound = trainer.__dict__.pop("_unsloth_cp_bound_methods", None) or {}
+    for name, method in bound.items():
+        if trainer.__dict__.get(name) is method:
+            del trainer.__dict__[name]
+
+
 def _install_accelerator_state(self):
     manager = getattr(self, "_context_parallel_manager", None)
     accelerator = getattr(self, "accelerator", None)
     state = getattr(accelerator, "state", None)
     if manager is None:
-        if _INSTALLED_MESH and getattr(state, "device_mesh", None) is _INSTALLED_MESH[0]:
-            # The mesh an accepted FSDP2 ParallelismConfig indexes, restored with that config.
-            state.device_mesh = _INSTALLED_MESH[1] if len(_INSTALLED_MESH) > 1 else None
-            _INSTALLED_MESH.clear()
-        _restore_parallelism_config(state)
+        _release_accelerator_state(state)
         return
     if accelerator is None:
+        return
+    if manager.device_mesh is None:
+        # A root-mesh manager (parallel_env): the tensor parallel hooks split the data and reduce gradients.
+        _restore_parallelism_config(accelerator.state)
+        _cp_scaler_start(self, accelerator)
         return
     current = getattr(accelerator.state, "device_mesh", None)
     if _INSTALLED_MESH and current is _INSTALLED_MESH[0]:
@@ -617,12 +1492,434 @@ def _install_accelerator_state(self):
         _install_fsdp2_parallelism_config(accelerator.state, manager)
     else:
         _restore_parallelism_config(accelerator.state)
+    _cp_scaler_start(self, accelerator)
     # PEFT makes the Trainer ask DDP for find_unused_parameters, which breaks reentrant checkpointing.
     if getattr(self.args, "ddp_find_unused_parameters", None) in (None, False):
         self.args.ddp_find_unused_parameters = False
         handler = getattr(accelerator, "ddp_handler", None)
         if handler is not None:
             handler.find_unused_parameters = False
+
+
+def _cp_scaler_start(trainer, accelerator) -> None:
+    """float16: start the GradScaler at 2**16 / world, as native FSDP2 and tensor parallel do.
+    CP rank grads are world x one GPU's (loss is multiplied by world). Only touches a scaler still at the default."""
+    scaler = getattr(accelerator, "scaler", None)
+    if scaler is None or getattr(scaler, "_unsloth_cp_init_scale", False):
+        return
+    try:
+        if not scaler.is_enabled() or getattr(scaler, "_scale", None) is not None:
+            return
+        if float(getattr(scaler, "_init_scale", 0.0)) != 2.0**16:
+            return
+        handler = getattr(accelerator, "scaler_handler", None)
+        user = handler.to_kwargs() if handler is not None and hasattr(handler, "to_kwargs") else {}
+        if "init_scale" in user:
+            return
+        from .models.fsdp2_native import _loss_scale_ranks
+
+        world = _loss_scale_ranks(trainer)
+    except Exception:
+        return
+    if world > 1:
+        scaler._init_scale = 2.0**16 / world
+    scaler._unsloth_cp_init_scale = True
+
+
+def _model_parallel_axes(model) -> list:
+    """The tensor / pipeline parallel axes a trainer would combine with context parallelism: from
+    UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (read without building anything) or a model split by hand. Expert parallel
+    is not one: the experts are token-local, so it composes with cp and the registry's ep x cp cells decide
+    (_expert_parallel_size)."""
+    import os
+
+    axes = []
+    for name, what in (
+        ("UNSLOTH_PP_SIZE", "pipeline parallel"),
+        ("UNSLOTH_TP_SIZE", "tensor parallel"),
+    ):
+        raw = str(os.environ.get(name, "")).strip()
+        try:
+            size = (
+                int(raw) if raw else 1
+            )  # as tp_env._int_env, which raises its own error on a bad value
+        except ValueError:
+            size = 1
+        if size > 1:
+            axes.append(f"{what} ({name}={raw})")
+    if isinstance(model, torch.nn.Module):
+        try:
+            from .models.pp_native import is_pipeline_parallel
+            from .models.tp_native import is_tensor_parallel
+        except Exception:
+            return axes
+        if is_pipeline_parallel(model) and not any(a.startswith("pipeline") for a in axes):
+            axes.append("pipeline parallel (apply_pipeline_parallel)")
+        if is_tensor_parallel(model) and not any(a.startswith("tensor") for a in axes):
+            axes.append("tensor parallel (apply_tensor_parallel)")
+    return axes
+
+
+def _expert_parallel_size(model) -> int:
+    """UNSLOTH_EP_SIZE, or the ep mesh size of a model apply_expert_parallel sharded (2 if it cannot be read)."""
+    try:
+        from .models.ep_native import _mesh, ep_env_size, is_expert_parallel
+    except Exception:
+        return 1
+    try:
+        ep = ep_env_size()
+    except ValueError:
+        ep = 1
+    if ep <= 1 and isinstance(model, torch.nn.Module) and is_expert_parallel(model):
+        try:
+            ep = int(_mesh(model).size())
+        except Exception:
+            ep = 2
+    return ep
+
+
+def _composed_layout(size: int):
+    """The UNSLOTH_PARALLEL / UNSLOTH_TP_SIZE layout whose root mesh has this cp axis, or None."""
+    import os
+
+    if not any(
+        str(os.environ.get(k, "")).strip() not in ("", "1")
+        for k in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE")
+    ):
+        return None
+    from .parallel_env import env_cp_size
+
+    if env_cp_size() != size:
+        return None  # cp from the trainer config only: the layout was read without a cp axis
+    from .models.tp_env import env_layout
+
+    layout = env_layout()
+    return layout if layout is not None and layout.cp == size else None
+
+
+def _refuse_model_parallel_cp(
+    size: int,
+    model,
+    trainer_cls = None,
+    config = None,
+    peft_config = None,
+    backend = None,
+) -> None:
+    """Before the trainer's __init__ touches the model: a CP manager building its own (dp, cp) mesh would make
+    its cp groups the tensor parallel / pipeline data parallel groups of a tp / pp launch, so the step would run
+    and train on mixed-up shards. Context parallel composes through the root mesh only (cp in UNSLOTH_PARALLEL
+    or UNSLOTH_CP_SIZE, read with the layout); the capability registry decides which compositions run."""
+    axes = _model_parallel_axes(model)
+    import os
+
+    if not axes:
+        # Context parallel alone (DDP or native FSDP2 over the rest): the registry's rules and cells too.
+        import types
+
+        from .fsdp2_launch import unsloth_fsdp2_native_requested
+        from .parallel_capabilities import check_layout
+
+        try:
+            world = int(os.environ.get("WORLD_SIZE", "1") or 1)
+        except ValueError:
+            world = 1
+        try:
+            fsdp2 = bool(unsloth_fsdp2_native_requested())
+        except Exception:
+            fsdp2 = False
+        ep = _expert_parallel_size(model)
+        alone = types.SimpleNamespace(
+            dp = max(world // size, 1),
+            tp = 1,
+            pp = 1,
+            cp = size,
+            fsdp2 = fsdp2,
+            cp_backend = None,
+            schedule = None,
+            ep = ep,  # expert parallel beside cp: the registry's ep x cp cells decide
+        )
+        # A constructor kwarg (context_parallel_backend = ...) overrides the config's value.
+        backend = backend or getattr(config, "context_parallel_backend", None)
+        check_layout(alone, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config)
+        return
+
+    composable = all("UNSLOTH_" in a for a in axes)
+    layout = _composed_layout(size) if composable else None
+    if layout is not None:
+        from .parallel_capabilities import check_layout
+
+        backend = backend or getattr(config, "context_parallel_backend", None) or layout.cp_backend
+        check_layout(
+            layout, trainer_cls, model, config, cp_backend = backend, peft_config = peft_config
+        )
+        return
+    env_cp = str(os.environ.get("UNSLOTH_CP_SIZE", "")).strip()
+    hint = ""
+    if not env_cp and composable:
+        hint = (
+            f' To compose them, put cp in the launch layout instead: UNSLOTH_PARALLEL="...,cp={size}" or '
+            f"UNSLOTH_CP_SIZE={size} beside the other variables, so the mesh is built with a cp axis."
+        )
+    raise NotImplementedError(
+        f"Unsloth: context parallelism (context_parallel_size = {size}) does not compose with "
+        f"{' and '.join(axes)} yet: its context parallel groups would be the other axis' groups, and training "
+        "would run with wrong gradients. Use context parallelism alone (with DDP or UNSLOTH_FSDP2=1), or "
+        "tensor / pipeline parallelism with context_parallel_size = 1." + hint
+    )
+
+
+def _trainer_model_argument(args, kwargs):
+    if "model" in kwargs:
+        return kwargs["model"]
+    # (self, model, args, ...) for every Trainer / TRL trainer __init__.
+    return args[1] if len(args) > 1 else None
+
+
+_CP_KWARGS = ("context_parallel_size", "context_parallel_backend", "context_parallel_rotate_method")
+
+
+def _default_cp_config(
+    config_cls,
+    args,
+    kwargs,
+    name = None,
+):
+    """The trainer was called without `args` but with context parallel on (UNSLOTH_CP_SIZE, cp in
+    UNSLOTH_PARALLEL, or context_parallel_size = N as a constructor kwarg). The trainer's __init__ takes no
+    such kwarg, and _backwards_compatible_trainer only moves them into a config it was given, so build the
+    default config the trainer would build, move the CP kwargs onto it and pass it as `args`."""
+    config = config_cls(name) if name else config_cls()
+    for key in _CP_KWARGS:
+        if key in kwargs:
+            setattr(config, key, kwargs.pop(key))
+    if len(args) > 1:  # SFTTrainer(model, None, ...): args excludes self
+        args = args[:1] + (config,) + args[2:]
+    else:
+        kwargs["args"] = config
+    return config, args
+
+
+def _cp_requested(kwargs) -> bool:
+    from .parallel_env import env_cp_size
+
+    forwarded = kwargs.get("context_parallel_size")
+    forwarded = forwarded if isinstance(forwarded, int) and not isinstance(forwarded, bool) else 1
+    return forwarded > 1 or env_cp_size() > 1
+
+
+def _sft_default_name(model):
+    # TRL's SFTTrainer: args = SFTConfig(f"{model_name}-SFT").
+    name = (
+        model
+        if isinstance(model, str)
+        else getattr(getattr(model, "config", None), "_name_or_path", None)
+    )
+    name = str(name or "").rstrip("/").split("/")[-1]
+    return f"{name}-SFT" if name else None
+
+
+def _declares_cp_fields(config) -> bool:
+    import dataclasses
+    if not dataclasses.is_dataclass(config):
+        return True  # a plain namespace / object keeps what is set on it
+    return "context_parallel_size" in {f.name for f in dataclasses.fields(config)}
+
+
+class _ConfigOverlay:
+    """The trainer config as the trainer will see it: constructor kwargs that name config fields
+    (SFTTrainer(..., router_aux_loss_coef = 0.0)) win, as Unsloth's trainer wrapper moves them into the config."""
+
+    def __init__(self, base, overrides):
+        self.__dict__["_base"] = base
+        self.__dict__["_overrides"] = overrides
+
+    @property
+    def __class__(self):
+        return type(self.__dict__["_base"])
+
+    def __getattr__(self, name):
+        overrides = self.__dict__["_overrides"]
+        return overrides[name] if name in overrides else getattr(self.__dict__["_base"], name)
+
+
+def _effective_config(config, kwargs):
+    if config is None:
+        return None
+    overrides = {
+        k: v
+        for k, v in kwargs.items()
+        if k not in ("model", "args", "peft_config") and hasattr(config, k)
+    }
+    return _ConfigOverlay(config, overrides) if overrides else config
+
+
+def _positional_config_to_keyword(
+    init,
+    self,
+    args,
+    kwargs,
+    require_args = True,
+):
+    """Binds every positional to its name so the config can be rebuilt with cp values as kwargs;
+    unchanged if the signature cannot bind them"""
+    import inspect
+
+    try:
+        bound = inspect.signature(init).bind(self, *args, **kwargs)
+    except (TypeError, ValueError):
+        return args, kwargs
+    params = inspect.signature(init).parameters
+    if any(
+        p.kind is inspect.Parameter.VAR_POSITIONAL and bound.arguments.get(n)
+        for n, p in params.items()
+    ):
+        return args, kwargs
+    if require_args and "args" not in bound.arguments:
+        return args, kwargs
+    out = {}
+    for i, (name, value) in enumerate(bound.arguments.items()):
+        if i == 0:
+            continue  # self
+        if params[name].kind is inspect.Parameter.VAR_KEYWORD:
+            out.update(value)
+        else:
+            out[name] = value
+    return (), out
+
+
+def _inject_env_cp(config, kwargs, requested: int, trainer_name: str) -> int:
+    """UNSLOTH_CP_SIZE / UNSLOTH_CP_BACKEND (also from UNSLOTH_PARALLEL) into the trainer arguments, the way
+    SFTTrainer(context_parallel_size = N) is handled. Returns the context parallel size the trainer will get."""
+    from .parallel_env import env_cp_backend, env_cp_size
+
+    size = env_cp_size()
+    backend = env_cp_backend()
+    if config is not None and not _declares_cp_fields(config):
+        # Plain TrainingArguments: Unsloth's trainer wrapper rebuilds the trainer config from to_dict(), which drops
+        # attributes set here, so the values travel as trainer kwargs (routed into the new config).
+        config = None
+    if size == 1:
+        if backend is not None and requested > 1:
+            if config is not None and "context_parallel_backend" not in kwargs:
+                config.context_parallel_backend = backend
+            else:
+                kwargs["context_parallel_backend"] = backend
+        return requested
+    if requested > 1 and requested != size:
+        raise ValueError(
+            f"Unsloth: {trainer_name} asks for context_parallel_size = {requested}, but UNSLOTH_CP_SIZE={size} "
+            "(or cp in UNSLOTH_PARALLEL) asks for another; use one of the two."
+        )
+    if "context_parallel_size" in kwargs or config is None:
+        kwargs["context_parallel_size"] = size
+        if backend is not None:
+            kwargs["context_parallel_backend"] = backend
+    else:
+        config.context_parallel_size = size
+        if backend is not None:
+            config.context_parallel_backend = backend
+    return size
+
+
+def _resolve_auto_backend(
+    config,
+    kwargs,
+    size: int,
+    model,
+    rl: bool = False,
+) -> None:
+    """Write the backend 'auto' resolves to into the trainer arguments before the trainer's __init__, so auto
+    packing and every later check read the same backend. `_unsloth_cp_backend_auto` records that it was auto."""
+    in_kwargs = "context_parallel_backend" in kwargs
+    current = (
+        kwargs["context_parallel_backend"]
+        if in_kwargs
+        else getattr(config, "context_parallel_backend", None)
+    )
+    if (current or "auto") != "auto":
+        return
+    if isinstance(model, str) and not rl:
+        # A model id is loaded inside the trainer's __init__, after this commits the backend: read its heads
+        # from the config now, so 'auto' picks ring when they cannot be split over cp.
+        try:
+            # The trainer's own loader options (subfolder, revision, token, cache_dir, trust_remote_code).
+            from .trainer import _resolve_string_model_config
+            model_config = _resolve_string_model_config(model, config)
+            model = types.SimpleNamespace(config = model_config) if model_config is not None else None
+        except Exception:
+            model = None
+    layout = _composed_layout(size)
+    resolved = resolve_cp_backend(
+        "auto", size, model, tp = layout.tp if layout is not None else 1, rl = rl
+    )
+    if in_kwargs or config is None:
+        kwargs["context_parallel_backend"] = resolved
+    else:
+        config.context_parallel_backend = resolved
+        try:
+            config._unsloth_cp_backend_auto = True
+        except Exception:
+            pass
+
+
+def _check_native_fsdp2_reduces_over_cp(model, manager) -> None:
+    """UNSLOTH_FSDP2=1 (native FSDP2, models/fsdp2_native.py) shards inside Trainer.__init__ without knowing about
+    context parallel. CP peers hold different tokens of the same rows, so their gradients must be reduced together:
+    the FSDP2 mesh must contain the cp group (the world mesh does: FSDP2 then shards over dp_shard x cp, and its
+    gradient average over dp x cp matches the CP token count). A sub-mesh that splits a cp group is refused."""
+    try:
+        from .models.fsdp2_native import is_native_fsdp2
+        from .models.fsdp2_save import model_mesh
+    except Exception:
+        return
+    if not is_native_fsdp2(model):
+        return
+    mesh = model_mesh(model)
+    manager.fsdp2_native = True
+    if mesh is None:
+        return  # the default world group
+    fsdp_ranks = set(int(r) for r in mesh.mesh.flatten().tolist())
+    cp_ranks = set(int(r) for r in manager.mesh.mesh.flatten().tolist())
+    if not cp_ranks <= fsdp_ranks:
+        raise NotImplementedError(
+            f"Unsloth: cp x fsdp2: native FSDP2 shards over ranks {sorted(fsdp_ranks)}, which leaves out context "
+            f"parallel peers {sorted(cp_ranks - fsdp_ranks)}; their gradients would not be reduced together. "
+            "Instead: let UNSLOTH_PARALLEL / UNSLOTH_FSDP2=1 shard over the whole (dp_shard, cp) mesh (no FSDP2 "
+            "sub-mesh), or drop cp."
+        )
+
+
+def _refuse_router_aux_loss_after_init(
+    trainer,
+    size: int,
+    backend: Optional[str] = None,
+    rl: bool = False,
+) -> None:
+    """TRL's SFTTrainer / DPOTrainer set output_router_logits on the config inside their __init__ (from the
+    architecture's router_aux_loss_coef unless router_aux_loss_coef = 0.0). A load balancing loss computed per
+    sequence shard is not the one-process objective; this catches what the pre-init registry check predicted.
+    SFT on a family _cp_load_balancing_loss covers under Ulysses (no tp / pp) is marked for it instead."""
+    from .parallel_capabilities import Query, _moe, check
+
+    model = getattr(trainer, "model", None)
+    moe, aux = _moe(model)
+    # DPO passes output_router_logits per forward instead of writing the config: read the trainer's switch too.
+    aux = aux or bool(getattr(trainer, "aux_loss_enabled", False))
+    if not (moe and aux):
+        return
+    layout = _composed_layout(size)
+    if (
+        not rl
+        and backend == "ulysses"
+        and (layout is None or (layout.tp == 1 and layout.pp == 1))
+        and _cp_router_aux_target(model) is not None
+    ):
+        trainer._unsloth_cp_router_aux = True
+        return
+    check(
+        Query(trainer = "sft", moe = True, router_aux_loss = True, cp = size, torch = (99, 0)),
+        cells = False,
+    )
 
 
 def _check_cp_runtime(self, size: int, backend: str) -> None:
@@ -654,41 +1951,111 @@ def _check_cp_runtime(self, size: int, backend: str) -> None:
         )
 
 
+# Config fields of n-gram lookup tables hashed from the tokens before each position (Qwen4Exp PLE, DeepSeek-V4.1
+# engram): a sequence shard would hash its first tokens without the previous shard's, so the rows would differ.
+_NGRAM_TABLE_CONFIG_KEYS = ("ple_layer_ids", "engram_layer_ids")
+
+
+def _ngram_table_blocker(config) -> Optional[str]:
+    for c in (config, getattr(config, "text_config", None)):
+        for key in _NGRAM_TABLE_CONFIG_KEYS:
+            if c is not None and getattr(c, key, None):
+                return key
+    return None
+
+
 def _check_cp_model(
     model,
     size: int,
     backend: str,
     allow_hybrids: bool = True,
+    tp: int = 1,
 ) -> None:
     model_config = getattr(model, "config", None)
-    unsupported = _unsupported_attention(model_config, backend)
+    table = _ngram_table_blocker(model_config)
+    if table is not None:
+        raise NotImplementedError(
+            f"Unsloth: context parallelism does not support n-gram lookup tables ({table}): their hashes read "
+            "the tokens before each position, which a sequence shard boundary would cut off."
+        )
+    # DPO / GRPO (allow_hybrids False) keep the Llama-style rule: their decoder hooks are not verified on
+    # the generic path.
+    generic = (
+        allow_hybrids
+        and backend == "ulysses"
+        and not _uses_unsloth_attention(model)
+        and _generic_hf_attention(model)
+    )
+    unsupported = _unsupported_attention(model_config, backend, generic = generic)
     if unsupported is not None:
         raise NotImplementedError(
             f"Unsloth: {backend} context parallelism does not support {unsupported}."
         )
     if backend == "ulysses":
         # Every rank raises here, before any collective.
-        text_config = getattr(model_config, "text_config", None) or model_config
-        ulysses_head_plan(
-            text_config.num_attention_heads,
-            getattr(text_config, "num_key_value_heads", None) or text_config.num_attention_heads,
-            size,
-        )
+        _ulysses_head_plans(model, size, tp)
     if _stateful_mixers(model) and not allow_hybrids:
         raise NotImplementedError(
-            "Unsloth: DPO / GRPO context parallelism does not support Gated DeltaNet hybrids yet."
+            "Unsloth: DPO / GRPO context parallelism does not support linear attention hybrids yet."
         )
     _check_stateful_mixers(model, backend, size)
     blocker = _hybrid_config_blocker(model) if _stateful_mixers(model) else None
     if blocker is not None:
         raise NotImplementedError(
-            f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            "Unsloth: context parallelism on linear attention hybrids does not support "
+            f"{blocker}."
+        )
+    blocker = _hybrid_config_blocker(model) if generic else None
+    if blocker is not None:
+        raise NotImplementedError(
+            f"Unsloth: Ulysses context parallelism does not support {blocker}."
+        )
+    if not allow_hybrids and (
+        _uses_unsloth_attention(model)
+        and not _uses_unsloth_attention(model, rl = True)
+        or not _uses_unsloth_attention(model)
+        and _generic_hf_attention(model)
+    ):
+        # Fast forwards not declared for RL (Mistral, Granite, Cohere) and generic HF attention: SFTTrainer only.
+        raise NotImplementedError(
+            "Unsloth: DPO / GRPO context parallelism supports Unsloth's Llama-style and Qwen3 attention only; "
+            "Unsloth's Mistral / Granite / Cohere attention and generic Ulysses on other Hugging Face attention "
+            "models are verified for SFTTrainer."
         )
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
-            "Unsloth: context parallelism currently supports Llama-style attention "
-            "(Llama, Qwen2, Gemma), and Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids with Ulysses."
+            "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3, Mistral, Granite, "
+            "Cohere) with either backend, and with Ulysses any Hugging Face attention model (attention through "
+            "ALL_ATTENTION_FUNCTIONS, e.g. MiniMax-M2) and the Qwen3-Next / Qwen3.5 Gated DeltaNet, Kimi-Linear and "
+            "MiniMax-M1 Lightning hybrids, and DeepSeek V3.2 (DSA indexer) / V4 (compressed sink attention)."
         )
+
+
+# Encoders and projectors a text-only batch never runs; context parallelism only takes text batches.
+_MEDIA_TOWER_NAMES = frozenset(
+    (
+        "visual",
+        "vision_tower",
+        "vision_model",
+        "vision_encoder",
+        "multi_modal_projector",
+        "mm_projector",
+        "embed_vision",
+        "audio_tower",
+        "audio_model",
+        "embed_audio",
+    )
+)
+
+
+def _trainable_media_tower_parameters(model) -> list:
+    if not isinstance(model, torch.nn.Module):
+        return []
+    return [
+        name
+        for name, param in model.named_parameters()
+        if param.requires_grad and not _MEDIA_TOWER_NAMES.isdisjoint(name.split("."))
+    ]
 
 
 def _check_cp_trainer(
@@ -697,6 +2064,7 @@ def _check_cp_trainer(
     backend: str,
     models,
     allow_fsdp2: bool = False,
+    tp: int = 1,
 ) -> bool:
     """Shared trainer checks; returns whether the trainer runs under FSDP2."""
     import accelerate
@@ -707,7 +2075,7 @@ def _check_cp_trainer(
     for model in models:
         if model is not None:
             # SFT shards the inputs of the whole model; the RL hooks only shard Llama-style decoders.
-            _check_cp_model(model, size, backend, allow_hybrids = allow_fsdp2)
+            _check_cp_model(model, size, backend, allow_hybrids = allow_fsdp2, tp = tp)
     accelerator = getattr(self, "accelerator", None)
     distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
     fsdp2 = allow_fsdp2 and _is_fsdp2(accelerator, distributed_type)
@@ -722,6 +2090,24 @@ def _check_cp_trainer(
         )
     if fsdp2:
         _check_fsdp2_parallelism_config(accelerator)
+    elif (
+        distributed_type.startswith("MULTI_")
+        and (getattr(accelerator, "num_processes", 2) or 2) > 1
+    ):
+        # Unused trainable towers break DDP (find_unused_parameters = False for reentrant checkpointing).
+        # Native FSDP2 also reports MULTI_* to accelerate, but it reduces only the gradients that exist.
+        from .models.fsdp2_native import is_native_fsdp2
+        for model in models:
+            if allow_fsdp2 and is_native_fsdp2(model):
+                continue
+            unused = _trainable_media_tower_parameters(model)
+            if unused:
+                raise NotImplementedError(
+                    "Unsloth: context parallelism trains on text-only batches, so the trainable "
+                    f"vision / audio tower ({len(unused)} parameters, e.g. {unused[0]}) never gets a "
+                    "gradient and DDP fails at the second step. Freeze it (for LoRA, "
+                    "finetune_vision_layers = False) or train with FSDP2."
+                )
     if getattr(accelerator, "dispatch_batches", None):
         raise NotImplementedError("Unsloth: context parallelism does not support dispatch_batches.")
     _refuse_iterable_datasets(
@@ -731,8 +2117,8 @@ def _check_cp_trainer(
 
 
 def patch_sft_trainer(install_cp_methods: bool = False) -> None:
-    # Only __init__ is wrapped up front; the other wrappers go on the class once a trainer enables
-    # CP. With CP off they still slowed torch 2.10 LoRA steps by ~35% (gemma-4-E2B, L4 / A100).
+    # Only __init__ is patched on the class; CP wrappers bind per trainer since class wrappers
+    # slowed torch 2.10 LoRA ~35% with CP off; install_cp_methods=True binds all
     import trl
 
     trainer_cls = trl.SFTTrainer
@@ -774,12 +2160,55 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             forwarded = kwargs["context_parallel_size"]
             valid = isinstance(forwarded, int) and not isinstance(forwarded, bool)
             requested = forwarded if valid else 1
+        if config is None and (requested > 1 or _cp_requested(kwargs)):
+            import sys
+
+            import trl
+
+            model = _trainer_model_argument((self,) + args, kwargs)
+            module = sys.modules.get(trainer_cls.__module__)
+            config_cls = getattr(module, "UnslothSFTConfig", None) or getattr(
+                module, "SFTConfig", None
+            )
+            config, args = _default_cp_config(
+                config_cls or trl.SFTConfig, args, kwargs, _sft_default_name(model)
+            )
+        if "args" not in kwargs and config is not None and not _declares_cp_fields(config):
+            from .parallel_env import env_cp_size
+            if env_cp_size() > 1:
+                # A positional plain TrainingArguments: the env cp values go into kwargs, which Unsloth's
+                # trainer wrapper only folds into a keyword `args`.
+                args, kwargs = _positional_config_to_keyword(original_init, self, args, kwargs)
+        requested = _inject_env_cp(config, kwargs, requested, "SFTTrainer")
         if requested > 1:
+            _resolve_auto_backend(
+                config, kwargs, requested, _trainer_model_argument((self,) + args, kwargs)
+            )
+            _refuse_model_parallel_cp(
+                requested,
+                _trainer_model_argument((self,) + args, kwargs),
+                type(self),
+                _effective_config(config, kwargs),
+                peft_config = kwargs.get("peft_config"),
+                backend = kwargs.get("context_parallel_backend"),
+            )
+        if requested > 1 or install_cp_methods:
             # Before the original __init__: Unsloth wraps instance methods there (auto packing's
             # train reset, the token budget's training_step), and they must capture the CP ones.
-            install_methods()
-        original_init(self, *args, **kwargs)
+            _bind_instance_methods(self, cp_methods)
+        try:
+            original_init(self, *args, **kwargs)
+        except BaseException:
+            _unbind_instance_methods(self)
+            raise
         self._context_parallel_manager = None
+        try:
+            _cp_init_tail(self)
+        except BaseException:
+            _unbind_instance_methods(self)
+            raise
+
+    def _cp_init_tail(self):
         # Unsloth's attention ignores transformers' own CP: it would stay local to each shard.
         # `accelerate launch` with parallelism_config_cp_size builds it from the environment
         # (ACCELERATE_USE_PARALLELISM_CONFIG), leaving args.parallelism_config None.
@@ -800,14 +2229,22 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                     f"{source} with cp_size > 1."
                 )
         size, backend, rotate_method = context_parallel_options(getattr(self, "args", None))
+        if size > 1 and backend == "auto":
+            layout = _composed_layout(size)
+            backend = resolve_cp_backend(
+                backend,
+                size,
+                getattr(self, "model", None),
+                tp = layout.tp if layout is not None else 1,
+            )
+            self.args.context_parallel_backend = backend
         if size <= 1:
             _install_accelerator_state(self)
-            if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
-                # By identity: a subclass may define __eq__ without __hash__.
-                pre_cp_trainers[:] = [ref for ref in pre_cp_trainers if ref() is not None]
-                pre_cp_trainers.append(weakref.ref(self))
+            if not install_cp_methods:
+                _unbind_instance_methods(self)
             return
         _check_cp_runtime(self, size, backend)
+        _refuse_router_aux_loss_after_init(self, size, backend)
         # These recompute loss outside our forward from sharded labels, losing cross-shard targets.
         if (
             getattr(self.args, "label_smoothing_factor", 0)
@@ -818,6 +2255,12 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 "Unsloth: context parallelism needs loss_type = 'nll' without "
                 "label_smoothing_factor or compute_loss_func."
             )
+        if getattr(
+            self, "model_accepts_loss_kwargs", True
+        ) is False and _inkling2_loss_takes_kwargs(getattr(self, "model", None)):
+            # Inkling 2 declares accepts_loss_kwargs = False but hands **kwargs (num_items_in_batch, shift_labels)
+            # to its loss_function: the sharded loss must be a sum over the global token count.
+            self.model_accepts_loss_kwargs = True
         if getattr(self, "model_accepts_loss_kwargs", True) is False:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
@@ -831,18 +2274,36 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             raise NotImplementedError(
                 "Unsloth: context parallelism needs average_tokens_across_devices = True."
             )
+        layout = _composed_layout(size)
         fsdp2 = _check_cp_trainer(
-            self, size, backend, [getattr(self, "model", None)], allow_fsdp2 = True
+            self,
+            size,
+            backend,
+            [getattr(self, "model", None)],
+            allow_fsdp2 = True,
+            tp = layout.tp if layout is not None else 1,
         )
-        manager = ContextParallelManager(size, backend, rotate_method, fsdp2 = fsdp2)
+        manager = ContextParallelManager(
+            size,
+            backend,
+            rotate_method,
+            fsdp2 = fsdp2,
+            **({"layout": layout} if layout is not None else {}),
+        )
+        _check_native_fsdp2_reduces_over_cp(self.model, manager)
+        _install_cp_router_aux(self, manager)
         self._context_parallel_manager = manager
-        install_methods()
+        if "_unsloth_cp_bound_methods" not in self.__dict__:
+            _bind_instance_methods(self, cp_methods)
         manager.attach_attention_hooks(self.model)
         _install_accelerator_state(self)
         # The ring calls the flash ops FA3 / FA4 override, so scope them to train() here too.
         from .utils.packing import _scope_flash_attention_impl
 
         _scope_flash_attention_impl(self.model, self)
+        from .parallel_env import announce
+
+        announce(self, layout, manager)
         print(
             f"Unsloth: Context parallelism enabled with size = {size} ({backend}"
             + (f", rotate_method = {rotate_method})" if backend == "ring" else ")")
@@ -852,6 +2313,8 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 else "."
             )
         )
+        # Installed again by each CP entry point (_cp_state_scope) while it runs.
+        _release_accelerator_state(getattr(getattr(self, "accelerator", None), "state", None))
 
     @functools.wraps(original_prediction_step)
     def patched_prediction_step(self, model, inputs, *args, **kwargs):
@@ -870,10 +2333,15 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
         if not isinstance(shift_labels, torch.Tensor):
             with manager.apply(inputs):
                 return original_prediction_step(self, model, inputs, *args, **kwargs)
-        inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
+        # compute_loss returns this shard's token mean (TRL >= 1 ignores an inputs["num_items_in_batch"]
+        # key, older TRL leaves the model to average): weight it by the shard's share of the targets so
+        # the cp sum is the sequence's token mean. A shard without targets adds 0, even when its mean is 0 / 0.
+        count = shift_labels.ne(-100).sum().clamp_min(1)
         inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
+            local = inputs["shift_labels"].ne(-100).sum()
             loss = self.compute_loss(model, inputs).detach()
+        loss = torch.where(local > 0, loss * local / count, torch.zeros_like(loss))
         dist.all_reduce(loss, group = manager.mesh.get_group())
         return loss, None, None
 
@@ -881,8 +2349,8 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
     def patched_train(self, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
             _refuse_iterable_datasets(getattr(self, "train_dataset", None))
-        _install_accelerator_state(self)
-        return original_train(self, *args, **kwargs)
+        with _cp_state_scope(self):
+            return original_train(self, *args, **kwargs)
 
     @functools.wraps(original_evaluate)
     def patched_evaluate(self, *args, **kwargs):
@@ -896,18 +2364,22 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                     else current
                 )
             _refuse_iterable_datasets(eval_dataset)
-        _install_accelerator_state(self)
-        return original_evaluate(self, *args, **kwargs)
+        with _cp_state_scope(self):
+            return original_evaluate(self, *args, **kwargs)
 
     @functools.wraps(original_predict)
     def patched_predict(self, test_dataset, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
             _refuse_iterable_datasets(test_dataset)
-        _install_accelerator_state(self)
-        return original_predict(self, test_dataset, *args, **kwargs)
+        with _cp_state_scope(self):
+            return original_predict(self, test_dataset, *args, **kwargs)
 
     @functools.wraps(original_save_model)
     def patched_save_model(self, *args, **kwargs):
+        with _cp_state_scope(self):
+            return _save_model(self, *args, **kwargs)
+
+    def _save_model(self, *args, **kwargs):
         state = getattr(getattr(self, "accelerator", None), "state", None)
         installed = _INSTALLED_PARALLELISM_CONFIG[1] if _INSTALLED_PARALLELISM_CONFIG else None
         if installed is None or getattr(state, "parallelism_config", None) is not installed:
@@ -951,9 +2423,20 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
             # Without gradient checkpointing the model would build a cache for the sharded scans.
             if hasattr(inputs, "setdefault"):
                 inputs.setdefault("use_cache", False)
+            install_idle_expert_grad_hook(
+                getattr(self, "optimizer", None),
+                getattr(self, "model", None),
+                window = _optimizer_window(self),
+            )
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
-        with manager.apply(inputs) if manager else contextlib.nullcontext():
+        if manager is None:
             return original_training_step(self, model, inputs, *args, **kwargs)
+        manager.in_training_step = True
+        try:
+            with manager.apply(inputs):
+                return original_training_step(self, model, inputs, *args, **kwargs)
+        finally:
+            manager.in_training_step = False
 
     if has_total_train_batch_size:
 
@@ -967,46 +2450,21 @@ def patch_sft_trainer(install_cp_methods: bool = False) -> None:
                 total = total // manager.size
             return total
 
-    # Non-CP trainers built before any trainer enabled CP: their __init__ may have wrapped train /
-    # evaluate / predict on the instance around the plain methods (auto packing's train reset).
-    pre_cp_trainers = []  # weakref.ref per trainer
-
-    def _restoring(trainer, bound):
-        @functools.wraps(bound)
-        def call(*args, **kwargs):
-            # What patched_train / evaluate / predict do for a non-CP trainer: drop the mesh and
-            # parallelism config a CP trainer installed on the shared accelerator state.
-            _install_accelerator_state(trainer)
-            return bound(*args, **kwargs)
-
-        return call
-
-    def install_methods():
-        if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
-            return
-        for trainer in [ref() for ref in pre_cp_trainers]:
-            if trainer is None:
-                continue
-            for name in ("train", "evaluate", "predict"):
-                bound = trainer.__dict__.get(name)
-                if bound is not None:
-                    trainer.__dict__[name] = _restoring(trainer, bound)
-        pre_cp_trainers.clear()
-        trainer_cls.prediction_step = patched_prediction_step
-        trainer_cls.train = patched_train
-        trainer_cls.evaluate = patched_evaluate
-        trainer_cls.predict = patched_predict
-        trainer_cls.evaluation_loop = patched_evaluation_loop
-        trainer_cls.save_model = patched_save_model
-        trainer_cls.training_step = patched_training_step
-        if has_total_train_batch_size:
-            trainer_cls.get_total_train_batch_size = patched_get_total_train_batch_size
-        trainer_cls.__unsloth_context_parallel_methods__ = True
+    cp_methods = {
+        "prediction_step": patched_prediction_step,
+        "train": patched_train,
+        "evaluate": patched_evaluate,
+        "predict": patched_predict,
+        "evaluation_loop": patched_evaluation_loop,
+        "save_model": patched_save_model,
+        "training_step": patched_training_step,
+    }
+    if has_total_train_batch_size:
+        cp_methods["get_total_train_batch_size"] = patched_get_total_train_batch_size
 
     trainer_cls.__init__ = patched_init
+    trainer_cls._unsloth_cp_methods = cp_methods
     trainer_cls.__unsloth_context_parallel__ = True
-    if install_cp_methods:
-        install_methods()
 
 
 # Backends with single-tensor collectives; others (MPI) keep the list path.
@@ -1086,7 +2544,8 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     if manager is None or manager is not module._unsloth_cp_rl_manager:
         stack.append(None)
         return None
-    if args or kwargs.get("past_key_values") is not None or kwargs.get("input_ids") is None:
+    has_cache = kwargs.get("past_key_values") is not None or kwargs.get("cache") is not None
+    if args or has_cache or kwargs.get("input_ids") is None:
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism shards keyword input_ids training forwards "
             "only (no positional inputs, inputs_embeds or KV cache)."
@@ -1110,14 +2569,389 @@ def _rl_decoder_pre_hook(module, args, kwargs):
     # blocks on that rank alone.
     if "attention_mask" in kwargs:
         kwargs["attention_mask"] = None
-    stack.append(seq_len)
+    # Claimed by this call alone: a second or nested call of the same decoder gathers every state.
+    selection = getattr(_LAST_HIDDEN, "selection", None)
+    if selection is not None and selection.decoder is module:
+        selection.decoder = None
+        # The first call claims on every rank (the vote needs all of them), but only the call the audited
+        # forward makes itself may truncate: a helper or callback it runs first that calls the decoder
+        # (and may index its hidden_states) votes for every state instead.
+        if (
+            selection.caller is not None
+            and _direct_caller_code(sys._getframe(1)) is not selection.caller
+        ):
+            selection.allowed = False
+    else:
+        selection = None
+    stack.append((seq_len, selection))
     return args, kwargs
 
 
-def _rl_decoder_post_hook(module, args, kwargs, output):
-    seq_len = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
-    if seq_len is None:
+def _direct_caller_code(frame):
+    # The code object that called the module: the first frame above torch's own call machinery
+    # (Module._wrapped_call_impl / _call_impl, compile wrappers).
+    while frame is not None:
+        name = frame.f_globals.get("__name__", "")
+        if name != "torch" and not name.startswith("torch."):
+            return frame.f_code
+        frame = frame.f_back
+    return None
+
+
+class _LastHiddenSelection:
+    __slots__ = ("decoder", "allowed", "truncated", "caller")
+
+    def __init__(
+        self,
+        decoder,
+        allowed = True,
+        caller = None,
+    ):
+        self.decoder = decoder
+        # Code object the claiming decoder call must come from directly (None: any caller).
+        self.caller = caller
+        # This rank's own verdict. The decoder call still claims the selection when it is False, so every
+        # rank reaches the same vote; the vote then keeps every state on all of them.
+        self.allowed = bool(allowed)
+        self.truncated = False
+
+
+# Per thread: a forward on another thread never sees this caller's selection, so whether a decoder call
+# gathers one state or all of them cannot depend on thread timing, which differs between ranks.
+_LAST_HIDDEN = threading.local()
+
+
+@contextlib.contextmanager
+def last_hidden_state_only(
+    decoder,
+    allowed = True,
+    caller = None,
+) -> Iterator[_LastHiddenSelection]:
+    """For a caller that asks for output_hidden_states only to read the last one (GRPO's hidden-state
+    forward): the next call of ``decoder`` on this thread gathers that state alone, not all L + 1 layers
+    to full length. ``decoder = None`` selects nothing (and hides an enclosing selection). The yielded
+    selection's ``truncated`` says whether the decoder did return only the last state. ``allowed = False``
+    claims the decoder call without truncating: it votes against truncation on every rank. With ``caller``
+    (a code object) the claiming call votes against truncation unless that code made it directly."""
+    selection = _LastHiddenSelection(decoder, allowed, caller)
+    previous = getattr(_LAST_HIDDEN, "selection", None)
+    _LAST_HIDDEN.selection = selection
+    try:
+        yield selection
+    finally:
+        _LAST_HIDDEN.selection = previous
+
+
+# Forwards audited to read nothing but the decoder's last state and to hand its hidden_states tuple on untouched.
+_PASSTHROUGH_MARKER = "_unsloth_cp_hidden_states_passthrough"
+_PASSTHROUGH_AUDIT = {}  # code object -> {decoder attribute names: verdict}
+
+
+# The decoder output fields a forward may read anywhere: none of them is (or holds) the hidden-state tuple.
+# Enumerated from the Llama / Qwen2 / Qwen3 / Gemma / Gemma3 / Mistral (and Qwen3-MoE) CausalLM forwards
+# on transformers 4.57 and 5.x (5.x names the cache ``cache``).
+_FREE_OUTPUT_FIELDS = frozenset(
+    ("last_hidden_state", "past_key_values", "cache", "attentions", "router_logits")
+)
+_NESTED_SCOPES = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+    ast.Lambda,
+    ast.ClassDef,
+    ast.ListComp,
+    ast.SetComp,
+    ast.DictComp,
+    ast.GeneratorExp,
+)
+# Reach a local by name (locals()["outputs"]) past the checks below.
+_INTROSPECTION = frozenset(("locals", "vars", "globals", "eval", "exec"))
+
+
+def _decoder_output_passthrough(function, attrs) -> bool:
+    """Strict allowlist check of a CausalLM forward: every ``self.<attr>(...)`` decoder call is assigned
+    to a plain name, and every read of that name is one of
+      ``name.last_hidden_state`` / ``.past_key_values`` / ``.cache`` / ``.attentions`` / ``.router_logits``
+      (a field read, not called or written), ``name[0]``, or
+      ``name.hidden_states`` as the ``hidden_states =`` keyword of the ModelOutput constructor the forward
+      itself returns.
+    Any other use (slices, other subscripts, methods, aliasing, passing the output on, starred unpacking,
+    reads from a nested scope or comprehension) and any ``hidden_states`` string: False."""
+    import inspect
+    import textwrap
+
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+    except Exception:
+        return False
+    if not tree.body or not isinstance(tree.body[0], (ast.FunctionDef, ast.AsyncFunctionDef)):
+        return False
+    forward = tree.body[0]
+    parents = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+        if isinstance(node, ast.Constant) and node.value == "hidden_states":
+            return False
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in _INTROSPECTION
+        ):
+            return False
+
+    def decoder_call(node):
+        func = getattr(node, "func", None)
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(func, ast.Attribute)
+            and func.attr in attrs
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "self"
+        )
+
+    def in_nested_scope(node):
+        node = parents.get(node)
+        while node is not None and node is not forward:
+            if isinstance(node, _NESTED_SCOPES):
+                return True
+            node = parents.get(node)
+        return node is None
+
+    names = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Attribute)
+            and node.attr in attrs
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "self"
+        ):
+            call = parents.get(node)
+            if not (isinstance(call, ast.Call) and call.func is node):
+                return False  # the decoder handed on whole
+            owner = parents.get(call)
+            if (
+                isinstance(owner, ast.Assign)
+                and len(owner.targets) == 1
+                and isinstance(owner.targets[0], ast.Name)
+            ):
+                names.add(owner.targets[0].id)
+            elif isinstance(owner, ast.AnnAssign) and isinstance(owner.target, ast.Name):
+                names.add(owner.target.id)
+            else:
+                return False  # returned or consumed in place
+    if not names:
+        return False
+
+    def output_class(func):
+        # The callee resolved in the forward's own module: only a ModelOutput subclass counts.
+        path = []
+        while isinstance(func, ast.Attribute):
+            path.append(func.attr)
+            func = func.value
+        if not isinstance(func, ast.Name):
+            return False
+        try:  # getsource above read the innermost function: resolve in its module
+            scope = inspect.unwrap(function).__globals__
+        except Exception:
+            return False
+        if func.id not in scope:
+            return False
+        value = scope[func.id]
+        try:
+            for attr in reversed(path):
+                value = getattr(value, attr)
+            from transformers.utils import ModelOutput
+        except Exception:
+            return False
+        return isinstance(value, type) and issubclass(value, ModelOutput)
+
+    def returned_hidden_states(use):
+        # ``hidden_states = outputs.hidden_states`` straight into the ModelOutput the forward returns.
+        keyword = parents.get(use)
+        if not (isinstance(keyword, ast.keyword) and keyword.arg == "hidden_states"):
+            return False
+        call = parents.get(keyword)
+        return (
+            isinstance(call, ast.Call)
+            and isinstance(parents.get(call), ast.Return)
+            and output_class(call.func)
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and names.intersection(node.names):
+            return False
+        if isinstance(node, ast.Attribute) and node.attr == "hidden_states":
+            value = node.value
+            if not (
+                isinstance(value, ast.Name)
+                and value.id in names
+                and isinstance(node.ctx, ast.Load)
+                and returned_hidden_states(node)
+            ):
+                return False
+        if not (isinstance(node, ast.Name) and node.id in names):
+            continue
+        if in_nested_scope(node):
+            return False
+        use = parents.get(node)
+        if isinstance(node.ctx, ast.Store):
+            # Only as the target of its own decoder call.
+            if isinstance(use, ast.Assign) and use.targets == [node] and decoder_call(use.value):
+                continue
+            if isinstance(use, ast.AnnAssign) and use.target is node and decoder_call(use.value):
+                continue
+            return False
+        if not isinstance(node.ctx, ast.Load):
+            return False  # del
+        if isinstance(use, ast.Attribute) and use.value is node and isinstance(use.ctx, ast.Load):
+            caller = parents.get(use)
+            if isinstance(caller, ast.Call) and caller.func is use:
+                return False  # a method, never a field read
+            if use.attr in _FREE_OUTPUT_FIELDS or use.attr == "hidden_states":
+                continue  # hidden_states was checked above
+            return False
+        if (
+            isinstance(use, ast.Subscript)
+            and use.value is node
+            and isinstance(use.ctx, ast.Load)
+            and isinstance(use.slice, ast.Constant)
+            and type(use.slice.value) is int
+            and use.slice.value == 0
+        ):
+            continue
+        return False
+    return True
+
+
+_SAFE_WRAPPER_CODES = None
+
+
+def _safe_forward_wrappers() -> frozenset:
+    """Code objects of the transformers forward decorators that return the wrapped forward's output
+    unchanged (can_return_tuple at most calls .to_tuple() on it, deprecate_kwarg renames kwargs). Found by
+    decorating a probe, so a wrapper matches by code identity, not by name."""
+    global _SAFE_WRAPPER_CODES
+    if _SAFE_WRAPPER_CODES is not None:
+        return _SAFE_WRAPPER_CODES
+
+    def probe(self, *args, **kwargs):
         return None
+
+    codes = set()
+    try:
+        from transformers.utils.generic import can_return_tuple
+        codes.add(can_return_tuple(probe).__code__)
+    except Exception:
+        pass
+    try:
+        from transformers.utils.deprecation import deprecate_kwarg
+        codes.add(deprecate_kwarg("_unsloth_probe", version = "0.0.0")(probe).__code__)
+    except Exception:
+        pass
+    _SAFE_WRAPPER_CODES = frozenset(codes)
+    return _SAFE_WRAPPER_CODES
+
+
+def _cp_text_decoder(model):
+    # The one CP-attached text decoder held directly by ``model``, and the attribute names holding it. Module
+    # structure only: attach_rl_hooks runs on every rank, so this is the same on all of them.
+    manager = get_cp_manager()
+    if manager is None or model is None:
+        return None, None
+    decoders = _decoders(model)
+    if len(decoders) != 1 or getattr(decoders[0], "_unsloth_cp_rl_manager", None) is not manager:
+        return None, None
+    decoder = decoders[0]
+    attrs = frozenset(name for name, child in model._modules.items() if child is decoder)
+    if not attrs:
+        return None, None
+    return decoder, attrs
+
+
+def last_hidden_state_decoder(model, forward) -> Optional[torch.nn.Module]:
+    """The decoder a GRPO hidden-state forward of ``model`` may scope with last_hidden_state_only(), or
+    None (gather every state). Only the one CP-attached text decoder held directly by ``model``, and only
+    when ``forward`` is marked or audited to pass the hidden states through without reading them: a forward
+    that reads an intermediate state before returning would get the wrong tensor otherwise. The verdict on
+    ``forward`` is rank-local (a wrapper installed on one rank changes it): last_hidden_state_scope() votes
+    on it over the CP group."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return None
+    return decoder if _forward_passthrough(forward, attrs) else None
+
+
+def last_hidden_state_scope(
+    model,
+    forward,
+    requested = False,
+):
+    """last_hidden_state_only() for GRPO's hidden-state forward of ``model``. The decoder call is claimed
+    from module structure alone, the same on every rank, so all ranks reach one vote; this rank's verdicts
+    (the caller asked for the states itself, ``forward`` fails the passthrough audit) only make that vote
+    keep every state, never skip it on one rank while a peer enters it."""
+    decoder, attrs = _cp_text_decoder(model)
+    if decoder is None:
+        return last_hidden_state_only(None)
+    allowed = not requested and _forward_passthrough(forward, attrs)
+    # Bound to the audited function: only the decoder call it makes itself may be the truncated one.
+    caller = _audited_code(forward)
+    return last_hidden_state_only(decoder, allowed = allowed and caller is not None, caller = caller)
+
+
+def _audited_code(forward):
+    # The code object of the innermost function _forward_passthrough audits.
+    function = getattr(forward, "__func__", forward)
+    for _ in range(16):
+        if not hasattr(function, "__wrapped__"):
+            break
+        function = function.__wrapped__
+    function = getattr(function, "__func__", function)
+    return getattr(function, "__code__", None)
+
+
+def _forward_passthrough(forward, attrs) -> bool:
+    function = getattr(forward, "__func__", forward)
+    chain = [function]
+    while hasattr(chain[-1], "__wrapped__") and len(chain) < 16:
+        chain.append(chain[-1].__wrapped__)
+    # Only the innermost function is audited: every wrapper around it must be a known one that hands the
+    # output back as is. functools.wraps copies the marker outward, so it cannot vouch for a wrapper either.
+    safe = _safe_forward_wrappers()
+    if hasattr(chain[-1], "__wrapped__") or any(
+        getattr(f, "__code__", None) not in safe for f in chain[:-1]
+    ):
+        return False
+    if any(getattr(f, _PASSTHROUGH_MARKER, False) for f in chain):
+        return True
+    inner = getattr(chain[-1], "__func__", chain[-1])
+    try:
+        key = inner.__code__
+    except AttributeError:
+        return False
+    cached = _PASSTHROUGH_AUDIT.setdefault(key, {})
+    if attrs not in cached:
+        cached[attrs] = _decoder_output_passthrough(inner, attrs)
+    return bool(cached[attrs])
+
+
+def _truncation_agreed(module, hidden, manager, allowed) -> bool:
+    """True on every rank when every rank allows the truncation and no rank has a forward hook after the CP
+    post hook on ``module`` (such a hook reads output["hidden_states"] by index). Agreed over the CP group,
+    so a rank-local hook or forward verdict cannot make the peers enter different gathers."""
+    hooks = list(module._forward_hooks)
+    mine = getattr(module, "_unsloth_cp_rl_post_hook_id", None)
+    later = mine not in hooks or hooks.index(mine) != len(hooks) - 1
+    flag = torch.tensor([int(later or not allowed)], dtype = torch.int32, device = hidden.device)
+    dist.all_reduce(flag, op = dist.ReduceOp.MAX, group = manager.group)
+    return not bool(flag.item())
+
+
+def _rl_decoder_post_hook(module, args, kwargs, output):
+    entry = module._unsloth_cp_rl_stack.pop() if module._unsloth_cp_rl_stack else None
+    if entry is None:
+        return None
+    seq_len, selection = entry
     manager = module._unsloth_cp_rl_manager
     last = output[0]
 
@@ -1136,8 +2970,16 @@ def _rl_decoder_post_hook(module, args, kwargs, output):
             )
         return (hidden, *output[1:])
     output[next(iter(output.keys()))] = hidden
-    if layers is not None:
-        # GRPO's hidden-state forward asks for these and reads the last one (the same tensor as above).
+    if (
+        layers is not None
+        and selection is not None
+        and len(layers)
+        and _truncation_agreed(module, last, manager, selection.allowed)
+    ):
+        # Only the last state is read: every other layer would be one more all-gather and a full-length copy.
+        output["hidden_states"] = (hidden if layers[-1] is last else _full(layers[-1]),)
+        selection.truncated = True
+    elif layers is not None:
         output["hidden_states"] = tuple(
             hidden if layer is last else _full(layer) for layer in layers
         )
@@ -1163,7 +3005,8 @@ def attach_rl_hooks(manager, model) -> None:
         decoder._unsloth_cp_rl_stack = []
         if not getattr(decoder, "_unsloth_cp_rl_hooked", False):
             decoder.register_forward_pre_hook(_rl_decoder_pre_hook, with_kwargs = True)
-            decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            handle = decoder.register_forward_hook(_rl_decoder_post_hook, with_kwargs = True)
+            decoder._unsloth_cp_rl_post_hook_id = handle.id
             decoder._unsloth_cp_rl_hooked = True
     manager.attach_attention_hooks(model)
 
@@ -1213,14 +3056,156 @@ class _OnDevice:
 
 def _broadcast_from_group_root(obj, manager, device):
     """CP rank 0 sends its object (tensors through CPU) so every peer scores the same samples."""
-    payload = [_map_leaves(obj, _OnDevice)]
     group = manager.group
-    dist.broadcast_object_list(payload, src = dist.get_global_rank(group, 0), group = group)
+    src = dist.get_global_rank(group, 0)
+    # Peers overwrite their payload with the root's, so only the root copies its tensors to the host.
+    payload = [_map_leaves(obj, _OnDevice) if dist.get_rank() == src else None]
+    dist.broadcast_object_list(payload, src = src, group = group)
     return _map_leaves(
         payload[0],
         lambda x: x.restore(device),
         leaf = _OnDevice,
     )
+
+
+_UNMERGEABLE = object()
+
+
+def _generation_is_collective(trainer, manager) -> bool:
+    """Generation forwards that need every peer (sharded weights): peers must then run the same batch."""
+    if getattr(manager, "fsdp2", False):
+        return True
+    accelerator = getattr(trainer, "accelerator", None)
+    distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
+    if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
+        return True
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return True
+    from .models.fsdp2_native import is_native_fsdp2
+
+    return is_native_fsdp2(getattr(trainer, "model", None))
+
+
+def _generation_share(trainer, prompts, args, kwargs, manager):
+    """This peer's slice of whole generation groups, or None for the root to generate them all."""
+    import os
+
+    if os.environ.get("UNSLOTH_CP_SPLIT_GENERATION", "1") == "0":
+        return None
+    if trainer.__dict__.get("_unsloth_cp_split_generation_off"):
+        return None
+    # TRL 0.24 passes images; rollout functions and environments keep per-batch state outside prompts.
+    if any(x is not None for x in args) or any(x is not None for x in kwargs.values()):
+        return None
+    if getattr(trainer, "rollout_func", None) is not None:
+        return None
+    if getattr(trainer, "environment_factories", None) or getattr(trainer, "use_vllm", False):
+        return None
+    if not isinstance(prompts, list) or _generation_is_collective(trainer, manager):
+        return None
+    config = trainer.args
+    generations = getattr(config, "num_generations", None) or 1
+    if not getattr(getattr(trainer, "model", None), "training", True):
+        generations = getattr(config, "num_generations_eval", None) or generations
+    count = len(prompts)
+    groups = count // generations if count % generations == 0 else 0
+    # Equal shares: TRL's metric gathers inside _generate need the same row count on every process.
+    if groups < manager.size or groups % manager.size:
+        return None
+    share = count // manager.size
+    start = manager.mesh.get_local_rank() * share
+    return slice(start, start + share)
+
+
+def _merge_generation_shares(values, sizes):
+    """Concatenates the peers' per-sample outputs in peer order; _UNMERGEABLE for anything else."""
+    first = values[0]
+    if all(x is None for x in values):
+        return None
+    if isinstance(first, dict):
+        if any(not isinstance(x, dict) or x.keys() != first.keys() for x in values):
+            return _UNMERGEABLE
+        merged = {}
+        for key in first:
+            merged[key] = _merge_generation_shares([x[key] for x in values], sizes)
+            if merged[key] is _UNMERGEABLE:
+                return _UNMERGEABLE
+        return merged
+    if isinstance(first, list):
+        if all(isinstance(x, list) and not x for x in values):
+            return []  # TRL >= 1.9 returns tool_images = [] without tools
+        if any(not isinstance(x, list) or len(x) != n for x, n in zip(values, sizes)):
+            return _UNMERGEABLE
+        return [item for x in values for item in x]
+    if isinstance(first, torch.Tensor):
+        if any(not isinstance(x, torch.Tensor) for x in values):
+            return _UNMERGEABLE
+        if first.ndim == 0:
+            # TRL's token count, gathered over every process already; recounted after the merge.
+            return first if all(torch.equal(x.cpu(), first.cpu()) for x in values) else _UNMERGEABLE
+        if all(x.shape[0] == n and x.shape[1:] == first.shape[1:] for x, n in zip(values, sizes)):
+            return torch.cat(values)
+        return _UNMERGEABLE
+    if isinstance(first, (bool, int, float, str)) and all(
+        type(x) is type(first) and x == first for x in values
+    ):
+        return first
+    return _UNMERGEABLE
+
+
+def _gather_generation_shares(result, manager, device, sizes):
+    """Every peer's _generate output on every peer, merged in peer order (tensors through CPU)."""
+    if not isinstance(result, tuple) or hasattr(result, "_fields"):
+        payload = None
+    else:
+        payload = _map_leaves(result, _OnDevice)
+    gathered = [None] * manager.size
+    dist.all_gather_object(gathered, payload, group = manager.group)
+    if any(x is None or len(x) != len(gathered[0]) for x in gathered):
+        return _UNMERGEABLE
+    shares = [_map_leaves(x, lambda leaf: leaf.restore(device), leaf = _OnDevice) for x in gathered]
+    merged = []
+    for values in zip(*shares):
+        value = _merge_generation_shares(list(values), sizes)
+        if value is _UNMERGEABLE:
+            return _UNMERGEABLE
+        merged.append(value)
+    return tuple(merged)
+
+
+def _all_processes_agree(flag: bool, device) -> bool:
+    """True only if every process passes True (a MIN all-reduce over the world)."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return flag
+    value = torch.tensor([int(flag)], device = device)
+    dist.all_reduce(value, op = dist.ReduceOp.MIN)
+    return bool(value.item())
+
+
+def _metrics_snapshot(trainer):
+    metrics = getattr(trainer, "_metrics", None)
+    lengths = (
+        {mode: {k: len(v) for k, v in values.items()} for mode, values in metrics.items()}
+        if isinstance(metrics, dict)
+        else None
+    )
+    return lengths, getattr(getattr(trainer, "state", None), "num_input_tokens_seen", None)
+
+
+def _restore_metrics(trainer, snapshot) -> None:
+    lengths, tokens_seen = snapshot
+    if lengths is not None:
+        for mode, values in trainer._metrics.items():
+            kept = lengths.get(mode, {})
+            for key in list(values):
+                if key not in kept:
+                    del values[key]
+                else:
+                    del values[key][kept[key] :]
+    if tokens_seen is not None:
+        trainer.state.num_input_tokens_seen = tokens_seen
 
 
 def _check_same_prompts(prompts, manager) -> None:
@@ -1384,6 +3369,16 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
 
     @functools.wraps(original_init)
     def patched_init(self, *args, **kwargs):
+        if "args" not in kwargs and len(args) > 1:
+            from .parallel_env import env_cp_size
+            if env_cp_size() > 1 or _cp_requested(kwargs):
+                # DPOTrainer(model, ref_model, ...): bind the positionals to their names, so a missing or None
+                # `args` gets the default config below and the cp values never reach the constructor as kwargs.
+                args, kwargs = _positional_config_to_keyword(
+                    original_init, self, args, kwargs, require_args = False
+                )
+                if kwargs.get("args", 0) is None:
+                    kwargs.pop("args")
         config = kwargs.get("args")
         if config is None:
             config = next((x for x in args if hasattr(x, "context_parallel_size")), None)
@@ -1391,34 +3386,68 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             requested = context_parallel_options(config)[0]
         except ValueError:
             requested = 1  # Raised again after the original __init__.
+        # Positional arguments past the model: the config's position differs per trainer, so leave those.
+        if config is None and "args" not in kwargs and len(args) <= 1 and _cp_requested(kwargs):
+            import sys
+
+            # The generated Unsloth{X}Trainer builds Unsloth{X}Config() for args = None.
+            config_cls = getattr(
+                sys.modules.get(trainer_cls.__module__),
+                trainer_cls.__name__.replace("Trainer", "Config"),
+                None,
+            )
+            if config_cls is not None:
+                config, args = _default_cp_config(config_cls, args, kwargs)
+        requested = _inject_env_cp(config, kwargs, requested, trainer_cls.__name__)
         if requested > 1:
+            _resolve_auto_backend(config, kwargs, requested, None, rl = True)
+            _refuse_model_parallel_cp(
+                requested,
+                _trainer_model_argument((self,) + args, kwargs),
+                type(self),
+                _effective_config(config, kwargs),
+                peft_config = kwargs.get("peft_config"),
+                backend = kwargs.get("context_parallel_backend"),
+            )
             # Before the original __init__, so instance wrappers made there capture the CP methods.
-            install_methods()
-        original_init(self, *args, **kwargs)
+            _bind_instance_methods(self, cp_methods)
+        try:
+            original_init(self, *args, **kwargs)
+        except BaseException:
+            _unbind_instance_methods(self)
+            raise
         self._context_parallel_manager = None
+        try:
+            _cp_init_tail(self)
+        except BaseException:
+            _unbind_instance_methods(self)
+            raise
+
+    def _cp_init_tail(self):
         _refuse_transformers_cp(
             self,
             "DPOConfig" if kind == "dpo_trainer" else "GRPOConfig",
             ", context_parallel_backend = 'ulysses'",
         )
         size, backend, _ = context_parallel_options(getattr(self, "args", None))
+        backend = resolve_cp_backend(backend, size, rl = True)
         if size <= 1:
             _install_accelerator_state(self)
-            if not trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
-                # The generated trainers bind self.train in __init__ (rl.py), around the plain method.
-                pre_cp_trainers[:] = [ref for ref in pre_cp_trainers if ref() is not None]
-                pre_cp_trainers.append(weakref.ref(self))
+            _unbind_instance_methods(self)
             return
         if backend != "ulysses":
             raise NotImplementedError(
                 "Unsloth: DPO / GRPO context parallelism needs context_parallel_backend = 'ulysses'."
             )
         _check_cp_runtime(self, size, backend)
+        _refuse_router_aux_loss_after_init(self, size, backend, rl = True)
         _check_rl_config(self, kind)
         ref_model = getattr(self, "ref_model", None)
         _check_cp_trainer(self, size, backend, [self.model, ref_model])
         manager = ContextParallelManager(size, backend)
         self._context_parallel_manager = manager
+        if "_unsloth_cp_bound_methods" not in self.__dict__:
+            _bind_instance_methods(self, cp_methods)
         attach_rl_hooks(manager, self.model)
         if kind == "grpo_trainer":
             # GRPO's packed and shared-prefix forwards pick their path per step from self-checks;
@@ -1430,7 +3459,6 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 module._unsloth_prefix_grouper_nograd_disabled = True
         if isinstance(ref_model, torch.nn.Module):
             attach_rl_hooks(manager, ref_model)
-        _install_accelerator_state(self)
         print(f"Unsloth: Context parallelism enabled with size = {size} (ulysses, {kind}).")
 
     def _step_wrapper(name):
@@ -1443,9 +3471,17 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                 return original(self, *args, **kwargs)
             for decoder in _decoders(self.model):
                 decoder._unsloth_cp_rl_stack.clear()
+            if name == "training_step":
+                install_idle_expert_grad_hook(
+                    getattr(self, "optimizer", None), self.model, window = _optimizer_window(self)
+                )
             # Backward, and checkpoint recompute in it, run Ulysses attention too, so the scope spans them.
-            with _manager_scope(manager if activate_at_step else None):
-                return original(self, *args, **kwargs)
+            manager._clear_real_tokens()
+            try:
+                with _manager_scope(manager if activate_at_step else None):
+                    return original(self, *args, **kwargs)
+            finally:
+                manager._clear_real_tokens()
 
         return wrapped
 
@@ -1471,6 +3507,26 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         if manager is None:
             return originals["_generate"](self, prompts, *args, **kwargs)
         _check_same_prompts(prompts, manager)
+        device = self.accelerator.device
+        share = _generation_share(self, prompts, args, kwargs, manager)
+        # _generate gathers over every process: all data parallel groups split, or none do.
+        if not _all_processes_agree(share is not None, device):
+            share = None
+        if share is not None:
+            snapshot = _metrics_snapshot(self)
+            with _manager_scope(None):
+                result = originals["_generate"](self, prompts[share], *args, **kwargs)
+            sizes = [share.stop - share.start] * manager.size
+            merged = _gather_generation_shares(result, manager, device, sizes)
+            if _all_processes_agree(merged is not _UNMERGEABLE, device):
+                return _recount_completion_tokens(self, merged)
+            self._unsloth_cp_split_generation_off = True
+            if dist.get_rank() == 0:
+                print(
+                    "Unsloth: context parallel peers could not merge their generations; rank 0 now "
+                    "generates every completion for its peers."
+                )
+            _restore_metrics(self, snapshot)
         with _manager_scope(None):
             result = originals["_generate"](self, prompts, *args, **kwargs)
         result = _broadcast_from_group_root(result, manager, self.accelerator.device)
@@ -1498,8 +3554,8 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
     def patched_train(self, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
             _refuse_iterable_datasets(getattr(self, "train_dataset", None))
-        _install_accelerator_state(self)
-        return originals["train"](self, *args, **kwargs)
+        with _cp_state_scope(self):
+            return originals["train"](self, *args, **kwargs)
 
     @functools.wraps(originals["evaluate"])
     def patched_evaluate(self, *args, **kwargs):
@@ -1513,14 +3569,14 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
                     else current
                 )
             _check_rl_eval_entry(self, kind, dataset)
-        _install_accelerator_state(self)
-        return originals["evaluate"](self, *args, **kwargs)
+        with _cp_state_scope(self):
+            return originals["evaluate"](self, *args, **kwargs)
 
     def patched_predict(self, test_dataset, *args, **kwargs):
         if getattr(self, "_context_parallel_manager", None) is not None:
             _check_rl_eval_entry(self, kind, test_dataset)
-        _install_accelerator_state(self)
-        return originals["predict"](self, test_dataset, *args, **kwargs)
+        with _cp_state_scope(self):
+            return originals["predict"](self, test_dataset, *args, **kwargs)
 
     @functools.wraps(originals["evaluation_loop"])
     def patched_evaluation_loop(self, *args, **kwargs):
@@ -1529,49 +3585,32 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
             self.gather_function = _cp_gather_for_metrics(self.accelerator, manager.size)
         return originals["evaluation_loop"](self, *args, **kwargs)
 
-    # Non-CP trainers built before CP was enabled: like SFT, repair what their __init__ bound on the
-    # instance, so they still drop the mesh a CP trainer installs on the shared AcceleratorState.
-    pre_cp_trainers = []  # weakref.ref per trainer
+    # Bound per CP-enabling trainer, as for SFT; trainers without CP keep the class's methods.
+    cp_methods = {
+        "training_step": _step_wrapper("training_step"),
+        "prediction_step": _step_wrapper("prediction_step"),
+        "train": patched_train,
+        "evaluate": patched_evaluate,
+        "evaluation_loop": patched_evaluation_loop,
+    }
+    if originals["predict"] is not None:
+        cp_methods["predict"] = functools.wraps(originals["predict"])(patched_predict)
+    if kind == "grpo_trainer":
+        cp_methods["compute_loss"] = _scoped("compute_loss", sticky = True)
+        for name in ("_get_per_token_logps", "_get_per_token_logps_and_entropies"):
+            if originals[name] is not None:
+                cp_methods[name] = _scoped(name)
+        if originals["_generate"] is not None:
+            cp_methods["_generate"] = functools.wraps(originals["_generate"])(patched_generate)
+        cp_methods["_prepare_inputs"] = patched_prepare_inputs
+        if originals["_get_train_sampler"] is not None:
+            cp_methods["_get_train_sampler"] = patched_train_sampler
 
-    def _restoring(trainer, bound):
-        @functools.wraps(bound)
-        def call(*args, **kwargs):
-            _install_accelerator_state(trainer)
-            return bound(*args, **kwargs)
-
-        return call
-
-    def install_methods():
-        # Only __init__ is wrapped up front (as for SFT): the wrappers below go on the class once a
-        # trainer enables CP, so trainers without CP keep their original methods.
-        if trainer_cls.__dict__.get("__unsloth_context_parallel_methods__"):
-            return
-        for trainer in [ref() for ref in pre_cp_trainers]:
-            if trainer is None:
-                continue
-            for name in ("train", "evaluate", "predict"):
-                bound = trainer.__dict__.get(name)
-                if bound is not None:
-                    trainer.__dict__[name] = _restoring(trainer, bound)
-        pre_cp_trainers.clear()
-        trainer_cls.training_step = _step_wrapper("training_step")
-        trainer_cls.prediction_step = _step_wrapper("prediction_step")
-        trainer_cls.train = patched_train
-        trainer_cls.evaluate = patched_evaluate
-        if originals["predict"] is not None:
-            trainer_cls.predict = functools.wraps(originals["predict"])(patched_predict)
-        trainer_cls.evaluation_loop = patched_evaluation_loop
-        if kind == "grpo_trainer":
-            trainer_cls.compute_loss = _scoped("compute_loss", sticky = True)
-            for name in ("_get_per_token_logps", "_get_per_token_logps_and_entropies"):
-                if originals[name] is not None:
-                    setattr(trainer_cls, name, _scoped(name))
-            if originals["_generate"] is not None:
-                trainer_cls._generate = functools.wraps(originals["_generate"])(patched_generate)
-            trainer_cls._prepare_inputs = patched_prepare_inputs
-            if originals["_get_train_sampler"] is not None:
-                trainer_cls._get_train_sampler = patched_train_sampler
-        trainer_cls.__unsloth_context_parallel_methods__ = True
-
+    trainer_cls._unsloth_cp_methods = cp_methods
     trainer_cls.__init__ = patched_init
     trainer_cls.__unsloth_context_parallel__ = True
+
+
+# RL trainers patched while this module was still importing (see models/rl.py).
+for _trainer_cls, _kind in globals().pop("_DEFERRED_RL_TRAINERS", ()):
+    patch_rl_trainer(_trainer_cls, _kind)

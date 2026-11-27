@@ -119,9 +119,7 @@ class TestTheProbeReadsTheFlagAndNotItsNamesakes:
         assert _probe(tmp_path, monkeypatch, **kwargs)["supports_reasoning_flag"] is False
 
     def test_a_parsed_catalogue_counts_even_on_a_nonzero_exit(self, tmp_path, monkeypatch):
-        """Same policy as the sibling flags: a nonzero exit after a full help still named
-        the flags, and the doubt is carried separately in *_probe_inconclusive.
-        """
+        """Like sibling flags, a nonzero exit after full help counts; doubt goes in *_probe_inconclusive."""
         caps = _probe(tmp_path, monkeypatch, MODERN_HELP, returncode = 1)
         assert caps["supports_reasoning_flag"] == caps["supports_reasoning_budget"] is True
         assert caps["reasoning_budget_probe_inconclusive"] is True
