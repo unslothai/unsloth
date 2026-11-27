@@ -3142,7 +3142,7 @@ def _checkpoint_quant_formats() -> list[str]:
 
 
 def _repair_recommendation() -> Optional[dict]:
-    """Torch-free; None off Windows, off CUDA, or when the install already has the managed pair."""
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
     try:
         from utils.hardware.windows_repair import windows_repair_recommendation
         return windows_repair_recommendation()
@@ -3315,7 +3315,7 @@ def get_system_info(
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
         "checkpoint_quant_formats": _checkpoint_quant_formats(),
-        # Windows: an existing home older than the managed torch / xFormers pair. Additive key, null otherwise.
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
         "repair_recommendation": _repair_recommendation(),
     }
 

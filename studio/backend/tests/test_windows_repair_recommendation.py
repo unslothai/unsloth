@@ -117,11 +117,17 @@ def test_an_old_torch_on_rtx50_recommends_repair():
     rec = _rec()
     assert rec["reason"] == "torch_older_than_managed"
     assert rec["torch"] == "2.10.0+cu128"
-    assert (rec["managed_torch"], rec["managed_xformers"]) == ("2.13", "0.0.35")
+    assert rec["managed_torch"] == "2.13"
+    # The managed 0.0.35 xFormers is never offered: on sm_120 it has no FlashAttention 2 of its own.
+    assert not any("xformers" in key for key in rec)
+    assert "0.0.35" not in repr(rec)
 
 
-def test_an_old_xformers_on_the_managed_torch_recommends_repair():
-    assert _rec(torch = "2.13.0+cu130", xformers = "0.0.33")["reason"] == "xformers_older_than_managed"
+@pytest.mark.parametrize("xformers", ["0.0.34", "0.0.33.post2", None])
+def test_an_xformers_older_than_the_managed_pin_is_never_a_reason(xformers):
+    # RTX 5090 with the managed torch and xFormers 0.0.34 (FA2 through flash_attn): working, and 0.0.35 from the
+    # cu130 index would not be an upgrade there, so nothing is recommended.
+    assert _rec(torch = "2.13.0+cu130", xformers = xformers) is None
 
 
 @pytest.mark.parametrize(

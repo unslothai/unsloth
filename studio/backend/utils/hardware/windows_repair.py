@@ -4,8 +4,9 @@
 """Windows: whether an existing install should be repaired onto the managed PyTorch.
 
 An existing home keeps the torch it was installed with; only a repair (UNSLOTH_TORCH_UPGRADE=1) moves it to
-the managed build. On RTX 50-series (sm_120) cards xFormers trains only with torch 2.13 and xFormers 0.0.35,
-so an older home there runs attention on SDPA instead, or fails in the backward of an old xFormers build.
+the managed build (torch 2.13 on the cu130 route), which is what RTX 50-series (sm_120) support is tested on.
+Torch only: the xFormers version is never a reason. The managed 0.0.35 cu130 wheel builds no FlashAttention 2
+of its own and its cutlass kernels stop at sm_90, so on sm_120 it is not an upgrade over an installed 0.0.34.
 Torch-free: package metadata and the cached nvidia-smi capability query, so the polled /api/system may call it."""
 
 from __future__ import annotations
@@ -19,8 +20,6 @@ from typing import Callable, Optional
 
 # Lower bound of install.ps1's managed CUDA torch for new installs ($script:Cu130NewInstallTorchSpec).
 WINDOWS_MANAGED_TORCH_FLOOR = (2, 13)
-# The first xFormers whose sm_120 build ships the backward kernels, paired with that torch.
-WINDOWS_MANAGED_XFORMERS_FLOOR = (0, 0, 35)
 _SM120 = 12
 # The managed torch comes from the cu130 index, which install.ps1 picks only for a driver supporting CUDA 13.0.
 _MANAGED_ROUTE_DRIVER_CUDA = (13, 0)
@@ -109,9 +108,8 @@ def windows_repair_recommendation(
     managed_route_host: Callable[[], bool] = _managed_route_host,
     driver_cuda_version: Callable[[], Optional[tuple[int, int]]] = _driver_cuda_version,
 ) -> Optional[dict]:
-    """``{"reason", "torch", "xformers", "managed_torch", "managed_xformers"}`` when this Windows CUDA install
-    has an sm_120+ card and a torch (or an installed xFormers) older than the managed pair, and Repair can
-    reach that pair; else None. A driver too old for the cu130 route gets ``driver_older_than_managed``
+    """``{"reason", "torch", "managed_torch"}`` when this Windows CUDA install has an sm_120+ card and a torch
+    older than the managed one, and Repair can reach it; else None. xFormers is never a reason (see above). A driver too old for the cu130 route gets ``driver_older_than_managed``
     instead, since Repair alone would keep the old torch."""
     if platform != "win32":
         return None
@@ -122,14 +120,9 @@ def windows_repair_recommendation(
     if not any(int(cap[0]) >= _SM120 for cap in capabilities().values()):
         return None
     torch_release = _release(torch_version)
-    xformers_version = dist_version("xformers")
-    xformers_release = _release(xformers_version)
-    if torch_release is not None and torch_release[:2] < WINDOWS_MANAGED_TORCH_FLOOR:
-        reason = "torch_older_than_managed"
-    elif xformers_release is not None and xformers_release < WINDOWS_MANAGED_XFORMERS_FLOOR:
-        reason = "xformers_older_than_managed"
-    else:
+    if torch_release is None or torch_release[:2] >= WINDOWS_MANAGED_TORCH_FLOOR:
         return None
+    reason = "torch_older_than_managed"
     # Only x64 with the Python 3.13 venv takes the managed torch; elsewhere Repair would not change it.
     if not managed_route_host():
         return None
@@ -139,7 +132,5 @@ def windows_repair_recommendation(
     return {
         "reason": reason,
         "torch": torch_version,
-        "xformers": xformers_version,
         "managed_torch": ".".join(map(str, WINDOWS_MANAGED_TORCH_FLOOR)),
-        "managed_xformers": ".".join(map(str, WINDOWS_MANAGED_XFORMERS_FLOOR)),
     }

@@ -19,29 +19,27 @@ const t = (key: never, values: Record<string, string> = {}) => {
   return strings[leaf].replace(/\{(\w+)\}/g, (_m, name: string) => values[name] ?? `{${name}}`);
 };
 
-test("an old torch names both versions and the managed pair", () => {
+test("an old torch names both torch versions and no xFormers upgrade", () => {
   const text = repairRecommendationText(
-    {
-      reason: "torch_older_than_managed",
-      torch: "2.10.0+cu128",
-      xformers: "0.0.33",
-      managed_torch: "2.13",
-      managed_xformers: "0.0.35",
-    },
+    { reason: "torch_older_than_managed", torch: "2.10.0+cu130", managed_torch: "2.13" },
     t,
   );
   assert.ok(text?.startsWith("Repair recommended:"), text ?? "null");
-  assert.match(text, /PyTorch 2\.10\.0\+cu128/);
-  assert.match(text, /xFormers 0\.0\.35/);
+  assert.match(text, /PyTorch 2\.10\.0\+cu130, older than the managed 2\.13/);
+  // On sm_120 the managed xFormers 0.0.35 is not an upgrade over 0.0.34, so no wording offers it.
+  assert.doesNotMatch(text, /xFormers|0\.0\.35/);
   assert.doesNotMatch(text, /\{/);
 });
 
-test("an old xFormers on a current torch gets its own wording", () => {
-  const text = repairRecommendationText(
-    { reason: "xformers_older_than_managed", torch: "2.13.0+cu130", xformers: "0.0.33", managed_xformers: "0.0.35" },
-    t,
+test("the old xFormers reason no longer renders, and no string names an xFormers version", () => {
+  assert.equal(
+    repairRecommendationText({ reason: "xformers_older_than_managed", torch: "2.13.0+cu130" }, t),
+    null,
   );
-  assert.match(text ?? "", /xFormers 0\.0\.33, older than the managed 0\.0\.35/);
+  for (const key of ["recommendedTorch", "recommendedDriver"]) {
+    assert.doesNotMatch(strings[key], /xFormers/);
+  }
+  assert.equal(strings.recommendedXformers, undefined);
 });
 
 test("a driver too old for the managed route asks for a driver update first", () => {

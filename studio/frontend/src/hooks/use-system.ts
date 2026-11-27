@@ -68,7 +68,7 @@ export interface SystemInfoResponse {
   nvfp4_diffusion?: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
   checkpoint_quant_formats?: string[];
-  /** Windows: an existing home older than the managed torch / xFormers. Null or absent otherwise. */
+  /** Windows: an existing home older than the managed torch. Null or absent otherwise. */
   repair_recommendation?: RepairRecommendation | null;
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
