@@ -3109,10 +3109,8 @@ def _generation_share(trainer, prompts, args, kwargs, manager):
         generations = getattr(config, "num_generations_eval", None) or generations
     count = len(prompts)
     groups = count // generations if count % generations == 0 else 0
-    # Equal shares (TRL's metric gathers inside _generate need the same row count on every process) of
-    # two or more groups: one group's rows are one prompt, so they need no padding mask, and an unmasked
-    # batched decode can take a slower attention route than the padded full batch (on a T4, 4 rows of one
-    # prompt decoded in 2.4x the time of the 8 padded rows they came from).
+    # Equal shares (TRL's in-_generate gathers need equal rows) of 2+ groups: a one-group share is unpadded,
+    # and unmasked batched decode can take a slower route (T4: 4 rows of one prompt took 2.4x 8 padded rows).
     if groups < 2 * manager.size or groups % manager.size:
         return None
     share = count // manager.size
@@ -3501,7 +3499,6 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         _check_same_prompts(prompts, manager)
         share = _generation_share(self, prompts, args, kwargs, manager)
         if share is not None:
-            # Each peer samples its own whole groups; the all-gather restores the full batch in order.
             snapshot = _metrics_snapshot(self)
             with _manager_scope(None):
                 result = originals["_generate"](self, prompts[share], *args, **kwargs)
