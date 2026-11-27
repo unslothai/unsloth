@@ -120,7 +120,7 @@ def test_first_forward_under_inference_mode_keeps_normal_weights(gfx):
         dit(torch.randn(2, 3072, dtype = torch.bfloat16))
     assert _padded(dit.attn) and not dit.attn.weight.is_inference()
     x = torch.randn(2, 3072, dtype = torch.bfloat16, requires_grad = True)
-    dit(x).float().sum().backward()  # weights usable for autograd afterwards
+    dit(x).float().sum().backward()
     assert x.grad is not None
 
 
@@ -215,7 +215,7 @@ def test_unreadable_active_table_keeps_everything(gfx, monkeypatch):
 
 def test_parse_row():
     assert wp.parse_row("tn_3072_4096_9216_ld_9216_9216_3072") == (3072, 9216, 4096)
-    assert wp.parse_row("tn_3072_4096_9216_ld_9280_9216_3072") is None  # already a padded weight
+    assert wp.parse_row("tn_3072_4096_9216_ld_9280_9216_3072") is None
     assert wp.parse_row("nn_3072_3840_9216_ld_3072_9216_3072") is None
     assert wp.parse_row("garbage") is None
 
@@ -246,12 +246,12 @@ def test_every_shipped_table_maps_to_known_families():
 def test_install_arms_once_and_pads_on_first_forward(gfx, monkeypatch):
     dit = Dit()
     assert wp.install(dit, family = "wan2.2-ti2v-5b") == 1
-    assert wp.install(dit) == 0  # already armed
+    assert wp.install(dit) == 0
     assert dit.attn.weight.is_contiguous()
     dit(torch.randn(2, 3072, dtype = torch.bfloat16))
     assert _padded(dit.attn) and wp.STATS["calls"] == 1
     dit(torch.randn(2, 3072, dtype = torch.bfloat16))
-    assert wp.STATS["calls"] == 1  # hook removed after the first forward
+    assert wp.STATS["calls"] == 1
 
 
 def test_install_off_card(gfx, monkeypatch):

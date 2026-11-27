@@ -1,24 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ROCm gfx11xx: store the denoiser's 16-bit ``nn.Linear`` weights with a padded row pitch (K + P elements, a view
-of an [N, K + P] buffer) so hipBLASLt reads them off the power-of-two strides that alias on Strix Halo's memory
-channels. Same GEMM with another leading dimension: torch.equal on every measured GEMM. AMD CI Linux gfx1151,
-untuned hipBLASLt, P = 64: block linear sums 1.09x Wan 5B, 1.26x Krea-2, 1.31x Qwen-Image-2.1, 1.30x LTX-2.5, 1.10x
-FLUX.3 klein; real Krea-2 block 1.21x; Wan 2.2 5B 832x480x49 denoise 42.2 -> 38.8 s. Weight memory +P / K (0.4-2%).
+"""ROCm gfx11xx: store denoiser 16-bit ``nn.Linear`` weights as a view of an [N, K + P] buffer so hipBLASLt avoids
+power-of-two strides that alias on Strix Halo memory channels (bit-exact; gfx1151 1.1-1.3x block GEMMs, +P / K memory).
 
-A TunableOp row is keyed on the leading dimension, so a padded weight misses the shipped table (0.90-0.94x on Qwen /
-klein GEMMs) and its GEMM takes another solution. By default (env unset) every weight whose (N, K) has a row in the
-loaded TunableOp results stays contiguous, whatever the family: a padded GEMM was never served from the table, so
-the render stays byte-identical to main (AMD CI gfx1151: klein, Qwen-Image-2.1, Wan on Windows). On Linux the
-shipped klein / Qwen table also holds rows for some Wan 5B shapes (3072 x 3072 attention projections, M = 1
-timestep rows), so the default pads only Wan's FFN there. ``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH=<P>`` keeps only the
-family rule: a family the table was tuned for (``TABLE_FAMILIES``, or any family while the user tunes or has a local
-tuned cache) keeps its covered weights, other families pad every eligible weight (Wan 5B Linux: denoise -8.2%, but
-small GEMMs leave their tuned rows, LPIPS 0.12 against main after 8 steps).
-
-``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``: unset = on (P = 64, table rows kept) for ``DEFAULT_ON_ARCHES``; ``0`` off;
-``<P>`` (a multiple of 8) forces pitch P on any gfx11xx card with the family rule. Counts land in ``STATS``."""
+TunableOp rows are keyed on the leading dimension, so a padded weight misses the shipped table (0.90-0.94x). Env unset:
+weights whose (N, K) has a loaded table row stay contiguous (byte-identical to main). ``UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH``:
+``0`` off; ``<P>`` (multiple of 8) forces pitch P on any gfx11xx, keeping table rows only for ``TABLE_FAMILIES`` (or
+while tuning / with a local tuned cache)."""
 
 from __future__ import annotations
 
@@ -28,10 +17,8 @@ from typing import Any, Optional
 PITCH_ENV = "UNSLOTH_DIFFUSION_ROCM_WEIGHT_PITCH"
 DEFAULT_PITCH = 64
 ARCH_PREFIX = "gfx11"
-# Measured default-on archs; other gfx11xx cards take it only through the env var.
 DEFAULT_ON_ARCHES: frozenset = frozenset({"gfx1151"})
 MIN_IN_FEATURES = 1024
-# Families whose denoiser GEMMs the shipped rocm_gemm_tables/*.csv were tuned on (the table name lists them).
 TABLE_FAMILIES = frozenset({"qwen-image-2.1", "flux.3-klein", "flux.3-klein-base", "flux.2-klein"})
 TABLE_STEM_TOKENS = {
     "qwenimage21": ("qwen-image-2.1",),
@@ -113,8 +100,6 @@ def table_shapes() -> Optional[set]:
 
 
 def _table_family(family: Optional[str], arch: Optional[str]) -> bool:
-    """A family whose GEMMs a loaded table may hold: a shipped-table family, or any while tuned rows come from the
-    user's own renders (tune mode, or a local cache from an earlier tune)."""
     if str(family or "").strip().lower() in TABLE_FAMILIES:
         return True
     try:
@@ -131,8 +116,7 @@ def install(
     logger: Any = None,
     family: Optional[str] = None,
 ) -> int:
-    """Speed optims run before placement, so the re-store waits for the module's first forward (weights on the card
-    by then); returns 1 when the hook is armed."""
+    """Pads on the first forward (weights are placed by then, not at speed-optim time); 1 when armed."""
     if module is None or _env() in ("0", "off", "false", "no"):
         return 0
     if not callable(getattr(module, "register_forward_pre_hook", None)):
@@ -158,9 +142,7 @@ def install(
 
 
 def _release_old_storage(torch: Any) -> None:
-    """The contiguous weights just replaced go back to the caching allocator; hand them to the driver so the re-store
-    costs P / K, not a second copy of the denoiser (AMD CI Wan 5B: reserved +5.2 GiB otherwise; on an APU that is
-    system RAM)."""
+    """Free the replaced weights, else reserved memory holds a second denoiser copy (Wan 5B +5.2 GiB)."""
     try:
         if torch.cuda.is_available() and not torch.cuda.is_current_stream_capturing():
             torch.cuda.empty_cache()
@@ -173,7 +155,6 @@ def pad_weights(
     logger: Any = None,
     family: Optional[str] = None,
 ) -> int:
-    """Re-store every eligible plain ``nn.Linear`` weight of ``module`` with the padded pitch. Returns the count."""
     if module is None:
         return 0
     import torch
@@ -186,8 +167,7 @@ def pad_weights(
     n = skipped_table = skipped_other = 0
     arch_by_dev: dict = {}
     p = 0
-    # inference_mode(False): the first forward may run under inference_mode; weights made there would be inference
-    # tensors, which a later LoRA / training use cannot save for backward.
+    # Not inference tensors: later LoRA / training must save these weights for backward.
     with torch.inference_mode(False), torch.no_grad():
         for m in module.modules():
             if type(m) is not torch.nn.Linear:
@@ -213,7 +193,6 @@ def pad_weights(
                 skipped_other += 1
                 continue
             if guard is None:
-                # env unset: keep every covered (N, K) (byte-identical to main); explicit pitch: the family rule
                 guard = shapes is not None and (not _env() or _table_family(family, arch))
             N, K = w.shape
             if guard and ("*" in shapes or (int(N), int(K)) in shapes):
