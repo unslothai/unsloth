@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MOSS-Image layer-major batch: on an offloaded DiT the layer loop runs outer and the rows inner, so a streamed
-block uploads once per call instead of once per row, and every row is still the per-sample row bit for bit. CPU only
-(diffusers block-level group offload with both devices on the CPU)."""
+"""MOSS-Image layer-major batch: one block upload per call, rows bit-identical to solo. CPU only."""
 
 from __future__ import annotations
 
@@ -227,8 +225,7 @@ def test_refusals_keep_the_per_sample_forward(moss, monkeypatch):
 
 
 def test_pipeline_rows_with_cfg_are_solo_renders_and_neighbour_invariant(moss, monkeypatch):
-    """Through the pipeline (CFG, per-row negative, uncond skip layer, seed list): each layer-major row is its own solo
-    render bit for bit, and swapping one member's prompt and seed leaves the others bit-identical."""
+    """Via the pipeline (CFG, skip layer, seed list): rows equal solo renders; swapping one leaves others intact."""
     model = _tiny(moss)
     scheduler = moss.MOSSImageScheduler()
     pipe = moss.MOSSImagePipeline(transformer = model, scheduler = scheduler)

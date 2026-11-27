@@ -288,8 +288,7 @@ class _Block(nn.Module, _AttentionMixin):
 
     def forward(self, x, rope, modulation):
         if isinstance(x, (list, tuple)):
-            # Layer-major rows (``MOSSImageTransformer._layer_major``): one call, so an offload hook moves this
-            # block's weights once for the batch; each row then runs the solo computation at its own shape.
+            # Layer-major rows: one call so an offload hook uploads weights once; each row runs solo.
             forward = type(self).forward
             return tuple(forward(self, *row) for row in zip(x, rope, modulation))
         shift_a, scale_a, gate_a, shift_f, scale_f, gate_f = modulation.unbind(1)
@@ -411,8 +410,7 @@ def _bound_to(fn, module) -> bool:
 
 
 def _passes_rows(layer) -> bool:
-    """Whether a call to ``layer`` reaches ``_Block.forward`` through offload hooks that only move weights and
-    arguments: no compiled call, no CUDA-graph or cache wrapper, no module forward hooks."""
+    """Whether ``layer`` reaches ``_Block.forward`` through weight-moving offload hooks only."""
     if getattr(layer, "_compiled_call_impl", None) is not None:
         return False
     if layer._forward_hooks or layer._forward_pre_hooks:
@@ -442,9 +440,7 @@ def _passes_rows(layer) -> bool:
 
 
 def layer_major_refusal(transformer) -> Optional[str]:
-    """Why a batch of ``transformer`` runs each row through every block in turn (main's order), else None: the layer
-    loop runs outer and the rows inner, so an offloaded block uploads once per call instead of once per row. Each row
-    still runs the solo computation at its own shape, so the output is the per-sample output bit for bit."""
+    """Why a batch cannot run layer-major (one upload per block per call, rows bit-identical to solo), else None."""
     if _env_off(LAYER_MAJOR_ENV):
         return f"{LAYER_MAJOR_ENV}=0"
     if transformer.gradient_checkpointing and torch.is_grad_enabled():
@@ -461,21 +457,15 @@ def layer_major_refusal(transformer) -> Optional[str]:
     return None
 
 
-# Measured Auto verdicts for the layer-major batch: card name -> evidence, with ``serves`` True only when the paired
-# G2c bound (24 pairs, LPIPS upper <= +0.01), the row-0 gate and the speed gate (lower bound >= 1.05x serial, p95
-# <= +3%) all passed there. Any other card keeps rendering concurrent MOSS requests one at a time.
+# Measured layer-major verdicts per card; ``serves`` only if the G2c, row-0 and speed gates passed. Others render alone.
 MEASURED_BATCH_WINS: dict = {
-    # bf16 eager, diffusers block-level group offload (one block per group, streams), 1024 px, 10 steps, CFG 2.5,
-    # 3 ABBA repeats; torch 2.14.1, diffusers 0.42.1. Batched vs serial: N=2 1.98x (95% CI 1.98-1.99), N=4 2.42x
-    # (2.40-2.43), batched p95 0.41-0.50x of serial; 336 -> 84 block uploads per step at N=4. G2c n=24 upper bound
-    # 0.0 (all 24 batched latents equal their solo renders); row 0 equal to its solo render at N=2 and N=4.
+    # bf16 group offload, 1024 px, 10 steps; torch 2.14.1, diffusers 0.42.1: N=2 1.98x, N=4 2.42x vs serial.
     "NVIDIA A100-SXM4-80GB": {"serves": True, "speed_lo": 1.98, "g2c_upper": 0.0, "g2c_n": 24},
 }
 
 
 def coalesce_key(pipe) -> Optional[tuple]:
-    """What a MOSS prompt must share with batch neighbours, else None (render alone): a load that runs layer-major on
-    a card with a serving verdict. Rows may differ in text length, since each row runs at its own."""
+    """Batch key for a layer-major load on a card with a serving verdict, else None (render alone)."""
     transformer = getattr(pipe, "transformer", None)
     if transformer is None or layer_major_refusal(transformer) is not None:
         return None
@@ -679,10 +669,7 @@ class MOSSImageTransformer(_ModelMixin, _ConfigMixin, _PeftAdapterMixin):
         return Transformer2DModelOutput(sample = sample)
 
     def _layer_major(self, hidden_states, timestep, text_in, mask, refined_text, skip_layers):
-        """The per-sample forward with the layer loop outer and the rows inner: every row is prepared, refined, rotated,
-        modulated and finished exactly as its batch-1 forward does it, and each block is called once with all rows.
-        The AdaLN modulation runs at batch 1 too (once for a shared timestep), so a row is its solo render bit for bit
-        rather than carrying a batch-B GEMM's rounding."""
+        """Per-sample forward, layer loop outer: AdaLN runs at batch 1 too so each row is bit-identical to solo."""
         batch, _, height, width = hidden_states.shape
         device = hidden_states.device
         times = torch.as_tensor(timestep, device = device, dtype = torch.float32).reshape(-1)
