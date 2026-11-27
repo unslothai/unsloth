@@ -4440,7 +4440,8 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
-# Windows, transformers 5.0 - 5.16: read shards with pread, not a copy-on-write mmap charged to commit (os error 1455).
+# Read CPU shard opens with pread, not mmap: Windows with transformers 5.0 - 5.16 (mmap is charged to commit, os error
+# 1455) and CUDA unified-memory GPUs (GB10 / DGX Spark: mmap -> GPU copies are many times slower), decided per open.
 from ._windows_safetensors import patch_windows_safetensors_pread
 
 patch_windows_safetensors_pread()
