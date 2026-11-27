@@ -4790,7 +4790,13 @@ class _SliceReader:
         path = self.index[key]
         if path not in self.handles:
             from safetensors import safe_open
-            self.handles[path] = safe_open(path, framework = "pt", device = "cpu")
+
+            from ._windows_safetensors import pread_backend_kwargs
+
+            # read once per rank and copied to its device: pread where mmap -> GPU is slow
+            self.handles[path] = safe_open(
+                path, framework = "pt", device = "cpu", **pread_backend_kwargs()
+            )
         return self.handles[path]
 
     def shape(self, key):
@@ -6492,11 +6498,21 @@ def _load_optimizer_local_state(optimizer, saved):
     inner.load_state_dict({"state": state, "param_groups": saved["param_groups"]})
 
 
+def _release_inference_replica(*models):
+    """Drop a replica left by generate / for_inference (local, no collective): while it is in, named_parameters()
+    yields its whole tensors instead of the shards the optimizer and the checkpoint hold."""
+    from .tp_replica import release_replica
+    for model in models:
+        if model is not None:
+            release_replica(model)
+
+
 def _tp_save_optimizer_and_scheduler(self, output_dir):
     import os
 
     import torch.distributed as dist
 
+    _release_inference_replica(self.model)
     rank = dist.get_rank() if dist.is_initialized() else 0
     path = _ckpt_path(output_dir, rank)
     trainables = {
@@ -6604,8 +6620,9 @@ def _tp_load_from_checkpoint(
     resume_from_checkpoint,
     model = None,
 ):
-    payload = _tp_resume_payload(self, resume_from_checkpoint)
     target = model if model is not None else self.model
+    _release_inference_replica(self.model, target)
+    payload = _tp_resume_payload(self, resume_from_checkpoint)
     if payload is _PORTABLE:
         from .portable_resume import portable_load_weights
 
@@ -6630,6 +6647,7 @@ def _tp_load_optimizer_and_scheduler(self, checkpoint, *args, **kwargs):
 
     if checkpoint is None:
         return None
+    _release_inference_replica(self.model)
     payload = _tp_resume_payload(self, checkpoint)
     if payload is _PORTABLE:
         from .portable_resume import PORTABLE_OPTIMIZER, portable_load_optimizer

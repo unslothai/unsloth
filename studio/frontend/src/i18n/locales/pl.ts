@@ -2657,6 +2657,10 @@ export const pl = {
         confirmDescriptionChatOnly:
           "Zatrzymuje serwer i ponownie uruchamia instalator. To instalacja Tylko czat, więc instalator uaktualni ją również do pełnej instalacji z PyTorch, łącznie kilka gigabajtów. Czaty i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Napraw teraz",
+        recommendedTorch:
+          "Zalecana naprawa: ta instalacja ma PyTorch {torch}, starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} jest starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50, ale ten sterownik GPU nie obsługuje CUDA 13. Najpierw zaktualizuj sterownik GPU, a potem napraw instalację.",
       },
       resetPreferences: {
         sectionTitle: "Strefa zagrożenia",

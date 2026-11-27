@@ -773,3 +773,53 @@ def test_ep_env_load_keeps_the_zoo_per_expert_paths(monkeypatch):
     assert epn.ep_env_load(lambda: "loaded", (), {}, False) == "loaded"
     assert os.environ["UNSLOTH_MOE_STACKED_LORA"] == "0"
     assert os.environ["UNSLOTH_MOE_GROUPED"] == "1"
+
+
+def test_ep_expert_lists_grouped_experts_only_for_standard_expert_mlps():
+    """The grouped local experts take only the 4.x expert MLPs whose forward is down(act(gate(x)) * up(x)), untouched;
+    off the GPU (or fp32) every block keeps the per-expert loop and says why."""
+    import types
+
+    import transformers.models.qwen3_moe.modeling_qwen3_moe as qwen3_moe
+    from transformers import Qwen3MoeConfig
+    from unsloth.models import ep_expert_lists as lists
+
+    config = Qwen3MoeConfig(hidden_size = 16, moe_intermediate_size = 8, intermediate_size = 8)
+    lst = torch.nn.Module()
+    for e in range(4):
+        lst.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
+    saved = os.environ.pop(lists._GROUPED_ENV, None)  # the caller's kill switch must not leak in
+    try:
+        shard = types.SimpleNamespace(lo = 2, hi = 4)
+        experts, names = lists._grouped_spec(shard, lst, [3, 1])
+        assert list(experts) == [lst._modules["2"], lst._modules["3"]]
+        assert names == ("gate_proj", "up_proj", "down_proj")
+        assert lists._grouped_spec(shard, lst, [3, 1])[0] is experts  # the ModuleList is reused
+        # Only experts that received rows: one with none keeps unset gradients, as in the loop.
+        assert list(lists._grouped_spec(shard, lst, [0, 2])[0]) == [lst._modules["3"]]
+        rows = torch.randn(3, 16)
+        assert lists._grouped_locals(shard, lst, rows, torch.arange(3), [2, 1]) is None
+        assert shard.grouped_declined == "cpu torch.float32 rows", shard.grouped_declined
+        lst._modules["3"].register_forward_hook(lambda *a: None)
+        assert "hooks" in lists._grouped_spec(shard, lst, [3, 1])
+        lst._modules["0"].forward = lambda x: x
+        assert "hooks" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), lst, [1, 1])
+        fresh = torch.nn.Module()
+        for e in range(2):
+            fresh.add_module(str(e), qwen3_moe.Qwen3MoeMLP(config, intermediate_size = 8))
+        fresh._modules["1"].down_proj.weight_fake_quantizer = torch.nn.Identity()
+        assert "QAT" in lists._grouped_spec(types.SimpleNamespace(lo = 0, hi = 2), fresh, [1, 1])
+        del fresh._modules["1"].down_proj.weight_fake_quantizer
+        fresh._modules["1"].down_proj.register_forward_hook(lambda m, a, out: out * 2)
+        assert "projections" in lists._grouped_spec(
+            types.SimpleNamespace(lo = 0, hi = 2), fresh, [1, 1]
+        )
+        os.environ[lists._GROUPED_ENV] = "0"
+        assert (
+            lists._grouped_spec(types.SimpleNamespace(lo = 2, hi = 4), lst, [1, 1])
+            == f"{lists._GROUPED_ENV}=0"
+        )
+    finally:
+        os.environ.pop(lists._GROUPED_ENV, None)
+        if saved is not None:
+            os.environ[lists._GROUPED_ENV] = saved

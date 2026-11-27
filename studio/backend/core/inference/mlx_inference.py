@@ -6860,9 +6860,6 @@ class MLXInferenceBackend:
             getattr(config, "base_model", None) if is_lora else model_name
         )
         zoo_multimodal = not is_vision and _zoo_declares_multimodal(route_config, hf_token)
-        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
-            route_config, hf_token
-        )
         # Vision off reads no images. An adapter or audio input keeps the processor it was built for.
         vision_off = bool(
             disable_vision
@@ -6872,6 +6869,9 @@ class MLXInferenceBackend:
         )
         if vision_off and _text_load_drops_the_tower(route_config, hf_token):
             is_vision = zoo_multimodal = False
+        vlm_only_text = not (is_vision or zoo_multimodal) and _zoo_builds_text_on_mlx_vlm(
+            route_config, hf_token
+        )
         kv_bits, turboquant = parse_mlx_kv_quant(kv_quant)
         self._turboquant = turboquant
         if self._turboquant:
@@ -7100,6 +7100,11 @@ class MLXInferenceBackend:
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
+
+        # Zoo can build a text-only checkpoint with mlx-vlm and return just its tokenizer.
+        if not use_vlm and getattr(model, "_is_vlm_model", None) is True:
+            use_vlm = True
+            tokenizer_or_processor = getattr(model, "_processor", tokenizer_or_processor)
 
         zoo_loaded_multimodal = zoo_multimodal and not served_by_mlx_lm
         if zoo_loaded_multimodal:

@@ -2489,6 +2489,10 @@ export const he = {
         confirmDescriptionChatOnly:
           "עוצר את השרת ומריץ מחדש את תוכנית ההתקנה. זוהי התקנה של צ'אט בלבד, ולכן תוכנית ההתקנה גם משדרגת אותה להתקנה המלאה עם PyTorch, כמה ג'יגה-בייט בסך הכול. הצ'אטים וההגדרות יישמרו. התהליך עשוי להימשך מספר דקות.",
         confirmAction: "תקן כעת",
+        recommendedTorch:
+          "מומלץ לתקן: בהתקנה זו PyTorch {torch}, ישן יותר מהגרסה המנוהלת {managedTorch} שבה נתמכים מעבדי RTX מסדרה 50.",
+        recommendedDriver:
+          "PyTorch {torch} ישן יותר מהגרסה המנוהלת {managedTorch} שבה נתמכים מעבדי RTX מסדרה 50, אבל מנהל ההתקן של ה-GPU הזה לא תומך ב-CUDA 13. עדכנו קודם את מנהל ההתקן של ה-GPU ואז תקנו את ההתקנה.",
       },
       resetPreferences: {
         sectionTitle: "אזור סכנה",

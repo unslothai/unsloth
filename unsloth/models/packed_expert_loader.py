@@ -315,9 +315,14 @@ class _Shards:
     def get(self, entries, idx, proj, suffix):
         from safetensors import safe_open
 
+        from ._windows_safetensors import pread_backend_kwargs
+
         path, _, _, key = entries[(idx, proj, suffix)]
         if path not in self.files:
-            self.files[path] = safe_open(path, framework = "pt", device = "cpu")
+            # each expert is read once into a preallocated buffer: pread where mmap -> GPU is slow
+            self.files[path] = safe_open(
+                path, framework = "pt", device = "cpu", **pread_backend_kwargs()
+            )
         return self.files[path].get_tensor(key)
 
 

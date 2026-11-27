@@ -63,6 +63,19 @@ def _loader_utils_functions(
     ]
 
 
+def _real_function(path, name):
+    """One self-contained function compiled from its module's source, so the fixture runs the real code without
+    importing the module (unsloth.models._utils pulls in torch)."""
+    node = next(
+        n
+        for n in ast.parse(path.read_text(encoding = "utf-8")).body
+        if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+    namespace = {}
+    exec(compile(ast.Module([node], type_ignores = []), str(path), "exec"), namespace)
+    return namespace[name]
+
+
 def _module_definitions(tree):
     """loader.py's own top-level functions and literal constants, by name."""
     defined = {}
@@ -154,6 +167,8 @@ def loader():
         _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
         # #19464: from_pretrained starts every load with a backend switch that needs a real torch.
         _unsloth_load_begins = lambda: None,
+        # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
+        gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
     )
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
