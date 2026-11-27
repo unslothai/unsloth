@@ -323,15 +323,18 @@ fn append_native_save(save: &Arc<Mutex<NativeSave>>, content: &[u8]) -> Result<(
         .map_err(|error| format!("Failed to save {}: {error}", destination.display()))
 }
 
-fn finish_native_save(save: Arc<Mutex<NativeSave>>) -> Result<String, String> {
-    let save = Arc::try_unwrap(save)
+fn own_native_save(save: Arc<Mutex<NativeSave>>) -> Result<NativeSave, String> {
+    Arc::try_unwrap(save)
         .map_err(|_| "Native export is still being written.".to_string())?
         .into_inner()
-        .map_err(|_| "Native export handle is unavailable.".to_string())?;
+        .map_err(|_| "Native export handle is unavailable.".to_string())
+}
+
+fn finish_native_save(save: Arc<Mutex<NativeSave>>) -> Result<String, String> {
     let NativeSave {
         destination,
         mut temporary,
-    } = save;
+    } = own_native_save(save)?;
     temporary
         .flush()
         .and_then(|()| temporary.as_file().sync_all())
@@ -745,6 +748,31 @@ pub async fn save_native_file_from_url(
 }
 
 #[tauri::command]
+pub async fn finish_native_file_save_from_url(
+    webview: tauri::Webview,
+    app: AppHandle,
+    registry: State<'_, NativeSaveRegistry>,
+    token: String,
+    url: String,
+) -> Result<String, String> {
+    crate::native_intents::ensure_main_window(&webview)?;
+    require_loopback_url(&url)?;
+    let save = registry
+        .take(&token)
+        .ok_or_else(|| "That native export is no longer available.".to_string())?;
+    let NativeSave {
+        destination,
+        temporary,
+    } = own_native_save(save)?;
+    let response = open_download_response(&url, DOWNLOAD_READ_TIMEOUT, None).await?;
+    stream_download_to_path(response, temporary, &destination, true).await?;
+    if let Ok(config_dir) = app.path().app_config_dir() {
+        remember_save_dir(&config_dir, &destination);
+    }
+    Ok(saved_file_name(&destination))
+}
+
+#[tauri::command]
 pub async fn pick_native_download_directory(
     webview: tauri::Webview,
     app: AppHandle,
@@ -832,6 +860,16 @@ async fn stream_url_to_path_inner(
     bearer: Option<&str>,
     replace: bool,
 ) -> Result<(), String> {
+    let response = open_download_response(url, read_timeout, bearer).await?;
+    let temporary = staged_temp_file(path)?;
+    stream_download_to_path(response, temporary, path, replace).await
+}
+
+async fn open_download_response(
+    url: &str,
+    read_timeout: Duration,
+    bearer: Option<&str>,
+) -> Result<reqwest::Response, String> {
     let request = crate::loopback_http::streaming_client(Duration::from_secs(10), read_timeout)
         .map_err(|error| format!("Download failed: {error}"))?
         .get(url);
@@ -839,7 +877,7 @@ async fn stream_url_to_path_inner(
         Some(token) => request.bearer_auth(token),
         None => request,
     };
-    let mut response = request
+    let response = request
         .send()
         .await
         .map_err(|error| format!("Download failed: {error}"))?;
@@ -850,7 +888,15 @@ async fn stream_url_to_path_inner(
             response.status().as_u16()
         ));
     }
-    let mut temporary = staged_temp_file(path)?;
+    Ok(response)
+}
+
+async fn stream_download_to_path(
+    mut response: reqwest::Response,
+    mut temporary: tempfile::NamedTempFile,
+    path: &Path,
+    replace: bool,
+) -> Result<(), String> {
     while let Some(chunk) = response
         .chunk()
         .await
@@ -1555,6 +1601,22 @@ mod tests {
             .filter(|entry| entry.file_name() != std::ffi::OsStr::new("clip.mp4"))
             .collect();
         assert!(strays.is_empty(), "staging file left behind");
+    }
+
+    #[test]
+    fn a_download_can_use_the_destination_selected_before_the_url_was_minted() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("selected.mp4");
+        let staged = staged_temp_file(&dest).unwrap();
+        let (url, server) = serve_once(b"recording".to_vec(), "200 OK");
+        test_runtime()
+            .block_on(async {
+                let response = open_download_response(&url, DOWNLOAD_READ_TIMEOUT, None).await?;
+                stream_download_to_path(response, staged, &dest, true).await
+            })
+            .unwrap();
+        server.join().unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"recording");
     }
 
     #[test]

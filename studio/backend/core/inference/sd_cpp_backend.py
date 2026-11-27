@@ -3505,6 +3505,12 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
     )
 
 
+def _request_ref_image_args(state: Any, has_refs: bool) -> Optional[str]:
+    return sd_cpp_args_mod.ref_image_args_for_family(
+        getattr(getattr(state, "family", None), "name", None), has_refs
+    )
+
+
 def _request_scheduler(state: Any) -> Optional[str]:
     """The family's ``--scheduler``; None under custom sigmas (they replace the schedule) or the kill switch."""
     if getattr(state, "sample_sigmas", None) or not sd_cpp_args_mod.family_scheduler_enabled():
@@ -5678,6 +5684,7 @@ class SdCppDiffusionBackend:
                     qwen_image_layers = layers,
                     hires = hires_payload,
                     extra_sample_args = _request_extra_sample_args(state),
+                    ref_image_args = _request_ref_image_args(state, bool(ref_pngs)),
                 )
                 try:
                     rendered = _render(state.server, payload, max(deadline - time.monotonic(), 1.0))
@@ -6051,6 +6058,9 @@ class SdCppDiffusionBackend:
         extra_sample_args = _request_extra_sample_args(state)
         if extra_sample_args:
             extra_args += ["--extra-sample-args", extra_sample_args]
+        ref_image_args = _request_ref_image_args(state, bool(ref_pngs))
+        if ref_image_args:
+            extra_args += ["--ref-image-args", ref_image_args]
 
         images = []
         seeds: list[int] = []

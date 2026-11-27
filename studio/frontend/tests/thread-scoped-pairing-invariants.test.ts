@@ -134,7 +134,9 @@ test("an edit whose chat was never read is sent as a merge, not a replacement", 
   assert.match(commit, /heldThreadScopedChanges\(held\)/);
   assert.match(commit, /sendThreadScopedSettingsBeacon\(threadId, changes, true\)/);
   const merge = slice(store, "async function mergeThreadScopedSettingsIntoRow", "\n}");
-  assert.match(merge, /settingsPatch: changes/);
+  assert.match(merge, /stageThreadFields\(threadId, changes\)/);
+  assert.match(merge, /settingsPatch: threadFieldsPayload\(sending\),/);
+  assert.doesNotMatch(merge, /settingsDefaults:/);
 });
 
 test("hydration does not overwrite a field whose edit is still held", () => {
@@ -155,7 +157,7 @@ test("every snapshot write is ordered against the others", () => {
   assert.match(store, /function nextThreadSettingsSeq\(\): number \{/);
   const write = slice(store, "function writeThreadScopedSettings", "\n}");
   assert.match(write, /const settingsSeq = nextThreadSettingsSeq\(\);/);
-  assert.match(write, /\{ settings, settingsSeq, settingsWriter/);
+  assert.match(write, /settingsPatch:[\s\S]*settingsDefaults:[\s\S]*settingsSeq,[\s\S]*settingsWriter:/);
   const beacon = slice(store, "function sendThreadScopedSettingsBeacon", "\n}");
   assert.match(beacon, /settingsSeq: nextThreadSettingsSeq\(\)/);
   assert.match(beacon, /takeThreadSettingsWriteTicket\(threadId\)/);
@@ -217,7 +219,7 @@ test("a retry does not resample the defaults over the edit it is holding", () =>
   const begin = slice(store, "export function beginThreadScopedPairing", "\n}");
   assert.match(begin, /if \(pairingWindowDefaultsThreadId !== threadId\) \{/);
   assert.match(
-    slice(store, "applyThreadScopedSettings: (threadId, settings) =>", "} else if ("),
+    slice(store, "applyThreadScopedSettings: (threadId, settings, options) =>", "} else if ("),
     /pairingWindowDefaultsThreadId = null;/,
   );
 });

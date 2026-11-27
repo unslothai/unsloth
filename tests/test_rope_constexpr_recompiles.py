@@ -16,8 +16,7 @@ pytest.importorskip("triton")
 import unsloth  # noqa: F401
 from unsloth.kernels import rope_embedding as RE
 
-# Batch never 1 or equal to a head count, seq never head_dim: torch's own 0/1 and duck-size
-# specializations would recompile on any kernel.
+# Batch never 1 or a head count, seq never head_dim: avoids torch's 0/1 and duck-size recompiles.
 N_HEADS, N_KV, HEAD_DIM = 8, 4, 64
 
 

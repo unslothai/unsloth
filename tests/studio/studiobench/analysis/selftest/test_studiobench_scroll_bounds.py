@@ -142,8 +142,7 @@ def test_client_heights_that_disagree_are_not_treated_as_a_shared_offset():
 
 
 def test_client_heights_that_agree_are_still_treated_as_a_shared_offset():
-    """The positive control for the two above: the ordinary case, where both arms publish the same
-    viewport height, must still be compared as extents rather than pushed onto the fallback."""
+    """Positive control: equal client heights still compare as extents, not the fallback."""
     base = _scroll_row(18, bottom = 9_200, client = 800)
     treat = _scroll_row(6, bottom = 8_600, client = 800)
     treat["census"]["viewport_scroll_height"] = 9_400
@@ -231,8 +230,7 @@ def test_an_arm_with_no_extent_does_not_borrow_its_partners_ceiling():
 
 
 def test_the_lower_bound_still_catches_a_gesture_that_was_snapped_back():
-    """The bound this invariant was written for: Unsloth's intent-aware autoscroll snapping a
-    programmatic move straight back to the bottom left the gesture having covered nothing."""
+    """Lower bound catches a programmatic move snapped back to the bottom, covering nothing."""
     base = _scroll_row(18, fraction = 1.0, bottom = 9_200, client = 800)
     treat = _scroll_row(6, fraction = 0.1, bottom = 9_200, client = 800)
     assert B.compare_behaviour(base, treat)["verdict"] == B.BROKEN

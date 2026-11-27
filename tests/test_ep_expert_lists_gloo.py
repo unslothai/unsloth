@@ -145,7 +145,18 @@ def _case_list_family(
     want_adapter = {k: v.detach().clone() for k, v in get_peft_model_state_dict(ref).items()}
 
     model = _build(build, repo, overrides, gc, experts_and_router_only)
-    epn.apply_expert_parallel(model, mesh)
+    import contextlib
+    import io
+
+    printed, device_bytes = io.StringIO(), epn._device_total_bytes
+    epn._device_total_bytes = (
+        lambda: 2**40
+    )  # a GPU the tiny model fits: the rank-0 hint toward data parallel
+    try:
+        with contextlib.redirect_stdout(printed):
+            epn.apply_expert_parallel(model, mesh)
+    finally:
+        epn._device_total_bytes = device_bytes
     listed = lists.list_blocks(model)
     group = epn._mesh(model).get_group()
     count_shared(model, "ep")
@@ -202,6 +213,7 @@ def _case_list_family(
         "calls": shard.calls,
         "shared_calls": (ep_calls, ref_calls / world),
         "pass1_skips": {k: [n for n, _ in v] for k, v in getattr(shard, "skip", {}).items()},
+        "hint": "transformers 4.x per-expert modules" in printed.getvalue(),
     }
 
 
@@ -628,7 +640,29 @@ def _check(results, world):
 
 @pytest.mark.parametrize("family", LIST_FAMILIES)
 def test_ep_expert_lists_match_one_process(family):
-    _check(_spawn("_case_list_family", **_spec(family)), 2)
+    results = _spawn("_case_list_family", **_spec(family))
+    _check(results, 2)
+    # rank 0 alone points a model that fits one GPU to data parallel / transformers 5
+    assert [r["hint"] for r in results] == [True, False], [r["hint"] for r in results]
+
+
+def test_list_exchange_hint_only_when_the_whole_model_fits_one_gpu(monkeypatch):
+    _, _, epn = _modules()
+    model = torch.nn.Linear(4, 4)  # 80 bytes of fp32 parameters
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: 1000)
+    hint = epn._list_exchange_hint(model, 2, 2)
+    assert "2 mixture-of-experts blocks" in hint and "UNSLOTH_EP_SIZE" in hint, hint
+    assert (
+        epn._list_exchange_hint(model, 0, 2) is None
+    )  # fused experts only: no per-expert exchange
+    setattr(
+        model.weight, epn._EP, ("list", 4, 2)
+    )  # a sharded expert tensor counts ep times: 64 * 8 + 16 bytes
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: 800)
+    assert epn._list_exchange_hint(model, 2, 8) is None
+    assert epn._list_exchange_hint(model, 2, 2) is not None
+    monkeypatch.setattr(epn, "_device_total_bytes", lambda: None)  # no GPU to compare with
+    assert epn._list_exchange_hint(model, 2, 2) is None
 
 
 @pytest.mark.parametrize("family", ("mixtral", "qwen2_moe"))

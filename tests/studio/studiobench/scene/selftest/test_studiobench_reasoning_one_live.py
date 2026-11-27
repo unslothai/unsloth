@@ -142,8 +142,7 @@ def test_a_thread_with_no_reasoning_pane_is_NOT_RUN(make_page):
 
 
 def test_it_refuses_a_thread_that_is_already_open(make_page):
-    """A pane left open by an earlier action would make this measure a CLOSE and call it an open.
-    Refusing is right: the number is the only reason the action exists."""
+    """An already-open pane would make the measure read a CLOSE as an open, so it refuses."""
     page = make_page(panes = 3)
     page.evaluate("() => window.__sb.dom.reasoningTriggers()[0].click()")
     got = A.reasoning_toggle_one(_ctx(page))

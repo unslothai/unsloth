@@ -64,8 +64,7 @@ if ($is51) {
 
 Write-Host ""
 Write-Host "=== #8335 itself, against a real CIM instance ==="
-# Windows only: Win32_OperatingSystem always returns one instance, reproducing one GPU.
-# $IsWindows does not exist on 5.1, which is Windows by construction.
+# Windows only: Win32_OperatingSystem gives one instance (one GPU); $IsWindows absent on 5.1.
 if ($is51 -or $IsWindows) {
     $_cim = @(Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue)
     Check "exactly one CIM instance to work with" ($_cim.Count -eq 1)
@@ -131,7 +130,6 @@ Check "rocm7.0 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+rocm7.0
 Check "rocm7.13.0 wheel (#8335)" (Invoke-IsRocm "C:\v" "__version__ = '2.11.0+rocm7.13.0'")
 Check "gfx1151 wheel"        (Invoke-IsRocm "C:\v" "__version__ = '2.9.0+gfx1151'")
 Check "gfx110X-all wheel"    (Invoke-IsRocm "C:\v" "__version__ = '2.7.1+gfx110X.all'")
-# A dev/nightly segment precedes the local label.
 Check "nightly rocm wheel"   (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+rocm7.2'")
 Check "nightly cuda wheel"   (-not (Invoke-IsRocm "C:\v" "__version__ = '2.12.0.dev20260801+cu130'"))
 Check "source build"         (-not (Invoke-IsRocm "C:\v" "__version__ = '2.9.0a0+git1a2b3c'"))
@@ -150,8 +148,7 @@ Check "no venv path"         (-not (Invoke-IsRocm "" "__version__ = '2.8.0+rocm6
 
 Write-Host ""
 Write-Host "=== Invoke-BoundedPythonProbe keeps the reason it failed ==="
-# Both installers carry a copy. The probe must keep stderr, stay bounded and drain async, so a
-# real child process is launched.
+# Both installers carry a copy; the probe must keep stderr, stay bounded and drain async.
 $py = (Get-Command python3 -ErrorAction SilentlyContinue)
 if (-not $py) { $py = (Get-Command python -ErrorAction SilentlyContinue) }
 Check "an interpreter is available to probe" ($null -ne $py)
@@ -265,8 +262,7 @@ Check "the force-reinstall flag is declared outside the venv block" (
     $setupText -match '(?m)^\$script:PinChangedForceReinstall = \$false$')
 
 Write-Host "the surfaced probe error survives a stderr that is only whitespace"
-# Blank-line stderr passes the guard but leaves nothing for [0], fatal under Set-StrictMode
-# (setup.bat runs without -NoProfile). Driven for real with the old form as a control.
+# Blank-line stderr leaves [0] nothing to index, fatal under Set-StrictMode.
 $_strictNewOk = $true
 try {
     & {
@@ -324,8 +320,7 @@ Check "it says incomplete, not out of date" ($_reuse -match 'incomplete rather t
 Check "a venv with an interpreter still just prints its version" (
     $_reuse -match '(?s)if \(Test-Path -LiteralPath \$_venvPyExe\) \{.*?--version')
 
-# Activate.ps1 must exist too: install.ps1 leaves Scripts off PATH, so a missing one hits the
-# same hazard.
+# install.ps1 leaves Scripts off PATH, so a missing Activate.ps1 hits the same hazard.
 Check "it refuses a venv with no activation script" (
     $_reuse -match 'Exit-SetupFailure "No activation script at')
 Check "the activation script path is built next to the interpreter" (
@@ -341,8 +336,7 @@ Check "it does not delete that venv either" (-not ($_reuse -match 'Remove-Item')
 
 Write-Host ""
 Write-Host "=== a present activation script is not the same as an activated venv ==="
-# Activate.ps1 updates PATH in its last statement, so a truncated copy silently does nothing and
-# an unparseable one is non-terminating. Prove both hazards before asserting the guard.
+# Truncated Activate.ps1 does nothing (PATH is set last); unparseable is non-terminating.
 $_actRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-activate-" + [guid]::NewGuid().ToString("N"))
 try {
     New-Item -ItemType Directory -Path $_actRoot -Force | Out-Null
@@ -380,8 +374,7 @@ try {
         'if ($env:PATH -eq $before) { Write-Output "PATH-UNTOUCHED" }',
         'Write-Output "SURVIVED"',
         'exit 0')
-    # 5.1 applies $ErrorActionPreference to native stderr (7.1+ does not), so scope "Stop" off for
-    # this call; the exit code is what is judged.
+    # 5.1 applies $ErrorActionPreference to native stderr (7.1+ does not); exit code counts.
     $_childOut = & {
         $ErrorActionPreference = "Continue"
         & $_hostExe -NoProfile -File $_child 2>$null
@@ -454,8 +447,7 @@ Assert-VenvActivated -VenvDir `$Venv
     Remove-Item -LiteralPath $_actRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Ends after a non-newline token so CRLF fails the match. The dot-source is reached through
-# Enter-StudioVenv, so the region spans that helper.
+# Ends on a non-newline token so CRLF fails the match; the dot-source is in Enter-StudioVenv.
 $_actPat = '(?s)(\$ActivateScript = Join-Path \$VenvDir "Scripts\\Activate\.ps1"\n.*?\. \$ActivateScript\n.*?Assert-VenvActivated -VenvDir \$VenvDir\n)'
 $_act = if ($setupText -match $_actPat) { $Matches[1] } else { "" }
 Check "the activation block was found"     ($_act -ne "")
@@ -482,8 +474,7 @@ Check "the guard does not delete anything" (
 
 Write-Host ""
 Write-Host "=== an installer-managed repair never moves a GPU wheel to another family ==="
-# setup re-probes hardware after install.ps1 installed torch; a disagreeing probe (cpu or another
-# GPU vendor) must not force-reinstall over install.ps1's chosen wheel and then exit 0.
+# Re-probe disagreeing with install.ps1's torch (cpu or another GPU) must not force-reinstall.
 $_guardPat = '(?s)(if \(\$shouldRebuild -and \$InstallerManagedSetup -and\n.*?\n    \}\n)'
 $_guard = if ($setupText -match $_guardPat) { $Matches[1] } else { "" }
 Check "the downgrade guard was found"       ($_guard -ne "")
@@ -492,8 +483,7 @@ Check "it only fires under the installer"   ($_guard -match '\$InstallerManagedS
 Check "it only fires on a GPU wheel"        ($_guard -match '\$installedTorchTag -and \$installedTorchTag -ne "cpu"')
 # Not narrowed to a cpu rescan: GPU-to-GPU disagreements must be covered too.
 Check "it is not narrowed to a cpu rescan"  (-not ($_guard -match '\$expectedTorchTag -eq "cpu"'))
-# $expectedTorchTag may be unassigned when torch fails to import; reading it in the condition
-# is fatal under Set-StrictMode.
+# $expectedTorchTag unset when torch import fails: reading it is fatal under Set-StrictMode.
 Check "the condition never reads the expected tag" (
     -not (($_guard -split '\{', 2)[0] -match '\$expectedTorchTag'))
 Check "it clears the rebuild flag"          ($_guard -match '\$shouldRebuild = \$false')
@@ -505,15 +495,13 @@ Check "a kept xpu venv still locks the xpu index" (
 # Two install arms force torch back regardless of PinChangedForceReinstall, so the kept family
 # must reach index selection, declared outside the venv block.
 
-# A GPU wheel in the venv is not proof this run chose it (legacy-layout migration leaves old
-# wheels), so install.ps1 reports its family and only a matching wheel is preserved.
+# GPU wheels may be legacy-layout leftovers; keep only a wheel matching install.ps1's report.
 $installText = (Get-Content -Raw (Join-Path $root "install.ps1")) -replace "`r`n", "`n"
 Check "install.ps1 reports the family it settled on" (
     $installText -match '\$env:UNSLOTH_INSTALLER_TORCH_TAG = if \(\$SkipTorch\) \{ "" \} else \{')
 Check "it reports the resolved flavor, not the raw index URL" (
     $installText -match '\[string\]\(Get-ExpectedTorchFlavorTag -TorchIndexUrl \$TorchIndexUrl -ROCmIndexUrl \$ROCmIndexUrl\)')
-# Assigned unconditionally so a second install in the same session does not inherit it; ""
-# clears it on every edition. The -match half is the anti-vacuity half.
+# Always assigned, so a later install in the session cannot inherit it; empty clears it.
 Check "the report is assigned on every run, not only when known" (
     ($installText -match '(?m)^\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = ') -and
     ($installText -notmatch 'if \([^\n]*\) \{\s*\$env:UNSLOTH_INSTALLER_TORCH_TAG = (?!\$previous)'))

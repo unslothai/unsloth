@@ -101,6 +101,89 @@ def test_nothing_loaded_serves_from_the_studio_embedder(studio_embedder):
     assert payload["usage"] == {"prompt_tokens": 9, "total_tokens": 9}
 
 
+@pytest.mark.parametrize("resident", [False, True])
+def test_openai_token_arrays_decode_offline_for_both_embedders(studio_embedder, resident):
+    import httpx
+
+    seen = []
+
+    class Client:
+        async def post(self, _url, json, **_kwargs):
+            seen.append(json["input"])
+            return httpx.Response(200, json = {"data": [{"embedding": [1.0, 0.0]}]})
+
+        async def aclose(self):
+            return None
+
+    def encode(texts, **_kwargs):
+        seen.append(texts)
+        return _vectors(texts)
+
+    studio_embedder.setitem(sys.modules, "tiktoken", None)
+    studio_embedder.setattr(rag_embeddings, "encode", encode)
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = resident,
+            is_embedding_gguf = resident,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    _call({"input": [3923, 374, 279, 4320, 30], "model": "text-embedding-ada-002"})
+    _call({"input": [[15339], [76460, 222]], "model": "text-embedding-3-small"})
+    assert seen == [["What is the answer?"], ["hello", "😀"]]
+
+
+@pytest.mark.parametrize("token_id", [-1, 100256, 2**40])
+def test_invalid_openai_embedding_token_ids_are_bad_requests(studio_embedder, token_id):
+    studio_embedder.setattr(
+        inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
+    )
+    error = _http_error({"input": [token_id], "model": "text-embedding-3-large"})
+    assert error.status_code == 400
+    assert error.detail == "Invalid OpenAI embedding token IDs."
+
+
+@pytest.mark.parametrize(
+    "model, raw",
+    [
+        ("org/embed-GGUF", [[3923, 374]]),
+        ("text-embedding-3-small", ["caption", [12, 34]]),
+        ("text-embedding-3-small", [[12, "caption", 34]]),
+        ("text-embedding-3-small", [{"content": [{"type": "text", "text": "caption"}]}]),
+    ],
+)
+def test_resident_embedder_keeps_native_inputs(studio_embedder, model, raw):
+    import httpx
+
+    class Client:
+        async def post(self, _url, json, **_kwargs):
+            assert json["input"] is raw
+            return httpx.Response(200, json = {"data": [{"embedding": [1.0, 0.0]}]})
+
+        async def aclose(self):
+            return None
+
+    studio_embedder.setattr(inference_route.account_access, "managed_account", lambda: False)
+    studio_embedder.setattr(inference_route, "_cancelable_nonstreaming_client", Client)
+    studio_embedder.setattr(
+        inference_route,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_embedding_gguf = True,
+            base_url = "http://llama.test",
+            context_length = 512,
+            model_identifier = "org/E-GGUF",
+        ),
+    )
+    _call({"input": raw, "model": model})
+
+
 def test_chat_model_loaded_serves_from_the_studio_embedder(studio_embedder):
     started = []
     studio_embedder.setattr(

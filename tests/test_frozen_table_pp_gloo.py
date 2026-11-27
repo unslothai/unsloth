@@ -56,8 +56,7 @@ def test_pp_tables(ckpt, cell):
         assert len(res[0]["calls"]) == 2 * 2 * 2, len(res[0]["calls"])
         memo = res[0]["table_memo"]
         if memo and memo[0] is not None:
-            # One memo slot per in-flight micro-batch: under 1F1B (F0 F1 B0 B1 on the first stage) both recomputes
-            # are served from memory, so each step reads the table once per micro-batch.
+            # One memo slot per in-flight micro-batch; under 1F1B recomputes are memo hits.
             assert memo == [{"memo_hits": 2, "memo_misses": 2}] * 2, memo
             assert res[0]["stats"]["gathers"] == 2 * 2, res[0]["stats"]
             assert res[1]["table_memo"] == [None, None]  # the stage without the table

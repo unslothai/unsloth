@@ -194,8 +194,7 @@ def _own_support_logps(logits, index, top_k):
 
 
 def test_own_support_scoring_is_not_a_distribution_when_supports_differ():
-    """Why the gate exists: with a policy whose top-2 set excludes a sampled token, scoring every token
-    under the per-policy rule implies probabilities summing to more than 1."""
+    """Per-policy top-2 sets excluding a sampled token make implied probabilities sum above 1."""
     new = torch.tensor([[0.0, 1.0, 2.0]])
     implied = torch.cat([_own_support_logps(new, torch.tensor([i]), 2) for i in range(3)]).exp()
     assert implied.sum().item() > 1.08
@@ -265,7 +264,6 @@ def test_efficient_path_refuses_the_kept_set_for_an_unsynced_sampler(monkeypatch
     trainer = _trainer()
     refuse(trainer)
     assert not getattr(trainer, "_unsloth_truncated_support_refused", False)
-    # Opt-in off (no support kwargs): nothing to refuse.
     refuse = _refuse_helper(monkeypatch, {})
     trainer = _trainer()
     trainer._unsloth_vllm_sync_skip = True

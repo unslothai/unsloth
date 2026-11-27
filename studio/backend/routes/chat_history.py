@@ -263,6 +263,7 @@ def _settings_write_from_patch(patch: dict) -> Optional[dict]:
     merge = "settingsPatch" in patch
     seq = patch.pop("settingsSeq", None)
     writer = patch.pop("settingsWriter", None)
+    defaults = patch.pop("settingsDefaults", None)
     if not (replace or merge):
         return None
     incoming = patch.pop("settingsPatch", None)
@@ -278,6 +279,7 @@ def _settings_write_from_patch(patch: dict) -> Optional[dict]:
         return None
     return {
         "merge": incoming if merge else None,
+        "defaults": defaults if merge else None,
         "replace": None if merge else incoming,
         "seq": seq,
         "writer": writer,
@@ -305,8 +307,9 @@ class ChatThreadPatch(BaseModel):
     anthropicCodeExecContainerId: Optional[str] = None
     # Replaces the whole snapshot, except for anything the client could not read.
     settings: Optional[ChatThreadSettings] = None
-    # settingsPatch applies only the fields it names, for writers that have not read the row yet.
+    # Apply explicit edits, with fallback values for fields this chat has never saved.
     settingsPatch: Optional[ChatThreadSettings] = None
+    settingsDefaults: Optional[ChatThreadSettings] = None
     # Orders this writer's own snapshot writes; never compared across writers.
     settingsSeq: Optional[int] = None
     settingsWriter: Optional[str] = None

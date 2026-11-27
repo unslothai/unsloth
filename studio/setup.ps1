@@ -2884,13 +2884,19 @@ function Get-CudaTorchInstallLabel {
     return $CuTag
 }
 
+# Whether this process already runs elevated (an elevated run is never shown a UAC prompt). Its own
+# function so the unattended-UAC tests can pin it: GitHub's Windows runners are elevated.
+function Test-SetupProcessElevated {
+    try {
+        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
+        return [bool]$_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
 # An unanswerable UAC prompt blocks forever. Not stdout: the CLI pipes it for logging.
 function Test-SetupUacUnanswerable {
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
-    try {
-        $_principal = New-Object System.Security.Principal.WindowsPrincipal([System.Security.Principal.WindowsIdentity]::GetCurrent())
-        if ($_principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { return $false }
-    } catch { }
+    if (Test-SetupProcessElevated) { return $false }
     $opt = "$env:UNSLOTH_NONINTERACTIVE".Trim().ToLowerInvariant()
     if ($opt -in @("1", "true", "yes")) { return $true }
     if ($opt -in @("0", "false", "no")) { return $false }
@@ -5989,8 +5995,159 @@ function Test-WoaWheelTagsParity {
     return (($pyTags -contains $PyTag) -and ($abiTags -contains $AbiTag))
 }
 
+# Exact tags, or a wheel that does not care (cp38-abi3, py3-none). Free-threaded has no abi3.
+function Test-WoaWheelTagsUsableParity {
+    param([string]$Name, [string]$PyTag, [string]$AbiTag = "")
+    if (-not $AbiTag) { $AbiTag = $PyTag }
+    if (Test-WoaWheelTagsParity -Name $Name -PyTag $PyTag -AbiTag $AbiTag) { return $true }
+    $fields = ($Name -replace '(?i)\.whl$', '') -split '-'
+    if ($fields.Count -lt 5) { return $false }
+    # Free-threaded CPython has no stable ABI (CPython #111506), so abi3 is not an option there.
+    if ($AbiTag -like "*t") { return $false }
+    $abiTags = $fields[$fields.Count - 2] -split '\.'
+    $minor = 0
+    if ($PyTag -match '^cp3(\d+)$') { $minor = [int]$Matches[1] }
+    foreach ($pyTag in ($fields[$fields.Count - 3] -split '\.')) {
+        # abi3 is forward compatible only from what it was built against: cp314-abi3 fails on cp313.
+        if (($abiTags -contains "abi3") -and ($pyTag -match '^cp3(\d+)$')) {
+            if ([int]$Matches[1] -le $minor) { return $true }
+        }
+        if ($abiTags -contains "none") {
+            if ($pyTag -match '^py3(\d*)$') {
+                if ([string]::IsNullOrEmpty($Matches[1]) -or ([int]$Matches[1] -le $minor)) { return $true }
+            }
+            if ($pyTag -match '^cp3(\d+)$') {
+                if ([int]$Matches[1] -le $minor) { return $true }
+            }
+        }
+    }
+    return $false
+}
+
+# One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
+# failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
+function Invoke-WoaHttpBytesParity {
+    param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
+    if (-not $Uri) { return $null }
+    $response = $null
+    try {
+        $req = [System.Net.WebRequest]::Create($Uri)
+        $req.UserAgent = 'unsloth-installer'
+        $req.Timeout = 20000
+        $req.ReadWriteTimeout = 20000
+        $ranged = $false
+        if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
+        elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
+        $response = $req.GetResponse()
+        $status = [int]$response.StatusCode
+        if ($ranged -and $status -ne 206) { return $null }
+        if (-not $ranged -and $status -ne 200) { return $null }
+        $total = -1
+        $contentRange = [string]$response.Headers['Content-Range']
+        if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
+        $stream = $response.GetResponseStream()
+        $buffer = New-Object System.IO.MemoryStream
+        $chunk = New-Object byte[] 65536
+        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
+            $buffer.Write($chunk, 0, $read)
+            if ($buffer.Length -gt $MaxBytes) { return $null }
+        }
+        return @{ Bytes = $buffer.ToArray(); Total = $total }
+    } catch {
+        return $null
+    } finally {
+        if ($response) { try { $response.Close() } catch {} }
+    }
+}
+
+# The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
+function Get-WoaMetadataTorchRequirementParity {
+    param([string]$Metadata)
+    if (-not $Metadata) { return "" }
+    $clauses = @()
+    foreach ($line in ($Metadata -split "`r?`n")) {
+        if ($line -eq "") { break }
+        if ($line -notmatch '^Requires-Dist:\s*(.+)$') { continue }
+        $req = $Matches[1].Trim()
+        if ($req -match ';') { continue }
+        if ($req -notmatch '^(?i)torch(?![A-Za-z0-9_.-])\s*(\[[^\]]*\])?\s*\(?\s*([^()]*?)\s*\)?\s*$') { continue }
+        if ($Matches[2]) { $clauses += $Matches[2] }
+    }
+    return ($clauses -join ',')
+}
+
+# The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
+# else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+function Get-WoaWheelTorchRequirementParity {
+    param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
+    if (-not $WheelUrl) { return "" }
+    if ($null -eq $script:WoaWheelTorchRequirementCacheParity) { $script:WoaWheelTorchRequirementCacheParity = @{} }
+    if ($script:WoaWheelTorchRequirementCacheParity.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] }
+    $answer = ""
+    try {
+        $metadata = $null
+        if ($HasCoreMetadata) {
+            $got = Invoke-WoaHttpBytesParity -Uri "$WheelUrl.metadata"
+            if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+        }
+        if ($null -eq $metadata) {
+            $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
+            $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
+            $tail = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Suffix 65558
+            if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
+            $t = $tail.Bytes
+            $eocd = -1
+            for ($i = $t.Length - 22; $i -ge 0; $i--) {
+                if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
+            }
+            if ($eocd -lt 0) { throw "no end of central directory" }
+            $cdSize = & $u32 $t ($eocd + 12)
+            $cdOffset = & $u32 $t ($eocd + 16)
+            # Zip64 or an implausible directory: not worth parsing for one line.
+            if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
+            $tailStart = $tail.Total - $t.Length
+            if ($cdOffset -ge $tailStart) {
+                $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
+            } else {
+                $got = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
+                if (-not $got) { throw "no directory" }
+                $cd = $got.Bytes
+            }
+            $entry = $null
+            $p = 0
+            while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
+                $nameLen = & $u16 $cd ($p + 28)
+                $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
+                if ($name -match '^[^/]+\.dist-info/METADATA$') {
+                    $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
+                    break
+                }
+                $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
+            }
+            if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
+            $head = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $entry.Offset -Length 30
+            if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
+            $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
+            $body = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $start -Length $entry.Size
+            if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
+            if ($entry.Method -eq 0) {
+                $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
+            } else {
+                $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
+                $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
+            }
+        }
+        $answer = Get-WoaMetadataTorchRequirementParity -Metadata $metadata
+    } catch {
+        $answer = ""
+    }
+    $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] = $answer
+    return $answer
+}
+
 function Test-WoaPairsWithTorchParity {
-    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision")
+    param([string]$TorchVersion, [string]$OtherVersion, [string]$Project = "torchvision", [string]$TorchRequirement = "")
     if (-not $TorchVersion -or -not $OtherVersion) { return $false }
     $stamp = {
         param($v)
@@ -6005,7 +6162,55 @@ function Test-WoaPairsWithTorchParity {
     if ((& $stamp $TorchVersion) -ne (& $stamp $OtherVersion)) { return $false }
     if ((& $local $TorchVersion) -ne (& $local $OtherVersion)) { return $false }
     if (& $stamp $TorchVersion) { return $true }
-    # Stable releases pair by offset: torchvision 0.(M+15) with torch 2.M.
+    # A stable companion pairs with what its own torch requirement admits; $null (a clause this cannot read) falls through.
+    $admits = {
+        param([string]$v, [string]$spec)
+        $public = ($v -split '\+', 2)[0]
+        if ($public -notmatch '^\d+(\.\d+)*$') { return $null }
+        $have = @($public -split '\.' | ForEach-Object { [long]$_ })
+        $order = {
+            param($a, $b)
+            for ($i = 0; $i -lt [Math]::Max($a.Count, $b.Count); $i++) {
+                $x = if ($i -lt $a.Count) { $a[$i] } else { 0 }
+                $y = if ($i -lt $b.Count) { $b[$i] } else { 0 }
+                if ($x -ne $y) { return [Math]::Sign($x - $y) }
+            }
+            return 0
+        }
+        foreach ($clause in ($spec -split ',')) {
+            $c = $clause.Trim()
+            if (-not $c) { continue }
+            if ($c -notmatch '^(~=|==|!=|<=|>=|<|>)\s*(\d+(?:\.\d+)*)(\.\*)?$') { return $null }
+            $op = $Matches[1]; $want = @($Matches[2] -split '\.' | ForEach-Object { [long]$_ }); $wild = [bool]$Matches[3]
+            if ($wild -and $op -notin @('==', '!=')) { return $null }
+            if ($wild) {
+                $prefix = ($want.Count -le $have.Count) -and ((& $order @($have[0..($want.Count - 1)]) $want) -eq 0)
+                if (($op -eq '==') -ne $prefix) { return $false }
+                continue
+            }
+            $cmp = & $order $have $want
+            $ok = switch ($op) {
+                '==' { $cmp -eq 0 }
+                '!=' { $cmp -ne 0 }
+                '<=' { $cmp -le 0 }
+                '>=' { $cmp -ge 0 }
+                '<'  { $cmp -lt 0 }
+                '>'  { $cmp -gt 0 }
+                '~=' {
+                    if ($want.Count -lt 2) { $null }
+                    else { ($cmp -ge 0) -and ((& $order @($have[0..($want.Count - 2)]) @($want[0..($want.Count - 2)])) -eq 0) }
+                }
+            }
+            if ($null -eq $ok) { return $null }
+            if (-not $ok) { return $false }
+        }
+        return $true
+    }
+    if ($TorchRequirement) {
+        $verdict = & $admits $TorchVersion $TorchRequirement
+        if ($null -ne $verdict) { return [bool]$verdict }
+    }
+    # Unread metadata: stable releases share an empty stamp, so they pair by offset: torchvision 0.(M+15) to 2.M.
     $rel = {
         param($v)
         $m = [regex]::Match($v, '^(\d+)\.(\d+)')
@@ -6358,7 +6563,7 @@ function Test-WoaAudioMatchesTorchParity {
 
 function Get-WoaCudaWheelVersionParity {
     param([string]$IndexUrl, [string]$PyTag, [string]$AbiTag, [string]$Project = "torch",
-          [string]$PairWith = "", [string]$Below = "")
+          [string]$PairWith = "", [string]$Below = "", [string]$MaxCuda = "")
     if ([string]::IsNullOrWhiteSpace($IndexUrl) -or [string]::IsNullOrWhiteSpace($PyTag)) { return $null }
     if (-not $AbiTag) { $AbiTag = $PyTag }
     $base = ($IndexUrl -split '[?#]', 2)[0].TrimEnd('/')
@@ -6367,6 +6572,29 @@ function Get-WoaCudaWheelVersionParity {
         $body = [string](Invoke-RestMethod -Uri "$base/$Project/$tail" -UseBasicParsing -TimeoutSec 20)
     } catch { return $null }
     if ([string]::IsNullOrWhiteSpace($body)) { return $null }
+    $projectUrl = "$base/$Project/"
+    # Each wheel's link, so a stable companion's own torch requirement can be read (PEP 658 when the index serves it).
+    $links = @{}
+    foreach ($anchor in [regex]::Matches($body, '(?i)<a\s[^>]*>')) {
+        $href = [regex]::Match($anchor.Value, '(?i)\bhref\s*=\s*["'']([^"'']+)["'']')
+        if (-not $href.Success) { continue }
+        $target = ($href.Groups[1].Value -split '[#?]', 2)[0]
+        $file = ($target -split '/')[-1]
+        try { $file = [System.Uri]::UnescapeDataString($file) } catch {}
+        $core = [regex]::Match($anchor.Value, '(?i)\bdata-(?:core|dist-info)-metadata\s*=\s*["'']([^"'']*)["'']')
+        $links[$file.ToLowerInvariant()] = @{ Href = $target; Core = ($core.Success -and $core.Groups[1].Value -ne 'false') }
+    }
+    # Same release twice (+cu134 and +cu135): the newest CUDA build the driver runs, else the newest.
+    $driverCu = $null
+    if ($MaxCuda -match '^(\d+)\.(\d+)') { $driverCu = [int]$Matches[1] * 10 + [int]$Matches[2] }
+    $cudaRank = {
+        param([string]$v)
+        if ($v -notmatch '\+cu(\d+)') { return @(0, 0) }
+        $cu = [int]$Matches[1]
+        return @($(if ($null -eq $driverCu -or $cu -le $driverCu) { 1 } else { 0 }), $cu)
+    }
+    $readRequirement = [bool]($PairWith -and ($PairWith -notmatch '(?i)\.dev\d') -and
+        (($Project -replace '[-_.]+', '-').ToLowerInvariant() -eq "torchvision"))
     $best = $null
     $bestKey = $null
     # PEP 440 order within one release: dev < a < b < rc < final.
@@ -6386,10 +6614,21 @@ function Get-WoaCudaWheelVersionParity {
     foreach ($match in [regex]::Matches($body, "$Project-[^`"'<>\s]*?win_arm64\.whl")) {
         $name = $match.Value
         try { $name = [System.Uri]::UnescapeDataString($name) } catch {}
-        if (-not (Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag)) { continue }
+        # torch is built per interpreter; a companion may be interpreter-agnostic (torchvision 0.29.2 is py3-none).
+        $tagsOk = if ($Project -eq "torch") { Test-WoaWheelTagsParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+                  else { Test-WoaWheelTagsUsableParity -Name $name -PyTag $PyTag -AbiTag $AbiTag }
+        if (-not $tagsOk) { continue }
         if ($name -notmatch '\+cu[0-9]+') { continue }
         $version = ($name -split '-')[1]
-        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project)) { continue }
+        $requirement = ""
+        if ($readRequirement -and (($PairWith -split '\+', 2)[-1] -eq ($version -split '\+', 2)[-1]) -and $links.ContainsKey($name.ToLowerInvariant())) {
+            $link = $links[$name.ToLowerInvariant()]
+            try {
+                $wheelUrl = ([System.Uri]::new([System.Uri]$projectUrl, $link.Href)).AbsoluteUri
+                $requirement = Get-WoaWheelTorchRequirementParity -WheelUrl $wheelUrl -HasCoreMetadata $link.Core
+            } catch { $requirement = "" }
+        }
+        if ($PairWith -and -not (Test-WoaPairsWithTorchParity -TorchVersion $PairWith -OtherVersion $version -Project $Project -TorchRequirement $requirement)) { continue }
         $release = ($version -split '\+', 2)[0]
         $numeric = [regex]::Match($release, '^\d+(\.\d+){0,2}').Value
         $key = $null
@@ -6405,6 +6644,10 @@ function Get-WoaCudaWheelVersionParity {
         elseif ($key -eq $bestKey) {
             $rankNew = & $prerelease $version; $rankBest = & $prerelease $best
             if (($rankNew[0] -gt $rankBest[0]) -or (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -gt $rankBest[1]))) { $best = $version }
+            elseif (($rankNew[0] -eq $rankBest[0]) -and ($rankNew[1] -eq $rankBest[1])) {
+                $cuNew = & $cudaRank $version; $cuBest = & $cudaRank $best
+                if (($cuNew[0] -gt $cuBest[0]) -or (($cuNew[0] -eq $cuBest[0]) -and ($cuNew[1] -gt $cuBest[1]))) { $best = $version }
+            }
         }
     }
     return $best
@@ -8005,6 +8248,19 @@ function Test-UnparseableManagedTorchCache {
     return $trimmed -ieq $Managed.Trim().Replace('/', '\').TrimEnd('\')
 }
 
+# USER value is account-wide: a custom-home run must not repoint it at its own tree.
+function Test-TorchCacheMayPersist {
+    param([string]$Value, [string]$Persisted, [string]$StudioRoot, [bool]$HomeIsCustom)
+    if (-not $HomeIsCustom) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Persisted)) { return $true }
+    $norm = { param($p) [Environment]::ExpandEnvironmentVariables($p).Trim().Replace('/', '\').TrimEnd('\') }
+    $p = & $norm $Persisted
+    if ($p -ieq (& $norm $Value)) { return $true }
+    $h = & $norm $StudioRoot
+    # StartsWith, not -like: a home holding [ or ] would read as a wildcard pattern.
+    return ([bool]$h -and ($p -ieq $h -or $p.StartsWith("$h\", [StringComparison]::OrdinalIgnoreCase)))
+}
+
 function Clear-UnparseableTorchCacheEnv {
     $managedTorchCache = Join-Path (Join-Path $StudioHome "cache") "torchinductor"
     if (-not $StageRoot) {
@@ -8109,7 +8365,12 @@ if ($TorchCacheDir) {
     if (-not (Test-Path -LiteralPath $TorchCacheDir)) { [System.IO.Directory]::CreateDirectory($TorchCacheDir) | Out-Null }
     $env:TORCHINDUCTOR_CACHE_DIR = $TorchCacheDir
     if (-not $StageRoot) {
-        [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        $_persistedTorchCache = [Environment]::GetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', 'User')
+        if (Test-TorchCacheMayPersist $TorchCacheDir $_persistedTorchCache $StudioHome $StudioHomeIsCustom) {
+            [Environment]::SetEnvironmentVariable('TORCHINDUCTOR_CACHE_DIR', $TorchCacheDir, 'User')
+        } else {
+            substep "kept the account's TORCHINDUCTOR_CACHE_DIR ($_persistedTorchCache): it belongs to another install, so $TorchCacheDir is used for this run only"
+        }
     }
     substep "TORCHINDUCTOR_CACHE_DIR set to $TorchCacheDir (avoids MAX_PATH issues)"
 }
@@ -8286,13 +8547,16 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
     } catch { $_woaTags = "" }
     if ($_woaTags -match '^(cp\d+)\|(cp\d+t?)$') {
         $_woaPyTag = $Matches[1]; $_woaAbi = $Matches[2]
-        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi
+        # Ties between CUDA builds of one release go to the newest this driver runs, as in install.ps1.
+        $_woaMaxCuda = ""
+        try { $_woaMaxCuda = [string](Get-LlamaDriverMaxCuda) } catch { $_woaMaxCuda = "" }
+        $_woaTorchV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -MaxCuda $_woaMaxCuda
         if ($_woaTorchV) {
             $WinArm64TorchSpec = "torch==$_woaTorchV"
             $_woaVisionV = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Project "torchvision" -PairWith $_woaTorchV
             $_woaBacktracks = 0
             while (-not $_woaVisionV -and $_woaBacktracks -lt 5) {
-                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV
+                $_woaOlderTorch = Get-WoaCudaWheelVersionParity -IndexUrl $WinArm64EffectiveTorchIndexUrl -PyTag $_woaPyTag -AbiTag $_woaAbi -Below $_woaTorchV -MaxCuda $_woaMaxCuda
                 if (-not $_woaOlderTorch) { break }
                 substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; trying torch $_woaOlderTorch" "Yellow"
                 $_woaTorchV = $_woaOlderTorch
@@ -8306,11 +8570,12 @@ if ($WinArm64Venv -and $WinArm64EffectiveTorchIndexUrl) {
                 # Keep the installed pair rather than pin a torch whose torchvision would resolve wrong.
                 $_woaInstalledPair = ""
                 try {
-                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m; print(m.version('torch') + '|' + m.version('torchvision'))" 2>$null | Out-String).Trim()
+                    # The installed torchvision's own torch requirement as well, read from its METADATA the way the probe reads the index's.
+                    $_woaInstalledPair = (& (Join-Path $VenvDir "Scripts\python.exe") -c "import importlib.metadata as m, re; r = [re.sub(r'^torch\s*\(?\s*([^()]*?)\s*\)?\s*$', r'\1', q.strip()) for q in (m.requires('torchvision') or []) if ';' not in q and re.match(r'(?i)torch(?![A-Za-z0-9_.-])', q.strip())]; print(m.version('torch') + '|' + m.version('torchvision') + '|' + ','.join(x.replace(' ', '') for x in r if x))" 2>$null | Out-String).Trim()
                 } catch { $_woaInstalledPair = "" }
-                $_woaKeptTorch = ""; $_woaKeptVision = ""
-                if ($_woaInstalledPair -match '^(\S+)\|(\S+)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2] }
-                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision")) {
+                $_woaKeptTorch = ""; $_woaKeptVision = ""; $_woaKeptRequirement = ""
+                if ($_woaInstalledPair -match '^(\S+)\|(\S+)\|(\S*)$') { $_woaKeptTorch = $Matches[1]; $_woaKeptVision = $Matches[2]; $_woaKeptRequirement = $Matches[3] }
+                if ($_woaKeptTorch -and $_woaKeptVision -and (Test-WoaPairsWithTorchParity -TorchVersion $_woaKeptTorch -OtherVersion $_woaKeptVision -Project "torchvision" -TorchRequirement $_woaKeptRequirement)) {
                     substep "windows on arm: this index pairs no torchvision with torch $_woaTorchV; keeping the installed torch $_woaKeptTorch and torchvision $_woaKeptVision" "Yellow"
                     $_woaTorchV = $_woaKeptTorch
                     $WinArm64TorchSpec = "torch==$_woaKeptTorch"
@@ -8590,6 +8855,8 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
         $_residentProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code "import importlib.metadata as m; print(m.version('torch'))"
         # Only a release this index publishes, so a CUDA family change never pins an unservable one.
         # download.pytorch.org win_amd64: cu126 2.6-2.14, cu128 2.7-2.11, cu129 2.8-2.9, cu130 2.9-2.14.
+        # cu130 tops out at the minor below install.ps1 $Cu130TorchCeiling (exclusive, "2.15.0"), so both keep
+        # the same releases; raise them together once a 2.15 cu130 win_amd64 wheel is published.
         $_keptRange = @{ "cu126" = @(6, 14); "cu128" = @(7, 11); "cu129" = @(8, 9); "cu130" = @(9, 14) }[[string]$CuTag]
         if ($_keptRange -and $_residentProbe.Ok -and ($_residentProbe.Output -match '(?m)^(2\.(\d+)\.\d+)(\+\S*)?\s*$') -and
                 [int]$Matches[2] -ge $_keptRange[0] -and [int]$Matches[2] -le $_keptRange[1]) {

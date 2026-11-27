@@ -681,9 +681,10 @@ GROUPED_DECODE_CALLS = [0]
 # end (HF generate, LoRA attached, CUDA-graph decode) on Qwen3-0.6B / Qwen3-4B / Llama-3.2-1B, batch
 # 2-16, prompts 128-2048: below these some model ran slower. Other cards keep SDPA. Unmasked SDPA GQA
 # (equal-length rows, e.g. one GRPO prompt per batch) is faster than the grouped route on L4 / A100;
-# on an A100 short caches lose too (the grouped route's extra launches are not hidden).
+# on an A100 short caches lose too (the grouped route's extra launches are not hidden). On a T4 grouped
+# won every cell measured (unmasked by 1.1x - 4x), so it starts at the smallest cache measured.
 _GROUPED_DECODE_MIN_TOKENS = {
-    "T4": (8192, 1024, 256),
+    "T4": (256, 256, 256),
     "L4": (None, 2048, 1024),
     "A100": (None, 16384, 8192),
 }
@@ -4924,6 +4925,9 @@ class FastLlamaModel:
             fix_tokenizer = fix_tokenizer,
             revision = tokenizer_revision,
             config = getattr(model, "config", None),
+            # Only for the GGUF's own repo: a separate tokenizer_name has no GGUF to read.
+            gguf_file = kwargs.get("gguf_file") if tokenizer_name == model_name else None,
+            local_files_only = kwargs.get("local_files_only", False),
             **_tokenizer_cache_kwargs,
         )
 
@@ -5260,6 +5264,7 @@ class FastLlamaModel:
                 init_lora_weights = init_lora_weights,
                 loftq_config = loftq_config,
                 temporary_location = temporary_location,
+                qat_scheme = qat_scheme,
                 target_parameters = target_parameters,
                 ensure_weight_tying = ensure_weight_tying,
                 offload_layers = offload_layers,
@@ -5730,7 +5735,9 @@ class FastLlamaModel:
 
         from .lora_init import fast_lora_init, record_fast_pissa
         from ._utils import block_swap_shaped
+        from .loader_utils import _patch_peft_for_native_fp8
 
+        _patch_peft_for_native_fp8(model)  # DoRA on native fp8 linears reads the dense weight
         with (
             fast_lora_init() as fast,
             block_swap_shaped(

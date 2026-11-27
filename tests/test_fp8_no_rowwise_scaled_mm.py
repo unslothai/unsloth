@@ -152,7 +152,10 @@ def test_other_rowwise_errors_still_raise(monkeypatch):
     assert FL._ROWWISE_UNSUPPORTED == set()
 
 
-def test_rowwise_probe_is_cached_per_device(windows):
+@pytest.mark.parametrize("hip", [None, "7.2.0"], ids = ["cuda_build", "rocm_build"])
+def test_rowwise_probe_is_cached_per_device(windows, monkeypatch, hip):
+    # The answer comes from the real probe on every build, ROCm included (no torch.version.hip shortcut).
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
     device = torch.device("cpu")
     assert FL.rowwise_supported(device) is False
     assert windows == ["tensor", "row"]

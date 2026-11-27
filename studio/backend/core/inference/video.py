@@ -8216,9 +8216,21 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
+            from .host_pinning import cuda_is_integrated
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
+
+            try:
+                _ordinal = kwargs.get("gpu_ordinal")
+                _target = (
+                    resolve_diffusion_device_target()
+                    if _ordinal is None
+                    else resolve_diffusion_device_target(ordinal = _ordinal)
+                )
+                integrated_cuda = cuda_is_integrated(_target.torch_device)
+            except Exception:  # noqa: BLE001 - unresolvable target: the platform default
+                integrated_cuda = False
 
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
@@ -8235,7 +8247,7 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors():
+                with pread_safetensors(integrated_cuda = integrated_cuda):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):
@@ -13073,7 +13085,7 @@ class VideoBackend:
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
             from .diffusion_te_truncate import truncate_text_encoders
-            truncate_text_encoders(pipe, logger = logger)
+            truncate_text_encoders(pipe, logger = logger, family = getattr(fam, "name", None))
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,

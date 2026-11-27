@@ -129,12 +129,12 @@ def rowwise_supported(device) -> bool:
     """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one does not: any failure counts
     ("Rowwise scaling is not currently supported on your device" on the Windows wheels, cuBLASLt
     CUBLAS_STATUS_NOT_SUPPORTED on older ones, a wrong answer). One small GEMM pair per device, cached. No verdict
-    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards."""
+    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards.
+    ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs (gfx1151, or fnuz-only MI300) fail its
+    tensorwise GEMM and give no verdict, so the answer always comes from the device."""
     device = torch.device(device)
     if device in _ROWWISE_UNSUPPORTED:
         return False
-    if torch.version.hip is not None:
-        return True
     verdict = _ROWWISE_PROBED.get(device)
     if verdict is not None:
         return verdict

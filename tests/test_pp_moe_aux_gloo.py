@@ -358,10 +358,81 @@ def _case_aux_on_after_split(rank, world, tmp, family):
     return out
 
 
+def _case_whole_batch(
+    rank,
+    world,
+    tmp,
+    n_mb = 2,
+    filler = 0,
+    mask = True,
+    **build_kw,
+):
+    """One forward over the whole batch in one process vs the pipeline splitting that batch into
+    n_mb micro-batches (filler of them fully label-masked copies) with the aux loss formed over the whole batch
+    (ctx.aux_batch_rows, as pp_env sets it): loss, aux and every gradient."""
+    from torch.distributed.device_mesh import init_device_mesh
+
+    ids, labels, attention_mask = batch(bsz = 4, mask = mask)
+    n_items = int((labels[:, 1:] != -100).sum())
+    model = build(**build_kw)
+    out = model(
+        input_ids = ids,
+        labels = labels,
+        attention_mask = attention_mask,
+        num_items_in_batch = n_items,
+        use_cache = False,
+    )
+    out.loss.backward()
+    ref = {n: p.grad.detach().clone() for n, p in model.named_parameters() if p.grad is not None}
+    want = {"loss": float(out.loss), "aux": float(out.aux_loss)}
+    model = build(**build_kw)
+    mesh = init_device_mesh("cpu", (world,), mesh_dim_names = ("pp",))["pp"]
+    pp = ppn.apply_pipeline_parallel(model, mesh, n_microbatches = n_mb, schedule = "gpipe")
+    rows = ids.shape[0]
+    if filler:
+        pad = filler * rows // (n_mb - filler)
+        ids = torch.cat([ids, ids[:1].expand(pad, -1)])
+        labels = torch.cat([labels, torch.full_like(labels[:1], -100).expand(pad, -1)])
+        if attention_mask is not None:
+            attention_mask = torch.cat(
+                [attention_mask, torch.ones_like(attention_mask[:1]).expand(pad, -1)]
+            )
+    pp.ctx.aux_batch_rows = rows
+    loss = pp.step(
+        ids, labels, attention_mask = attention_mask, num_items_in_batch = n_items, n_microbatches = n_mb
+    )
+    pp.ctx.aux_batch_rows = None
+    diffs, missing = {}, []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        g = ref.get(name)
+        if p.grad is None:
+            if g is not None and float(g.abs().max()) > 0:
+                missing.append(name)
+            continue
+        group = _group(name)
+        prev = diffs.get(group, (0.0, 0.0))
+        diffs[group] = (
+            max(prev[0], float((p.grad - g).abs().max())),
+            max(prev[1], float(g.abs().max())),
+        )
+    return {
+        "want": want,
+        "loss": float(loss),
+        "aux": float(pp.last_aux_loss),
+        "diffs": diffs,
+        "missing": missing,
+        "engaged": pp.carried_router_aux_steps,
+        "stage": (pp.start, pp.end),
+    }
+
+
 CASES = {
     "parity": _case_parity,
     "refusals": _case_refusals,
     "aux_on_after_split": _case_aux_on_after_split,
+    "whole_batch": _case_whole_batch,
 }
 
 
@@ -575,3 +646,30 @@ def test_pp2_aux_off_split_on_interleaved_refuses_aux_turned_on(family):
     for r in _spawn("aux_on_after_split", 2, family = family):
         assert r["guarded"] and not r["moe"], r
         assert "with schedule = 'interleaved1f1b'" in (r["refused"] or ""), r
+
+
+@pytest.mark.parametrize(
+    "kw",
+    [
+        dict(n_mb = 2, coef = 1.0),
+        dict(n_mb = 4, coef = 1.0, mask = False),
+        dict(n_mb = 2, coef = 0.01, lora = True),
+        dict(n_mb = 4, coef = 1.0, filler = 2),  # torch 2.10 GPipe pads a batch to the stage count
+        dict(n_mb = 2, coef = 1.0, mlp_only_layers = (1,)),
+    ],
+    ids = ["mb2", "mb4_nomask", "mb2_lora", "mb4_two_filler", "mb2_dense_layer"],
+)
+def test_pp2_moe_aux_over_the_whole_split_batch_matches_one_forward(kw):
+    """The Trainer path's objective: one forward over the whole batch, not the sum of per micro-batch aux losses.
+    Failing before: the pipeline formed one aux loss per micro-batch (the value is 1-2% off, the router gradients
+    far more)."""
+    results = _spawn("whole_batch", 2, **kw)
+    want = results[0]["want"]
+    assert want["aux"] > 0
+    for res in results:
+        assert res["loss"] == pytest.approx(want["loss"], rel = 1e-5, abs = 1e-6), (res["loss"], want)
+        assert res["aux"] == pytest.approx(want["aux"], rel = 1e-5, abs = 1e-6), (res["aux"], want)
+        assert not res["missing"], res["missing"]
+        for group, (diff, scale) in res["diffs"].items():
+            assert diff <= 1e-6 + 1e-4 * scale, (kw, res["stage"], group, diff, scale)
+    assert sorted(r["engaged"] for r in results) == [0, 1], results

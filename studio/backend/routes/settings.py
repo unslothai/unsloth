@@ -2663,6 +2663,34 @@ def get_coding_agents(current_subject: str = Depends(get_current_subject)) -> Co
     return CodingAgentsResponse(detected = detect_installed_coding_agents())
 
 
+class ChatImageSwapSetting(BaseModel):
+    enabled: StrictBool
+
+
+class ChatImageSwapSettingResponse(ChatImageSwapSetting):
+    managed_by_env: bool
+
+
+@_owner_settings_router.get("/chat-image-swap", response_model = ChatImageSwapSettingResponse)
+def get_chat_image_swap_setting():
+    import os
+    from core.inference.chat_media_swap import SWAP_ENV, swap_enabled
+    return ChatImageSwapSettingResponse(
+        enabled = swap_enabled(), managed_by_env = SWAP_ENV in os.environ
+    )
+
+
+@_owner_settings_router.put("/chat-image-swap", response_model = ChatImageSwapSettingResponse)
+def update_chat_image_swap_setting(payload: ChatImageSwapSetting):
+    from core.inference.chat_media_swap import SWAP_SETTING_KEY
+    from storage.studio_db import upsert_app_settings
+    from utils.openai_auto_switch_settings import _invalidate
+
+    upsert_app_settings({SWAP_SETTING_KEY: payload.enabled})
+    _invalidate(SWAP_SETTING_KEY)
+    return get_chat_image_swap_setting()
+
+
 @_owner_settings_router.get("/openai-auto-switch", response_model = OpenAIAutoSwitchResponse)
 def get_openai_auto_switch(
     current_subject: str = Depends(get_current_subject),

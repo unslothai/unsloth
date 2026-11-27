@@ -626,6 +626,12 @@ def triton_runs_on_device(index = 0):
         try:
             ok = _triton_probe(index)
         except Exception as error:
+            oom = getattr(torch, "OutOfMemoryError", None)
+            if (isinstance(oom, type) and isinstance(error, oom)) or "out of memory" in str(
+                error
+            ).lower():
+                # A full card says nothing about the toolchain: no Triton for this call, probe again next time.
+                return False
             ok = False
             logger.info(
                 f"Unsloth: Triton cannot run on ROCm device {index} ({type(error).__name__}: "
@@ -4440,7 +4446,8 @@ except:
 from transformers.modeling_utils import logger as transformers_logger
 
 
-# Windows, transformers 5.0 - 5.16: read shards with pread, not a copy-on-write mmap charged to commit (os error 1455).
+# Read CPU shard opens with pread, not mmap: Windows with transformers 5.0 - 5.16 (mmap is charged to commit, os error
+# 1455) and CUDA unified-memory GPUs (GB10 / DGX Spark: mmap -> GPU copies are many times slower), decided per open.
 from ._windows_safetensors import patch_windows_safetensors_pread
 
 patch_windows_safetensors_pread()
@@ -6977,6 +6984,9 @@ def patch_gradient_accumulation_fix(Trainer):
             # UNSLOTH_TP_SIZE / UNSLOTH_PP_SIZE (unmodified scripts): the pipeline split, then tensor parallel,
             # before native FSDP2 shards the dp dimension.
             _refuse_expert_parallel_env_model_init(_original_trainer_init, args, kwargs)
+            _tensor_parallel_env_prebuilt_optimizer_refusal(
+                self, _original_trainer_init, args, kwargs, model
+            )
             tp_env = _tensor_parallel_env_trainer_pre(model)
             if tp_env is None and model is not None:
                 from .ep_native import ep_env_apply, ep_refuse_prebuilt_optimizer
@@ -7163,6 +7173,13 @@ def patch_gradient_accumulation_fix(Trainer):
 
     # Idempotent: already installed at import unless Trainer was reloaded since.
     _patch_trainer_train_gc_scope(Trainer)
+
+    # offload_layers: run a step's micro-batches layer by layer (outermost, over the GA fix above).
+    try:
+        from ._layer_major_ga import patch_layer_major_gradient_accumulation
+        patch_layer_major_gradient_accumulation(Trainer)
+    except Exception as e:
+        logger.warning_once(f"Unsloth: layer-major gradient accumulation not installed ({e})")
 
 
 def _unsloth_model_parallel_marker(model, flag):
@@ -7502,6 +7519,35 @@ def _pipeline_parallel_env_refusals(
     )
 
 
+def _tensor_parallel_env_prebuilt_optimizer_refusal(trainer, init, args, kwargs, model):
+    """UNSLOTH_TP_SIZE alone on a model get_peft_model did not shard (PEFT's own get_peft_model, full finetuning):
+    the tensor parallel split in Trainer.__init__ replaces the trainable parameters, so an optimizer built before
+    it would step the old ones and the model would never update. Under UNSLOTH_PP_SIZE the pipeline refusals
+    check this."""
+    if not os.environ.get("UNSLOTH_TP_SIZE") or not isinstance(model, torch.nn.Module):
+        return
+    from .tp_env import env_layout
+
+    layout = env_layout()
+    if layout is None or layout.tp <= 1 or layout.pp > 1:
+        return
+    from .tp_native import is_tensor_parallel
+
+    if is_tensor_parallel(model):
+        return  # already split (Unsloth's get_peft_model): the optimizer holds the parameters that train
+    if _prebuilt_optimizer(
+        trainer, init, args, kwargs
+    ) is None and not _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
+        return
+    raise NotImplementedError(
+        f"Unsloth: UNSLOTH_TP_SIZE={layout.tp} (tensor parallel) splits this model in Trainer.__init__, which "
+        "replaces its trainable parameters, but Trainer(optimizers = (optimizer, ...)) or optimizer_cls_and_kwargs "
+        "= (cls, {'params': ...}) already holds them, so the model would never update. Let the Trainer build the "
+        "optimizer (TrainingArguments optim / learning_rate), override create_optimizer, or build the optimizer "
+        "after Unsloth's get_peft_model (which splits first)."
+    )
+
+
 def _tensor_parallel_env_trainer_pre(model):
     if not os.environ.get("UNSLOTH_TP_SIZE") and not os.environ.get("UNSLOTH_PP_SIZE"):
         return None
@@ -7579,15 +7625,18 @@ def _tensor_parallel_trainer_pre(model):
     return tp_trainer_setup(model, phase = "pre")
 
 
-def _unsloth_tp_skip_dpo_ref_adapter(model):
-    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" copy, False off tp; raises if trained."""
-    tp = _is_unsloth_tensor_parallel(model)
-    if not tp:
-        try:
-            tp = int(os.environ.get("UNSLOTH_TP_SIZE", "1") or 1) > 1
-        except ValueError:
-            tp = False
-    if not tp:
+def _unsloth_env_size(name):
+    try:
+        return int(os.environ.get(name, "1") or 1)
+    except ValueError:
+        return 1
+
+
+def _unsloth_tp_skip_ref_adapter(model, trainer = "DPOTrainer"):
+    """Under tp, a fresh adapter equals the disabled-adapter reference: True skips TRL's "ref" adapter copy
+    (DPOTrainer, KTOTrainer), False off tp; raises if trained (tp DTensor shards cannot seed a "ref" copy).
+    Expert parallel keeps the copy: its expert LoRA rows are plain local parameters, so the copy is exact."""
+    if not (_is_unsloth_tensor_parallel(model) or _unsloth_env_size("UNSLOTH_TP_SIZE") > 1):
         return False
     nonzero, device = 0, torch.device("cpu")
     params = dict(model.named_parameters(remove_duplicate = False))
@@ -7634,12 +7683,17 @@ def _unsloth_tp_skip_dpo_ref_adapter(model):
         nonzero = int(flag.item())
     if nonzero:
         raise ValueError(
-            "Unsloth: DPOTrainer with ref_model = None on a tensor parallel PEFT model whose adapter is already "
+            f"Unsloth: {trainer} with ref_model = None on a tensor parallel PEFT model whose adapter is already "
             'trained (non-zero lora_B or a changed saved module) is not supported: TRL\'s frozen "ref" copy of the adapter cannot be built '
-            "from tensor parallel shards. Start DPO from a fresh adapter (the base model is then the reference), "
+            f"from tensor parallel shards. Start {trainer.replace('Trainer', '')} from a fresh adapter (the base model is then the reference), "
             "pass an explicit ref_model, or unset UNSLOTH_TP_SIZE."
         )
     return True
+
+
+def _unsloth_tp_skip_dpo_ref_adapter(model):
+    """The name trainer caches compiled before KTO was covered import."""
+    return _unsloth_tp_skip_ref_adapter(model, "DPOTrainer")
 
 
 def _refuse_model_parallel_export(model, method):
@@ -9564,6 +9618,12 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
             }
         return model.save_pretrained(save_directory, *args, **kwargs)
 
+    if _is_unsloth_pipeline_parallel(model):
+        # Each stage holds only its own layers' LoRA: a local state_dict would make every stage write its part
+        # into the same directory. Gather every stage's adapter and write the 1-GPU adapter from rank 0
+        # (collective), as save_pretrained does on a pipeline parallel model.
+        from .pp_env import pp_save_adapter
+        return pp_save_adapter(model, (save_directory, *args), kwargs, cast_lora = True)
     if _is_unsloth_tensor_parallel(model):
         # A state_dict built here would hold the sharded DTensors (safetensors cannot read their storage) and
         # bypass the tensor parallel save: build it on rank 0 from the gathered adapter instead.
@@ -9593,6 +9653,24 @@ def save_lora_adapter(model, save_directory, *args, **kwargs):
             return model.save_pretrained(save_directory, *args, **kwargs)
 
         return _agree_write(ep_write)
+    # By class name (fully_shard subclasses each unit from FSDPModule): an unsharded model imports nothing here.
+    if any(c.__name__ == "FSDPModule" for m in model.modules() for c in type(m).__mro__):
+        from .fsdp2_save import fsdp2_gather_active, fsdp2_units
+        sharded = not fsdp2_gather_active() and bool(fsdp2_units(model))
+    else:
+        sharded = False
+    if sharded:
+        # FSDP2 shards: a local state_dict holds DTensors and the save_pretrained decorator passes a given
+        # state_dict through, so every rank would write its shards. Gather the adapter (and the frozen weights
+        # PEFT still writes) onto rank 0, which writes; every rank enters and learns whether the write failed.
+        from ..save import _fsdp2_peft_saved_frozen
+        from .fsdp2_save import fsdp2_gathered
+
+        include = _fsdp2_peft_saved_frozen(model, kwargs)
+        with fsdp2_gathered(model, trainable_only = True, include = include) as writer:
+            if writer is False:
+                return None
+            return write()
     return write()
 
 

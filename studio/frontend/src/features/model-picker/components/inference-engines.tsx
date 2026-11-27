@@ -155,9 +155,11 @@ export function EngineInstall({
           className={cn(
             "flex flex-wrap items-center gap-2",
             centered && "justify-center",
+            management && "justify-end",
           )}
         >
-          {engine.installed && (
+          {/* Settings shows the version under the engine name. */}
+          {engine.installed && !management && (
             <span>
               {t("managedEngines.installed", {
                 version: engine.installed_version ?? "",
@@ -284,10 +286,27 @@ export function InferenceEnginesSection({
   const t = useT();
   const isOwner = useIsAccountOwner();
   const { engines, error } = useEngines();
-  // Why the engine can't be installed, shown under its name.
-  const engineNote = (engine: EngineStatus) =>
-    engine.unsupported_reason ||
-    (isOwner || engine.installed ? undefined : t("managedEngines.ownerRequired"));
+  const engineNote = (engine: EngineStatus) => {
+    const installed = engine.installed
+      ? t("managedEngines.installed", {
+          version: engine.installed_version ?? "",
+        })
+      : undefined;
+    const blocked =
+      engine.unsupported_reason ||
+      (isOwner || engine.installed
+        ? undefined
+        : t("managedEngines.ownerRequired"));
+    if (installed && blocked) {
+      return (
+        <>
+          <span className="block">{installed}</span>
+          <span className="block">{blocked}</span>
+        </>
+      );
+    }
+    return installed ?? blocked;
+  };
   const rows = (
     <>
       {error && <p role="alert">{error}</p>}

@@ -79,6 +79,7 @@ from .loader_utils import (
     _load_probe_memo_scope,
     _memo_config_probe,
     _resolved_revision,
+    _cached_missing_adapter_error,
     _restore_load_scoped_env,
     _resolve_checkpoint_tokenizer_name,
     _is_offline_related_error,
@@ -1407,8 +1408,10 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
@@ -1745,6 +1748,15 @@ class FastLanguageModel(FastLlamaModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,
@@ -2417,8 +2429,10 @@ class FastModel(FastBaseModel):
         **kwargs,
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
@@ -2732,6 +2746,9 @@ class FastModel(FastBaseModel):
             if float8_training is not None:
                 converted = convert_model_to_float8_training(model, float8_training)
                 print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
+            if qat_scheme is not None:
+                print("Unsloth: Applying QAT to mitigate quantization degradation")
+                model = FastModel._prepare_for_qat(model, qat_scheme)
             # Returns before the FORCE_FLOAT32 scan and no diffusion type is on that list, so False. Stamped, not left unset, or the trainer reads whatever an earlier load wrote.
             model = _mark_forced_float32(model, False)
             model = _mark_full_finetuning(model, full_finetuning)
@@ -2774,6 +2791,15 @@ class FastModel(FastBaseModel):
                 )
             is_model = False
         try:
+            _missing = _cached_missing_adapter_error(
+                model_name,
+                model_config if user_config is None and adapter_revision is base_revision else None,
+                adapter_revision,
+                token,
+                local_files_only,
+            )
+            if _missing is not None:
+                raise _missing
             peft_config = _memo_config_probe(
                 PeftConfig.from_pretrained,
                 model_name,

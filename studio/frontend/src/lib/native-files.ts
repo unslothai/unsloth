@@ -203,6 +203,29 @@ export async function downloadUrlStreaming(
   return savedFileName;
 }
 
+/** Mint a short-lived download URL only once the native save chooser has closed. */
+export async function downloadShortLivedUrl(
+  filename: string,
+  getUrl: () => Promise<string>,
+): Promise<string | undefined> {
+  if (!isTauri) {
+    browserUrlDownload(await getUrl(), filename);
+    return;
+  }
+  const { invoke } = await import("@tauri-apps/api/core");
+  const token = await invoke<string | null>("begin_native_file_save", {
+    fileName: filename,
+  });
+  if (token === null) throw new DownloadCancelledError();
+  try {
+    const url = await getUrl();
+    return await invoke<string>("finish_native_file_save_from_url", { token, url });
+  } catch (error) {
+    await invoke<void>("cancel_native_file_save", { token }).catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function downloadUrl(
   url: string,
   filename: string,

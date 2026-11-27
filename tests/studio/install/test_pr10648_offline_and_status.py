@@ -40,7 +40,6 @@ UPSTREAM_TAG = "v1.9.1"
 SOURCE_COMMIT = "0" * 40
 STUDIO_PROTOCOL = "inference/multipart-v1"
 
-# The substrings the setup scripts grep.
 KEEP_TOKEN = "keeping the existing complete install"
 MATCH_TOKEN = "already matches"
 FAIL_TOKEN = "prebuilt install failed"
@@ -378,8 +377,7 @@ def test_an_explicit_request_never_keeps(tmp_path, monkeypatch, capsys, extra_ar
 
 
 def test_the_keep_arm_names_the_reason_and_the_release_it_kept(tmp_path, monkeypatch, capsys):
-    """The kept line has to be readable on its own: setup.sh prints one status line and
-    throws the installer log away, so the release and the reason both belong in it."""
+    """setup.sh shows only its status line, so that line must name the release and reason."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "http_403")
@@ -433,8 +431,7 @@ def _macos_listing_failure(tmp_path, monkeypatch, host):
 def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_install(
     tmp_path, monkeypatch, capsys
 ):
-    """Unreachable listing rules nothing out, so keeping a min_os-compatible install is the right
-    verdict."""
+    """Unreachable listing rules nothing out, so keep the min_os-compatible install."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = _seed_install(tmp_path, host, min_os = "13.0")
     before = _tree_snapshot(install_dir)
@@ -456,8 +453,7 @@ def test_macos_incompatible_newest_plus_unreachable_listing_keeps_a_runnable_ins
 def test_macos_incompatible_newest_plus_unreachable_listing_fails_without_an_install(
     tmp_path, monkeypatch, capsys
 ):
-    """With no install and an unreachable listing, the run must exit 1 rather than report a false
-    success."""
+    """With no install and an unreachable listing, exit 1 rather than report a false success."""
     host = _host("macos", "arm64", macos_version = (13, 0))
     install_dir = tmp_path / "whisper.cpp"
 
@@ -818,8 +814,7 @@ def test_setup_ps1_never_reports_success_for_a_non_zero_exit(tmp_path, name, sta
     "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
 )
 def test_both_shells_agree_on_the_label(tmp_path, name, status, output, label):
-    """Windows and POSIX must show the same label; comparing the two shells' labels directly, not
-    each against a constant, stops them drifting apart."""
+    """Compare the two shells' labels directly, not each to a constant, so they cannot drift."""
     sh = _run_bash(_sh_whisper_script(tmp_path, status, output))
     ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
     assert sh.returncode == 0 and ps.returncode == 0, (sh, ps.stdout, ps.stderr)
@@ -972,8 +967,7 @@ def test_setup_ps1_reports_each_component_separately(tmp_path):
 
 @requires_bash
 def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):
-    """Runs the installer offline and feeds its real log to the shipped setup.sh block, so a
-    reworded log line shows up as a wrong label, not a pass."""
+    """Feeds real offline installer log to setup.sh; a reworded line shows as a wrong label."""
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)
     _inject(monkeypatch, "offline")
@@ -986,8 +980,7 @@ def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, m
     ), result.stdout
 
 
-# A digest mismatch is a tamper signal, not an offline notice; only an end-to-end CLI run caught
-# the removed re-raise.
+# Digest mismatch is tamper, not offline; only end-to-end CLI run caught the removed re-raise.
 def test_a_tampered_release_is_not_reported_as_an_unavailable_update(tmp_path, monkeypatch, capsys):
     host = _host("linux", "x64")
     install_dir = _seed_install(tmp_path, host)

@@ -203,6 +203,9 @@ async function registerDroppedAttachments(
   };
 }
 
+// None of these can happen mid native drag; a click or a window switch clears a stuck overlay.
+const WINDOW_RESET_EVENTS = ["blur", "focus", "pointerdown"] as const;
+
 function sameDropState(
   a: NativeModelDropState,
   b: NativeModelDropState,
@@ -238,6 +241,12 @@ export function useNativeModelDrop(
     // "over" fires per cursor move; returning `prev` makes React bail out.
     const publish = (next: NativeModelDropState) =>
       setDropState((prev) => (sameDropState(prev, next) ? prev : next));
+    // A missed "leave" left the overlay stuck (#19346); a live drag brings it back on its next "over".
+    const clearOverlay = () => publish({ status: "idle" });
+    for (const type of WINDOW_RESET_EVENTS) {
+      globalThis.window?.addEventListener(type, clearOverlay);
+    }
+    globalThis.document?.addEventListener("visibilitychange", clearOverlay);
 
     void import("@tauri-apps/api/webview")
       .then(({ getCurrentWebview }) =>
@@ -442,6 +451,13 @@ export function useNativeModelDrop(
     return () => {
       disposed = true;
       unlisten?.();
+      for (const type of WINDOW_RESET_EVENTS) {
+        globalThis.window?.removeEventListener(type, clearOverlay);
+      }
+      globalThis.document?.removeEventListener(
+        "visibilitychange",
+        clearOverlay,
+      );
     };
   }, [addIntent, enabled]);
 
