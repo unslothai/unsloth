@@ -7850,6 +7850,57 @@ def test_generate_batched_seed_matches_solo_replay(fake_runtime, tmp_path):
     assert batched[1] == solo == 9
 
 
+class _StepNoiseScheduler:
+    """Records the generator each ``step`` receives."""
+
+    def __init__(self):
+        self.step_generators = []
+
+    def step(
+        self,
+        model_output,
+        timestep,
+        sample,
+        generator = None,
+        return_dict = True,
+    ):
+        self.step_generators.append(generator)
+        return (sample,)
+
+
+class _UnseededStepPipe(_FakePipe):
+    """Steps without passing its generator, as diffusers HiDreamImagePipeline does."""
+
+    def __init__(self):
+        super().__init__()
+        self.scheduler = _StepNoiseScheduler()
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        **kwargs,
+    ):
+        n = kwargs.get("num_images_per_prompt", 1) * (
+            len(prompt) if isinstance(prompt, list) else 1
+        )
+        self.scheduler.step(None, 0, types.SimpleNamespace(shape = (n, 4)), return_dict = False)
+        return super().__call__(prompt = prompt, **kwargs)
+
+
+def test_generate_hands_each_images_generator_to_a_step_that_draws_noise(fake_runtime, tmp_path):
+    backend = _load_zimage_backend(tmp_path)
+    pipe = _UnseededStepPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    backend.generate(prompt = "p", seeds = [3, 9])
+    [batched] = pipe.scheduler.step_generators
+    assert [g.manual for g in batched] == [3, 9]
+    backend.generate(prompt = "p", seed = 9)
+    solo = pipe.scheduler.step_generators[-1]
+    assert solo.manual == 9
+    assert "step" not in vars(pipe.scheduler)
+
+
 def test_generate_prompt_list_rejected_off_txt2img(fake_runtime, tmp_path):
     backend = _load_zimage_backend(tmp_path)
     with pytest.raises(ValueError, match = "text-to-image only"):
@@ -8120,6 +8171,54 @@ def test_qwen21_prompt_list_renders_each_text_length_apart(fake_runtime, tmp_pat
     pipe.calls.clear()
     backend.generate(prompt = "fallback", prompts = ["red fox", "grey owl"], seeds = [5, 6])
     assert pipe.calls == [(["red fox", "grey owl"], [5, 6])]
+
+
+class _RecordingPipe(_FakePipe):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list = []
+
+    def __call__(
+        self,
+        *,
+        prompt = None,
+        generator = None,
+        **kwargs,
+    ):
+        seeds = [g.manual for g in generator] if isinstance(generator, list) else [generator.manual]
+        self.calls.append((prompt, seeds))
+        return super().__call__(prompt = prompt, generator = generator, **kwargs)
+
+
+def test_sdxl_prompt_list_renders_each_clip_chunk_count_apart(fake_runtime, tmp_path, monkeypatch):
+    # Each CLIP chunk count renders in its own pipe call.
+    import core.inference.diffusion_sd_controls as sd_controls
+
+    backend = _loaded_backend(
+        tmp_path, gguf_filename = "sdxl.safetensors", base_repo = None, family_override = "sdxl"
+    )
+    pipe = _RecordingPipe()
+    object.__setattr__(backend._state, "pipe", pipe)
+    monkeypatch.setattr(sd_controls, "weighting_engaged", lambda *a, **k: True)
+    monkeypatch.setattr(
+        sd_controls,
+        "_clip_chunk_counts",
+        lambda _pipe, texts, **k: [1 + len(t.split()) // 3 for t in texts],
+        raising = False,
+    )
+    monkeypatch.setattr(sd_controls, "apply_prompt_controls", lambda *a, **k: False)
+    out = backend.generate(
+        prompt = "fallback",
+        prompts = ["red fox", "grey owl", "a long prompt here", "blue jay"],
+        seeds = [1, 2, 3, 4],
+    )
+    assert pipe.calls == [
+        (["red fox", "grey owl"], [1, 2]),
+        ("a long prompt here", [3]),
+        ("blue jay", [4]),
+    ]
+    assert out["seeds"] == [1, 2, 3, 4]
+    assert len(out["images"]) == 4
 
 
 def test_text_length_runs_leaves_other_pipelines_alone():
@@ -15297,3 +15396,28 @@ def test_generate_fast_cfg_refused_on_a_pipeline_without_it(fake_runtime, tmp_pa
     assert backend.status()["supports_cfg_interval"] is False
     with pytest.raises(ValueError, match = "Fast CFG"):
         backend.generate(prompt = "a sloth", steps = 50, guidance = 4.0, cfg_interval_end = 0.8)
+
+
+@pytest.mark.parametrize(
+    "request_, env, expected_state, origin, value",
+    [
+        (None, None, None, "default", "off"),
+        (None, "1", None, "env", "on"),
+        ("on", None, "on", "per_load", "on"),
+        ("off", "1", "off", "per_load", "off"),
+    ],
+)
+def test_load_keeps_the_lora_fuse_choice_and_reports_its_origin(
+    fake_runtime, tmp_path, monkeypatch, request_, env, expected_state, origin, value
+):
+    from core.inference import diffusion_lora_fuse as lora_fuse
+
+    if env is None:
+        monkeypatch.delenv(lora_fuse.LORA_FUSE_ENV, raising = False)
+    else:
+        monkeypatch.setenv(lora_fuse.LORA_FUSE_ENV, env)
+    overrides = {} if request_ is None else {"lora_fuse": request_}
+    backend = _loaded_backend(tmp_path, **overrides)
+    assert backend._state.lora_fuse == expected_state
+    entry = backend.status()["resolved"]["lora_fuse"]
+    assert (entry["origin"], entry["value"]) == (origin, value)

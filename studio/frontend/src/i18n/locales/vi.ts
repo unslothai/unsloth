@@ -2629,6 +2629,10 @@ export const vi = {
         confirmDescriptionChatOnly:
           "Dừng máy chủ và chạy lại trình cài đặt. Đây là bản cài đặt Chỉ trò chuyện, nên trình cài đặt cũng sẽ nâng cấp nó lên bản cài đặt đầy đủ với PyTorch, tổng cộng vài gigabyte. Cuộc trò chuyện và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Sửa chữa ngay",
+        recommendedTorch:
+          "Nên sửa chữa: bản cài đặt này có PyTorch {torch}, cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ.",
+        recommendedDriver:
+          "PyTorch {torch} cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ, nhưng trình điều khiển GPU này không hỗ trợ CUDA 13. Hãy cập nhật trình điều khiển GPU trước, rồi sửa chữa bản cài đặt.",
       },
       resetPreferences: {
         sectionTitle: "Vùng nguy hiểm",
@@ -4425,8 +4429,8 @@ export const vi = {
       summary: {
         single: "Huấn luyện trên một GPU",
         layerSplit: "Mô hình được chia theo từng lớp trên {count} GPU",
-        ddp: "Mô hình vừa một GPU: song song dữ liệu trên {count} GPU",
-        fsdp2: "Mô hình quá lớn cho một GPU: phân mảnh trên {count} GPU",
+        ddp: "Mỗi GPU huấn luyện một bản sao đầy đủ: song song dữ liệu trên {count} GPU",
+        fsdp2: "Trọng số và trạng thái optimizer được phân mảnh trên {count} GPU",
         tp: "Mỗi lớp được chia trên {count} GPU",
         pp: "Các lớp chạy thành {count} giai đoạn pipeline, mỗi GPU một giai đoạn",
         cp: "Mỗi chuỗi được chia trên {count} GPU",
@@ -4437,7 +4441,7 @@ export const vi = {
         noGpu: "Hãy chọn ít nhất một GPU.",
         singleNeedsOne: "Một GPU chỉ dùng đúng một GPU. Hãy bỏ chọn các GPU khác.",
         needsTwo: "Chế độ này cần ít nhất hai GPU.",
-        customSpec: "Nhập bố cục, ví dụ dp=2,tp=2.",
+        customSpec: "Nhập bố cục, ví dụ {example}.",
       },
     },
     preview: {
@@ -5406,6 +5410,7 @@ export const vi = {
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
     },
     history: {
+      notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",
       title: "Lịch sử",
       search: "Tìm trong lịch sử",
       empty: "Các bản dịch của bạn sẽ xuất hiện ở đây.",

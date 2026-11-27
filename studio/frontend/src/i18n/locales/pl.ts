@@ -2657,6 +2657,10 @@ export const pl = {
         confirmDescriptionChatOnly:
           "Zatrzymuje serwer i ponownie uruchamia instalator. To instalacja Tylko czat, więc instalator uaktualni ją również do pełnej instalacji z PyTorch, łącznie kilka gigabajtów. Czaty i ustawienia zostaną zachowane. Może to potrwać kilka minut.",
         confirmAction: "Napraw teraz",
+        recommendedTorch:
+          "Zalecana naprawa: ta instalacja ma PyTorch {torch}, starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} jest starszy niż zarządzany {managedTorch}, na którym obsługiwane są karty GPU z serii RTX 50, ale ten sterownik GPU nie obsługuje CUDA 13. Najpierw zaktualizuj sterownik GPU, a potem napraw instalację.",
       },
       resetPreferences: {
         sectionTitle: "Strefa zagrożenia",
@@ -4474,8 +4478,8 @@ export const pl = {
       summary: {
         single: "Trenowanie na jednej karcie GPU",
         layerSplit: "Model jest dzielony warstwa po warstwie na karty GPU: {count}",
-        ddp: "Model mieści się na jednej karcie GPU: równoległość danych na kartach GPU: {count}",
-        fsdp2: "Model jest za duży na jedną kartę GPU: shardowany na karty GPU: {count}",
+        ddp: "Każda karta GPU trenuje pełną kopię: równoległość danych na kartach GPU: {count}",
+        fsdp2: "Wagi i stan optymalizatora shardowane na karty GPU: {count}",
         tp: "Każda warstwa jest dzielona na karty GPU: {count}",
         pp: "Warstwy działają jako etapy potoku ({count}), po jednym na kartę GPU",
         cp: "Każda sekwencja jest dzielona na karty GPU: {count}",
@@ -4486,7 +4490,7 @@ export const pl = {
         noGpu: "Wybierz co najmniej jedną kartę GPU.",
         singleNeedsOne: "Jedna karta GPU używa dokładnie jednej karty. Odznacz pozostałe.",
         needsTwo: "Ten tryb wymaga co najmniej dwóch kart GPU.",
-        customSpec: "Wpisz układ, na przykład dp=2,tp=2.",
+        customSpec: "Wpisz układ, na przykład {example}.",
       },
     },
     preview: {
@@ -5459,6 +5463,7 @@ export const pl = {
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
     },
     history: {
+      notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",
       title: "Historia",
       search: "Szukaj w historii",
       empty: "Tutaj pojawią się Twoje tłumaczenia.",

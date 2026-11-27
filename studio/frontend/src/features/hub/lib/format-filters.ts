@@ -150,6 +150,19 @@ export function checkpointQuantFormat(result: {
   return result.quantMethod?.toLowerCase() === "fp8" ? "fp8" : null;
 }
 
+/** True for an FP8 checkpoint on a host whose torch build runs per-channel (row-wise scaled) FP8 only by
+ *  dequantizing to 16-bit (`checkpoint_quant_dequant_only` from /api/system). It still loads; block-scaled FP8
+ *  keeps its own GEMM, so the note is worded as conditional on the checkpoint's scaling. */
+export function fp8MayRunDequantized(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantDequantOnly: readonly string[] | undefined,
+): boolean {
+  return (
+    (checkpointQuantDequantOnly ?? []).includes("fp8_rowwise") &&
+    checkpointQuantFormat(result) === "fp8"
+  );
+}
+
 /** Recommended: every GGUF, plus FP8 / NVFP4 checkpoints only where every GPU runs them natively. */
 export function matchesRecommended(
   result: { id: string; isGguf: boolean; quantMethod?: string },

@@ -210,15 +210,6 @@ def test_fast_inference_is_refused_at_load_under_ep(clean_env):
     assert "fast_inference = False" in message and not calls, message
 
 
-def _transformers_4():
-    import transformers
-    from packaging.version import Version
-    return Version(transformers.__version__).major < 5
-
-
-_TRANSFORMERS_4 = _transformers_4()
-
-
 def _hunyuan_meta():
     """Hunyuan-A13B's layout shrunk: 64 experts, a top-k per layer, a shared expert."""
     from transformers import AutoConfig, AutoModelForCausalLM
@@ -247,31 +238,42 @@ def test_hunyuan_v1_moe_is_not_blocked_by_its_default_config():
     assert caps._ep_blocker("hunyuan_v1_moe", 2) == ""
     assert "hunyuan_v1_moe" not in caps._EP_BLOCKED_FAMILIES
     model = _hunyuan_meta()
-    if _TRANSFORMERS_4:  # unfused per-expert modules there: every family is refused alike
-        assert "transformers 4.x" in caps._ep_blocker(model, 2)
-    else:
-        assert caps._ep_blocker(model, 2) == ""
-        caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+    # transformers 4.x keeps per-expert modules: they shard as a per-expert list (models/ep_expert_lists.py).
+    assert caps._ep_blocker(model, 2) == ""
+    caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
     assert "refused" not in caps._moe_note("hunyuan_v1_moe", "lora", False, "ep")
-    assert "per-expert Linear lists" in caps._moe_note("gpt_oss", "qlora", False, "ep")
+    assert "refused" not in caps._moe_note("gpt_oss", "qlora", False, "ep")
     assert "refused" not in caps._moe_note("gpt_oss", "lora", False, "ep")
 
 
-def test_gpt_oss_4bit_is_blocked_by_family_and_16bit_is_not():
+def test_gpt_oss_4bit_is_planned_when_the_experts_split_evenly():
+    """load_in_4bit gpt-oss is refused only for an ep not dividing the released expert counts (32, 128)."""
     assert caps._ep_blocker("gpt_oss", 2) == ""
     assert caps._ep_blocker("gpt_oss", 2, load_in_4bit = False) == ""
-    reason = caps._ep_blocker("gpt_oss", 2, load_in_4bit = True)
-    assert "per-expert Linear lists" in reason and "GptOssExpertsBnb4bit" in reason, reason
+    for ep in (2, 4, 8):
+        assert caps._ep_blocker("gpt_oss", ep, load_in_4bit = True) == "", ep
     assert caps._ep_blocker("gpt_oss", 1, load_in_4bit = True) == ""
     assert caps._ep_blocker("qwen3_moe", 2, load_in_4bit = True) == ""
+    assert caps._ep_blocker("gpt_oss", 3, load_in_4bit = False) == ""
+    reason = caps._ep_blocker("gpt_oss", 3, load_in_4bit = True)
+    assert "per-expert Linear lists" in reason and "32 experts over 3" in reason, reason
     message = _refusal(_ep_query(family = "gpt_oss", mode = "qlora", ep_blocker = reason))
     assert (
         message.startswith("Unsloth: ep x model: ") and "per-expert Linear lists" in message
     ), message
+    # The checkpoint's own expert count when the caller read its config (Studio's model facts).
+    assert "30 experts over 4" in caps._ep_blocker("gpt_oss", 4, load_in_4bit = True, experts = 30)
+    assert caps._ep_blocker("gpt_oss", 3, load_in_4bit = True, experts = 6) == ""
+    status, cell = caps.cell_status(_ep_query(family = "gpt_oss", mode = "qlora", attention = "eager"))
+    assert status == "supported" and cell.name == "MoE gpt_oss x qlora x aux off x ep", (
+        status,
+        cell,
+    )
 
 
-def test_gpt_oss_with_zoo_bnb4bit_experts_is_refused_by_structure():
-    """zoo's GptOssExpertsBnb4bit (what every load_in_4bit gpt-oss load installs), built unquantized on meta."""
+def test_gpt_oss_with_zoo_bnb4bit_experts_shards_by_structure():
+    """zoo's GptOssExpertsBnb4bit (what every load_in_4bit gpt-oss load installs), built unquantized on meta: its
+    per-expert Linear lists now shard (models/ep_expert_lists.py), so the loaded model is not refused."""
     zoo_gpt_oss = pytest.importorskip("unsloth_zoo.temporary_patches.gpt_oss")
     bnb_experts = getattr(zoo_gpt_oss, "GptOssExpertsBnb4bit", None)
     if bnb_experts is None:
@@ -301,14 +303,11 @@ def test_gpt_oss_with_zoo_bnb4bit_experts_is_refused_by_structure():
     finally:
         gpt_oss.GptOssExperts = stock
     assert type(model.model.layers[0].mlp.experts) is bnb_experts
-    reason = caps._ep_blocker(model, 2)
-    assert "per-expert Linear lists" in reason and "gate_up_projs" in reason, reason
-    with pytest.raises(NotImplementedError) as info:
-        caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
-    assert "per-expert Linear lists" in str(info.value), info.value
-    with pytest.raises(NotImplementedError) as info:
-        ep_native.ep_refuse_per_expert_lists(model)
-    assert "load_in_4bit = False" in str(info.value), info.value
+    assert caps._ep_blocker(model, 2) == ""
+    caps.check_layout(_ep_layout(), None, model, types.SimpleNamespace(packing = False))
+    ep_native.ep_refuse_per_expert_lists(model)
+    # 4 experts over 3 ranks do not split evenly: still refused, with the reason.
+    assert "per-expert Linear lists" in caps._ep_blocker(model, 3)
     with torch.device("meta"):
         plain = AutoModelForCausalLM.from_config(config)
     assert caps._ep_blocker(plain, 2) == ""

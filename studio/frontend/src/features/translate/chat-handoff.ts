@@ -8,8 +8,6 @@ import {
   buildChatHandoff,
 } from "./translate-history";
 
-export const CHAT_HANDOFF_ENTRIES = 5;
-
 type HandoffEntry = Pick<
   TranslateHistoryEntry,
   "at" | "source" | "output" | "target" | "from"

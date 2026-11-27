@@ -584,3 +584,21 @@ def test_an_oom_inside_fp8_quantization_is_not_recorded_as_fp8_or_bf16(monkeypat
     events = []
     assert dit._apply_fp8_training(model, events.append, None) is True
     assert any("1 layer(s) could not be converted" in e["message"] for e in events)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_declares_the_dense_compute_dtype_not_its_int8_storage(dtype):
+    # Callers that cast a projection's input to the dtype the layer computes in read ``compute_dtype``; the int8
+    # weight buffer is storage, and reading it truncated MOSS-Image's activations to integers.
+    m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
+    assert m.weight.dtype == torch.int8
+    assert m.compute_dtype == dtype
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16, torch.float32])
+def test_moss_casts_a_frozen_int8_projection_input_to_the_dense_dtype(dtype):
+    pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import _compute_dtype
+
+    m = fi8.FrozenInt8Linear(nn.Linear(64, 32, bias = False).to(dtype))
+    assert _compute_dtype(m) == dtype

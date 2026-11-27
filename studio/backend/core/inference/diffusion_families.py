@@ -798,6 +798,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         ),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
         sd_cpp_sampling_method = "euler",
+        # BFL's reference shift; sd.cpp's built-in FLUX.3 default is still 6.93.
+        sd_cpp_flow_shift = 16.0,
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
         # Trains the undistilled base; the distilled Klein is the same DiT, so Deploy loads the adapter there.
@@ -867,8 +869,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # which prequant_repos keeps loadable. sd.cpp detects its layout itself, so no --vae-format.
         sd_cpp_vae = ("unsloth/flux-3-image-klein-FP8", "vae/diffusion_pytorch_model.safetensors"),
         sd_cpp_text_encoders = _FLUX3_SD_CPP_TEXT_ENCODERS,
-        # sd.cpp's documented invocation (docs/flux3.md). No flow shift: its scheduler already applies FLUX.3's 6.93.
+        # sd.cpp's documented invocation (docs/flux3.md) at BFL's reference shift (sd.cpp's built-in is still 6.93).
         sd_cpp_sampling_method = "euler",
+        sd_cpp_flow_shift = 16.0,
         sd_cpp_arch_marker = _FLUX3_SD_CPP_ARCH_MARKER,
         sd_cpp_reference = True,
     ),
@@ -2404,15 +2407,13 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("kontext", 20, 2.5),  # editing: before the generic flux.1
     ("flux.1", 20, 3.5),
     ("flux1", 20, 3.5),
-    # FLUX.3 Image Klein, ComfyUI's templates (Comfy-Org/workflow_templates 0.11.87): the base t2i and edit templates
-    # run 50 steps at CFG 3.5 (euler / simple), raised from the launch templates' 25, which is also the BFL reference
-    # setting (diffusers' FLUX.3 pipeline defaults: 50 steps, guidance 3.5). Both distilled templates run 16 steps at
-    # CFG 1, as does the BFL reference. Base first.
+    # FLUX.3 Image Klein, BFL reference (flux-3-image-klein 62e90b9278 raised base CFG 3.5 -> 4.0; diffusers and
+    # ComfyUI still say 3.5). Distilled: 16 steps, no CFG. Base first.
     # Every registered alias plus the canonical family names (an opaque path resolves through the family).
-    ("flux.3-klein-base", 50, 3.5),
-    ("flux-3-image-klein-base", 50, 3.5),
-    ("flux3-image-klein-base", 50, 3.5),
-    ("flux3-klein-base", 50, 3.5),
+    ("flux.3-klein-base", 50, 4.0),
+    ("flux-3-image-klein-base", 50, 4.0),
+    ("flux3-image-klein-base", 50, 4.0),
+    ("flux3-klein-base", 50, 4.0),
     ("flux.3-klein", 16, 1.0),
     ("flux-3-image-klein", 16, 1.0),
     ("flux3-image-klein", 16, 1.0),

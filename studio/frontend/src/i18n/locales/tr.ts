@@ -2619,6 +2619,10 @@ export const tr = {
         confirmDescriptionChatOnly:
           "Sunucuyu durdurur ve yükleyiciyi yeniden çalıştırır. Bu bir Yalnızca sohbet kurulumu olduğundan yükleyici onu PyTorch ile tam kuruluma da yükseltir; toplamda birkaç gigabayt. Sohbetler ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Şimdi onar",
+        recommendedTorch:
+          "Onarım önerilir: bu kurulumda PyTorch {torch} var; bu, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski.",
+        recommendedDriver:
+          "PyTorch {torch}, RTX 50 serisi GPU'ların desteklendiği yönetilen {managedTorch} sürümünden eski, ancak bu GPU sürücüsü CUDA 13'ü desteklemiyor. Önce GPU sürücüsünü güncelleyin, ardından kurulumu onarın.",
       },
       resetPreferences: {
         sectionTitle: "Tehlikeli bölge",
@@ -4424,8 +4428,8 @@ export const tr = {
       summary: {
         single: "Tek GPU'da eğitim",
         layerSplit: "Model katman katman {count} GPU'ya bölünür",
-        ddp: "Model tek GPU'ya sığıyor: {count} GPU'da veri paralelliği",
-        fsdp2: "Model tek GPU için fazla büyük: {count} GPU'ya parçalanır",
+        ddp: "Her GPU tam bir kopya eğitir: {count} GPU'da veri paralelliği",
+        fsdp2: "Ağırlıklar ve optimizer durumu {count} GPU'ya parçalanır",
         tp: "Her katman {count} GPU'ya bölünür",
         pp: "Katmanlar, GPU başına bir tane olmak üzere {count} ardışık düzen aşaması olarak çalışır",
         cp: "Her dizi {count} GPU'ya bölünür",
@@ -4436,7 +4440,7 @@ export const tr = {
         noGpu: "En az bir GPU seçin.",
         singleNeedsOne: "Tek GPU tam olarak bir GPU kullanır. Diğerlerinin işaretini kaldırın.",
         needsTwo: "Bu mod en az iki GPU gerektirir.",
-        customSpec: "Bir düzen girin, örneğin dp=2,tp=2.",
+        customSpec: "Bir düzen girin, örneğin {example}.",
       },
     },
     preview: {
@@ -5408,6 +5412,7 @@ export const tr = {
       showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
     },
     history: {
+      notSaved: "Geçmişe kaydedilmedi: tarayıcı depolama alanı dolu.",
       title: "Geçmiş",
       search: "Geçmişte ara",
       empty: "Çevirileriniz burada görünür.",

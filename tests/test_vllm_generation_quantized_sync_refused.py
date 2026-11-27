@@ -103,3 +103,114 @@ def test_unquantized_peft_is_not_refused(monkeypatch):
     generation = _patched(_Generation)(model)
     generation.sync_weights()
     assert model.merges == 1 and generation.loaded == ["linear.weight", "linear.bias"]
+
+
+def _engine(quantization):
+    # vLLM LLM: llm.llm_engine.model_config.quantization is the method the engine was built with.
+    model_config = types.SimpleNamespace(quantization = quantization)
+    return types.SimpleNamespace(llm_engine = types.SimpleNamespace(model_config = model_config))
+
+
+def test_engine_quantization_is_read_from_the_llm():
+    from unsloth.models.rl_replacements import _unsloth_vllm_engine_quantization
+
+    assert _unsloth_vllm_engine_quantization(_engine("bitsandbytes")) == "bitsandbytes"
+    assert _unsloth_vllm_engine_quantization(_engine(None)) is None
+    assert _unsloth_vllm_engine_quantization(None) is None
+
+
+def test_unquantized_engine_for_a_4bit_model_warns_once(monkeypatch, capsys):
+    # TRL >= 1.19 builds its colocated engine without quantization = "bitsandbytes": a 16-bit vLLM copy.
+    from unsloth.models.rl_replacements import _unsloth_trl_vllm_engine_check
+
+    monkeypatch.delenv("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", raising = False)
+    model = _Model()
+    generation = _patched(_DequantizingGeneration)(model)
+    generation.llm = _engine(None)
+    _unsloth_trl_vllm_engine_check(generation, model)
+    out = capsys.readouterr().out
+    assert "builds its own vLLM engine unquantized" in out and "fast_inference = True" in out
+    generation.sync_weights()
+    assert generation.loaded == ["linear.weight", "linear.bias"]
+
+
+def test_bitsandbytes_engine_refuses_dequantized_weights(monkeypatch, capsys):
+    # A pre-quantized bnb-4bit checkpoint gives a bitsandbytes engine, which cannot load 16-bit weights.
+    from unsloth.models.rl_replacements import _unsloth_trl_vllm_engine_check
+
+    monkeypatch.delenv("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", raising = False)
+    model = _Model()
+    generation = _patched(_DequantizingGeneration)(model)
+    generation.llm = _engine("bitsandbytes")
+    _unsloth_trl_vllm_engine_check(generation, model)
+    assert "unquantized" not in capsys.readouterr().out
+    with pytest.raises(RuntimeError, match = "bitsandbytes-quantized"):
+        generation.sync_weights()
+    assert generation.loaded == []
+    monkeypatch.setenv("UNSLOTH_VLLM_ALLOW_STALE_ROLLOUTS", "1")
+    generation.sync_weights()
+    assert generation.loaded == []
+
+
+def test_16bit_model_gets_no_engine_warning(capsys):
+    from unsloth.models.rl_replacements import _unsloth_trl_vllm_engine_check
+
+    model = _Model(in_4bit = False)
+    generation = _patched(_DequantizingGeneration)(model)
+    generation.llm = _engine(None)
+    _unsloth_trl_vllm_engine_check(generation, model)
+    assert capsys.readouterr().out == ""
+
+
+def test_installed_trl_init_vllm_runs_the_engine_check():
+    # The patched VLLMGeneration._init_vllm calls the check right after building TRL's own engine.
+    import inspect
+
+    from packaging.version import Version
+
+    trl_version = Version(pytest.importorskip("trl").__version__)
+    if trl_version < Version("0.28.0"):
+        pytest.skip("TRL < 0.28 has no VLLMGeneration")
+    vllm_generation = pytest.importorskip("trl.generation.vllm_generation")
+    from unsloth.models.rl_replacements import vllm_generation_init_patch
+
+    vllm_generation_init_patch()
+    src = inspect.getsource(vllm_generation.VLLMGeneration._init_vllm)
+    assert "_unsloth_trl_vllm_engine_check(self, model)" in src
+    assert callable(getattr(vllm_generation, "_unsloth_trl_vllm_engine_check", None))
+
+
+def test_vllm_without_bitsandbytes_points_to_fast_inference():
+    from unsloth.models.rl_replacements import _unsloth_trl_vllm_init_error
+
+    vllm_error = ValueError(
+        "1 validation error for ModelConfig\n  Value error, Unknown quantization method: bitsandbytes. "
+        "Must be one of ['awq', 'auto_awq', 'fp8', 'mxfp8']."
+    )
+    replacement = _unsloth_trl_vllm_init_error(vllm_error)
+    assert isinstance(replacement, RuntimeError)
+    assert "fast_inference = True" in str(replacement) and "vllm-bnb-plugin" in str(replacement)
+    assert _unsloth_trl_vllm_init_error(ValueError("CUDA out of memory")) is None
+    assert _unsloth_trl_vllm_init_error(ValueError("Unknown quantization method: gguf")) is None
+
+
+def test_installed_trl_init_vllm_maps_the_missing_bitsandbytes_error():
+    import inspect
+
+    from packaging.version import Version
+
+    trl_version = Version(pytest.importorskip("trl").__version__)
+    if trl_version < Version("0.28.0"):
+        pytest.skip("TRL < 0.28 has no VLLMGeneration")
+    vllm_generation = pytest.importorskip("trl.generation.vllm_generation")
+    from unsloth.models.rl_replacements import vllm_generation_init_patch
+
+    vllm_generation_init_patch()
+    src = inspect.getsource(vllm_generation.VLLMGeneration._init_vllm)
+    assert "_unsloth_trl_vllm_init_error(_unsloth_init_error)" in src
+    assert "raise _unsloth_replacement from _unsloth_init_error" in src
+    # The engine check still runs only after TRL's own LLM(...) returned.
+    assert src.index("except Exception as _unsloth_init_error") < src.index(
+        "_unsloth_trl_vllm_engine_check(self, model)"
+    )
+    assert callable(getattr(vllm_generation, "_unsloth_trl_vllm_init_error", None))

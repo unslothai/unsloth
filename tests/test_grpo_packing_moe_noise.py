@@ -163,7 +163,8 @@ def _run(config, mode):
     return ns, model
 
 
-def test_nograd_block_packs_through_routing_noise(big_batches):
+def test_nograd_block_packs_through_routing_noise(big_batches, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_SEQ_PACKING_VERIFY_GROWTH", "1")
     ns, model = _run(MOE, "routing")
     assert 0.7 <= ns["_pk_diff"] < 1.5
     assert ns["_pk_use"] is True

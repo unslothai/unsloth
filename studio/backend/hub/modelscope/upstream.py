@@ -397,6 +397,11 @@ def page_url(kind: str, repo: str) -> str:
     return f"{MODELSCOPE}/{kind}s/{upstream_id(kind, repo)}"
 
 
+def page_links() -> dict:
+    """What the browser needs to build ``page_url`` itself, so hub links skip the backend."""
+    return {"base": MODELSCOPE, "aliases": _ALIASES}
+
+
 def file_url(kind: str, repo: str, sha: str, path: str) -> str:
     from urllib.parse import quote
     return f"{page_url(kind, repo)}/resolve/{sha}/{quote(path)}"

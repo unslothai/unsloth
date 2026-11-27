@@ -53,6 +53,8 @@ _PLAIN_RESPONSE = {
     "seconds",
     "error",
     "remixed_from_video_id",
+    "queue_position",
+    "eta_seconds",
 }
 
 
@@ -130,7 +132,9 @@ def test_a_plain_openai_request_sends_the_old_kwargs_plus_a_seed(client, backend
     for resp, kwargs in zip((json_resp, form_resp), calls, strict = True):
         assert resp.status_code == 200, resp.json()
         # The readability check's decode rides along, so the render does not decode it again.
-        assert set(kwargs) - {"seed", "decoded_reference_images"} == _PLAIN_KWARGS
+        assert set(kwargs) - {"seed", "decoded_reference_images", "live_preview"} == _PLAIN_KWARGS
+        # Headless: no previewer for a clip nothing shows.
+        assert kwargs["live_preview"] is False
         ((source, _, _),) = kwargs["decoded_reference_images"].entries
         assert source is kwargs["input_reference"]
         assert isinstance(kwargs["seed"], int) and 0 <= kwargs["seed"] < 2**53
