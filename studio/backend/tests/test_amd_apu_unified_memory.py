@@ -291,9 +291,6 @@ class TestTheApuBudgetIsCappedByHostRam:
 
 
 class TestAWindowsCarveOutIsCountedAboveHostRam:
-    """Windows leaves the BIOS carve-out out of the RAM it reports, yet HIP allocates from it first;
-    the cap must add the unused part back or a 32 GB carve-out is sized at what Windows has free."""
-
     @staticmethod
     def _probe(monkeypatch, hip_free_mib, avail_mib, carve_out_free_mib):
         monkeypatch.setattr(
