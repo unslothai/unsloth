@@ -379,7 +379,7 @@ def test_token_budget_and_layer_major_see_the_in_backward_step(af):
     trainer._unsloth_updates_in_backward = True
     assert "every backward" in tb._exactness_blocker(trainer)
     assert af.updates_in_backward(trainer)
-    source = (ROOT / "unsloth/models/_layer_major_ga.py").read_text()
+    source = (ROOT / "unsloth/models/_layer_major_ga.py").read_text(encoding = "utf-8")
     assert '"_unsloth_updates_in_backward"' in source
 
 
