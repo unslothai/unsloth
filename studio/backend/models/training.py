@@ -896,6 +896,29 @@ class TrainingStartRequestStatus(BaseModel):
     error_code: Optional[str] = None
 
 
+class TrainingMemoryPeaks(BaseModel):
+    """Memory peaks of the process that trains the run (not the whole GPU or host), in bytes.
+
+    GPU values are summed over every device visible to the training process. A field is None
+    when the host cannot measure it (no CUDA, or commit outside Windows).
+    """
+
+    gpu_peak_allocated_bytes: Optional[int] = Field(
+        None, description = "torch.cuda.max_memory_allocated summed over visible devices"
+    )
+    gpu_peak_reserved_bytes: Optional[int] = Field(
+        None, description = "torch.cuda.max_memory_reserved summed over visible devices"
+    )
+    gpu_device_count: Optional[int] = Field(None, description = "Devices the GPU sums cover")
+    host_peak_rss_bytes: Optional[int] = Field(
+        None,
+        description = "Peak resident set (ru_maxrss on Linux/macOS, peak working set on Windows)",
+    )
+    host_peak_commit_bytes: Optional[int] = Field(
+        None, description = "Peak committed private memory (Windows only)"
+    )
+
+
 class TrainingStatus(BaseModel):
     """Current training job status - works for streaming or polling"""
 
@@ -942,13 +965,19 @@ class TrainingStatus(BaseModel):
         description = "Full metric history arrays for chart recovery after SSE reconnection. "
         "Keys: 'steps', 'loss', 'lr', 'grad_norm', 'grad_norm_steps' — each a list of numeric values.",
     )
+    memory_peaks: Optional[TrainingMemoryPeaks] = Field(
+        None,
+        description = "Memory peaks of the training process so far; absent until it reports them.",
+    )
 
     @model_serializer(mode = "wrap")
     def _omit_absent_layout(self, handler):
-        # Byte-identical status JSON for runs without a layout.
+        # Byte-identical status JSON for runs without a layout or memory peaks.
         data = handler(self)
-        if isinstance(data, dict) and data.get("parallel") is None:
-            data.pop("parallel", None)
+        if isinstance(data, dict):
+            for key in ("parallel", "memory_peaks"):
+                if data.get(key) is None:
+                    data.pop(key, None)
         return data
 
 
@@ -976,6 +1005,9 @@ class TrainingProgress(BaseModel):
     eval_loss: Optional[float] = Field(
         None, description = "Eval loss from the most recent evaluation step"
     )
+    memory_peaks: Optional[TrainingMemoryPeaks] = Field(
+        None, description = "Memory peaks of the training process so far"
+    )
 
 
 class TrainingRunSummary(BaseModel):
@@ -996,6 +1028,11 @@ class TrainingRunSummary(BaseModel):
     duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
+    # Peaks of the process that trained the run, in bytes (see TrainingMemoryPeaks); None on older runs.
+    gpu_peak_allocated_bytes: Optional[int] = None
+    gpu_peak_reserved_bytes: Optional[int] = None
+    host_peak_rss_bytes: Optional[int] = None
+    host_peak_commit_bytes: Optional[int] = None
     can_resume: bool = False
     # Why resume is unavailable when the reason is the recorded resource provenance rather than the checkpoint itself.
     resume_blocked_reason: Optional[str] = None
