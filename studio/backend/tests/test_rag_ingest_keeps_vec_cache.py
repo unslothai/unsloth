@@ -59,7 +59,6 @@ def test_ingest_appends_to_the_warm_cache_without_a_rebuild(
     second = _ingest(tmp_path, scope, "b.txt", "xray yankee zulu " * 80)
     after = vec_cache.read_epoch(rag_conn, scope)
     rag_conn.commit()
-    # Same scope and global epoch: only the newest rowid moved, so the append fast path applied.
     assert after[:2] == warm[:2] and after[2] > warm[2]
     entry = vec_cache._entries.get(key)
     assert entry is not None and entry.epoch == after
@@ -106,7 +105,6 @@ def test_only_a_changed_embedding_model_moves_the_epoch(rag_conn):
     legacy = store.create_document(rag_conn, scope = scope, filename = "g", sha256 = "i")
     store.set_document_embedding_model(rag_conn, legacy, "st:m")
     assert epoch() == e0 + 2
-    # The prefix a width change leaves on other documents is a change too.
     rag_conn.execute(
         "UPDATE documents SET embedding_model=? WHERE id=?",
         (rag_db.VECTORS_DROPPED + "st:m", doc),
