@@ -328,14 +328,9 @@ def rejected_conv_direct_mode(
 
 
 # Metal VAE direct conv: unslothai/stable-diffusion.cpp#103 (ggml patches 0072 / 0073) gives ggml-metal an implicit GEMM
-# CONV_2D. A virtualized macos-15 M1 runner: SD-Turbo VAE decode 512 px 12.3 -> 5.4 s, compute buffer 1664 -> 640 MB.
-# An M5 Max (FLUX.2 klein 4B Q4_K_M, 1024 px, pin -u9455ee1): VAE 2.33 -> 0.84 s, 14.73 -> 13.4 s per image, 71.65 dB
-# PSNR vs im2col (max pixel diff 1), no hang. sd.cpp's own auto keeps im2col there ("no implicit GEMM path"), so Studio
-# passes it. Default ON for families whose DiffusionFamily sets ``sd_cpp_metal_vae_conv_direct`` (the FLUX.2 VAE and
-# the FLUX.1 ``ae``); ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=0`` turns it off, ``=1`` opts any other family in. Only an
-# Apple Silicon Mac with a build known to carry the kernel. Intel Macs never get it (their Metal CONV_2D was ~5x slower
-# than im2col and tripped the GPU watchdog). ``=force`` skips the build check (source builds), still Apple Silicon
-# only. The denoiser always keeps im2col.
+# CONV_2D, which sd.cpp's own auto leaves on im2col. On by default for families setting ``sd_cpp_metal_vae_conv_direct``
+# (measured on an M5 Max: klein VAE 2.33 -> 0.84 s, 71.65 dB); ``=0`` turns it off, ``=1`` opts other families in,
+# ``=force`` skips the build check. Apple Silicon only: Intel Metal CONV_2D was ~5x slower and tripped the watchdog.
 METAL_VAE_CONV_DIRECT_ENV = "UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT"
 METAL_VAE_CONV_DIRECT_MODE = "off,vae=on"
 # Unsloth prebuilts carrying the implicit GEMM Metal CONV_2D. Every later sd.cpp master build (> 982) does too.
