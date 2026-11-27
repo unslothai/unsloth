@@ -65,6 +65,19 @@ def default_batched_forward(family: Any, pipe: Any = None) -> bool:
     return True
 
 
+def admits_without_pipe(family: Any) -> bool:
+    """The route's family check, which has no pipe: refuse only when the answer cannot depend on the load. MOSS fuses
+    rows only on a measured layer-major load, which the engine decides with its pipe (coalesce_plan)."""
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
+
+    if batched_forward(family):
+        return True
+    return (
+        getattr(family, BATCHED_FORWARD_ATTR, None) is None
+        and getattr(family, "name", None) == MOSS_IMAGE_FAMILY_NAME
+    )
+
+
 def batched_forward(family: Any, pipe: Any = None) -> bool:
     """The family's ``batched_forward`` when it sets one, else ``default_batched_forward``."""
     said = getattr(family, BATCHED_FORWARD_ATTR, None)

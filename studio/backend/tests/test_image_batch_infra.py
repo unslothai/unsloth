@@ -955,8 +955,11 @@ def test_a_graphed_verdict_admits_a_size_only_while_its_graph_exists(monkeypatch
         cache = {"k2": object()}, _batched = {"k2": 2}, _batched_canvas = {"k2": {"c"}}
     )
     with_graph = types.SimpleNamespace(cuda_graphs = (handle,))
+    # step-graph handles (GraphedForward) can drop their batched graphs, so an eager fallback is enforceable
     without = types.SimpleNamespace(
-        cuda_graphs = (types.SimpleNamespace(cache = {"k1": 1}, _batched = {}),)
+        cuda_graphs = (
+            types.SimpleNamespace(cache = {"k1": 1}, _batched = {}, drop_batched = lambda size: 0),
+        )
     )
     assert race.effective_verdict(graphed_win, 2, with_graph, layout = ())["promoted"] is True
     assert race.effective_verdict(graphed_win, 2, without)["promoted"] is False

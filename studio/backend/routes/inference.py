@@ -56274,7 +56274,7 @@ async def _coalesced_image_generate(
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_batch_adapters import batched_forward
+    from core.inference.diffusion_batch_adapters import admits_without_pipe
     from core.inference.diffusion_cuda_graph import batch_rows
     from core.inference.diffusion_families import detect_family
     from core.inference.generation_ticket import (
@@ -56300,7 +56300,7 @@ async def _coalesced_image_generate(
     family = status.get("family")
     if family:
         try:
-            fused = batched_forward(detect_family("", family))
+            fused = admits_without_pipe(detect_family("", family))
         except Exception:  # noqa: BLE001 -- an unknown family renders alone
             fused = False
         if not fused:

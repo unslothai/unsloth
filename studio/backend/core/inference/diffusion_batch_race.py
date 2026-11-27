@@ -569,6 +569,15 @@ def run_race(
                 for arm in arms:
                     samples[arm].append((serial_times, times[arm]))
             verdicts = {arm: judge(samples[arm], seed = seed) for arm in arms}
+            eager = verdicts.get("batched_eager")
+            if eager is not None and eager.get("promoted") and not _enforces_eager(handles):
+                # Its win could not be served: later batched calls on these handles would replay graphs again.
+                verdicts["batched_eager"] = dict(
+                    eager,
+                    promoted = False,
+                    reason = "the eager arm won, but these graph handles cannot keep batched calls eager "
+                    "(no drop_batched)",
+                )
             best = _pick_arm(verdicts)
             verdict = dict(
                 verdicts[best],
@@ -791,7 +800,41 @@ def layout_token(layout: Any) -> Optional[str]:
         return repr(layout)
 
 
+def _enforces_eager(handles: Sequence[Any]) -> bool:
+    """Whether batched calls of a size stay eager once that size's batched graphs are dropped: true only when every
+    graph handle can drop them. A handle that records on demand (block graphs) would replay graphs again."""
+    return all(callable(getattr(handle, "drop_batched", None)) for handle in handles)
+
+
+def _withhold_unenforceable_eager(verdict: Any, handles: Sequence[Any]) -> Any:
+    if (
+        isinstance(verdict, dict)
+        and verdict.get("promoted")
+        and verdict.get("arm") == "batched_eager"
+        and not _enforces_eager(handles)
+    ):
+        return dict(
+            verdict,
+            promoted = False,
+            reason = "the eager arm won, but these graph handles cannot keep batched calls eager (no drop_batched)",
+        )
+    return verdict
+
+
 def effective_verdict(
+    verdict: dict,
+    size: int,
+    state: Any,
+    layout: Any = None,
+) -> dict:
+    """``_effective_verdict``, withholding an eager win the load's graph handles could not enforce."""
+    return _withhold_unenforceable_eager(
+        _effective_verdict(verdict, size, state, layout = layout),
+        tuple(getattr(state, "cuda_graphs", ()) or ()),
+    )
+
+
+def _effective_verdict(
     verdict: dict,
     size: int,
     state: Any,

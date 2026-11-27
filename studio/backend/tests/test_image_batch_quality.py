@@ -6,10 +6,12 @@ a missing or failing verdict keeps today's serial rules."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from pathlib import Path
 
+import httpx
 import pytest
 
 from core.inference import diffusion_batch_quality as quality
@@ -17,6 +19,7 @@ from core.inference import diffusion_batch_race as race
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_image_batch_infra import _engine, _fake_generate, _verdicts  # noqa: E402
+from test_image_concurrency import studio  # noqa: E402,F401  (fixture)
 
 CARD = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 PASS = {"verdict": "PASS", "n": 24, "upper": 0.006}
@@ -477,3 +480,150 @@ def test_a_race_whose_execution_configuration_changes_stops_and_persists_nothing
             clock = lambda: clock["t"],
         )
     assert stored == {}, "no verdict is persisted for a measurement that straddled the change"
+
+
+# ------------------------------------------------------------------------------------------- route capability check
+
+
+def test_a_measured_moss_layer_major_load_coalesces_through_the_route(studio, monkeypatch):
+    """MOSS fuses rows only on a layer-major load with a measured win (diffusion_moss_image.coalesce_key(pipe)). The
+    route's family check has no pipe of its own: it must not refuse MOSS before the engine, which has the pipe, is
+    asked (#19957)."""
+    from test_image_batch_infra import _post_while_rendering
+    from test_image_batching_followups import _groups, _interleaved, _plan
+
+    from core.inference.diffusion_families import MOSS_IMAGE_FAMILY_NAME, detect_family
+
+    fake = types.ModuleType("core.inference.diffusion_moss_image")
+    fake.coalesce_key = lambda pipe: ("moss-image layer-major",)
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_moss_image", fake)
+    app, backend, _saved = studio
+    backend.status = lambda: {
+        "loaded": True,
+        "repo_id": "x/moss",
+        "family": MOSS_IMAGE_FAMILY_NAME,
+        "base_repo": None,
+    }
+    _plan(
+        backend,
+        detect_family("", MOSS_IMAGE_FAMILY_NAME),
+        types.SimpleNamespace(transformer = object()),
+        offload_policy = "group",
+    )
+    responses = _post_while_rendering(app, backend, _interleaved("a fox", "a cat"), waiting = 2)
+    assert all(r.status_code == 200 for r in responses)
+    assert _groups(backend) == [sorted(["a fox", "a cat"])]
+
+
+def test_a_moss_load_without_a_measured_win_still_renders_alone_through_the_route(
+    studio, monkeypatch
+):
+    from test_image_batch_infra import _alone, _batched_calls
+    from test_image_batching_followups import _interleaved, _plan
+
+    from core.inference.diffusion_families import MOSS_IMAGE_FAMILY_NAME, detect_family
+
+    fake = types.ModuleType("core.inference.diffusion_moss_image")
+    fake.coalesce_key = lambda pipe: None
+    monkeypatch.setitem(sys.modules, "core.inference.diffusion_moss_image", fake)
+    app, backend, _saved = studio
+    backend.status = lambda: {
+        "loaded": True,
+        "repo_id": "x/moss",
+        "family": MOSS_IMAGE_FAMILY_NAME,
+        "base_repo": None,
+    }
+    _plan(
+        backend,
+        detect_family("", MOSS_IMAGE_FAMILY_NAME),
+        types.SimpleNamespace(transformer = object()),
+        offload_policy = "group",
+    )
+
+    async def run():
+        transport = httpx.ASGITransport(app = app)
+        async with httpx.AsyncClient(transport = transport, base_url = "http://studio") as client:
+            backend.rendering = True
+            out = [
+                await asyncio.wait_for(
+                    client.post(path, json = body, headers = {"x-test-account": account}), 5
+                )
+                for path, account, body in _interleaved("a fox", "a cat")
+            ]
+            backend.rendering = False
+            return out
+
+    responses = asyncio.run(run())
+    assert all(r.status_code == 200 for r in responses)
+    assert _batched_calls(backend) == [] and sorted(_alone(backend)) == ["a cat", "a fox"]
+
+
+# ------------------------------------------------------------------------------------------- eager wins need an enforceable path
+
+
+def _eager_wins(monkeypatch, handle):
+    from core.inference import diffusion_cuda_graph as cg
+
+    stored = {}
+    monkeypatch.setattr(
+        race, "record", lambda state, w, h, g, k, v, steps = None: stored.setdefault(k, v) is v
+    )
+    clock = {"t": 0.0}
+
+    def generate(
+        prompt = None,
+        prompts = None,
+        seeds = None,
+        seed = None,
+        batch_size = 1,
+        **kw,
+    ):
+        rows = list(prompts) if prompts else [prompt]
+        row_seeds = list(seeds) if seeds else [seed]
+        clock["t"] += (
+            5.0 if len(rows) == 1 else (6.0 if cg.eager_forced() else 11.0)
+        )  # the graphed arm loses
+        return {"images": [types.SimpleNamespace(p = p, s = s) for p, s in zip(rows, row_seeds)]}
+
+    report = race.run_race(
+        generate,
+        types.SimpleNamespace(cuda_graphs = (handle,)),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 4,
+        accuracy = False,
+        clock = lambda: clock["t"],
+    )
+    return report["sizes"]["2"], stored
+
+
+def test_an_eager_win_on_handles_that_cannot_drop_batched_graphs_is_not_promoted(monkeypatch):
+    """Block-graph handles record on demand and have no drop_batched: later coalesced calls would replay graphs, so
+    the eager verdict would not describe what serves. Withhold it."""
+    blocks = types.SimpleNamespace(set_bypass = lambda on: None)  # no drop_batched
+    verdict, stored = _eager_wins(monkeypatch, blocks)
+    eager_arm = verdict["arms"]["batched_eager"]
+    assert eager_arm["speedup_lb"] >= race.PROMOTE_LB, "the eager arm was fast enough"
+    assert (
+        eager_arm["promoted"] is False and "cannot keep batched calls eager" in eager_arm["reason"]
+    )
+    assert verdict["promoted"] is False
+    assert stored[2]["promoted"] is False
+    persisted_win = {
+        "promoted": True,
+        "arm": "batched_eager",
+        "path": "eager",
+        "neighbour_exact": True,
+    }
+    applied = race.effective_verdict(persisted_win, 2, types.SimpleNamespace(cuda_graphs = (blocks,)))
+    assert applied["promoted"] is False
+
+
+def test_an_eager_win_on_handles_that_drop_their_batched_graphs_is_promoted(monkeypatch):
+    graphs = types.SimpleNamespace(set_bypass = lambda on: None, drop_batched = lambda size: 1)
+    verdict, stored = _eager_wins(monkeypatch, graphs)
+    assert verdict["promoted"] is True and verdict["arm"] == "batched_eager"
+    applied = race.effective_verdict(dict(verdict), 2, types.SimpleNamespace(cuda_graphs = (graphs,)))
+    assert applied["promoted"] is True
