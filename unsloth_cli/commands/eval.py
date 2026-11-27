@@ -419,7 +419,15 @@ def process_results(doc, results):
     response = results[0]
     # a single-line option ends at the first newline, where a single-line dataset's stop ends it
     first_line = response.split("\\n")[0]
-    match = any((response if "\\n" in gold else first_line).strip() == gold for gold in golds)
+    match = any(
+        (
+            (response if "\\n" in gold else first_line).rstrip()
+            if gold.startswith((" ", "\\t", "\\n"))
+            else (response if "\\n" in gold else first_line).strip()
+        )
+        == gold
+        for gold in golds
+    )
     return {"exact_match": float(match)}
 """
 

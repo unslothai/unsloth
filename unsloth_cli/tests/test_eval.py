@@ -117,6 +117,7 @@ def test_dataset_task_yaml(tmp_path):
         ("red", ("red", "blue"), (1.0, 0.0)),
         (2, ("2", "3"), (1.0, 0.0)),
         (["red", "blue"], ("red", "green"), (1.0, 0.0)),
+        ("    return 2", ("    return 2", "return 2"), (1.0, 0.0)),
     ],
 )
 def test_local_dataset_scores_literal_answers_and_formats_fewshot(
@@ -172,8 +173,12 @@ def _score_generation(tmp_path, rows, generation):
         ("red\nblue", "red", 0.0),
         ("red\nblue\n", "red\nblue", 1.0),
         (["blue\nred\n"], "blue\nred", 1.0),
+        ("    return 2", "    return 2", 1.0),
         ("    return 2", "return 2", 0.0),
+        ("\treturn 2", "\treturn 2", 1.0),
+        (["    return 1", "    return 2"], "    return 2", 1.0),
         ("def f():\n\n    return 1", "def f():\n\n    return 1\n", 1.0),
+        ("    def f():\n        return 1", "    def f():\n        return 1\n", 1.0),
         (["red\nblue", "blue\nred"], "blue\nred", 1.0),
         (["2", "two\nlines"], "2\nBecause 1+1 is 2.", 1.0),
         (["2", "two\nlines"], "two\nlines", 1.0),
