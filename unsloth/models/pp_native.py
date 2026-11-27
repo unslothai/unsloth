@@ -917,6 +917,76 @@ def _load_balancing_from_statistics(stats, num_experts):
     return torch.sum((counts / rows) * (probs / rows)) * num_experts
 
 
+class _CarriedRouterAux:
+    """One step's router auxiliary loss over the whole batch when the pipeline splits it into micro-batches.
+
+    The load-balancing loss E * sum_e (C_e / R) (P_e / R) is a product of whole-batch sums (C, R carry no
+    gradient), so it is not the sum of the micro-batch losses. Under GPipe every forward runs before any backward:
+    the last stage records each micro-batch's statistics and adds a zero-valued term whose backward, run after all
+    forwards, hands its routing probabilities the whole-batch gradient W * E * C / R ** 2. The value W * aux is
+    added to the reported loss once (finish). Filler micro-batches (rows beyond `real`) are left out, as one
+    process never sees them."""
+
+    def __init__(self, n_microbatches, real_microbatches, num_experts):
+        self.m = int(n_microbatches)
+        self.real = int(real_microbatches)
+        self.num_experts = int(num_experts)
+        self.seen = 0
+        self.stats = []
+        self.weights = []
+        self.additive = True
+        self._grad = None
+
+    def total(self):
+        if not self.stats:
+            return None
+        return torch.stack([s.float() for s in self.stats]).sum(dim = 0)
+
+    def weight(self):
+        if not self.weights:
+            return 0.0
+        return sum(self.weights) if self.additive else self.weights[0]
+
+    def value(self):
+        """(aux over the whole batch, without its coefficient), or None."""
+        stats = self.total()
+        return None if stats is None else _load_balancing_from_statistics(stats, self.num_experts)
+
+    def grad(self, like):
+        if self.seen != self.m:
+            raise RuntimeError(
+                "Unsloth: the router auxiliary loss over the whole batch needs every micro-batch forward before "
+                f"the first backward (GPipe), but a backward ran after {self.seen} of {self.m} forwards."
+            )
+        if self._grad is None:
+            stats = self.total()
+            E = self.num_experts
+            grad = torch.zeros_like(stats)
+            rows = stats[-1].clamp_min(1)
+            weight = self.weight()
+            if torch.is_tensor(weight):
+                weight = weight.to(device = stats.device, dtype = stats.dtype)
+            grad[E : 2 * E] = weight * E * stats[:E] / (rows * rows)
+            self._grad = grad
+        return self._grad.to(device = like.device)
+
+
+class _CarriedRouterAuxTerm(torch.autograd.Function):
+    """0 in the forward; the whole-batch load-balancing gradient for this micro-batch's statistics in the
+    backward (_CarriedRouterAux)."""
+
+    @staticmethod
+    def forward(ctx, stats, carried, dtype):
+        ctx.carried = carried
+        ctx.device, ctx.dtype = stats.device, stats.dtype
+        return stats.new_zeros((), dtype = dtype)
+
+    @staticmethod
+    def backward(ctx, grad):
+        whole = ctx.carried.grad(grad)
+        return (whole * grad.float()).to(device = ctx.device, dtype = ctx.dtype), None, None
+
+
 def _statistics_match_transformers(
     module,
     num_experts,
@@ -1769,6 +1839,10 @@ class _StageContext:
         self.router_logits = None
         self.aux_losses = []
         self.trainer_aux = None  # (coef, divisor): pp_env._trainer_router_aux
+        # pp_env (Trainer): the real rows of the step's batch when the aux loss must be the one-process loss over
+        # the whole batch (summed statistics), not one per micro-batch; None keeps the per-micro-batch loss.
+        self.aux_batch_rows = None
+        self.carried_aux = None  # _CarriedRouterAux of the running step (more than one micro-batch)
         # Per-step request (None: config decides); pp_env._router_aux_request.
         self.output_router_logits = None
         self.uncarried_moe = None
@@ -2018,6 +2092,32 @@ class _PPStageModule(nn.Module):
             stats = stats.to(device)
         return stats + carry[0] if carry else stats
 
+    def _carried_router_aux(self, loss, stats, kwargs):
+        """Last stage, a step whose aux loss is over the whole batch (_CarriedRouterAux): record this micro-batch's
+        statistics and its weight, and add the zero-valued term that carries the whole-batch gradient."""
+        ctx = self._pp_ctx
+        moe, carried = ctx.moe, ctx.carried_aux
+        index = carried.seen
+        carried.seen += 1
+        if index >= carried.real:
+            # A filler micro-batch: no part of the one-process loss, but its received carry stays in the graph.
+            return loss + 0 * stats.sum().to(loss.device)
+        if ctx.trainer_aux is not None:
+            # TRL's compute_loss adds coef x aux / divisor once per batch.
+            coef, divisor = ctx.trainer_aux
+            weight, additive = coef / divisor, False
+        else:
+            # The rewritten forward weights the aux term by the batch's token share: linear in tokens, so the
+            # micro-batch shares add up to the batch's. Without a share it is the coefficient alone, once.
+            one = torch.ones((), device = loss.device, dtype = torch.float32)
+            share = _forward_aux_weighting(moe.owner, one, kwargs, ctx.num_items_in_batch)
+            additive = share is not one
+            weight = _router_aux_coef(moe) * (share.detach().float() if additive else 1.0)
+        carried.additive = additive
+        carried.stats.append(stats.detach())
+        carried.weights.append(weight)
+        return loss + _CarriedRouterAuxTerm.apply(stats, carried, loss.dtype).to(loss.device)
+
     def _stage_forward(self, x, *carry, **kwargs):
         ctx = self._pp_ctx
         moe = ctx.moe
@@ -2131,7 +2231,9 @@ class _PPStageModule(nn.Module):
             stats = self._router_statistics(
                 captured, carry, kwargs.get("attention_mask"), loss.device
             )
-            if stats is not None:
+            if stats is not None and ctx.carried_aux is not None:
+                loss = self._carried_router_aux(loss, stats, kwargs)
+            elif stats is not None:
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
@@ -2332,6 +2434,8 @@ class PipelineParallel:
         self.start, self.end = bounds[self.local_stages[0]]
         self.n_microbatches = n_microbatches
         self.schedule = self.spec.name
+        # Steps (on the last stage) whose router aux loss was formed over the whole split batch: engagement count.
+        self.carried_router_aux_steps = 0
         self.schedule_auto = False  # pp_env: the default 1F1B (UNSLOTH_PP_SCHEDULE unset)
         self.config = config
         self.parts = parts
@@ -2504,7 +2608,7 @@ class PipelineParallel:
         from torch.distributed.pipelining import PipelineStage
 
         m = int(n_microbatches or self.n_microbatches)
-        key = (mb, seq, m, train)
+        key = self._shape_key(mb, seq, m, train)
         if key in self._shapes:
             self._shapes.move_to_end(key)
             return self._shapes[key]
@@ -2617,7 +2721,8 @@ class PipelineParallel:
         A mixture-of-experts model with output_router_logits on (the trainer's request, else the config's) adds
         router_aux_loss_coef x the load-balancing loss of each micro-batch (over all stages' routers), as gradient
         accumulation over the same micro-batches does in one process; their sum (without the coefficient) is in
-        last_aux_loss.
+        last_aux_loss. Under the Trainer (pp_env sets ctx.aux_batch_rows) a split batch forms it once over the
+        whole batch instead, as one process does for that batch (GPipe only; _CarriedRouterAux).
 
         With FSDP2 over a dp mesh, each dp replica passes its own slice of the global batch (pp / tp peers the
         same one); num_items_in_batch is the token count of the whole global batch (default: this slice's
@@ -2693,7 +2798,7 @@ class PipelineParallel:
         num_items_in_batch = max(num_items_in_batch, 1)
         # FSDP2 / DDP-style dp average the gradients over dp: dp x (this replica's token loss sum / global tokens).
         self._loss_multiplier = (dp_mesh.size() if dp_mesh is not None else 1) * float(loss_scale)
-        fresh = (bsz // m, seq, m, True) not in self._shapes
+        fresh = self._shape_key(bsz // m, seq, m, True) not in self._shapes
         schedule = self._schedule_for(bsz // m, seq, m)
         step_kwargs = _batch_kwargs(kwargs, bsz, device, "step")
         step_kwargs["labels"] = labels.to(device)
@@ -2709,6 +2814,16 @@ class PipelineParallel:
         self._step_scaler = scaler if scaler is not None and scaler.is_enabled() else None
         self._mb_losses = []
         self.ctx.aux_losses = []
+        self._start_carried_router_aux(bsz, m)
+        if self.ctx.carried_aux is not None and (
+            self.spec.multi or self.step_schedule(m) != "gpipe"
+        ):
+            self.ctx.carried_aux = None
+            raise ValueError(
+                f"Unsloth: the router auxiliary loss over a batch split into {m} micro-batches needs the GPipe "
+                f"schedule (every forward before the first backward), not {self.schedule}: set "
+                "UNSLOTH_PP_SCHEDULE=gpipe (or leave it unset), or UNSLOTH_PP_MICROBATCHES=1."
+            )
         args = (input_ids.to(device),) if self.is_first else ()
         target = step_kwargs["labels"] if self.is_last else None
         tables = self._size_frozen_table_memo(m)
@@ -2728,7 +2843,10 @@ class PipelineParallel:
             self.last_table_memo = tables.frozen_table_step_stats()
         if self.dp_mesh is not None:
             self._average_replicated_grads()
-        total = self._batch_loss(m, device, dp_group)
+        try:
+            total = self._batch_loss(m, device, dp_group)
+        finally:
+            self.ctx.carried_aux = None
         return total * float(loss_scale) if loss_scale != 1 else total
 
     def _take_fsdp_grads(self):
@@ -2741,10 +2859,44 @@ class PipelineParallel:
 
     def step_schedule(self, m):
         """The schedule a training step with `m` micro-batches runs: the default 1F1B (schedule_auto) falls back
-        to GPipe when m < stages; an explicit schedule is always kept."""
-        if self.schedule_auto and self.schedule == "1f1b" and m < self.num_stages:
+        to GPipe when m < stages, or when a split batch forms the router aux loss over the whole batch (only
+        GPipe runs every forward before the first backward); an explicit schedule is always kept."""
+        if (
+            self.schedule_auto
+            and self.schedule == "1f1b"
+            and (m < self.num_stages or self.whole_batch_router_aux(m))
+        ):
             return "gpipe"
         return self.schedule
+
+    def whole_batch_router_aux(self, m):
+        """This step splits its batch into micro-batches and its router aux loss is the one over the whole batch
+        (pp_env set aux_batch_rows), with the auxiliary loss on."""
+        ctx = self.ctx
+        moe = ctx.moe
+        if int(m) <= 1 or moe is None or ctx.aux_batch_rows is None:
+            return False
+        if not _router_aux_requested(ctx, moe.config):
+            return False
+        try:
+            return bool(_router_aux_coef(moe))
+        except AttributeError:
+            return True
+
+    def _shape_key(self, mb, seq, m, train):
+        # The schedule class depends on the step (GPipe for a whole-batch router aux loss), not on the shape alone.
+        return (mb, seq, m, train, self.step_schedule(m) if train else None)
+
+    def _start_carried_router_aux(self, bsz, m):
+        """A _CarriedRouterAux for this step when its router aux loss is over the whole batch, else None."""
+        self.ctx.carried_aux = None
+        if not self.whole_batch_router_aux(m):
+            return
+        rows = int(self.ctx.aux_batch_rows)
+        per = bsz // m
+        self.ctx.carried_aux = _CarriedRouterAux(
+            m, min(m, -(-rows // per)), self.ctx.moe.num_experts
+        )
 
     def _in_flight(self, m):
         """Micro-batches this rank has forwarded but not yet backpropagated, at most."""
@@ -2781,7 +2933,17 @@ class PipelineParallel:
                 )
             total = torch.stack([l.float() for l in self._mb_losses]).sum().reshape(1).to(device)
             self._mb_losses = []
-            if self.ctx.moe is not None:
+            carried = self.ctx.carried_aux
+            if self.ctx.moe is not None and carried is not None:
+                # The whole batch's aux loss, added once (its micro-batch terms were 0-valued).
+                value = carried.value()
+                aux = torch.zeros((), device = device) if value is None else value.float().to(device)
+                weight = carried.weight()
+                if torch.is_tensor(weight):
+                    weight = weight.float().to(device)
+                total = torch.cat([total + weight * aux, aux.reshape(1)])
+                self.carried_router_aux_steps += 1
+            elif self.ctx.moe is not None:
                 aux = [a.float().reshape(1).to(device) for a in self.ctx.aux_losses]
                 aux = torch.cat(aux).sum() if aux else torch.zeros((), device = device)
                 total = torch.cat([total, aux.reshape(1)])
@@ -2841,8 +3003,13 @@ class PipelineParallel:
             False  # what schedule.eval() does; called directly for return_outputs
         )
         self.ctx.num_items_in_batch = max(int(num_items_in_batch), 1)
+        # Forward only: the whole-batch value needs no schedule order.
+        self._start_carried_router_aux(bsz, m)
         try:
             schedule.step(*args, target = target, return_outputs = False, **step_kwargs)
+        except BaseException:
+            self.ctx.carried_aux = None
+            raise
         finally:
             schedule._has_backward = has_backward
             self.ctx.num_items_in_batch = None
@@ -2850,7 +3017,10 @@ class PipelineParallel:
             # next eval_loss (this cached schedule is not the training one).
             for st in getattr(schedule, "_stages", None) or (schedule._stage,):
                 st.clear_runtime_states()
-        return self._batch_loss(m, device, None)
+        try:
+            return self._batch_loss(m, device, None)
+        finally:
+            self.ctx.carried_aux = None
 
     def _average_replicated_grads(self):
         """Averages trainable FSDP2-replicated parameters over dp here, once: the schedule runs

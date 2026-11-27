@@ -237,6 +237,8 @@ export interface DiffusionLoadRequest {
     | "aiter"
     | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
+  // Omitted = auto (env switch, else off).
+  lora_fuse?: "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];

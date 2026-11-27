@@ -1406,10 +1406,15 @@ class FastLanguageModel(FastLlamaModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
             if isinstance(quantization_config, dict):
@@ -2413,10 +2418,15 @@ class FastModel(FastBaseModel):
         on_model_resolved = None,
         **kwargs,
     ):
-        from ._utils import _unsloth_load_begins
+        from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
+        from .._gguf_load import require_gguf_package
 
         _unsloth_load_begins()
+        require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+        )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):

@@ -283,6 +283,21 @@ def _key_peaks(key: Any) -> dict:
     return peaks
 
 
+def batch_denoise_mib(key: Any, work: int, rows: int, base_mib: int) -> int:
+    """The denoise-phase headroom of ``rows`` clips of one shape denoised together: each row's share is the largest
+    one-clip denoise peak this process or the store recorded for ``key`` (a covering request), else ``base_mib``.
+    Linear in rows, so the shared weight window is counted once per row: conservative, never under the one-clip
+    price. The decode is per clip, so it is not priced here."""
+    rows = max(1, int(rows))
+    per_row = None
+    if key is not None:
+        per_row = _covering(_PRE_DECODE.get(key, {}), int(work))
+        if per_row is None and measured_enabled():
+            per_row = _covering(_key_peaks(key), int(work))
+    per_row = max(int(base_mib), int(per_row or 0))
+    return per_row * rows
+
+
 def measured_extra_mib(key: Any, work: int) -> Optional[int]:
     if key is None or not measured_enabled():
         return None

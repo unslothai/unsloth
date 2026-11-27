@@ -229,7 +229,8 @@ def _tpn():
 
 @contextlib.contextmanager
 def expert_parallel_loading(ep_mesh = None):
-    """16-bit, bitsandbytes 4-bit or block-FP8 loads (transformers 5) keep only this rank's routed expert stacks; others load whole."""
+    """16-bit, bitsandbytes 4-bit or block-FP8 loads (transformers 5) keep only this rank's routed expert stacks, and
+    pre-quantized packed NVFP4 / MXFP8 per-expert checkpoints read only this rank's experts; others load whole."""
     tpn = _tpn()
     with tpn._sharded_from_pretrained(
         {

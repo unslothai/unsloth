@@ -1154,11 +1154,12 @@ def _restore_optimizer_from_host(record):
         param.grad = restored[id(host)]
 
 
-def _wrap_grpo_vllm_lora_rounding(trainer_cls):
-    """train / evaluate of a GRPO trainer with use_vllm run under vllm_lora_rounding, so the trainer rounds the
-    LoRA term as the rollout does; the previous order comes back afterwards (a later SFT keeps the fused one)."""
+def _wrap_grpo_vllm_lora_rounding(trainer_cls, always = False):
+    """train / evaluate / predict of an RL trainer with use_vllm (GRPO, RLOO, Online DPO; always for AsyncGRPO, which only
+    samples with vLLM) run under vllm_lora_rounding, so the trainer rounds the LoRA term as the rollout does;
+    the previous order comes back afterwards (a later SFT keeps the fused one)."""
     from ..kernels.utils import vllm_lora_rounding
-    for name in ("train", "evaluate"):
+    for name in ("train", "evaluate", "predict"):
         original = getattr(trainer_cls, name, None)
         if original is None or getattr(original, "_unsloth_vllm_lora_rounding", False):
             continue
@@ -1169,7 +1170,11 @@ def _wrap_grpo_vllm_lora_rounding(trainer_cls):
             _original = original,
             **kwargs,
         ):
-            with vllm_lora_rounding(bool(getattr(self, "use_vllm", False))):
+            # TRL 0.22's Online DPO keeps the flag only on its args.
+            use_vllm = getattr(self, "use_vllm", None)
+            if use_vllm is None:
+                use_vllm = getattr(getattr(self, "args", None), "use_vllm", False)
+            with vllm_lora_rounding(always or bool(use_vllm)):
                 return _original(self, *args, **kwargs)
 
         functools.update_wrapper(wrapped, original)
@@ -4553,6 +4558,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     except Exception as e:
         logger.info(f"Unsloth: Could not wrap the full-eval cast for {RLTrainer_name}: {e}")
 
+    if trainer_file in ("rloo_trainer", "online_dpo_trainer"):
+        # Both can score vLLM samples with the trainer, as GRPO does.
+        try:
+            _wrap_grpo_vllm_lora_rounding(getattr(created_module, f"Unsloth{RLTrainer_name}"))
+        except Exception as e:
+            logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for {RLTrainer_name}: {e}")
+
     if trainer_file == "grpo_trainer":
         # Inside the optimizer-parking wrapper below, so a parked optimizer also covers the partial rollout.
         try:
@@ -4687,6 +4699,52 @@ _DPO_REF_ADAPTER_BLOCK = re.compile(
 )
 
 
+# Owner of TRL 0.27+ add_adapter("ref") in GRPO (beta != 0) / RLOO: `if is_peft_available() and ...` to 1.3, `elif` after.
+_RL_REF_ADAPTER_HEADER = re.compile(
+    r"^(?P<head>[ \t]*(?:el)?if\s+)(?:is_peft_available\(\)\s+and\s+)?is_peft_model\(model\)"
+    r"(?:\s+and\s+args\.beta\s*!=\s*0(?:\.0)?)?\s*:(?P<tail>[ \t]*(?:#.*)?)$"
+)
+
+
+def _skip_rl_ref_adapter(init):
+    """Disable the frozen "ref" adapter copy (vLLM's LoRA sync rejects its weights; the base model is the reference).
+    The header stays and its body goes under `if False:`, so an elif / else chain keeps its meaning."""
+    lines = init.split("\n")
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("#") or not re.search(r"\.add_adapter\(\s*[\"']ref[\"']", line):
+            continue
+        depth = len(line) - len(line.lstrip())
+        for j in range(i - 1, -1, -1):
+            above = lines[j]
+            if not above.strip() or above.lstrip().startswith("#"):
+                continue
+            indent = len(above) - len(above.lstrip())
+            if indent >= depth:
+                continue
+            depth = indent
+            if _RL_REF_ADAPTER_HEADER.match(above):
+                end = j + 1
+                while end < len(lines) and (
+                    not lines[end].strip() or len(lines[end]) - len(lines[end].lstrip()) > indent
+                ):
+                    end += 1
+                while end > j + 1 and not lines[end - 1].strip():
+                    end -= 1
+                body = lines[j + 1 : end]
+                inner = min(len(x) - len(x.lstrip()) for x in body if x.strip())
+                lines[j + 1 : end] = [
+                    " " * inner
+                    + "if False:  # Unsloth: no frozen ref adapter, the base model is the reference"
+                ] + [("    " + x) if x.strip() else x for x in body]
+                break
+            if above.lstrip().startswith(("if ", "elif ", "def ")) or indent == 0:
+                break  # another condition owns it (DPO's ref_model is None, ...): leave it
+        else:
+            continue
+        break
+    return "\n".join(lines)
+
+
 def _guard_dpo_ref_adapter_for_tp(init):
     def _guard(match):
         indent = match.group("indent")
@@ -4756,6 +4814,8 @@ def patch_functions(
         return "\n".join(commented_lines)
 
     init = re.sub(add_adapter_block_pattern, comment_out_block, init, flags = re.DOTALL)
+    if trainer_file in ("grpo_trainer", "rloo_trainer"):
+        init = _skip_rl_ref_adapter(init)
 
     if trainer_file == "dpo_trainer":
         init = _guard_dpo_ref_adapter_for_tp(init)
@@ -6691,15 +6751,40 @@ def patch_trl_async_grpo():
 
         @functools.wraps(original_train)
         def train(self, *args, **kwargs):
+            # As prepare_for_training_mode: reset a stray compile cache, leave a pre-train for_inference().
+            model = getattr(self, "model", None)
+            was_training = getattr(model, "training", None)
+            use_gc = getattr(model, "_unsloth_gradient_checkpointing", None)
+            if not hasattr(model, "_unsloth_gradient_checkpointing"):
+                use_gc = getattr(getattr(self, "args", None), "gradient_checkpointing", True)
             try:
+                from ._utils import _unsloth_reset_stray_compile_cache
+                _unsloth_reset_stray_compile_cache(self)
+            except Exception:
+                pass
+            try:
+                if hasattr(model, "for_training"):
+                    model.for_training(use_gradient_checkpointing = use_gc)
                 return original_train(self, *args, **kwargs)
             finally:
-                server = getattr(self, "_unsloth_vllm_server", None)
-                if server is not None:
-                    # The rollout process is gone; drop the requests it left in flight.
-                    server.abort_all()
+                try:
+                    server = getattr(self, "_unsloth_vllm_server", None)
+                    if server is not None:
+                        # The rollout process is gone; drop the requests it left in flight.
+                        server.abort_all()
+                finally:
+                    # Back to inference mode even when train raised, as the model was before.
+                    if was_training is False and getattr(self, "_unsloth_tensor_parallel", False):
+                        model.eval()
+                    elif was_training is False and hasattr(model, "for_inference"):
+                        model.for_inference()
 
         trainer_class.train = train
+    try:
+        # Every rollout comes from vLLM, so score the LoRA term in its rounding order.
+        _wrap_grpo_vllm_lora_rounding(trainer_class, always = True)
+    except Exception as e:
+        logger.info(f"Unsloth: Could not wrap the vLLM LoRA rounding for AsyncGRPOTrainer: {e}")
 
     if hasattr(async_module, "AsyncRolloutWorker"):
 

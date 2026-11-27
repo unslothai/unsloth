@@ -13,6 +13,12 @@ from unsloth.kernels import fp8 as F8
 from unsloth.kernels import fp8_lora as FL
 
 WINDOWS_MESSAGE = "Rowwise scaling is not currently supported on your device"
+# torch 2.10 Windows wheels (RTX 5090) get past that guard and fail inside cuBLASLt instead.
+CUBLAS_MESSAGE = (
+    "CUDA error: CUBLAS_STATUS_NOT_SUPPORTED when calling cublasLtMatmulAlgoGetHeuristic( ltHandle, "
+    "computeDesc.descriptor(), Adesc.descriptor(), Bdesc.descriptor(), Cdesc.descriptor(), Ddesc.descriptor(), "
+    "preference.descriptor(), 1, &heuristicResult, &returnedResult)"
+)
 E4M3 = torch.float8_e4m3fn
 
 
@@ -21,7 +27,7 @@ def _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype):
     return out.to(out_dtype or torch.bfloat16)
 
 
-def _windows_scaled_mm(calls):
+def _windows_scaled_mm(calls, message = WINDOWS_MESSAGE):
     """torch._scaled_mm as the Windows wheels run it: tensorwise only."""
 
     def scaled_mm(
@@ -37,20 +43,20 @@ def _windows_scaled_mm(calls):
         rowwise = scale_a.numel() > 1 or scale_b.numel() > 1
         calls.append("row" if rowwise else "tensor")
         if rowwise:
-            raise RuntimeError(WINDOWS_MESSAGE)
+            raise RuntimeError(message)
         out = _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype)
         return out if bias is None else out + bias
 
     return scaled_mm
 
 
-@pytest.fixture
-def windows(monkeypatch):
+@pytest.fixture(params = [WINDOWS_MESSAGE, CUBLAS_MESSAGE], ids = ["rowwise_guard", "cublaslt"])
+def windows(monkeypatch, request):
     calls = []
     # Small test weights: lift the L4 size gate (tested on its own below).
     monkeypatch.setattr(F8, "_FP8_TENSORWISE_MIN_NUMEL", 0, raising = False)
     monkeypatch.setattr(F8, "_FP8_TENSORWISE_ANY_ROWS_NUMEL", 0, raising = False)
-    monkeypatch.setattr(torch, "_scaled_mm", _windows_scaled_mm(calls))
+    monkeypatch.setattr(torch, "_scaled_mm", _windows_scaled_mm(calls, request.param))
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
@@ -58,24 +64,16 @@ def windows(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "exc, unsupported",
+    "exc, oom",
     [
-        (RuntimeError(WINDOWS_MESSAGE), True),
-        (NotImplementedError("fp8 rowwise is not supported here"), True),
-        (
-            RuntimeError(
-                "Only bf16 high precision output types are supported for row-wise scaling."
-            ),
-            False,
-        ),
-        (RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"), False),
-        (torch.OutOfMemoryError("unsupported allocation"), False),
-        (RuntimeError("CUDA error: illegal memory access"), False),
-        (ValueError(WINDOWS_MESSAGE), False),
+        (RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB"), True),
+        (torch.OutOfMemoryError("allocation failed"), True),
+        (RuntimeError(WINDOWS_MESSAGE), False),
+        (RuntimeError(CUBLAS_MESSAGE), False),
     ],
 )
-def test_unsupported_classifier(exc, unsupported):
-    assert FL._is_unsupported(exc) is unsupported
+def test_oom_classifier(exc, oom):
+    assert FL._is_oom(exc) is oom
 
 
 def _rowwise_inputs(
@@ -138,6 +136,7 @@ def test_rowwise_scaled_mm_runs_at_unit_scale_instead_of_raising(windows):
 
 
 def test_other_rowwise_errors_still_raise(monkeypatch):
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
 
@@ -153,7 +152,10 @@ def test_other_rowwise_errors_still_raise(monkeypatch):
     assert FL._ROWWISE_UNSUPPORTED == set()
 
 
-def test_rowwise_probe_is_cached_per_device(windows):
+@pytest.mark.parametrize("hip", [None, "7.2.0"], ids = ["cuda_build", "rocm_build"])
+def test_rowwise_probe_is_cached_per_device(windows, monkeypatch, hip):
+    # The answer comes from the real probe on every build, ROCm included (no torch.version.hip shortcut).
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
     device = torch.device("cpu")
     assert FL.rowwise_supported(device) is False
     assert windows == ["tensor", "row"]
@@ -162,30 +164,124 @@ def test_rowwise_probe_is_cached_per_device(windows):
     assert FL._ROWWISE_UNSUPPORTED == {device}
 
 
+def _probe_scaled_mm(row_error = None):
+    calls = []
+
+    def scaled_mm(a, b, scale_a, scale_b, out_dtype, fast_accum):
+        calls.append("row" if scale_a.numel() > 1 else "tensor")
+        if row_error is not None and scale_a.numel() > 1:
+            raise row_error
+        return _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype)
+
+    return scaled_mm, calls
+
+
 def test_rowwise_probe_keeps_row_when_it_runs_or_fails_otherwise(monkeypatch):
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
-    monkeypatch.setattr(FL, "_scaled_mm", lambda *args: torch.zeros(16, 16))
+    fake, calls = _probe_scaled_mm()
+    monkeypatch.setattr(FL, "_scaled_mm", fake)
     assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert calls == ["tensor", "row"] and FL._ROWWISE_PROBED == {torch.device("cpu"): True}
 
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
-    calls = []
-
-    def oom_on_rowwise(a, b, scale_a, scale_b, out_dtype, fast_accum):
-        calls.append(scale_a.numel())
-        if scale_a.numel() > 1:
-            raise torch.OutOfMemoryError("CUDA out of memory")
-        return torch.zeros(16, 16)
-
-    monkeypatch.setattr(FL, "_scaled_mm", oom_on_rowwise)
+    fake, calls = _probe_scaled_mm(torch.OutOfMemoryError("CUDA out of memory"))
+    monkeypatch.setattr(FL, "_scaled_mm", fake)
     assert FL.rowwise_supported(torch.device("cpu")) is True
     assert FL._ROWWISE_PROBED == {}  # no verdict: probed again next time
     assert FL._ROWWISE_UNSUPPORTED == set()
 
 
-def test_inference_backend_probe_picks_tensorwise(monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        RuntimeError(CUBLAS_MESSAGE),
+        RuntimeError(WINDOWS_MESSAGE),
+        RuntimeError("cutlass cannot initialize"),
+    ],
+)
+def test_any_rowwise_probe_failure_means_missing(monkeypatch, error):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    fake, calls = _probe_scaled_mm(error)
+    monkeypatch.setattr(FL, "_scaled_mm", fake)
+    assert FL.rowwise_supported(torch.device("cpu")) is False
+    assert FL._ROWWISE_UNSUPPORTED == {torch.device("cpu")}
+
+
+def test_wrong_rowwise_answer_means_missing(monkeypatch):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+
+    def zeros_for_rowwise(a, b, scale_a, scale_b, out_dtype, fast_accum):
+        out = _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype)
+        return out * 0 if scale_a.numel() > 1 else out
+
+    monkeypatch.setattr(FL, "_scaled_mm", zeros_for_rowwise)
+    assert FL.rowwise_supported(torch.device("cpu")) is False
+
+
+def test_broken_context_after_failed_probe_is_no_verdict(monkeypatch):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    fake, _ = _probe_scaled_mm(RuntimeError(CUBLAS_MESSAGE))
+    monkeypatch.setattr(FL, "_scaled_mm", fake)
+    checked = []
+    monkeypatch.setattr(FL, "_cuda_context_ok", lambda device: checked.append(device) or False)
+    assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert checked == [torch.device("cpu")]
+    assert FL._ROWWISE_PROBED == {} and FL._ROWWISE_UNSUPPORTED == set()
+
+
+def test_failed_probe_clears_cuda_state(monkeypatch):
+    events = []
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda device = None: events.append("sync"))
+    real_ones = torch.ones
+
+    def ones(
+        *args,
+        device = None,
+        **kwargs,
+    ):
+        if device is not None and torch.device(device).type == "cuda":
+            events.append("launch")
+            return real_ones(*args, **kwargs)
+        return real_ones(*args, device = device, **kwargs)
+
+    monkeypatch.setattr(torch, "ones", ones)
+    assert FL._cuda_context_ok(torch.device("cuda", 0)) is True
+    assert events == ["sync", "launch"]
+    events.clear()
+    F8._clear_failed_probe(torch.device("cuda", 0))
+    assert events == ["sync", "launch"]
+
+
+def test_training_path_raises_when_the_probe_finds_rowwise(monkeypatch):
+    # The probe GEMM runs, so a row-wise failure in training is a real error: never swallowed.
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
+
+    def fails_on_big_rowwise(a, b, scale_a, scale_b, out_dtype, fast_accum):
+        if scale_a.numel() > 1 and a.shape[0] != 64:
+            raise RuntimeError(CUBLAS_MESSAGE)
+        return _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype)
+
+    monkeypatch.setattr(FL, "_scaled_mm", fails_on_big_rowwise)
+    x8 = torch.ones(16, 32).to(E4M3)
+    with pytest.raises(RuntimeError, match = "CUBLAS_STATUS_NOT_SUPPORTED"):
+        FL._rowwise_scaled_mm(
+            x8, x8.t(), torch.ones(16, 1), torch.ones(1, 16), torch.bfloat16, True
+        )
+    assert FL._ROWWISE_UNSUPPORTED == set()
+
+
+@pytest.mark.parametrize(
+    "message", [WINDOWS_MESSAGE, CUBLAS_MESSAGE], ids = ["rowwise_guard", "cublaslt"]
+)
+def test_inference_backend_probe_picks_tensorwise(monkeypatch, message):
     calls = []
-    monkeypatch.setattr(torch, "_scaled_mm", _windows_scaled_mm(calls))
+    monkeypatch.setattr(torch, "_scaled_mm", _windows_scaled_mm(calls, message))
     monkeypatch.setattr(F8, "_has_fbgemm_rowwise", lambda: False)
     monkeypatch.setattr(F8, "_FP8_ROWWISE_BACKEND_ENV", "")
     device = torch.device("cpu")

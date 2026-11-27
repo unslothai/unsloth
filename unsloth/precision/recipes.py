@@ -545,7 +545,8 @@ _add(
             "sm120": Gate(
                 "explicit",
                 evidence = "RTX PRO 6000: 1.08-1.10x at Qwen3-0.6B, 1.17x at 1.7B; rowwise "
-                "(fp8_lora_rowwise) is faster there. " + _FP8_LORA_RUNS,
+                "(fp8_lora_rowwise) is faster there where the row-wise _scaled_mm kernel exists (Linux torch "
+                "builds). " + _FP8_LORA_RUNS,
             ),
             "rocm": Gate("refused", "ROCm fp8 (fnuz) GEMMs are not wired for the frozen base"),
         },
@@ -579,7 +580,9 @@ _add(
             "sm100": Gate("unprobed"),
             "sm120": Gate(
                 "explicit",
-                evidence = "RTX PRO 6000, 16-bit master in host RAM (default): step 1.16x bf16 at Qwen3-0.6B "
+                evidence = "RTX PRO 6000 on a torch build with the row-wise _scaled_mm kernel (Linux; the Windows "
+                "wheels run unit-scale tensorwise GEMMs instead, not measured), 16-bit master in host RAM "
+                "(default): step 1.16x bf16 at Qwen3-0.6B "
                 "(A/A 0.02%), 1.22x at 1.7B (A/A 0.17%); peak memory -12% / -33% vs bf16 LoRA. Eval loss "
                 "(fp8 forward) +0.48-0.56% at 0.6B, +0.32-0.54% at 1.7B (bf16 seed band 0.02%); the trained "
                 "adapter on the exact 16-bit base +0.06-0.12%. Explicit, not named: the fp8-forward eval gap "

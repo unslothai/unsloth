@@ -2003,6 +2003,8 @@ class _LoadState:
     attention_request: Optional[str] = None
     # Resolved once at begin_load: the deferred speed profile must reuse it, not re-read the env.
     int8_policy: Any = None
+    # Per-load fold choice ("on"/"off", None = auto); kept so later folds (deferred compile, LoRA change) honour it.
+    lora_fuse: Optional[str] = None
     # Step cache engaged ("fbcache" | "static") or None; only fbcache breaks the graph.
     transformer_cache: Optional[str] = None
     # Auto only: generate() toggles it across FBCACHE_MIN_STEPS; explicit never toggles
@@ -2153,6 +2155,26 @@ def lora_fuse_status(pipe: Any) -> Optional[str]:
     if not getattr(pipe, "_unsloth_loras", ()):
         return None
     return getattr(pipe, _LORA_FUSE_STATUS_ATTR, None)
+
+
+def lora_fuse_resolved_entry(request: Optional[str]) -> dict[str, Any]:
+    """``status()["resolved"]["lora_fuse"]``; ``source`` follows the ResolvedBadge contract (explicit/auto)."""
+    from . import diffusion_lora_fuse as lora_fuse
+
+    allowed, origin = lora_fuse.resolve(request)
+    reason = {
+        lora_fuse.SOURCE_PER_LOAD: "chosen for this load",
+        lora_fuse.SOURCE_ENV: f"{lora_fuse.LORA_FUSE_ENV} on this install",
+        lora_fuse.SOURCE_DEFAULT: "off by default: the unfolded adapters stay closer to full precision",
+    }[origin]
+    return {
+        "value": "on" if allowed else "off",
+        "requested": request if origin == lora_fuse.SOURCE_PER_LOAD else None,
+        "source": "explicit" if origin == lora_fuse.SOURCE_PER_LOAD else "auto",
+        "status": RESOLVED_APPLIED,
+        "reason": reason,
+        "origin": origin,
+    }
 
 
 def _speed_off_requested(state: Any) -> bool:
@@ -4955,16 +4977,27 @@ def _image_cast_cached(cands: list, variant: Optional[str]) -> list:
     return cached_components(cands)
 
 
-def _converted_shards_pread(dtype: Any, small_host: Any) -> Any:
+def _converted_shards_pread(
+    dtype: Any,
+    small_host: Any,
+    device: Any = None,
+) -> Any:
     """Windows: transformers components converted to ``dtype`` read through ``pread`` (no copy-on-write commit for the
     stored bytes, #14513); components the small-host route loads at their stored dtype stay memory-mapped. An Intel
-    iGPU reads every shard through ``pread`` (#17137)."""
-    from .host_pinning import xpu_is_integrated
+    iGPU, or an integrated NVIDIA target ``device`` (any OS, diffusers too), reads every shard through ``pread``."""
+    from .host_pinning import cuda_is_integrated, xpu_is_integrated
     from .safetensors_pread import pread_safetensors, pread_wanted
 
     keep = tuple(small_host.storage_dtypes) if small_host is not None and small_host.engaged else ()
-    every = pread_wanted() and xpu_is_integrated()
-    return pread_safetensors(convert_to = dtype, keep = keep, every_shard = every)
+    integrated_cuda = device is not None and cuda_is_integrated(device)
+    every = integrated_cuda or (pread_wanted() and xpu_is_integrated())
+    return pread_safetensors(
+        convert_to = dtype, keep = keep, every_shard = every, integrated_cuda = integrated_cuda
+    )
+
+
+def _load_device(target: Any, device: Any = None) -> Any:
+    return getattr(target, "torch_device", None) or device
 
 
 # Reserved slot turn (a coalesced batch keeps its place), and whether a call is a follow-up pass (goes first).
@@ -6616,12 +6649,17 @@ class DiffusionBackend:
         _load_token: Optional[int] = None,
         nvfp4_route: Any = None,
         int8_attention: Optional[str] = None,
+        lora_fuse: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate, then run the (slow) load on a daemon thread. Returns at once.
 
         ``int8_attention``: ``auto`` / ``on`` / ``off`` for Studio's INT8 attention kernel on this load (None: auto),
-        resolved once here into the load's ``Int8Policy``."""
+        resolved once here into the load's ``Int8Policy``.
+        ``lora_fuse``: ``auto`` / ``on`` / ``off`` LoRA fold on this load (None / auto: the env switch, else off)."""
         from .diffusion_int8_attention import normalize_int8_attention, resolve_policy
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
 
         # Offline mode: every metadata, revision and listing call on the load path (Studio's and the loaders') would
         # raise OfflineModeIsEnabled, so the load reads the cache only, as a local_files_only one does.
@@ -6763,6 +6801,7 @@ class DiffusionBackend:
                 transformer_prequant_path = transformer_prequant_path,
                 attention_backend = attention_backend,
                 int8_attention = int8_policy,
+                **({"lora_fuse": lora_fuse} if lora_fuse is not None else {}),
                 transformer_cache = transformer_cache,
                 transformer_cache_threshold = transformer_cache_threshold,
                 model_kind = model_kind,
@@ -9861,6 +9900,7 @@ class DiffusionBackend:
         transformer_prequant_path: Optional[str] = None,
         attention_backend: Optional[str] = None,
         int8_attention: Any = None,
+        lora_fuse: Optional[str] = None,
         transformer_cache: Optional[str] = None,
         transformer_cache_threshold: Optional[float] = None,
         model_kind: Optional[str] = None,
@@ -9918,6 +9958,9 @@ class DiffusionBackend:
         if not isinstance(int8_attention, Int8Policy):
             normalize_int8_attention(int8_attention)
         int8_policy = resolve_policy(int8_attention)
+        from .diffusion_lora_fuse import normalize_lora_fuse
+
+        lora_fuse = normalize_lora_fuse(lora_fuse)
         normalize_transformer_cache(transformer_cache)
         # Text-encoder tri-state resolved once so every consumer agrees; must run before the load evicts the previous pipeline, since it validates the raw request.
         text_encoder_quant_requested = text_encoder_quant
@@ -11703,7 +11746,9 @@ class DiffusionBackend:
                                         else None
                                     )
                                     try:
-                                        with _converted_shards_pread(dtype, small_host):
+                                        with _converted_shards_pread(
+                                            dtype, small_host, _load_device(target)
+                                        ):
                                             pipe = pipeline_cls.from_pretrained(
                                                 _base_local_dir or fetch_base,
                                                 **pipe_kwargs,
@@ -12108,7 +12153,9 @@ class DiffusionBackend:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
                                         small_host, dtype
                                     )
-                                with _converted_shards_pread(dtype, small_host):
+                                with _converted_shards_pread(
+                                    dtype, small_host, _load_device(target)
+                                ):
                                     pipe = pipeline_cls.from_pretrained(
                                         _base_local_dir or fetch_base,
                                         **pipe_kwargs,
@@ -12915,6 +12962,11 @@ class DiffusionBackend:
                         logger.warning("diffusion.vae_tiling: not installed: %s", exc)
                     install_frame_pad_fix(pipe, target, logger = logger)
                     install_vae_sync(pipe, target, logger = logger)
+                    try:
+                        from .diffusion_patch_embed import install_patch_embed_linear
+                        install_patch_embed_linear(pipe, target, logger = logger)
+                    except Exception as exc:  # noqa: BLE001 - the stock Conv3d patch embed stays
+                        logger.warning("diffusion.patch_embed_linear: not installed: %s", exc)
                     # Before the speed optims: the fused CUDA decoder replaces the up blocks with its own clone-free one.
                     from .diffusion_vae_noclone import install_on_pipe as install_vae_noclone
 
@@ -12996,7 +13048,7 @@ class DiffusionBackend:
                         )
                     from .diffusion_te_truncate import truncate_text_encoders
 
-                    truncate_text_encoders(pipe, logger = logger)
+                    truncate_text_encoders(pipe, logger = logger, family = fam.name)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(
@@ -13176,6 +13228,9 @@ class DiffusionBackend:
 
                     skip_text_encoder_kv_cache(pipe, logger = logger)
                     select_final_hidden_state(pipe, logger = logger)
+                    from .diffusion_te_lean import lean_text_encode
+
+                    lean_text_encode(pipe, logger = logger)
                     from .diffusion_qwen_vl_mm_types import forward_mm_token_type_ids
 
                     forward_mm_token_type_ids(pipe, logger = logger)
@@ -13548,6 +13603,7 @@ class DiffusionBackend:
                         attention_backend = attention_engaged,
                         attention_request = attention_backend,
                         int8_policy = int8_policy,
+                        lora_fuse = lora_fuse,
                         transformer_cache = cache_engaged,
                         cache_auto = cache_may_toggle,
                         cache_quant_active = cache_quant_active,
@@ -14625,7 +14681,7 @@ class DiffusionBackend:
                 family = getattr(fam, "name", None),
             )
         )
-        with _converted_shards_pread(dtype, None):
+        with _converted_shards_pread(dtype, None, _load_device(target, device)):
             pipe = pipeline_cls.from_pretrained(
                 base_local_dir or base,
                 **pipe_kwargs,
@@ -16229,7 +16285,8 @@ class DiffusionBackend:
         if lora_fuse.fused(pipe):
             _set_lora_fuse_status(pipe, LORA_FUSE_FUSED)
             return
-        if not lora_fuse.enabled():
+        request = getattr(state, "lora_fuse", None)
+        if not lora_fuse.enabled(request):
             _set_lora_fuse_status(pipe, LORA_FUSE_DISABLED)
             return
         if _speed_off_requested(state):
@@ -16244,7 +16301,10 @@ class DiffusionBackend:
         ]
         denoisers = list({id(m): m for m in denoisers}.values())
         if not lora_fuse.denoisers_resident(
-            getattr(state, "offload_policy", None), getattr(state, "memory_mode", None), denoisers
+            getattr(state, "offload_policy", None),
+            getattr(state, "memory_mode", None),
+            denoisers,
+            request,
         ):
             _set_lora_fuse_status(pipe, LORA_FUSE_OFFLOAD)
             return  # offloaded or streamed denoiser weights move every render
@@ -18724,6 +18784,12 @@ class DiffusionBackend:
             )
             if live is not resolved["attention_backend"]:
                 resolved = {**resolved, "attention_backend": live}
+        if isinstance(resolved, dict):
+            # read live: an auto load follows the env switch at fold time, as the fold itself does
+            resolved = {
+                **resolved,
+                "lora_fuse": lora_fuse_resolved_entry(getattr(state, "lora_fuse", None)),
+            }
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,

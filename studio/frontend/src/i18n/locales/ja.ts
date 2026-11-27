@@ -2399,6 +2399,10 @@ export const ja = {
         confirmDescriptionChatOnly:
           "サーバーを停止してインストーラーを再実行します。これはチャット専用インストールのため、インストーラーは PyTorch を含むフルインストールにもアップグレードします (合計数 GB)。チャットと設定は保持されます。数分かかる場合があります。",
         confirmAction: "今すぐ修復",
+        recommendedTorch:
+          "修復を推奨: このインストールの PyTorch {torch} は、RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いバージョンです。",
+        recommendedDriver:
+          "PyTorch {torch} は RTX 50 シリーズ GPU がサポートされる管理対象の {managedTorch} より古いですが、この GPU ドライバーは CUDA 13 に対応していません。先に GPU ドライバーを更新してから、インストールを修復してください。",
       },
       resetPreferences: {
         sectionTitle: "危険ゾーン",

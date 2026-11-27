@@ -3066,6 +3066,146 @@ def _broadcast_from_group_root(obj, manager, device):
     )
 
 
+_UNMERGEABLE = object()
+
+
+def _generation_is_collective(trainer, manager) -> bool:
+    """Generation forwards that need every peer (sharded weights): peers must then run the same batch."""
+    if getattr(manager, "fsdp2", False):
+        return True
+    accelerator = getattr(trainer, "accelerator", None)
+    distributed_type = getattr(getattr(accelerator, "distributed_type", None), "name", "NO")
+    if distributed_type != "NO" and not distributed_type.startswith("MULTI_"):
+        return True
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(
+        trainer, "is_fsdp_enabled", False
+    ):
+        return True
+    from .models.fsdp2_native import is_native_fsdp2
+
+    return is_native_fsdp2(getattr(trainer, "model", None))
+
+
+def _generation_share(trainer, prompts, args, kwargs, manager):
+    """This peer's slice of whole generation groups, or None for the root to generate them all."""
+    import os
+
+    if os.environ.get("UNSLOTH_CP_SPLIT_GENERATION", "1") == "0":
+        return None
+    if trainer.__dict__.get("_unsloth_cp_split_generation_off"):
+        return None
+    # TRL 0.24 passes images; rollout functions and environments keep per-batch state outside prompts.
+    if any(x is not None for x in args) or any(x is not None for x in kwargs.values()):
+        return None
+    if getattr(trainer, "rollout_func", None) is not None:
+        return None
+    if getattr(trainer, "environment_factories", None) or getattr(trainer, "use_vllm", False):
+        return None
+    if not isinstance(prompts, list) or _generation_is_collective(trainer, manager):
+        return None
+    config = trainer.args
+    generations = getattr(config, "num_generations", None) or 1
+    if not getattr(getattr(trainer, "model", None), "training", True):
+        generations = getattr(config, "num_generations_eval", None) or generations
+    count = len(prompts)
+    groups = count // generations if count % generations == 0 else 0
+    # Equal shares: TRL's metric gathers inside _generate need the same row count on every process.
+    if groups < manager.size or groups % manager.size:
+        return None
+    share = count // manager.size
+    start = manager.mesh.get_local_rank() * share
+    return slice(start, start + share)
+
+
+def _merge_generation_shares(values, sizes):
+    """Concatenates the peers' per-sample outputs in peer order; _UNMERGEABLE for anything else."""
+    first = values[0]
+    if all(x is None for x in values):
+        return None
+    if isinstance(first, dict):
+        if any(not isinstance(x, dict) or x.keys() != first.keys() for x in values):
+            return _UNMERGEABLE
+        merged = {}
+        for key in first:
+            merged[key] = _merge_generation_shares([x[key] for x in values], sizes)
+            if merged[key] is _UNMERGEABLE:
+                return _UNMERGEABLE
+        return merged
+    if isinstance(first, list):
+        if all(isinstance(x, list) and not x for x in values):
+            return []  # TRL >= 1.9 returns tool_images = [] without tools
+        if any(not isinstance(x, list) or len(x) != n for x, n in zip(values, sizes)):
+            return _UNMERGEABLE
+        return [item for x in values for item in x]
+    if isinstance(first, torch.Tensor):
+        if any(not isinstance(x, torch.Tensor) for x in values):
+            return _UNMERGEABLE
+        if first.ndim == 0:
+            # TRL's token count, gathered over every process already; recounted after the merge.
+            return first if all(torch.equal(x.cpu(), first.cpu()) for x in values) else _UNMERGEABLE
+        if all(x.shape[0] == n and x.shape[1:] == first.shape[1:] for x, n in zip(values, sizes)):
+            return torch.cat(values)
+        return _UNMERGEABLE
+    if isinstance(first, (bool, int, float, str)) and all(
+        type(x) is type(first) and x == first for x in values
+    ):
+        return first
+    return _UNMERGEABLE
+
+
+def _gather_generation_shares(result, manager, device, sizes):
+    """Every peer's _generate output on every peer, merged in peer order (tensors through CPU)."""
+    if not isinstance(result, tuple) or hasattr(result, "_fields"):
+        payload = None
+    else:
+        payload = _map_leaves(result, _OnDevice)
+    gathered = [None] * manager.size
+    dist.all_gather_object(gathered, payload, group = manager.group)
+    if any(x is None or len(x) != len(gathered[0]) for x in gathered):
+        return _UNMERGEABLE
+    shares = [_map_leaves(x, lambda leaf: leaf.restore(device), leaf = _OnDevice) for x in gathered]
+    merged = []
+    for values in zip(*shares):
+        value = _merge_generation_shares(list(values), sizes)
+        if value is _UNMERGEABLE:
+            return _UNMERGEABLE
+        merged.append(value)
+    return tuple(merged)
+
+
+def _all_processes_agree(flag: bool, device) -> bool:
+    """True only if every process passes True (a MIN all-reduce over the world)."""
+    if not (dist.is_available() and dist.is_initialized()):
+        return flag
+    value = torch.tensor([int(flag)], device = device)
+    dist.all_reduce(value, op = dist.ReduceOp.MIN)
+    return bool(value.item())
+
+
+def _metrics_snapshot(trainer):
+    metrics = getattr(trainer, "_metrics", None)
+    lengths = (
+        {mode: {k: len(v) for k, v in values.items()} for mode, values in metrics.items()}
+        if isinstance(metrics, dict)
+        else None
+    )
+    return lengths, getattr(getattr(trainer, "state", None), "num_input_tokens_seen", None)
+
+
+def _restore_metrics(trainer, snapshot) -> None:
+    lengths, tokens_seen = snapshot
+    if lengths is not None:
+        for mode, values in trainer._metrics.items():
+            kept = lengths.get(mode, {})
+            for key in list(values):
+                if key not in kept:
+                    del values[key]
+                else:
+                    del values[key][kept[key] :]
+    if tokens_seen is not None:
+        trainer.state.num_input_tokens_seen = tokens_seen
+
+
 def _check_same_prompts(prompts, manager) -> None:
     import hashlib
     import pickle
@@ -3365,6 +3505,26 @@ def patch_rl_trainer(trainer_cls, kind: str) -> None:
         if manager is None:
             return originals["_generate"](self, prompts, *args, **kwargs)
         _check_same_prompts(prompts, manager)
+        device = self.accelerator.device
+        share = _generation_share(self, prompts, args, kwargs, manager)
+        # _generate gathers over every process: all data parallel groups split, or none do.
+        if not _all_processes_agree(share is not None, device):
+            share = None
+        if share is not None:
+            snapshot = _metrics_snapshot(self)
+            with _manager_scope(None):
+                result = originals["_generate"](self, prompts[share], *args, **kwargs)
+            sizes = [share.stop - share.start] * manager.size
+            merged = _gather_generation_shares(result, manager, device, sizes)
+            if _all_processes_agree(merged is not _UNMERGEABLE, device):
+                return _recount_completion_tokens(self, merged)
+            self._unsloth_cp_split_generation_off = True
+            if dist.get_rank() == 0:
+                print(
+                    "Unsloth: context parallel peers could not merge their generations; rank 0 now "
+                    "generates every completion for its peers."
+                )
+            _restore_metrics(self, snapshot)
         with _manager_scope(None):
             result = originals["_generate"](self, prompts, *args, **kwargs)
         result = _broadcast_from_group_root(result, manager, self.accelerator.device)

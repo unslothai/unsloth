@@ -2389,6 +2389,10 @@ export const zhCN = {
         confirmDescriptionChatOnly:
           "停止服务器并重新运行安装程序。这是仅聊天安装，因此安装程序还会将其升级为包含 PyTorch 的完整安装（共几 GB）。聊天记录和设置会保留。这可能需要几分钟。",
         confirmAction: "立即修复",
+        recommendedTorch:
+          "建议修复：此安装的 PyTorch {torch} 早于受管理的 {managedTorch}，而 RTX 50 系列 GPU 需要该版本才受支持。",
+        recommendedDriver:
+          "PyTorch {torch} 早于受管理的 {managedTorch}（RTX 50 系列 GPU 需要该版本才受支持），但此 GPU 驱动不支持 CUDA 13。请先更新 GPU 驱动，再修复安装。",
       },
       resetPreferences: {
         sectionTitle: "危险区域",

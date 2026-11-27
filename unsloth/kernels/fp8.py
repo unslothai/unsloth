@@ -1967,11 +1967,39 @@ def _quantize_fp8_per_row(x, scale_ub = None):
     return (x.float() / scale).clamp(-448.0, 448.0).to(torch.float8_e4m3fn), scale
 
 
-def _rowwise_gemm_works(gemm, device):
-    x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+def _clear_failed_probe(device):
+    # A failed probe GEMM must not poison the context: surface any error it left (synchronize), then a kernel
+    # launch check reads, and so resets, the last CUDA error.
+    if torch.device(device).type != "cuda":
+        return
     try:
-        return bool((gemm(x) == 128).all())
+        torch.cuda.synchronize(device)
     except Exception:
+        pass
+    try:
+        torch.ones(1, device = device).add_(1).item()
+    except Exception:
+        pass
+
+
+def _probe_out_of_memory(error):
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(error, oom)) or "out of memory" in str(
+        error
+    ).lower()
+
+
+def _rowwise_gemm_works(gemm, device):
+    # Any other failure means the kernel is missing here ("Rowwise scaling is not currently supported" on the Windows
+    # wheels, cuBLASLt CUBLAS_STATUS_NOT_SUPPORTED on older ones, "cutlass cannot initialize" for FBGEMM on sm120).
+    # Out of memory says nothing about the kernel: None, no verdict, so callers must not cache it.
+    try:
+        x = torch.ones(128, 128, dtype = torch.float8_e4m3fn, device = device)
+        return bool((gemm(x) == 128).all())
+    except Exception as error:
+        if _probe_out_of_memory(error):
+            return None
+        _clear_failed_probe(device)
         return False
 
 
@@ -1981,41 +2009,54 @@ _FP8_ROWWISE_BACKEND_ENV = os.environ.get("UNSLOTH_FP8_ROWWISE_BACKEND", "").str
 
 
 def _select_fp8_rowwise_backend(device):
+    """The first backend whose probe passes, or None when a probe ran out of memory before one did."""
     ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
     if _has_fbgemm_rowwise():
         from unsloth.import_fixes import suppress_cuda_printf
         with suppress_cuda_printf():
-            if _rowwise_gemm_works(
+            works = _rowwise_gemm_works(
                 lambda x: torch.ops.fbgemm.f8f8bf16_rowwise(x, x, ones(128), ones(128)), device
-            ):
-                return "fbgemm"
-    if _rowwise_gemm_works(
+            )
+        if works is not False:
+            return "fbgemm" if works else None
+    works = _rowwise_gemm_works(
         lambda x: torch._scaled_mm(
             x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.bfloat16
         ),
         device,
-    ):
-        return "scaled_mm"
+    )
+    if works is not False:
+        return "scaled_mm" if works else None
     # Torch builds without the row-wise kernel (the Windows wheels) still run the tensorwise one.
-    if _rowwise_gemm_works(
+    works = _rowwise_gemm_works(
         lambda x: torch._scaled_mm(
             x, x.t(), scale_a = ones(()), scale_b = ones(()), out_dtype = torch.float32
         ),
         device,
-    ):
-        return "tensorwise"
+    )
+    if works is not False:
+        return "tensorwise" if works else None
     return "dequant"
 
 
-@functools.lru_cache(maxsize = None)
+# Per device; an out-of-memory probe stores nothing, so the next call probes again.
+_FP8_ROWWISE_BACKEND_BY_DEVICE = {}
+
+
 def _probe_fp8_rowwise_backend(device):
     """Fastest rowwise FP8 GEMM that runs correctly on this device: FBGEMM ships no sm120 kernels ("cutlass
     cannot initialize" on RTX PRO 6000 / 5090), where torch._scaled_mm keeps FBGEMM's numerics; a torch build
     without the row-wise _scaled_mm runs the tensorwise one at unit scale plus an fp32 rescale; else dequant."""
+    backend = _FP8_ROWWISE_BACKEND_BY_DEVICE.get(device)
+    if backend is not None:
+        return backend
     if _FP8_ROWWISE_BACKEND_ENV in _FP8_ROWWISE_BACKENDS:
         backend = _FP8_ROWWISE_BACKEND_ENV
     else:
         backend = _select_fp8_rowwise_backend(device)
+    if backend is None:
+        # Out of memory while probing: dequantize this call and probe again on the next one.
+        return "dequant"
     if backend == "tensorwise" and _FP8_ROWWISE_BACKEND_ENV != "tensorwise":
         print(
             f"Unsloth: this torch build has no row-wise fp8 _scaled_mm on {device}; FP8 layers use "
@@ -2023,7 +2064,11 @@ def _probe_fp8_rowwise_backend(device):
         )
     else:
         logger.info(f"Unsloth: FP8 rowwise backend on {device}: {backend}")
+    _FP8_ROWWISE_BACKEND_BY_DEVICE[device] = backend
     return backend
+
+
+_probe_fp8_rowwise_backend.cache_clear = _FP8_ROWWISE_BACKEND_BY_DEVICE.clear
 
 
 def _fp8_rowwise_backend(device):
@@ -2045,16 +2090,28 @@ _SCALED_MM_FP16_ZERO_BIAS = _SCALED_MM_FP16_OUT_BROKEN and _SCALED_MM_FP16_BIAS_
 _SCALED_MM_FP16_DEQUANT_ONLY = _SCALED_MM_FP16_OUT_BROKEN and not _SCALED_MM_FP16_BIAS_OUT
 
 
-@functools.lru_cache(maxsize = None)
+_SCALED_MM_FLOAT32_OUT_BY_DEVICE = {}
+
+
 def _probe_scaled_mm_float32_out(device):
     # cuBLAS and older CUTLASS differ on fp32 output (ATen/native/cuda/ScaledBlas.cpp).
+    works = _SCALED_MM_FLOAT32_OUT_BY_DEVICE.get(device)
+    if works is not None:
+        return works
     ones = lambda n: torch.ones(n, dtype = torch.float32, device = device)
-    return _rowwise_gemm_works(
+    works = _rowwise_gemm_works(
         lambda x: torch._scaled_mm(
             x, x.t(), scale_a = ones((128, 1)), scale_b = ones((1, 128)), out_dtype = torch.float32
         ),
         device,
     )
+    if works is None:
+        return False  # out of memory: the safe answer for this call, probed again on the next
+    _SCALED_MM_FLOAT32_OUT_BY_DEVICE[device] = works
+    return works
+
+
+_probe_scaled_mm_float32_out.cache_clear = _SCALED_MM_FLOAT32_OUT_BY_DEVICE.clear
 
 
 def _scaled_mm_float32_out(device):

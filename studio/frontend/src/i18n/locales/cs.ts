@@ -2642,6 +2642,10 @@ export const cs = {
         confirmDescriptionChatOnly:
           "Zastaví server a znovu spustí instalační program. Toto je instalace Pouze chat, takže ji instalační program zároveň upgraduje na úplnou instalaci s PyTorch, celkem několik gigabajtů. Chaty a nastavení zůstanou zachovány. Může to trvat několik minut.",
         confirmAction: "Opravit nyní",
+        recommendedTorch:
+          "Doporučena oprava: tato instalace má PyTorch {torch}, starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50.",
+        recommendedDriver:
+          "PyTorch {torch} je starší než spravovaný {managedTorch}, na kterém jsou podporovány GPU řady RTX 50, ale tento ovladač GPU nepodporuje CUDA 13. Nejprve aktualizujte ovladač GPU a pak instalaci opravte.",
       },
       resetPreferences: {
         sectionTitle: "Nebezpečná zóna",

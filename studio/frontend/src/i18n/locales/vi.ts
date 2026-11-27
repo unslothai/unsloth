@@ -2629,6 +2629,10 @@ export const vi = {
         confirmDescriptionChatOnly:
           "Dừng máy chủ và chạy lại trình cài đặt. Đây là bản cài đặt Chỉ trò chuyện, nên trình cài đặt cũng sẽ nâng cấp nó lên bản cài đặt đầy đủ với PyTorch, tổng cộng vài gigabyte. Cuộc trò chuyện và cài đặt được giữ nguyên. Quá trình này có thể mất vài phút.",
         confirmAction: "Sửa chữa ngay",
+        recommendedTorch:
+          "Nên sửa chữa: bản cài đặt này có PyTorch {torch}, cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ.",
+        recommendedDriver:
+          "PyTorch {torch} cũ hơn {managedTorch} được quản lý mà GPU dòng RTX 50 được hỗ trợ, nhưng trình điều khiển GPU này không hỗ trợ CUDA 13. Hãy cập nhật trình điều khiển GPU trước, rồi sửa chữa bản cài đặt.",
       },
       resetPreferences: {
         sectionTitle: "Vùng nguy hiểm",

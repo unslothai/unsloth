@@ -3171,6 +3171,9 @@ def _build_training_status(
         details = details,
         parallel = getattr(backend, "parallel_plan", None) if exposes_owner_state else None,
         metric_history = metric_history,
+        memory_peaks = (
+            getattr(progress, "memory_peaks", None) if progress and exposes_owner_state else None
+        ),
     )
 
 
@@ -3361,6 +3364,7 @@ async def stream_training_progress(
                 grad_norm = grad_norm,
                 num_tokens = num_tokens,
                 eval_loss = eval_loss,
+                memory_peaks = getattr(progress, "memory_peaks", None) if progress else None,
             )
 
         def format_sse(
