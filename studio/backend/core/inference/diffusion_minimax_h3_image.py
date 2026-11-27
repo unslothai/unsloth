@@ -5045,11 +5045,11 @@ def load_h3_image_text_encoder(
         logger.warning(
             "diffusion.minimax_h3_image: hosted int8 encoder unusable, loading the bf16 encoder"
         )
-    import transformers
-
     from .diffusion_families import pinned_revision_kwargs
+    from .video_minimax_h3_te import h3_read_layers_text_encoder_class
 
-    encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
+    # Only the 50 layers hidden_states[50] reads, as the hosted int8 one: layers 50+, norm and head are never read.
+    encoder = h3_read_layers_text_encoder_class().from_pretrained(
         text_encoder_repo,
         subfolder = "text_encoder",
         torch_dtype = dtype,
@@ -6259,11 +6259,13 @@ def load_minimax_h3_image_pipeline(
         local_gb = sum(f.stat().st_size for f in local_te.glob("*.safetensors")) / 1e9
         if local_gb > plan.te_gb + 1.0:
             _encoder_fits(local_gb, "the text encoder in this model folder")
-        import transformers
+        from .video_minimax_h3_te import h3_read_layers_text_encoder_class
 
-        text_encoder = transformers.Qwen3VLForConditionalGeneration.from_pretrained(
-            str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True
-        ).eval()
+        text_encoder = (
+            h3_read_layers_text_encoder_class()
+            .from_pretrained(str(root / "text_encoder"), torch_dtype = dtype, low_cpu_mem_usage = True)
+            .eval()
+        )
         engaged_te = None
     if text_encoder is None and plan.te_kept_on_host:
 

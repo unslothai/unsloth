@@ -14289,17 +14289,24 @@ class VideoBackend:
         }
         # Strict: diffusers logs a failed component and registers None, which then fails at the first render.
         from .diffusion_component_fetch import load_components_strict
+        from .video_minimax_h3_te import h3_read_layers_spec
 
-        load_components_strict(
-            pipe,
-            workflow = workflow,
-            dtype = dtype,
-            cache_dir = hub_cache_dir(),
-            local_files_only = local_files_only,
-            **({"token": hf_token} if hf_token else {}),
-            **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
-            **({"revision": component_revisions} if component_revisions else {}),
-        )
+        # A bf16 conditioner loads only the 50 layers hidden_states[50] reads, as the hosted int8 one does (-15 GB).
+        with h3_read_layers_spec(pipe) as te_read_layers:
+            load_components_strict(
+                pipe,
+                workflow = workflow,
+                dtype = dtype,
+                cache_dir = hub_cache_dir(),
+                local_files_only = local_files_only,
+                **({"token": hf_token} if hf_token else {}),
+                **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
+                **({"revision": component_revisions} if component_revisions else {}),
+            )
+        if te_read_layers:
+            logger.info(
+                "video.h3_te_read_layers: bf16 conditioner loaded without decoder layers 50+, norm and head"
+            )
         if baked_loras and video_lora.side_branch_enabled(fam):
             # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
             # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
