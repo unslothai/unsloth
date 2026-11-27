@@ -252,13 +252,43 @@ def test_token_budget_is_ineligible(ga, tmp_path, monkeypatch, capsys):
 
     def init(self, *args, **kwargs):
         real_init(self, *args, **kwargs)
+        # As install_token_budget leaves a budget (its splitting training_step aside).
         self._unsloth_token_budget_installed = True
+        self._unsloth_token_budget_splits = 0
 
     monkeypatch.setattr(transformers.Trainer, "__init__", init)
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1")
     assert _windows(engine) == 0
     assert "UNSLOTH_TOKEN_BUDGET" in capsys.readouterr().out
+
+
+def test_token_balance_keeps_windows(ga, tmp_path, monkeypatch):
+    """UNSLOTH_TOKEN_BALANCE (on by default under DDP) only regroups rows in an instance-level get_train_dataloader:
+    windows still run, bitwise equal to standard accumulation over the same balanced batches."""
+    mod, engine = ga
+    spec = importlib.util.spec_from_file_location(
+        "_lmga_token_budget", os.path.join(_ROOT, "unsloth", "utils", "token_budget.py")
+    )
+    budget = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(budget)
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "exact")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    real_init = transformers.Trainer.__init__
+
+    def init(self, *args, **kwargs):
+        real_init(self, *args, **kwargs)
+        budget.install_token_budget(self)
+        assert "get_train_dataloader" in self.__dict__
+
+    monkeypatch.setattr(transformers.Trainer, "__init__", init)
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0")
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1")
+    assert _windows(engine) == 2
+    assert l0 == l1 and len(l0) == 2
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
 
 
 def test_rewritten_inputs_after_a_window_raise_instead_of_counting_twice(ga, tmp_path, monkeypatch):

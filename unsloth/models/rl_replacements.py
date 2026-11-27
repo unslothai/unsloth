@@ -3189,6 +3189,34 @@ def grpo_trainer__generate(function_name, function):
 RL_FUNCTIONS["grpo_trainer"].append(grpo_trainer__generate)
 
 
+def _unsloth_wrap_vllm_generate_with_sleep(function):
+    """Wake a standby (enable_sleep_mode) engine around each self.llm.generate line, then sleep it again."""
+    pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
+    patched = function
+    for match in reversed(list(pattern.finditer(function))):
+        line = match.group(0)
+        indent_match = re.match(r"(\s*)", line)
+        indent = indent_match.group(1) if indent_match else ""
+
+        # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
+        # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
+        wrapped = (
+            f"{indent}_unsloth_sleep_level = None\n"
+            f"{indent}if hasattr(self, 'llm'):\n"
+            f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
+            f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
+            f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
+            f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
+            f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
+            f"{indent}        self.llm.wake_up()\n"
+            f"{line}\n\n"
+            f"{indent}if _unsloth_sleep_level is not None:\n"
+            f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
+        )
+        patched = patched[: match.start()] + wrapped + patched[match.end() :]
+    return patched
+
+
 # Older TRL mishandles special tokens: 0.19.0 passed skip_special_tokens = True where it should be False.
 def grpo_trainer__generate_and_score_completions(function_name, function):
     if function_name != "_generate_and_score_completions":
@@ -3532,35 +3560,7 @@ def grpo_trainer__generate_and_score_completions(function_name, function):
 
     if "wake_up()" not in function:
         # Sleep functionality was added to trl in v0.23.0 (commit edbe823), so do not redo it.
-
-        pattern = re.compile(r".*self\.llm\.generate\(.*\).*", re.MULTILINE)
-        matches = list(pattern.finditer(function))
-        patched = function
-
-        for match in reversed(matches):
-            line = match.group(0)
-            indent_match = re.match(r"(\s*)", line)
-            indent = indent_match.group(1) if indent_match else ""
-
-            # The sleep level is read and checked before wake_up: a bad VLLM_SLEEP_MODE fails before the
-            # rollout, not after it. Unset / blank is level 1 (offload weights); vLLM documents 0, 1 and 2.
-            wrapped = (
-                f"{indent}_unsloth_sleep_level = None\n"
-                f"{indent}if hasattr(self, 'llm'):\n"
-                f"{indent}    if getattr(self.llm.llm_engine.vllm_config.model_config, 'enable_sleep_mode', False):\n"
-                f"{indent}        _unsloth_sleep_level = (os.environ.get('VLLM_SLEEP_MODE') or '').strip() or '1'\n"
-                f"{indent}        if _unsloth_sleep_level not in ('0', '1', '2'):\n"
-                f"{indent}            raise ValueError(f'Unsloth: VLLM_SLEEP_MODE must be 0, 1 or 2, got {{_unsloth_sleep_level!r}}.')\n"
-                f"{indent}        _unsloth_sleep_level = int(_unsloth_sleep_level)\n"
-                f"{indent}        self.llm.wake_up()\n"
-                f"{line}\n\n"
-                f"{indent}if _unsloth_sleep_level is not None:\n"
-                f"{indent}    self.llm.sleep(_unsloth_sleep_level)\n"
-            )
-
-            patched = patched[: match.start()] + wrapped + patched[match.end() :]
-
-        function = patched
+        function = _unsloth_wrap_vllm_generate_with_sleep(function)
 
     _mm_alignment = """
         if (
@@ -4859,6 +4859,19 @@ def online_dpo_trainer__generate_vllm_colocate(function_name, function):
     # Level-2 sleep discards the weights, but the next microbatch of the same step skips the sync.
     if function_name != "_generate_vllm_colocate":
         return function
+    if "self.llm.sleep(" not in function:
+        # TRL < 0.29 OnlineDPO never sleeps the engine: a standby engine would keep ~90% of VRAM during training.
+        return _unsloth_wrap_vllm_generate_with_sleep(function)
+    # Unsloth's allocator never sleeps the shared weights, so a tagged wake_up(tags=["weights"]) maps nothing and
+    # leaves vLLM's executor asleep; the generate wrapper's own wake_up then maps the KV cache a second time
+    # (cumem "invalid argument"). Wake the shared engine untagged, as the GRPO / RLOO sync_weights patch does.
+    function = re.sub(
+        r"^([ \t]+)self\.llm\.wake_up\(tags=(\[[^\]\n]*\])\)\n",
+        r"\1if getattr(self.llm, 'shared_weights', False): self.llm.wake_up()\n"
+        r"\1else: self.llm.wake_up(tags=\2)\n",
+        function,
+        flags = re.MULTILINE,
+    )
     return re.sub(
         r"^([ \t]+)self\.llm\.sleep\(level=2\)\n",
         r"\1self.llm.sleep(level=2)\n\1self._last_loaded_step = -1\n",

@@ -15,10 +15,17 @@ decoder; "auto" only for the standard dense decoders in _AUTO_LAYERS (each prove
 accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (always
 on with UNSLOTH_OFFLOAD_STATS = 0, which removes the measurement); "0" or unset: never. Every refusal below applies to
 both. Without an active block swap nothing here runs.
+
+Data parallel (torch DDP, 2+ ranks): the window's micro-batches run on the module inside DDP, so DDP's reducer never
+fires, and their gradients are averaged once after the window (_reduce_like_ddp: DDP's pre-scale by 1 / world size,
+then a bucketed sum all-reduce). The ranks agree before every window (one MIN all-reduce of each rank's decision) and
+inside it (unsloth_zoo's forward / commit votes), so either every rank runs a window or every rank runs the step the
+standard way.
 """
 
 import copy
 import functools
+import inspect
 import os
 import sys
 import threading
@@ -141,9 +148,15 @@ def _trainer_ok(trainer):
 
 # Instance-level method wrappers known to run outside every training step, so the window cannot reorder them, as
 # Unsloth's SFT trainer installs them: train (prepare_for_training_mode), _prepare_dataset (the one-shot packing
-# guard, unsloth/trainer.py) and _load_optimizer_and_scheduler (portable resume, unsloth/models/portable_resume.py).
+# guard, unsloth/trainer.py), _load_optimizer_and_scheduler (portable resume, unsloth/models/portable_resume.py) and
+# get_train_dataloader (UNSLOTH_TOKEN_BALANCE, on by default under DDP: it only regroups rows, once per epoch).
 # Any other instance-level override keeps the step standard.
-_INSTANCE_OK = ("train", "_prepare_dataset", "_load_optimizer_and_scheduler")
+_INSTANCE_OK = (
+    "train",
+    "_prepare_dataset",
+    "_load_optimizer_and_scheduler",
+    "get_train_dataloader",
+)
 
 
 def _instance_overrides(trainer):
@@ -373,24 +386,101 @@ def _window_blocker(
     return None
 
 
-def layer_major_ineligible(trainer, model, layers, swapper):
-    """Why a layer-major window cannot run for this trainer and model, or None."""
+def _world_size():
+    dist = torch.distributed
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_world_size()
+    return 1
+
+
+def _ddp_of(model):
+    """The torch DDP wrapper training_step got, or None."""
+    ddp = getattr(torch.nn.parallel, "DistributedDataParallel", None)
+    return model if ddp is not None and isinstance(model, ddp) else None
+
+
+def _engine_votes():
+    try:
+        return "agree" in inspect.signature(run_layer_major).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+def _ddp_ineligible(trainer, ddp, layers):
+    """Why the DDP-wrapped model cannot run windows (the manual reduce must equal DDP's own), or None."""
+    from ._ddp_defaults import _plain_ddp
+
+    if not _engine_votes():
+        return "unsloth_zoo is too old for layer-major windows under DDP"
+    accelerator = getattr(trainer, "accelerator", None)
+    if accelerator is not None and not _plain_ddp(accelerator):
+        return f"accelerate distributed type {getattr(accelerator, 'distributed_type', None)}"
+    if type(ddp) is not torch.nn.parallel.DistributedDataParallel or "forward" in ddp.__dict__:
+        return "a DDP subclass or a replaced DDP forward"
+    if (
+        ddp._forward_hooks
+        or ddp._forward_pre_hooks
+        or ddp._backward_hooks
+        or ddp._backward_pre_hooks
+    ):
+        # The window runs the module inside DDP, so hooks on the wrapper itself would be skipped.
+        return "hooks on the DDP wrapper"
+    dist = torch.distributed
+    if dist.get_world_size(ddp.process_group) != dist.get_world_size():
+        return "DDP over a subgroup (other parallel dimensions)"
+    if getattr(ddp, "require_backward_grad_sync", True):
+        # Trainer runs a step's first micro-batch under no_sync; without it the window cannot defer the reduce.
+        return "the step's first micro-batch runs outside DDP no_sync"
+    for attr, why in (
+        ("find_unused_parameters", "DDP find_unused_parameters = True"),
+        ("static_graph", "DDP static_graph"),
+        ("_comm_hooks", "a DDP communication hook"),
+        ("_delay_all_reduce_all_params", "DDP delayed all-reduce"),
+        ("_use_python_reducer", "DDP's Python reducer (compiled autograd)"),
+    ):
+        if getattr(ddp, attr, None):
+            return why
+    if getattr(ddp, "mixed_precision", None) is not None:
+        return "DDP mixed precision"
+    if getattr(getattr(ddp, "_join_config", None), "enable", False):
+        return "DDP join"
+    if (
+        hasattr(ddp, "buffer_hook")
+        or not hasattr(ddp, "_sync_buffers")
+        or not hasattr(ddp, "_check_sync_bufs_pre_fwd")
+    ):
+        return "a DDP buffer hook, or a torch DDP without the buffer sync this needs"
+    if getattr(ddp.module, "_unsloth_ddp_tower_params", None):
+        return "vision / audio towers averaged outside DDP"
+    return None
+
+
+def layer_major_ineligible(
+    trainer,
+    model,
+    layers,
+    swapper,
+    ddp = None,
+):
+    """Why a layer-major window cannot run for this trainer and model, or None. `model` is the module inside DDP
+    when `ddp` (the wrapper training_step got) is given."""
     if run_layer_major is None or not hasattr(swapper, "hold"):
         return "unsloth_zoo is too old for layer-major windows"
     if not getattr(swapper, "indices", None):
         return "no layer is swapped"
     if getattr(swapper, "total", len(layers)) != len(layers):
         return "the block swap does not cover the decoder layer list"
-    if (
-        torch.distributed.is_available()
-        and torch.distributed.is_initialized()
-        and torch.distributed.get_world_size() > 1
-    ):
-        return "distributed training"
-    accelerator = getattr(trainer, "accelerator", None)
-    kind = str(getattr(accelerator, "distributed_type", "NO"))
-    if not kind.endswith("NO"):
-        return f"accelerate distributed type {kind}"
+    if _world_size() > 1:
+        if ddp is None:
+            return "distributed training other than DDP"
+        why = _ddp_ineligible(trainer, ddp, layers)
+        if why is not None:
+            return why
+    else:
+        accelerator = getattr(trainer, "accelerator", None)
+        kind = str(getattr(accelerator, "distributed_type", "NO"))
+        if not kind.endswith("NO"):
+            return f"accelerate distributed type {kind}"
     args = getattr(trainer, "args", None)
     if getattr(args, "n_gpu", 1) > 1:
         return "DataParallel over several GPUs"
@@ -401,7 +491,7 @@ def layer_major_ineligible(trainer, model, layers, swapper):
     optim = str(getattr(args, "optim", "")).lower()
     if "lomo" in optim or "layerwise" in optim:
         return "this optimizer updates the weights inside every backward"
-    if trainer.__dict__.get("_unsloth_token_budget_installed"):
+    if "_unsloth_token_budget_splits" in trainer.__dict__:
         # Its instance-level training_step splits micro-batches into chunks the window never sees.
         return "UNSLOTH_TOKEN_BUDGET"
     if not _trainer_ok(trainer):
@@ -512,6 +602,129 @@ def _micro_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         _TLS.passthrough = False
 
 
+def _all_ranks_agree(flag, group, device):
+    """True only if every rank of `group` passes True (one MIN all-reduce)."""
+    value = torch.tensor([int(bool(flag))], dtype = torch.int32, device = device)
+    torch.distributed.all_reduce(value, op = torch.distributed.ReduceOp.MIN, group = group)
+    return bool(value.item())
+
+
+def _collective_device(group):
+    backend = str(torch.distributed.get_backend(group)).lower()
+    if "gloo" in backend and "nccl" not in backend:
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    return torch.device("cpu")
+
+
+_DDP_REDUCES = [0]
+_OTHER_RANK = (
+    "Unsloth: offload_layers runs micro-batches one after another this step: another rank cannot run a "
+    "layer-major window."
+)
+
+
+def _reduce_like_ddp(ddp):
+    """Average the gradients DDP owns as its reducer does: each gradient times 1 / world size, then a sum
+    all-reduce, in flat buckets of at most DDP's bucket size per dtype. A weight no rank gave a gradient keeps None
+    (one used anywhere is reduced, with zeros from the ranks that did not use it)."""
+    dist = torch.distributed
+    group = ddp.process_group
+    ignore = set(getattr(ddp, "parameters_to_ignore", ()) or ())
+    params = [p for n, p in ddp.module.named_parameters() if p.requires_grad and n not in ignore]
+    if not params:
+        return
+    world = dist.get_world_size(group)
+    device = _collective_device(group)
+    used = torch.tensor([p.grad is not None for p in params], dtype = torch.int32, device = device)
+    dist.all_reduce(used, group = group)
+    cap = int(getattr(ddp, "bucket_bytes_cap", 25 * 2**20) or 25 * 2**20)
+    buckets, size = [[]], 0
+    for p, u in zip(params, used.tolist()):
+        if not u:
+            continue
+        if p.grad is None:
+            p.grad = torch.zeros_like(p)
+        g = p.grad
+        if buckets[-1] and (
+            size + g.numel() * g.element_size() > cap
+            or buckets[-1][-1].dtype != g.dtype
+            or buckets[-1][-1].device != g.device
+        ):
+            buckets.append([])
+            size = 0
+        buckets[-1].append(g)
+        size += g.numel() * g.element_size()
+    for grads in buckets:
+        if not grads:
+            continue
+        flat = torch._utils._flatten_dense_tensors(grads)
+        flat.mul_(
+            1.0 / world
+        )  # DDP multiplies by 1 / world size while copying into its bucket, then sums
+        dist.all_reduce(flat, group = group)
+        for g, s in zip(grads, torch._utils._unflatten_dense_tensors(flat, grads)):
+            g.copy_(s)
+        del flat
+    _DDP_REDUCES[0] += 1
+
+
+def _ddp_buffers(ddp, layers):
+    """The buffers DDP broadcasts before a forward, with their versions (block swap moves weights, not buffers)."""
+    if not ddp._check_sync_bufs_pre_fwd():
+        return []
+    return [(b, b._version) for b in ddp.module.buffers()]
+
+
+def _plan(trainer, model, ddp, samples, mode):
+    """(layers, swapper, need) for a window over `samples`, or (None, message key, message)."""
+    if trainer.__dict__.get("_unsloth_layer_major_off"):
+        return None, None, None
+    cached = trainer.__dict__.get("_unsloth_layer_major_target")
+    # Re-planned swaps (offload_layers = "auto") install a new BlockSwap on the same layer list.
+    if (
+        cached is not None
+        and cached[0] == id(model)
+        and (cached[1] is None or cached[1].__dict__.get("_unsloth_block_swap") is cached[2])
+    ):
+        _, layers, swapper = cached
+    else:
+        layers, swapper = _block_swap_layers(model)
+        trainer._unsloth_layer_major_target = (id(model), layers, swapper)
+    if swapper is None:
+        return None, None, None
+    why = layer_major_ineligible(trainer, model, layers, swapper, ddp = ddp)
+    if why is not None:
+        return None, "why", f"Unsloth: offload_layers runs micro-batches one after another: {why}."
+    if mode == "auto":
+        ok, name = _auto_layers_ok(model, layers)
+        if not ok:
+            return (
+                None,
+                "opt-in",
+                f"Unsloth: offload_layers layer-major gradient accumulation is opt-in for {name}: set "
+                "UNSLOTH_OFFLOAD_LAYER_MAJOR=1 to run its micro-batches layer by layer.",
+            )
+    blocker = _window_blocker(trainer, model, layers)
+    if blocker is not None:
+        return (
+            None,
+            "blocker",
+            f"Unsloth: offload_layers runs micro-batches one after another: {blocker}.",
+        )
+    if mode == "auto" and not _auto_ready(trainer, swapper):
+        return None, None, None
+    ok, need = _fits(model, layers, samples)
+    if not ok:
+        return (
+            None,
+            "fit",
+            f"Unsloth: offload_layers runs micro-batches one after another this step: {need}.",
+        )
+    return layers, swapper, need
+
+
 def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     """The loss of micro-batch `inputs` if a layer-major window ran (or runs now) for it, else None."""
     window = trainer.__dict__.get("_unsloth_layer_major_window")
@@ -532,7 +745,7 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         )
     # Consumed by the step's first call: the trainer keeps no prefetched batch past it (the window holds its own).
     batch = trainer.__dict__.pop("_unsloth_layer_major_batch", None)
-    if batch is None or trainer.__dict__.get("_unsloth_layer_major_off"):
+    if batch is None:
         return None
     samples, items = batch
     if len(samples) < 2 or samples[0] is not inputs or items is not num_items_in_batch:
@@ -543,56 +756,43 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         not getattr(model, "training", True) and not getattr(trainer, "is_in_train", False)
     ):
         return None
-    cached = trainer.__dict__.get("_unsloth_layer_major_target")
-    # Re-planned swaps (offload_layers = "auto") install a new BlockSwap on the same layer list.
-    if (
-        cached is not None
-        and cached[0] == id(model)
-        and (cached[1] is None or cached[1].__dict__.get("_unsloth_block_swap") is cached[2])
-    ):
-        _, layers, swapper = cached
-    else:
-        layers, swapper = _block_swap_layers(model)
-        trainer._unsloth_layer_major_target = (id(model), layers, swapper)
-    if swapper is None:
-        return None
-    # Every step: hooks, compilation and optimizer settings can change after the first.
-    why = layer_major_ineligible(trainer, model, layers, swapper)
-    if why is not None:
+    # Above: identical on every rank. Below: this rank's decision, then agreed on.
+    ddp = _ddp_of(model) if _world_size() > 1 else None
+    if _world_size() > 1 and ddp is None:
         _say_once(
-            trainer, "why", f"Unsloth: offload_layers runs micro-batches one after another: {why}."
+            trainer,
+            "why",
+            "Unsloth: offload_layers runs micro-batches one after another: distributed training other than DDP.",
         )
         return None
-    if mode == "auto":
-        ok, name = _auto_layers_ok(model, layers)
-        if not ok:
-            _say_once(
-                trainer,
-                "opt-in",
-                f"Unsloth: offload_layers layer-major gradient accumulation is opt-in for {name}: set "
-                "UNSLOTH_OFFLOAD_LAYER_MAJOR=1 to run its micro-batches layer by layer.",
-            )
+    inner = ddp.module if ddp is not None else model
+    plan = _plan(trainer, inner, ddp, samples, mode)
+    if plan[0] is None and plan[1] is not None:
+        _say_once(trainer, plan[1], plan[2])
+    layers, swapper, need = plan
+    agree = None
+    if ddp is not None:
+        group, device = ddp.process_group, _collective_device(ddp.process_group)
+        if not _all_ranks_agree(layers is not None, group, device):
+            if layers is not None:
+                _say_once(trainer, "rank", _OTHER_RANK)
             return None
-    blocker = _window_blocker(trainer, model, layers)
-    if blocker is not None:
-        _say_once(
-            trainer,
-            "blocker",
-            f"Unsloth: offload_layers runs micro-batches one after another: {blocker}.",
-        )
-        return None
-    if mode == "auto" and not _auto_ready(trainer, swapper):
-        return None
-    ok, need = _fits(model, layers, samples)
-    if not ok:
-        _say_once(
-            trainer,
-            "fit",
-            f"Unsloth: offload_layers runs micro-batches one after another this step: {need}.",
-        )
+        # DDP broadcasts these before a step's first forward; the window's forwards bypass DDP, so do it here.
+        buffers = _ddp_buffers(ddp, layers)
+        if buffers:
+            ddp._sync_buffers()
+            buffers = _ddp_buffers(ddp, layers)
+
+        def agree(ok, stage):
+            if stage == "commit" and ok:
+                # A changed buffer (BatchNorm, dynamic RoPE) would be re-broadcast before the next micro-batch under DDP.
+                ok = all(b._version == v for b, v in buffers)
+            return _all_ranks_agree(ok, group, device)
+
+    elif layers is None:
         return None
     fns = [
-        functools.partial(_micro_step, trainer, model, s, num_items_in_batch, args, kwargs)
+        functools.partial(_micro_step, trainer, inner, s, num_items_in_batch, args, kwargs)
         for s in samples
     ]
     # The loss parts update TRL's metrics and token count; an abort retries the micro-batches the standard way.
@@ -602,7 +802,8 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         if k in trainer.__dict__
     }
     try:
-        losses, why = run_layer_major(layers, fns, swapper = swapper, model = model)
+        vote = {"agree": agree} if agree is not None else {}
+        losses, why = run_layer_major(layers, fns, swapper = swapper, model = inner, **vote)
     except BaseException:
         trainer.__dict__.update(counters)  # the engine already put back gradients and RNG
         raise
@@ -618,6 +819,9 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         )
         trainer._unsloth_layer_major_off = True
         return None
+    if ddp is not None:
+        # The step's only gradient reduction: the window ran inside no_sync and outside DDP's forward.
+        _reduce_like_ddp(ddp)
     _say_once(
         trainer,
         "on",
@@ -662,14 +866,17 @@ def patch_layer_major_gradient_accumulation(Trainer):
         except (TypeError, ValueError):
             return out
         # Only for trainers whose training_step reaches the wrapper below, which consumes it each step.
-        if (
-            isinstance(samples, list)
-            and len(samples) > 1
-            and _mode() != "off"
-            and _trainer_ok(self)
-            and _instance_overrides(self) is None
-        ):
-            self._unsloth_layer_major_batch = (samples, items)
+        if isinstance(samples, list) and len(samples) > 1 and _mode() != "off":
+            ok = _trainer_ok(self) and _instance_overrides(self) is None
+            if _world_size() > 1:
+                # Every rank stashes or none does: a rank-local wrapper (a rank 0 observer) must not leave the
+                # other ranks waiting in the step's window agreement.
+                agreed = _all_ranks_agree(ok, None, _collective_device(None))
+                if ok and not agreed:
+                    _say_once(self, "rank", _OTHER_RANK)
+                ok = agreed
+            if ok:
+                self._unsloth_layer_major_batch = (samples, items)
         elif (
             isinstance(samples, list)
             and len(samples) > 1

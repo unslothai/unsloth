@@ -1215,6 +1215,8 @@ class ContextParallelManager:
             _ACTIVE_MANAGER = previous
             self.packed_seq_lengths = None
             self.full_position_ids = None
+            # ulysses_deepseek: this step's gathered positions.
+            self._deepseek_full_position_ids = None
 
     @contextlib.contextmanager
     def apply(self, inputs: dict) -> Iterator[None]:
