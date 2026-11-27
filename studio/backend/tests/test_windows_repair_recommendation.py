@@ -45,6 +45,37 @@ def test_a_host_off_the_managed_route_gets_no_recommendation():
     assert _rec(route_host = False) is None
 
 
+@pytest.mark.parametrize(
+    "header, expected",
+    [
+        ("| NVIDIA-SMI 576.88   Driver Version: 576.88   CUDA Version: 12.9     |", (12, 9)),
+        # Newer drivers (616.56 on an RTX 5090) print the user-mode driver's version under another label.
+        (
+            "| NVIDIA-SMI 616.56                 KMD Version: 616.56        CUDA UMD Version: 13.4     |",
+            (13, 4),
+        ),
+        ("| NVIDIA-SMI 616.56   no version here |", None),
+    ],
+)
+def test_both_driver_header_spellings_are_read(monkeypatch, header, expected):
+    from types import SimpleNamespace
+
+    from utils.hardware import gpu_query
+
+    monkeypatch.setattr(gpu_query, "run_nvidia_smi", lambda *a, **k: SimpleNamespace(stdout = header))
+    wr._driver_cuda_version.cache_clear()
+    try:
+        assert wr._driver_cuda_version() == expected
+    finally:
+        wr._driver_cuda_version.cache_clear()
+
+
+def test_the_header_regex_matches_install_ps1():
+    install = Path(__file__).resolve().parents[3] / "install.ps1"
+    assert "CUDA(?: UMD)? Version:" in install.read_text(encoding = "utf-8")
+    assert "CUDA(?: UMD)? Version:" in Path(wr.__file__).read_text(encoding = "utf-8")
+
+
 def test_the_driver_header_is_parsed_as_install_ps1_reads_it(monkeypatch):
     from types import SimpleNamespace
 

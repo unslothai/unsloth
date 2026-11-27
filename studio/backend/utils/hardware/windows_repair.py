@@ -48,7 +48,8 @@ def _capabilities() -> dict:
 
 @functools.lru_cache(maxsize = 1)
 def _driver_cuda_version() -> Optional[tuple[int, int]]:
-    """The CUDA version the driver supports, from nvidia-smi's header as install.ps1 reads it; None when
+    """The CUDA version the driver supports, from nvidia-smi's header as install.ps1 reads it ("CUDA Version" or,
+    on newer drivers, "CUDA UMD Version"); None when
     unreadable. Cached: the driver does not change under a running server."""
     try:
         from utils.hardware import gpu_query
@@ -67,7 +68,7 @@ def _driver_cuda_version() -> Optional[tuple[int, int]]:
             env = child_env_without_native_path_secret(),
             **windows_hidden_subprocess_kwargs(),
         )
-        match = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", result.stdout or "")
+        match = re.search(r"CUDA(?: UMD)? Version:\s*(\d+)\.(\d+)", result.stdout or "")
         return (int(match.group(1)), int(match.group(2))) if match else None
     except Exception:  # noqa: BLE001 -- unknown driver
         return None
