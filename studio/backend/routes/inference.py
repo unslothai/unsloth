@@ -52682,8 +52682,6 @@ async def load_diffusion_model(
     try:
         with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
-        from core.inference.chat_media_swap import remember_image_model
-        remember_image_model(request.display_repo_id or request.model_path)
     except HTTPException as exc:
         # A raising load skips both wrappers, and the inner loader doesn't know inventory handles.
         exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
@@ -53197,6 +53195,19 @@ async def load_diffusion_model_gated(
             _cancel_upsampler_warm_start()
             # Only once the engine accepted the load, committed when it lands, so a refused or failed pick never
             # relabels the resident model.
+            if user_initiated and fam is not None:
+                from core.inference.chat_media_swap import remember_image_model
+                from core.inference.diffusion import _family_workflows
+                if "txt2img" in _family_workflows(fam):
+                    owner = current_account_id()
+                    model_id = request.display_repo_id or request.model_path
+                    note_engine_pick(
+                        request.engine,
+                        engine,
+                        prior_state,
+                        on_commit = lambda: remember_image_model(model_id, account_id = owner),
+                    )
+                    return started
             note_engine_pick(request.engine, engine, prior_state)
             return started
 
@@ -55276,7 +55287,11 @@ async def unload_diffusion_model(
     expected_load_id = request.expected_load_id if request is not None else None
     if not expected_load_id:
         account_access.require_resident_control("diffusion")
-    from core.inference.diffusion_engine_router import annotate_status, get_active_diffusion_engine
+    from core.inference.diffusion_engine_router import (
+        annotate_status,
+        get_active_diffusion_engine,
+        settle_diffusion_load,
+    )
     from core.inference.gpu_arbiter import release_if, DIFFUSION
 
     if not expected_load_id and account_access.managed_account():
@@ -55305,6 +55320,7 @@ async def unload_diffusion_model(
             current_account_id(),
             load_token = expected_load_id,
         )
+    settle_diffusion_load()
     active = get_active_diffusion_engine()
     unload = active.unload
     if account_access.account_scope() is not None:
@@ -55499,13 +55515,18 @@ async def diffusion_load_progress(
         return preparing
     if account_access.resident_hidden("diffusion"):
         return account_access.hidden_resident_response()
-    from core.inference.diffusion_engine_router import get_active_diffusion_engine
+    from core.inference.diffusion_engine_router import (
+        get_active_diffusion_engine,
+        settle_diffusion_load,
+    )
 
     if account_access.managed_account() and account_access.resident_hidden(
         "diffusion", get_active_diffusion_engine().status().get("repo_id")
     ):
         return account_access.hidden_resident_response()
     progress = get_active_diffusion_engine().load_progress()
+    if progress.get("phase") == "ready":
+        settle_diffusion_load()
     log_media_load_progress("image", progress.get("phase"), progress.get("fraction"))
     from hub.utils.host_paths import redact_load_progress
 

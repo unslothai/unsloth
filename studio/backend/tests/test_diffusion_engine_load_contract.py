@@ -109,7 +109,7 @@ def _drive_the_images_load(
         monkeypatch.setattr(
             router_module,
             "note_engine_pick",
-            lambda pick, loaded_by = None, before = None: notes.append(
+            lambda pick, loaded_by = None, before = None, **kwargs: notes.append(
                 (pick, engine.begin_load.call_count, loaded_by is engine)
             ),
         )

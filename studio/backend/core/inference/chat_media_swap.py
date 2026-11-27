@@ -86,13 +86,13 @@ def _account_key() -> str:
     return current_account_id()
 
 
-def remember_image_model(model_id: Optional[str]) -> None:
+def remember_image_model(model_id: Optional[str], *, account_id: Optional[str] = None) -> None:
     if isinstance(model_id, str) and model_id.strip():
-        _last_image_model[_account_key()] = model_id.strip()
+        _last_image_model[account_id or _account_key()] = model_id.strip()
 
 
 def default_image_model() -> Optional[str]:
-    """The setting, else the image model loaded last this session, else the only downloaded one."""
+    """The configured generator, last successful generator, or sole downloaded generator."""
     if name := request_image_model.get():
         return name
     env = os.environ.get(SWAP_MODEL_ENV)
@@ -109,8 +109,18 @@ def default_image_model() -> Optional[str]:
     if last:
         return last
     try:
-        from core.inference.media_model_index import IMAGE_TASK, available_media_model_ids
-        ids = list(available_media_model_ids(IMAGE_TASK) or ())
+        from core.inference.media_locality import is_edit_only
+        from core.inference.media_model_index import (
+            IMAGE_TASK,
+            available_media_model_ids,
+            resolve_local_media_model,
+        )
+        ids = [
+            name
+            for name in available_media_model_ids(IMAGE_TASK)
+            if (pick := resolve_local_media_model(name, task = IMAGE_TASK)) is not None
+            and not is_edit_only(pick)
+        ]
     except Exception:  # noqa: BLE001
         ids = []
     return ids[0] if len(ids) == 1 else None

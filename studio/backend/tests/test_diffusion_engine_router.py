@@ -785,6 +785,30 @@ def test_the_engine_pick_commits_only_when_the_background_load_lands():
     assert r._engine_pick == ENGINE_DIFFUSERS
 
 
+def test_a_successful_generator_is_remembered_for_its_account(monkeypatch):
+    from core.inference import chat_media_swap
+    from utils.account_context import current_account_id
+
+    monkeypatch.setattr(chat_media_swap, "_last_image_model", {})
+    account_id = current_account_id()
+    engine = SimpleNamespace(_state = object())
+    r.note_engine_pick(
+        "sd_cpp",
+        engine,
+        on_commit = lambda: chat_media_swap.remember_image_model("generator", account_id = account_id),
+    )
+    r.settle_diffusion_load()
+    assert not chat_media_swap._last_image_model
+
+    engine._state = object()
+    r.settle_diffusion_load()
+    # An edit-only load can change the engine's state without replacing the fallback.
+    r.note_engine_pick("sd_cpp", engine)
+    engine._state = object()
+    r.settle_diffusion_load()
+    assert chat_media_swap._last_image_model == {account_id: "generator"}
+
+
 def test_a_load_that_publishes_before_begin_load_returns_still_commits_its_pick():
     # begin_load starts the worker before it returns; a cached load can publish in that gap. The route snapshots the
     # state before starting it, so the published state still reads as new.

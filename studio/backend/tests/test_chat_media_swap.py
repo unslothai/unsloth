@@ -528,7 +528,16 @@ def test_default_image_model_order(monkeypatch):
     monkeypatch.setattr(settings, "_cached_setting", lambda key, default, *a: None)
     import core.inference.media_model_index as index
 
-    monkeypatch.setattr(index, "available_media_model_ids", lambda task: ["only/one"])
+    from core.inference import media_locality
+    from core.inference.media_model_index import MediaModelPick
+
+    monkeypatch.setattr(
+        index, "available_media_model_ids", lambda task: ["only/one", "only/editor"]
+    )
+    monkeypatch.setattr(
+        index, "resolve_local_media_model", lambda model, **kwargs: MediaModelPick(model, model)
+    )
+    monkeypatch.setattr(media_locality, "is_edit_only", lambda pick: pick.model_id == "only/editor")
     assert swap.default_image_model() == "only/one"
     swap.remember_image_model("last/used")
     assert swap.default_image_model() == "last/used"
