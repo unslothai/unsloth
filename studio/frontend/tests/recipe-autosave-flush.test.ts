@@ -182,6 +182,14 @@ function fakeServer(initial: Stored) {
         return true;
       };
       queue.push(() => {
+        if (failStatus === 200) {
+          failStatus = null;
+          put.outcome = 200;
+          const { baseUpdatedAt: _b, ...landed } = put.body;
+          stored = landed;
+          resolve(null);
+          return;
+        }
         if (failStatus !== null) {
           put.outcome = failStatus;
           reject(new RecipeApiError("Service unavailable", failStatus));
@@ -998,4 +1006,14 @@ test("a transient HTTP failure keeps the recovery candidates", async () => {
   await s.fire("pagehide");
   await s.server.release();
   assert.deepEqual(s.server.stored.payload, { columns: ["z"] });
+});
+
+test("a committed save whose answer body was unreadable is not trusted from the cache", async () => {
+  const s = setup();
+  await s.edit({ columns: ["x"] });
+  s.server.failNext(200);
+  await s.fireDebounce();
+  await s.server.release();
+  assert.deepEqual(s.server.stored.payload, { columns: ["x"] });
+  assert.equal(s.db.getCachedRecipe("r1"), null);
 });

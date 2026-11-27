@@ -134,6 +134,10 @@ async function putRecipe(input: SaveRecipeInput): Promise<RecipeRecord> {
       body,
       keepalive: input.keepalive ? release !== null : undefined,
     });
+    // A 200 whose body was cut off still committed: treat it like a lost answer.
+    if (typeof record?.updatedAt !== "number") {
+      throw new TypeError("The recipe save answer could not be read.");
+    }
   } catch (error) {
     if (!(error instanceof RecipeApiError)) {
       uncertainRecipes.set(id, Math.max(uncertainRecipes.get(id) ?? 0, now));
