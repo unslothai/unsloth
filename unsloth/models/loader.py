@@ -41,7 +41,7 @@ from .float8_training import (
     mark_fp8_lora,
     resolve_float8_training,
     resolve_fp8_lora,
-    float8_training_request,
+    int8_lora_from_env,
 )
 from .mistral_format import (
     MistralFormatRedirect,
@@ -1458,15 +1458,6 @@ class FastLanguageModel(FastLlamaModel):
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
         fp8_lora = None
-        _int8_request = float8_training_request(
-            kwargs.get("float8_training", None),
-            full_finetuning,
-            quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
-            dtype = dtype,
-            qat_scheme = qat_scheme,
-        )
-        if _int8_request is not kwargs.get("float8_training", None):
-            kwargs["float8_training"] = _int8_request
         fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
             fp8_lora = resolve_fp8_lora(
@@ -2314,6 +2305,8 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        if fp8_lora is None and fp8_request in (None, False):
+            fp8_lora = int8_lora_from_env(model, qat_scheme = qat_scheme)
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
@@ -2435,15 +2428,6 @@ class FastModel(FastBaseModel):
         )
         user_config = kwargs.pop("config", None)
         fp8_lora = None
-        _int8_request = float8_training_request(
-            kwargs.get("float8_training", None),
-            full_finetuning,
-            quantized_base = bool(load_in_4bit or load_in_8bit or load_in_fp8 not in (False, None)),
-            dtype = dtype,
-            qat_scheme = qat_scheme,
-        )
-        if _int8_request is not kwargs.get("float8_training", None):
-            kwargs["float8_training"] = _int8_request
         if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
             fp8_lora = resolve_fp8_lora(
                 kwargs.pop("float8_training"),
@@ -3899,6 +3883,10 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        if fp8_lora is None and float8_training is None:
+            fp8_lora = int8_lora_from_env(
+                model, full_finetuning = full_finetuning, qat_scheme = qat_scheme
+            )
         model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 

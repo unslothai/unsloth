@@ -458,33 +458,57 @@ def _parallel_layout_requested() -> bool:
         return False
 
 
-def float8_training_request(
-    float8_training,
+def _loaded_base_kind(model):
+    """'quantized', 'float32' or None (a 16-bit base) from the loaded model's Linear weights."""
+    for module in model.modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        weight = getattr(module, "weight", None)
+        if weight is None:
+            continue
+        if (
+            type(weight).__name__ in ("Params4bit", "Int8Params")
+            or getattr(weight, "quant_state", None) is not None
+        ):
+            return "quantized"
+        if weight.dtype not in (torch.bfloat16, torch.float16):
+            return "float32" if weight.dtype == torch.float32 else "quantized"
+        return None
+    return None
+
+
+def int8_lora_from_env(
+    model,
     full_finetuning = False,
-    quantized_base = False,
-    dtype = None,
     qat_scheme = None,
 ):
-    """The LoRA frozen-base request: the float8_training kwarg, or 'int8_lora' when UNSLOTH_LORA_BASE_INT8=1
-    and the kwarg is unset. The environment opt-in never fails a load: on a quantized base (load_in_4bit, ...)
-    or where the int8 base cannot run it says why and training stays as loaded (float8_training = 'int8_lora'
-    refuses instead)."""
-    if float8_training in (None, False) and not full_finetuning and int8_lora_requested():
-        why = "the base is loaded quantized (load_in_4bit / 8bit / fp8)" if quantized_base else None
-        if why is None and _parallel_layout_requested():
-            why = "tensor / pipeline / expert parallel runs keep the frozen base in 16 bit"
-        if why is None and qat_scheme is not None:
-            why = f"qat_scheme = {qat_scheme!r} fake-quantizes the base weight"
-        if why is None and dtype in (torch.float32, "float32", "fp32"):
-            why = "the int8 base needs bf16 / fp16 activations, the model loads in float32"
-        why = why or int8_lora_unavailable()
-        if why is not None:
-            print(
-                f"Unsloth: UNSLOTH_LORA_BASE_INT8=1 is ignored here ({why}); training stays in 16 bit."
-            )
-            return float8_training
-        return "int8_lora"
-    return float8_training
+    """UNSLOTH_LORA_BASE_INT8=1 with float8_training unset: INT8_LORA_RECIPE when the LOADED model is a 16-bit
+    base the int8 base can run on, else None. Decided after loading, so precision normalization (a '-bf16'
+    checkpoint loading 16 bit despite the load_in_4bit default) is already applied. Never fails a load: where it
+    cannot run it says why and training stays as loaded (float8_training = 'int8_lora' refuses instead)."""
+    if not int8_lora_requested() or model is None:
+        return None
+    why = None
+    if full_finetuning:
+        why = "full finetuning trains the base weight"
+    elif qat_scheme is not None:
+        why = f"qat_scheme = {qat_scheme!r} fake-quantizes the base weight"
+    elif _parallel_layout_requested():
+        why = "tensor / pipeline / expert parallel runs keep the frozen base in 16 bit"
+    else:
+        kind = _loaded_base_kind(model)
+        if kind == "quantized":
+            why = "the base is loaded quantized (load_in_4bit / 8bit / fp8)"
+        elif kind == "float32":
+            why = "the int8 base needs bf16 / fp16 activations, the model loaded in float32"
+    why = why or int8_lora_unavailable()
+    if why is not None:
+        print(f"Unsloth: UNSLOTH_LORA_BASE_INT8=1 is ignored here ({why}).")
+        return None
+    gpu = _precision.current_gpu_class()
+    if _precision.get_recipe(INT8_LORA_RECIPE).gate(gpu).status == "unprobed":
+        print(f"Unsloth: the int8 LoRA base has not been timed on {gpu}; running it as requested.")
+    return INT8_LORA_RECIPE
 
 
 def is_int8_lora_recipe(recipe) -> bool:

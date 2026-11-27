@@ -21,69 +21,77 @@ def test_registry_entry():
     assert r.gate("sm120").status != "named"
 
 
+def _linear_model(dtype = torch.bfloat16, quantized = False):
+    model = torch.nn.Sequential(torch.nn.Linear(256, 256, bias = False, dtype = dtype))
+    if quantized:
+        model[0].weight.quant_state = object()  # what bitsandbytes Params4bit carries
+    return model
+
+
+@pytest.fixture
+def env_on(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
+    monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: False)
+    monkeypatch.setattr(P, "current_gpu_class", lambda: "sm120")
+
+
 @pytest.mark.parametrize(
     "value, on", [("1", True), ("true", True), ("on", True), ("0", False), ("", False)]
 )
-def test_env_request(monkeypatch, value, on):
+def test_env_request(monkeypatch, env_on, value, on):
     monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", value)
-    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
     assert f8t.int8_lora_requested() is on
-    assert f8t.float8_training_request(None) == ("int8_lora" if on else None)
-    assert f8t.float8_training_request(False) == ("int8_lora" if on else False)
-    # an explicit float8_training wins, and full finetuning never takes the LoRA base
-    assert f8t.float8_training_request("fp8_lora") == "fp8_lora"
-    assert f8t.float8_training_request(None, full_finetuning = True) is None
+    assert f8t.int8_lora_from_env(_linear_model()) == ("int8_lora_rotated" if on else None)
+
+
+def test_env_unset_changes_nothing(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_LORA_BASE_INT8", raising = False)
+    assert f8t.int8_lora_from_env(_linear_model()) is None
+
+
+@pytest.mark.parametrize(
+    "kwargs, model, said",
+    [
+        (dict(full_finetuning = True), _linear_model(), "full finetuning"),
+        (dict(qat_scheme = "int8-int4"), _linear_model(), "qat_scheme"),
+        ({}, _linear_model(quantized = True), "quantized"),
+        ({}, _linear_model(torch.float32), "float32"),
+    ],
+)
+def test_env_opt_in_is_ignored_where_it_cannot_run(env_on, capsys, kwargs, model, said):
+    """Decided on the LOADED model: a quantized / fp32 base, full finetuning or QAT keeps the load as is."""
+    assert f8t.int8_lora_from_env(model, **kwargs) is None
+    assert said in capsys.readouterr().out
+
+
+def test_env_opt_in_on_a_16bit_load_whatever_the_flags(env_on):
+    # A '-bf16' checkpoint loads 16 bit despite load_in_4bit's default: the loaded weights decide, not the flags.
+    assert f8t.int8_lora_from_env(_linear_model(torch.bfloat16)) == "int8_lora_rotated"
+    assert f8t.int8_lora_from_env(_linear_model(torch.float16)) == "int8_lora_rotated"
+
+
+def test_env_opt_in_under_tp_or_ep_is_ignored(env_on, monkeypatch, capsys):
+    monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: True)
+    assert f8t.int8_lora_from_env(_linear_model()) is None
+    assert "parallel" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("gpu", ["sm80", "sm89", "sm75", None])
 def test_env_opt_in_on_unsupported_gpu_stays_16bit(monkeypatch, capsys, gpu):
     monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
+    monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: False)
     monkeypatch.setattr(P, "current_gpu_class", lambda: gpu)
     assert f8t.int8_lora_unavailable() is not None
-    assert f8t.float8_training_request(None) is None
+    assert f8t.int8_lora_from_env(_linear_model()) is None
     assert "ignored here" in capsys.readouterr().out
 
 
-def test_env_opt_in_on_quantized_base_is_ignored(monkeypatch, capsys):
-    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
-    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
-    assert f8t.float8_training_request(None, quantized_base = True) is None
-    assert "quantized" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("dtype", [torch.float32, "float32"])
-def test_env_opt_in_on_fp32_load_is_ignored(monkeypatch, capsys, dtype):
-    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
-    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
-    assert f8t.float8_training_request(None, dtype = dtype) is None
-    assert "float32" in capsys.readouterr().out
-    assert f8t.float8_training_request(None, dtype = torch.bfloat16) == "int8_lora"
+def test_explicit_request_still_refuses_fp32(monkeypatch):
     import unsloth.kernels.int8_lora as IL
-
     monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
-    with pytest.raises(P.PrecisionRefused, match = "fp32"):  # the explicit request still refuses fp32
+    with pytest.raises(P.PrecisionRefused, match = "fp32"):
         f8t.resolve_fp8_lora("int8_lora", dtype = torch.float32, gpu = "sm120")
-
-
-def test_env_opt_in_on_qat_load_is_ignored(monkeypatch, capsys):
-    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
-    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
-    assert f8t.float8_training_request(None, qat_scheme = "int8-int4") is None
-    assert "qat_scheme" in capsys.readouterr().out
-
-
-def test_env_opt_in_under_tp_or_ep_is_ignored(monkeypatch, capsys):
-    monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
-    monkeypatch.setattr(f8t, "int8_lora_unavailable", lambda gpu = "current": None)
-    monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: True)
-    assert f8t.float8_training_request(None) is None
-    assert "parallel" in capsys.readouterr().out
-
-
-def test_env_unset_changes_nothing(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_LORA_BASE_INT8", raising = False)
-    assert f8t.float8_training_request(None) is None
-    assert f8t.float8_training_request(True) is True
 
 
 @pytest.mark.parametrize(
