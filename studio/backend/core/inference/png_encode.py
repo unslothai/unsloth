@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pillow-exact PNG via numpy row filters; off with UNSLOTH_IMAGE_PNG_FAST=0; probe-gated per mode."""
+"""Pillow-exact PNG via numpy row filters (large images: strip-parallel deflate); off with UNSLOTH_IMAGE_PNG_FAST=0; probe-gated per mode."""
 
 from __future__ import annotations
 
@@ -13,11 +13,16 @@ import zlib
 from typing import Any, Iterator, Optional
 
 FAST_ENV = "UNSLOTH_IMAGE_PNG_FAST"
+STRIPS_ENV = "UNSLOTH_IMAGE_PNG_STRIPS"
 # mode -> (bytes per pixel, IHDR colour type)
 _MODES = {"L": (1, 0), "LA": (2, 4), "RGB": (3, 2), "RGBA": (4, 6)}
 # Smaller bands made a batch's concurrent encodes queue on the GIL (32 rows of 512 px: 4 at once 1.6x slower).
 _BAND_BYTES = 192 * 1024
 _AHEAD = 2
+# At or above this many pixel bytes, rows split into strips deflated side by side (pigz layout).
+_STRIP_MIN_BYTES = 2 * 1024 * 1024
+_STRIP_BYTES = 512 * 1024
+_MAX_STRIP_THREADS = 8
 _PROBE_LOCK = threading.Lock()
 _PROBED: dict[tuple[str, int], bool] = {}
 engaged = 0
@@ -26,6 +31,10 @@ _ENGAGED_LOCK = threading.Lock()
 
 def enabled() -> bool:
     return (os.environ.get(FAST_ENV) or "").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _strips_enabled() -> bool:
+    return (os.environ.get(STRIPS_ENV) or "").strip().lower() not in ("0", "false", "no", "off")
 
 
 def _filtered(pixels: Any, bpp: int, start: int, stop: int) -> bytes:
@@ -103,6 +112,58 @@ def _deflated(pixels: Any, bpp: int, level: int) -> Iterator[bytes]:
     yield compressor.flush()
 
 
+def _adler32_combine(first: int, second: int, second_len: int) -> int:
+    """zlib's adler32_combine: the Adler-32 of A + B from adler32(A), adler32(B) and len(B)."""
+    base = 65521
+    rem = second_len % base
+    lo = ((first & 0xFFFF) + (second & 0xFFFF) + base - 1) % base
+    hi = (rem * (first & 0xFFFF) + (first >> 16) + (second >> 16) + base - rem) % base
+    return lo | (hi << 16)
+
+
+def _strip(
+    pixels: Any, bpp: int, level: int, start: int, stop: int, last: bool
+) -> tuple[bytes, int, int]:
+    """One strip as byte-aligned raw deflate (final block only last), primed with the previous strip's tail."""
+    data = _filtered(pixels, bpp, start, stop)
+    compressor_args = (level, zlib.DEFLATED, -15, 9, zlib.Z_FILTERED)
+    if start:
+        stride = pixels.shape[1] + 1
+        tail_rows = min(start, -(-32768 // stride))
+        tail = _filtered(pixels, bpp, start - tail_rows, start)[-32768:]
+        compressor = zlib.compressobj(*compressor_args, zdict = tail)
+    else:
+        compressor = zlib.compressobj(*compressor_args)
+    out = compressor.compress(data) + compressor.flush(zlib.Z_FINISH if last else zlib.Z_SYNC_FLUSH)
+    return out, zlib.adler32(data), len(data)
+
+
+def _strip_deflated(pixels: Any, bpp: int, level: int, threads: int) -> Iterator[bytes]:
+    """zlib stream of the strips; bounds follow the image only, so bytes never depend on ``threads``."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    height, stride = pixels.shape
+    rows = max(1, _STRIP_BYTES // (stride + 1))
+    strips = [(start, min(height, start + rows)) for start in range(0, height, rows)]
+    empty = zlib.compressobj(level, zlib.DEFLATED, 15, 9, zlib.Z_FILTERED)
+    yield (empty.compress(b"") + empty.flush())[:2]
+    checksum = 1
+    with ThreadPoolExecutor(max_workers = threads, thread_name_prefix = "png-strip") as pool:
+        futures = [
+            pool.submit(_strip, pixels, bpp, level, start, stop, index == len(strips) - 1)
+            for index, (start, stop) in enumerate(strips)
+        ]
+        try:
+            for future in futures:
+                data, adler, length = future.result()
+                checksum = _adler32_combine(checksum, adler, length)
+                yield data
+        finally:
+            for future in futures:
+                future.cancel()
+    yield struct.pack(">I", checksum)
+
+
 def _chunks(data: bytes) -> Optional[list[tuple[bytes, int, int]]]:
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         return None
@@ -141,7 +202,21 @@ def _framing(image: Any, mode: str, save_kwargs: dict) -> Optional[tuple[bytes, 
     return header + data[33 : first[1]], data[last[1] + 12 + last[2] :]
 
 
-def _encode(image: Any, mode: str, level: int, save_kwargs: dict) -> Optional[bytes]:
+def _strip_threads(pixel_bytes: int, threads: Optional[int]) -> int:
+    if pixel_bytes < _STRIP_MIN_BYTES or not _strips_enabled():
+        return 1
+    if threads is None:
+        threads = getattr(os, "process_cpu_count", os.cpu_count)() or 1
+    return max(1, min(int(threads), _MAX_STRIP_THREADS))
+
+
+def _encode(
+    image: Any,
+    mode: str,
+    level: int,
+    save_kwargs: dict,
+    threads: int = 1,
+) -> Optional[bytes]:
     import numpy as np
     from PIL import ImageFile
 
@@ -162,7 +237,11 @@ def _encode(image: Any, mode: str, level: int, save_kwargs: dict) -> Optional[by
         out.write(piece)
         out.write(struct.pack(">I", zlib.crc32(piece, zlib.crc32(b"IDAT"))))
 
-    for data in _deflated(pixels, bpp, level):
+    if threads > 1:
+        stream = _strip_deflated(pixels, bpp, level, threads)
+    else:
+        stream = _deflated(pixels, bpp, level)
+    for data in stream:
         pending += data
         while len(pending) >= bufsize:
             idat(pending[:bufsize])
@@ -228,8 +307,9 @@ def encode(
     *,
     pnginfo: Any = None,
     compress_level: int,
+    threads: Optional[int] = None,
 ) -> Optional[bytes]:
-    """``image.save(fp, "PNG", pnginfo = ..., compress_level = ...)``'s bytes, or None: the caller uses Pillow."""
+    """``image.save(fp, "PNG", ...)``'s bytes, or None (Pillow encodes); large images use strips (same pixels, other bytes)."""
     global engaged
     mode = getattr(image, "mode", None)
     if (
@@ -245,7 +325,9 @@ def encode(
     if pnginfo is not None:
         kwargs["pnginfo"] = pnginfo
     try:
-        data = _encode(image, mode, int(compress_level), kwargs)
+        bpp = _MODES[mode][0]
+        strip_threads = _strip_threads(image.width * image.height * bpp, threads)
+        data = _encode(image, mode, int(compress_level), kwargs, strip_threads)
     except Exception:  # noqa: BLE001 - Pillow's encoder is always correct
         return None
     if data is not None:

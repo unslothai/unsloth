@@ -86,6 +86,8 @@ def _torch():
 FORCE_FAMILIES_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_FAMILIES"
 # A module attribute: zero-arg callable returning hashable per-call state that the forward branches on.
 GRAPH_KEY_EXTRA_ATTR = "_unsloth_graph_key_extra"
+# On an exception that hook raises to decline a call: the status reason (else the exception type names it).
+GRAPH_DECLINE_ATTR = "graph_decline"
 # =1: a denoiser whose text length follows the prompt records every new prompt length, on any render (the old way).
 EVERY_LENGTH_ENV = "UNSLOTH_DIFFUSION_CUDA_GRAPH_EVERY_LENGTH"
 
@@ -1339,6 +1341,8 @@ class GraphedForward:
         self.bypassed = False
         self.poisoned = False
         self.capture_error: Optional[dict] = None
+        # Set when the module's branch-key hook declines a call (_branch_declined): the status names it.
+        self.branch_refusal: Optional[str] = None
         self.cache: dict = {}
         self.cap_hit = False
         self._warmed: dict = {}
@@ -1369,6 +1373,7 @@ class GraphedForward:
             "refused_float": 0,
             "refused_host_tensor": 0,
             "refused_object": 0,
+            "refused_branch": 0,
             "cap_skips": 0,
             "invalidations": 0,
             "pool_bytes": 0,
@@ -1776,6 +1781,19 @@ class GraphedForward:
                 type(self.module).__name__,
             )
 
+    def _branch_declined(self, exc: BaseException) -> None:
+        """The module's branch-key hook (GRAPH_KEY_EXTRA_ATTR) raised: a deliberate decline (Krea 2's per-prompt key
+        start) or an unreadable flag. Counted apart from non-tensor arguments, named in the status, logged once."""
+        self.stats["refused_branch"] = self.stats.get("refused_branch", 0) + 1
+        reason = branch_decline_reason(exc)
+        if getattr(self, "branch_refusal", None) != reason:
+            self.branch_refusal = reason
+            if self.logger is not None:
+                self.logger.info(
+                    "diffusion.cuda_graph: %s runs eager: %s", type(self.module).__name__, reason
+                )
+        exc.__traceback__ = None
+
     def __call__(self, *args, **kwargs):
         if _bg_capture_suppressed():
             # Background compile thread: never capture off the render thread.
@@ -1858,6 +1876,7 @@ class GraphedForward:
             # no static buffer holds that, and a capture failing on it would poison the graphs of every plain call.
             self.stats["refused_object"] += 1
             return self._eager(eager_args, eager_kwargs)
+        declined = False
         try:
             key = graph_key((args, kwargs))
             if self.protect_keyed is None:
@@ -1880,14 +1899,26 @@ class GraphedForward:
             extra = getattr(self.module, GRAPH_KEY_EXTRA_ATTR, None)
             if callable(extra):
                 # Pre-hook state that picks a branch: a graph recorded on one branch must not replay the other.
-                key = key + (("x", extra()),)
-            entry = self.cache.get(key)
-            scope = _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
-            # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a later
-            # step of this render still has to record: its scope seals when the render ends (seal_lengths).
-            step_keyed = bool(self.protect_keyed) or callable(extra)
+                try:
+                    branch = extra()
+                except Exception as exc:  # noqa: BLE001 - the hook declines this call: it runs eager
+                    self._branch_declined(exc)
+                    declined = True
+                else:
+                    key = key + (("x", branch),)
+            if not declined:
+                entry = self.cache.get(key)
+                scope = (
+                    _image_scope(args, kwargs) if getattr(self, "length_varies", False) else None
+                )
+                # A key that also follows the step (NVFP4 protect branch, a pre-hook's branch flag) has variants a
+                # later step of this render still has to record: its scope seals when the render ends (seal_lengths).
+                step_keyed = bool(self.protect_keyed) or callable(extra)
         except Exception:  # noqa: BLE001 - an unhashable tree is simply not capturable
             self.stats["refused_object"] += 1
+            return self._eager(eager_args, eager_kwargs)
+        if declined:
+            # Outside the key handler: an error in the eager forward propagates instead of running it twice.
             return self._eager(eager_args, eager_kwargs)
 
         if entry is None:
@@ -3261,7 +3292,13 @@ def uninstall_all(handles: Any, *, logger: Any = None) -> None:
     _drop_pool_if_unused()
 
 
-_REFUSALS = ("refused_float", "refused_host_tensor", "refused_object")
+_REFUSALS = ("refused_float", "refused_host_tensor", "refused_object", "refused_branch")
+
+
+def branch_decline_reason(exc: BaseException) -> str:
+    """Why a branch-key hook declined a call: its exception's ``graph_decline`` text, else the exception type."""
+    reason = getattr(exc, GRAPH_DECLINE_ATTR, None)
+    return str(reason) if reason else f"declined: branch key unreadable ({type(exc).__name__})"
 
 
 def stats(handles: Any) -> dict:
@@ -3406,6 +3443,12 @@ def never_engaged(handles: Any) -> Optional[str]:
         )
         if s[field]
     ]
+    if s["refused_branch"]:
+        declined = next(
+            (str(h.branch_refusal) for h in handles if getattr(h, "branch_refusal", None)),
+            "declined by the denoiser's branch key",
+        )
+        parts.append(f"{s['refused_branch']} {declined}")
     detail = ", ".join(parts) if parts else "bypassed"
     return f"armed, but all {s['eager_calls']} denoiser call(s) so far ran eager ({detail})"
 

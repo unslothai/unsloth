@@ -91,7 +91,6 @@ def test_init_snapshots_before_gpu_init_and_restores_last():
     lines = _top_level_calls(tree)
     assert lines["snapshot_cudnn_sdpa_before_import"] < lines["_gpu_init"]
     restore = lines["restore_cudnn_sdpa_after_import"]
-    # After every other module-level import of the package.
     last_import = max(
         node.lineno
         for node in tree.body

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { readFastApiError } from "@/lib/format-fastapi-error";
 
 import { sandboxRoutePrefix } from "./sandbox-files";
 
@@ -35,20 +36,9 @@ export async function uploadToSandbox(
     body: form,
   });
   if (!response.ok) {
-    let detail = "";
-    try {
-      const body: unknown = await response.json();
-      const value = (body as { detail?: unknown } | null)?.detail;
-      if (typeof value === "string") detail = value;
-    } catch {
-      // A non-JSON error body leaves the status as the only thing to report.
-    }
-    throw Object.assign(
-      new Error(detail || `Request failed (${response.status})`),
-      {
-        status: response.status,
-      },
-    );
+    throw Object.assign(new Error(await readFastApiError(response)), {
+      status: response.status,
+    });
   }
   const result = (await response.json()) as SandboxUploadResult;
   for (const listener of sandboxUploadListeners) {

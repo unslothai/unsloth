@@ -229,3 +229,86 @@ test("a relay to a custom endpoint gets the session, and the Hugging Face token 
   const anonymous = ["Bearer session", null];
   assert.deepEqual(sent, [both, anonymous, both, anonymous, both, fresh, fresh, ["Bearer hf_x", null]]);
 });
+
+test("hub page links open ModelScope directly, aliased ids included", async () => {
+  const { hubWebUrl, setHubPageLinks } = await import("../src/lib/hf-endpoint.ts");
+  const adapter = "http://127.0.0.1:8888/api/hub/modelscope";
+  resetHfEndpoints();
+  setHfEndpoints(adapter, undefined, "modelscope");
+  assert.equal(hubWebUrl(`${adapter}/unsloth/Qwen3-8B`), `${adapter}/unsloth/Qwen3-8B`);
+  setHubPageLinks(null, {
+    base: "https://www.modelscope.cn",
+    aliases: { model: {}, dataset: { "openai/gsm8k": "AI-ModelScope/gsm8k" } },
+  });
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/datasets/OpenAI/GSM8K`),
+    "https://www.modelscope.cn/datasets/AI-ModelScope/gsm8k",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B/resolve/main/docs/guide.md#setup`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B/resolve/master/docs/guide.md#setup",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/unsloth/Qwen3-8B?tab=files`),
+    "https://www.modelscope.cn/models/unsloth/Qwen3-8B?tab=files",
+  );
+  setHubPageLinks(null, {
+    base: "https://www.modelscope.cn",
+    aliases: {
+      model: { "zai-org/cogvlm-chat-hf": "zai-org/cogvlm-chat-hf", "zai-org/x": "AI-ModelScope/x" },
+      dataset: {},
+    },
+    orgs: { "zai-org": "ZhipuAI" },
+  });
+  assert.equal(
+    hubWebUrl(`${adapter}/ZAI-ORG/GLM-5.3/resolve/main/README.md`),
+    "https://www.modelscope.cn/models/ZhipuAI/GLM-5.3/resolve/master/README.md",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/zai-org/cogvlm-chat-hf`),
+    "https://www.modelscope.cn/models/zai-org/cogvlm-chat-hf",
+  );
+  assert.equal(hubWebUrl(`${adapter}/zai-org/x`), "https://www.modelscope.cn/models/AI-ModelScope/x");
+  assert.equal(
+    hubWebUrl(`${adapter}/constructor/chinese-roberta-wwm-ext-large`),
+    "https://www.modelscope.cn/models/constructor/chinese-roberta-wwm-ext-large",
+  );
+  assert.equal(
+    hubWebUrl(`${adapter}/datasets/zai-org/d`),
+    "https://www.modelscope.cn/datasets/zai-org/d",
+  );
+  // A pinned revision needs the backend's commit mapping, so it keeps the mount.
+  const pinned = `${adapter}/unsloth/Qwen3-8B/resolve/${"a".repeat(40)}/LICENSE`;
+  assert.equal(hubWebUrl(pinned), pinned);
+  assert.equal(hubWebUrl("https://example.com/x/y"), "https://example.com/x/y");
+});
+
+test("hub page links on a relayed mirror use the mirror's own origin", async () => {
+  const { hubWebUrl, missingHubPageBase, setHubPageBase, setHubPageLinks } = await import(
+    "../src/lib/hf-endpoint.ts"
+  );
+  const relay = "http://127.0.0.1:8888/api/hub/endpoint/abc";
+  resetHfEndpoints();
+  setHfEndpoints("https://hf-mirror.com", undefined, "huggingface");
+  assert.equal(missingHubPageBase(), null);
+  setHfEndpoints(relay, undefined, "huggingface", { endpoint: true });
+  setHubPageLinks(null, undefined);
+  assert.equal(missingHubPageBase(), relay);
+  assert.equal(hubWebUrl(`${relay}/org/m`), `${relay}/org/m`);
+  setHubPageBase(relay, "https://hf-mirror.com/");
+  assert.equal(missingHubPageBase(), null);
+  assert.equal(hubWebUrl(`${relay}/datasets/org/d`), "https://hf-mirror.com/datasets/org/d");
+  // A base loaded for an endpoint that has since changed is never applied to the new one.
+  const next = "http://127.0.0.1:8888/api/hub/endpoint/def";
+  setHfEndpoints(next, undefined, "huggingface", { endpoint: true });
+  assert.equal(hubWebUrl(`${next}/org/m`), `${next}/org/m`);
+  setHubPageLinks("https://hub.internal", undefined);
+  assert.equal(hubWebUrl(`${next}/org/m`), "https://hub.internal/org/m");
+  setHubPageBase(relay, "https://stale.example");
+  assert.equal(hubWebUrl(`${next}/org/m`), "https://hub.internal/org/m");
+});
+

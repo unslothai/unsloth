@@ -265,7 +265,7 @@ def test_missing_source_shards_is_a_miss(env, tmp_path, scheme):
 
 def test_uncached_schemes_never_key(env, tmp_path):
     base, _ = _write_base(tmp_path)
-    assert C.lookup(_fam(base), "nvfp4", base_repo = str(base)) is None
+    assert C.lookup(_fam(base), "mxfp8", base_repo = str(base)) is None
 
 
 # ------------------------------------------------------------------------------------------------ atomicity
@@ -558,6 +558,9 @@ def test_quantize_transformer_stamps_what_the_cache_needs(env, tmp_path, scheme,
 
 
 # ------------------------------------------------------------------------------------------------ host RAM
+@pytest.mark.skipif(
+    sys.platform == "win32", reason = "ru_maxrss comes from the POSIX-only resource module"
+)
 def test_streaming_save_does_not_hold_the_state_dict_on_the_host(tmp_path):
     """ru_maxrss of a child writing 384 MB: the streaming writer adds far less than the payload, save_file about it."""
     script = textwrap.dedent(
@@ -1100,7 +1103,9 @@ def test_a_shared_blob_store_snapshot_is_judged_by_its_repo_blob_etag(
     _quantize(model, scheme)
     link, blob = _hub_snapshot(tmp_path, base)
     if relative:  # the hub's own snapshot links are relative
-        target = os.readlink(link)
+        target = C._plain_link_target(
+            os.readlink(link)
+        )  # Windows readlink adds \\?\, which relpath rejects
         os.unlink(link)
         os.symlink(os.path.relpath(target, os.path.dirname(link)), link)
     xet_hash = _share_blob(tmp_path, link)
@@ -1120,6 +1125,47 @@ def test_a_shared_blob_store_snapshot_is_judged_by_its_repo_blob_etag(
     C._REMOTE_MEMO.clear()
     remote["etag"] = "f" * 64  # main moved to new weights
     assert C.lookup(fam, scheme, base_repo = "org/tiny") is None
+
+
+def test_an_extended_length_link_target_is_followed_like_a_plain_one(
+    env, tmp_path, scheme, monkeypatch
+):
+    """Windows ``os.readlink`` returns an absolute target as ``\\\\?\\C:\\...``. Without stripping it the first hop is
+    never seen to land in ``<repo>/blobs`` and the chain is followed into the shared store, keying on the xet hash."""
+    base, _ = _write_base(tmp_path)
+    link, blob = _hub_snapshot(tmp_path, base)
+    xet_hash = _share_blob(tmp_path, link)
+    real_readlink = os.readlink
+
+    def windows_readlink(path, *args, **kwargs):
+        target = real_readlink(path, *args, **kwargs)
+        if not os.path.isabs(target) or target.startswith("\\\\?\\"):
+            return target  # already the Windows form on Windows itself
+        return "\\\\?\\" + target
+
+    # Only the module's own readlink calls see the Windows form; os.path.realpath keeps the real one.
+    windows_os = types.SimpleNamespace(
+        **{k: getattr(os, k) for k in dir(os) if not k.startswith("__")}
+    )
+    windows_os.readlink = windows_readlink
+    monkeypatch.setattr(C, "os", windows_os)
+    assert os.path.isabs(
+        real_readlink(link)
+    )  # the snapshot link is absolute, so the prefix is really applied
+    assert C._hub_coords(link)[2] == blob != xet_hash
+
+
+@pytest.mark.parametrize(
+    "target, plain",
+    [
+        ("\\\\?\\C:\\hub\\blobs\\e", "C:\\hub\\blobs\\e"),
+        ("\\\\?\\UNC\\server\\share\\blobs\\e", "\\\\server\\share\\blobs\\e"),
+        ("/home/u/hub/blobs/e", "/home/u/hub/blobs/e"),
+        ("../../blobs/e", "../../blobs/e"),
+    ],
+)
+def test_plain_link_target_strips_only_the_extended_length_prefix(target, plain):
+    assert C._plain_link_target(target) == plain
 
 
 def test_hub_coords_of_legacy_and_copied_snapshots_keep_their_names(tmp_path):

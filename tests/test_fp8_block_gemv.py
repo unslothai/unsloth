@@ -255,7 +255,7 @@ def test_router_small_m_first_falls_back(monkeypatch):
 
 
 def test_router_binding_follows_sm_count():
-    bound = F8.fp8_block_quant_linear
+    bound = F8.resolve_fp8_block_quant_linear()
     if (
         F8.fp8_block_matmul is not F8.w8a8_block_fp8_matmul_triton
         or bound.__wrapped__ is not F8.fp8_torch_block_quant_forward

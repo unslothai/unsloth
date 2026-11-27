@@ -90,8 +90,7 @@ def test_the_refusal_does_not_name_a_maximum_it_has_not_computed(corpus: Corpus)
 
 
 def test_the_default_ladder_is_untouched(corpus: Corpus):
-    """The guard is scoped to an EXPLICIT request. The pinned ladder must not acquire a new way
-    to fail, at any rung, and its numbers must not move by a character."""
+    """Guard is explicit-request only; pinned ladder gains no failure and keeps its numbers."""
     for rung in RUNGS:
         plan = plan_rung(corpus, rung)
         assert plan.streamed_chars <= STREAM_TAIL_CHARS, rung

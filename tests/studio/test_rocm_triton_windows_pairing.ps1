@@ -45,8 +45,7 @@ function Invoke-BoundedPythonProbe {
         if (-not $py) { $py = Get-Command python3 }
         $savedPath = $env:PYTHONPATH
         $env:PYTHONPATH = $script:RealProbeDir
-        # Continue: under Stop, Windows PowerShell 5.1 turns the failing import's redirected stderr into a
-        # terminating error before the exit code is read (the probe helper in setup.ps1 reads stderr itself).
+        # Under Stop, PS 5.1 makes redirected stderr terminating before the exit code is read.
         $ErrorActionPreference = "Continue"
         try { $out = & $py.Source -S -c $Code 2>&1 | Out-String } finally { $env:PYTHONPATH = $savedPath }
         return @{ Ok = ($LASTEXITCODE -eq 0); Output = $out }
@@ -318,7 +317,6 @@ try {
         Check "a $pre runtime is not a 3.8 release" ((Get-RocmTritonPairing).Stale)
     }
     New-TritonPackage -Version "3.8.0"
-    # A leftover or versionless record does not hide the 3.8 record.
     New-DistInfo "triton_windows-0.dist-info" "triton-windows" ""
     New-DistInfo "triton_windows-3.9.0.post30.dist-info" "triton-windows" "3.9.0.post30"
     $pair = Get-RocmTritonPairing

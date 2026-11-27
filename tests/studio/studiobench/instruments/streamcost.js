@@ -123,8 +123,7 @@
     st.pending = parts.pop();
     if (carried && parts.length > 0) noteCarried(st);
     for (const part of parts) {
-      // A block may carry id: / event: lines before its data (chat-run events do); per SSE, the
-      // block's data is its data: lines joined by newlines, and comment / other field lines are not data.
+      // Only data: lines form a block's data, joined by newlines; other fields are skipped.
       const dataLines = [];
       for (const raw of part.split("\n")) {
         const field = raw.trim();
@@ -186,8 +185,7 @@
       // A frame continuation is stream traffic and starts a task chain like any other chunk.
       const continuesFrame = st.pending.length > 0;
       if (looksSse || continuesFrame) noteSse();
-      // looksSse || pending: the second half of a split frame has no marker.
-      // Feed the whole chunk (only the scan is bounded); only now does this decoder become active.
+      // Split frame's tail has no marker; feed the whole chunk, then mark the decoder active.
       if (looksSse || continuesFrame) {
         // A fragment on a different decoder cannot be part of this stream.
         if (markerHold && markerHold !== st) setMarkerTail(markerHold, "");

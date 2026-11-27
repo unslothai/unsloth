@@ -4,6 +4,7 @@
 """A singular `image` column holding a list takes the plural path: TRL wraps the cell
 again, so two images reach the processor as [[[img, img]]]. unslothai/unsloth#3605."""
 
+import ast
 import textwrap
 
 import pytest
@@ -135,14 +136,33 @@ def test_the_guard_reads_every_row_not_only_the_first():
         _unsloth_reject_grpo_image_list(rows)
 
 
+def _assert_guard_runs_before_inputs_is_read(patched):
+    """The guard must be the first statement of the rewritten body that reads ``inputs``.
+
+    Other rewrites may put their own preamble ahead of it (the untruncated vLLM logprob
+    setter does), so the guard's line number is not the contract. What matters is that no
+    statement reads the rows before the guard has refused a multi image list."""
+    tree = ast.parse(textwrap.dedent(patched))
+    func = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "_generate_and_score_completions"
+    )
+
+    def reads_inputs(stmt):
+        return any(isinstance(node, ast.Name) and node.id == "inputs" for node in ast.walk(stmt))
+
+    first = next(stmt for stmt in func.body if reads_inputs(stmt))
+    assert ast.unparse(first) == "_unsloth_reject_grpo_image_list(inputs)", ast.unparse(first)
+
+
 def test_guard_is_injected_when_no_anchor_matches():
     source = "    def _generate_and_score_completions(self, inputs):\n        return inputs\n"
     patched = grpo_trainer__generate_and_score_completions(
         "_generate_and_score_completions", source
     )
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    lines = patched.splitlines()
-    assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_guard_is_injected_when_the_legacy_reference_calls_drift():
@@ -165,8 +185,7 @@ def test_guard_is_injected_when_the_legacy_reference_calls_drift():
     )
     assert "_unsloth_grpo_image_cell(img)" in patched
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    lines = patched.splitlines()
-    assert lines[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_guard_stays_off_a_trl_whose_reference_calls_do_take_the_counts():
@@ -234,7 +253,7 @@ def test_a_trl_that_cannot_size_its_placeholders_refuses_the_multi_image_row():
     )
     assert "_unsloth_grpo_image_cell(img)" in patched
     assert "_unsloth_reject_grpo_image_list(inputs)" in patched
-    assert patched.splitlines()[1].strip() == "_unsloth_reject_grpo_image_list(inputs)"
+    _assert_guard_runs_before_inputs_is_read(patched)
 
 
 def test_a_trl_that_can_size_its_placeholders_is_not_refused():

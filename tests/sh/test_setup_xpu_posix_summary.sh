@@ -89,8 +89,7 @@ check "arm exists"               "$([ -n "$_arm" ] && echo yes || echo no)" "yes
 check "ranked after NVIDIA"      "$([ -n "$_arm" ] && [ -n "$_nv" ] && [ "$_arm" -gt "$_nv" ] && echo yes || echo no)" "yes"
 check "ranked after AMD"         "$([ -n "$_arm" ] && [ -n "$_amd" ] && [ "$_arm" -gt "$_amd" ] && echo yes || echo no)" "yes"
 check "ranked before the CPU arm" "$([ -n "$_arm" ] && [ -n "$_none" ] && [ "$_arm" -lt "$_none" ] && echo yes || echo no)" "yes"
-# With neither CUDA nor XPU, importing unsloth raises, so the arm must not promise CPU training.
-# Comment lines are dropped since the arm quotes the wording it must not use.
+# No CUDA or XPU: unsloth import raises, so no CPU promise; comments skipped as they quote it.
 _warn_arm=$(awk '/^elif \[ "\$_setup_torch_is_xpu" = true \]; then$/{on=1;next} on && /^elif|^else/{exit} on' "$SETUP_SH" | grep -v '^[[:space:]]*#')
 check "warn arm was extracted" "$(printf '%s' "$_warn_arm" | grep -ci 'XPU runtime unavailable')" "1"
 check "no CPU-training promise" "$(printf '%s' "$_warn_arm" | grep -ci 'run on CPU\|runs on CPU')" "0"
@@ -110,7 +109,6 @@ _probe=$(sed -n "s/^ *_setup_xpu_probe='\(.*\)'$/\1/p" "$SETUP_SH" | head -1)
 check "probe was extracted" "$([ -n "$_probe" ] && echo yes || echo no)" "yes"
 check "probe carries its own deadline" \
     "$(printf '%s' "$_probe" | grep -q 'signal.alarm(' && echo yes || echo no)" "yes"
-# Both arms must run the SAME probe string; comment lines excluded.
 check "no second probe literal" \
     "$(grep -v '^ *#' "$SETUP_SH" | grep -c "torch.xpu.is_available()")" "1"
 check "fallback arm reuses the probe" \
