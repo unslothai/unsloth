@@ -100,7 +100,6 @@ def test_patched_forward_takes_the_matmul_only_for_half_cuda_patch_rows(monkeypa
     conv = module.proj
     x = torch.randn(5, 3, 2, 4, 4).bfloat16()
     stock = torch.nn.Conv3d.forward(conv, x)
-    # CPU input: the stock conv, untouched.
     assert torch.equal(conv(x), stock)
     calls = []
     real = pe.patch_conv_as_linear
@@ -138,9 +137,7 @@ def test_install_is_gated_and_idempotent(monkeypatch):
     assert pe.install_patch_embed_linear(pipe, _Target("cuda"), affected = True) == 0
     monkeypatch.setenv(pe.PATCH_EMBED_LINEAR_ENV, "1")
     assert pe.install_patch_embed_linear(pipe, _Target("cuda"), affected = False) == 1
-    assert (
-        pe.install_patch_embed_linear(pipe, _Target("cuda"), affected = False) == 0
-    )  # once per module
+    assert pe.install_patch_embed_linear(pipe, _Target("cuda"), affected = False) == 0
 
 
 def test_install_skips_everything_that_is_not_a_patchify_patch_embed(monkeypatch):
@@ -170,7 +167,7 @@ def test_real_transformers_qwen_vl_patch_embeds_are_matched():
     for embed, p in ((q25, 14), (q3, 16)):
         x = torch.randn(7, 3 * 2 * p * p)
         with torch.no_grad():
-            out = embed(x)  # fp32 on CPU: the stock conv inside the patched forward
+            out = embed(x)
             ref = torch.nn.Conv3d.forward(embed.proj, x.view(-1, 3, 2, p, p)).view(-1, 32)
         assert torch.equal(out, ref)
 

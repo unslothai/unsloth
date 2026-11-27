@@ -1,17 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-VL vision ``patch_embed.proj`` (a Conv3d whose kernel equals its stride) as one F.linear.
+"""Qwen-VL ``patch_embed.proj`` (Conv3d, kernel == stride) as one F.linear.
 
-torch 2.9.x refuses cuDNN for a contiguous bf16 / fp16 Conv3d with a non-1 kernel when the runtime
-cuDNN is 9.8 to 9.14 (``use_cudnn`` in aten/src/ATen/native/Convolution.cpp, "broken on cuDNN 9.8 -
-9.14"; torch 2.10 dropped the check). The pip wheels of torch 2.9.0 / 2.9.1 ship cuDNN 9.10.2, so
-the call falls to the native slow_conv3d: on an L4 the Qwen3-VL patch embed takes 5.3 s for 576
-patches and 37 s for 4096 (a 1024x1024 edit reference), on every call, against under 1 ms as a
-matmul. Each input row is exactly one patch, so the conv is a matmul over the flattened patch.
-
-Only installed on that torch / cuDNN range; ``UNSLOTH_PATCH_EMBED_LINEAR=0`` keeps the stock conv,
-``=1`` installs it on any CUDA torch.
+torch 2.9.x refuses cuDNN for bf16 / fp16 Conv3d on cuDNN 9.8-9.14 (``use_cudnn`` in
+Convolution.cpp; fixed in 2.10), and the 2.9 wheels ship 9.10.2, so it hits slow_conv3d
+(37 s for 4096 patches on an L4 vs under 1 ms as a matmul).
+``UNSLOTH_PATCH_EMBED_LINEAR=0`` keeps the stock conv, ``=1`` forces it on any CUDA torch.
 """
 
 from __future__ import annotations
@@ -23,7 +18,6 @@ from typing import Any, Optional
 PATCH_EMBED_LINEAR_ENV = "UNSLOTH_PATCH_EMBED_LINEAR"
 _FALSE = ("0", "false", "no", "off")
 _TRUE = ("1", "true", "yes", "on", "force")
-# The cuDNN window torch 2.9's use_cudnn refuses for 5-D half / bf16 convs with a non-1 kernel.
 _CUDNN_REFUSED = (90800, 91500)
 
 
