@@ -2192,6 +2192,13 @@ def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
         value = json.loads(text)
     except (ValueError, RecursionError):
         return text, []
+    lifted, found = _lift_inline_image_values(value)
+    if not found:
+        return text, []
+    return json.dumps(lifted, ensure_ascii = False), found
+
+
+def _lift_inline_image_values(value: Any) -> tuple[Any, list[tuple[str, str]]]:
     found: list[tuple[str, str]] = []
 
     def lift(node: Any) -> Any:
@@ -2205,10 +2212,7 @@ def _lift_inline_images(text: str) -> tuple[str, list[tuple[str, str]]]:
             return [lift(item) for item in node]
         return node
 
-    lifted = lift(value)
-    if not found:
-        return text, []
-    return json.dumps(lifted, ensure_ascii = False), found
+    return lift(value), found
 
 
 def _same_json_value(decoded: Any, value: Any) -> bool:
@@ -2293,29 +2297,28 @@ def _flatten_result(result: Any, ui_resource_uri: Optional[str] = None) -> str:
             unshown.append(note)
             if data:
                 payloads.add(data)
-    # After the block images: the widget hands images out positionally to the image blocks in its seed.
-    for data, mime in lifted:
-        payloads.add(data)
-        if len(data) > budget:
-            omitted += 1
-            continue
-        budget -= len(data)
-        images.append({"data": data, "mimeType": mime})
-    body = "\n".join(parts)
     if (
         structured is not None
         and isinstance(wrapped, list)
         and _mirrors_split_list(blocks, wrapped)
     ):
         structured = None
-    # the filesystem server mirrors binary blocks in structured_content; keep everything else
+    payloads.update(data for data, _ in lifted)
+    # The filesystem server mirrors binary blocks in structured_content; keep everything else.
     if structured is not None and payloads:
         structured = _strip_payloads(structured, payloads)
     if structured is not None and structured is not _MIRRORED:
-        if body.lstrip().startswith(TOOL_ERROR_PREFIXES):
-            body = f"{body}\n{structured}"
-        else:
-            body = f"{structured}\n{body}" if body else str(structured)
+        structured, structured_images = _lift_inline_image_values(structured)
+        lifted.extend(structured_images)
+        parts.append(str(structured))
+    # After the block images: the widget hands images out positionally to the image blocks in its seed.
+    for data, mime in lifted:
+        if len(data) > budget:
+            omitted += 1
+            continue
+        budget -= len(data)
+        images.append({"data": data, "mimeType": mime})
+    body = "\n".join(parts)
     if images or omitted or unshown:
         notes = []
         if images:
