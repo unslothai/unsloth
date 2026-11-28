@@ -514,3 +514,29 @@ def test_sm120_below_the_int8_gate_falls_back_to_fp8(wrapped, bnb_missing, monke
         else None,
     )
     assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == FP8
+
+
+def test_loaded_base_kind_reads_every_linear():
+    def model(*dtypes, quantized_last = False):
+        layers = [torch.nn.Linear(8, 8).to(d) for d in dtypes]
+        if quantized_last:
+            layers[-1].weight.quant_state = object()  # what bitsandbytes Params4bit carries
+        return torch.nn.Sequential(*layers)
+
+    # A 16-bit tower / head listed before the quantized decoder: still a quantized base.
+    assert (
+        f8t._loaded_base_kind(model(torch.bfloat16, torch.bfloat16, quantized_last = True))
+        == "quantized"
+    )
+    # An fp32 router or head first beside 16-bit layers: a 16-bit base.
+    assert f8t._loaded_base_kind(model(torch.float32, torch.bfloat16)) is None
+    assert f8t._loaded_base_kind(model(torch.float32, torch.float32)) == "float32"
+    assert f8t._loaded_base_kind(model(torch.float16)) is None
+
+
+def test_int8_lora_gemm_ops_are_counted_as_low_precision():
+    from unsloth.precision import engage
+    assert {"unsloth::int8_lora_mm", "unsloth::int8_lora_dgrad"} <= set(engage.LOWP_GEMM_CUSTOM_OPS)
+    assert (
+        "unsloth::int8_lora_quant_x" not in engage.LOWP_GEMM_CUSTOM_OPS
+    )  # quantization, not a GEMM

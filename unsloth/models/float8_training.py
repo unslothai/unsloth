@@ -473,7 +473,10 @@ def _parallel_layout_requested() -> bool:
 
 
 def _loaded_base_kind(model):
-    """'quantized', 'float32' or None (a 16-bit base) from the loaded model's Linear weights."""
+    """'quantized', 'float32' or None (a 16-bit base) from ALL the loaded model's Linear weights: any quantized
+    Linear makes the base quantized (a bnb 4-bit model keeps 16-bit towers / heads, which may come first), else
+    any 16-bit Linear makes it 16 bit (an fp32 router or head beside it does not), else float32."""
+    seen_16bit = seen_fp32 = False
     for module in model.modules():
         if not isinstance(module, torch.nn.Linear):
             continue
@@ -485,10 +488,15 @@ def _loaded_base_kind(model):
             or getattr(weight, "quant_state", None) is not None
         ):
             return "quantized"
-        if weight.dtype not in (torch.bfloat16, torch.float16):
-            return "float32" if weight.dtype == torch.float32 else "quantized"
+        if weight.dtype in (torch.bfloat16, torch.float16):
+            seen_16bit = True
+        elif weight.dtype == torch.float32:
+            seen_fp32 = True
+        else:
+            return "quantized"
+    if seen_16bit:
         return None
-    return None
+    return "float32" if seen_fp32 else None
 
 
 def int8_lora_from_env(

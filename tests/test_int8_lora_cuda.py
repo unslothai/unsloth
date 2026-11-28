@@ -407,3 +407,28 @@ def test_each_layer_device_is_gated(monkeypatch):
     gates[cls] = R.Gate("refused", "measured slower here")
     monkeypatch.setitem(R.RECIPES, "int8_lora_rotated", dataclasses.replace(r, gates = gates))
     assert "measured slower here" in IL.eligible_base(lin)
+
+
+def test_compiled_int8_lora_gemms_are_counted():
+    from unsloth import precision as P
+
+    torch._dynamo.reset()
+    lin = torch.nn.Linear(
+        2048, 1024, bias = False, device = "cuda", dtype = torch.bfloat16
+    ).requires_grad_(False)
+    state = IL.attach_int8_lora_base(lin, offload = False)
+    W = lin.weight
+
+    def run(x, dy):
+        return state.matmul(x, W), state.dgrad(dy, W)
+
+    compiled = torch.compile(run, fullgraph = True)
+    x = torch.randn(4096, 2048, device = "cuda", dtype = torch.bfloat16)
+    dy = torch.randn(4096, 1024, device = "cuda", dtype = torch.bfloat16)
+    compiled(x, dy)
+    with P.count_lowp_gemms() as counts:
+        compiled(x, dy)
+    assert counts["unsloth::int8_lora_mm"] == 1 and counts["unsloth::int8_lora_dgrad"] == 1, dict(
+        counts
+    )
+    IL.clear_int8_lora_cache()
