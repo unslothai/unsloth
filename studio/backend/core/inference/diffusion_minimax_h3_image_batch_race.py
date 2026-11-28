@@ -163,6 +163,7 @@ def run_race(
     width: int,
     height: int,
     steps: int,
+    guidance: Optional[float] = None,
     sizes: Sequence[int] = RACE_SIZES,
     repeats: int = 5,
     accuracy: bool = True,
@@ -173,6 +174,7 @@ def run_race(
     """Race the batched forward off against on, one k-image call each, at every size; persist each size's verdict
     (losers too). ``idle`` is checked before every render: a request that starts waiting aborts the race."""
     from . import diffusion_batch_race as race
+    from .diffusion_minimax_h3_image import H3_IMAGE_GUIDANCE
 
     bad = race.invalid_race_sizes(list(sizes))
     if bad:
@@ -186,6 +188,8 @@ def run_race(
         "width": int(width),
         "height": int(height),
         "steps": int(steps),
+        # guidance-distilled: generate()'s own default (0) is refused, so the race sends the one value it takes
+        "guidance": float(H3_IMAGE_GUIDANCE if guidance is None else guidance),
         "live_preview": False,
     }
     configuration = race._execution_configuration(state)

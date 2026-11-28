@@ -224,8 +224,9 @@ def test_the_auto_cap_is_the_measured_size_or_one(h3i, monkeypatch):
 
 def _generate(pipe, calls):
     import torch
-    def generate(*, prompt, seeds, batch_size, width, height, steps, live_preview):
-        assert batch_size == len(seeds) and live_preview is False
+    def generate(*, prompt, seeds, batch_size, width, height, steps, guidance, live_preview):
+        # generate()'s default guidance (0) is refused by this guidance-distilled family
+        assert batch_size == len(seeds) and live_preview is False and guidance == 1.0
         calls.append(len(seeds))
         out = pipe(
             prompt = [prompt] * len(seeds),
@@ -383,7 +384,7 @@ def test_the_engine_races_this_family_instead_of_refusing_it(h3r, monkeypatch):
     report = engine.batch_race(width = 1024, height = 1024, steps = None, sizes = (2, 4))
     assert report["kind"] == "h3_image_batched_forward"
     assert seen["state"] is engine._state and seen["width"] == 1024 and seen["sizes"] == (2, 4)
-    assert seen["steps"] == 6
+    assert seen["steps"] == 6 and seen["guidance"] is None
     # the backend registers itself, so a pipe call finds the loaded state that holds it
     engine._state.pipe = object()
     assert h3r.state_of(engine._state.pipe) is engine._state

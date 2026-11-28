@@ -18583,6 +18583,7 @@ class DiffusionBackend:
                 width = width,
                 height = height,
                 steps = H3_IMAGE_STEPS if steps is None else int(steps),
+                guidance = guidance,
                 sizes = sizes,
                 repeats = repeats,
                 accuracy = accuracy,
