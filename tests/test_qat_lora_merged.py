@@ -290,6 +290,25 @@ def test_registry_quantizer_keeps_no_tensors(monkeypatch):
         assert not isinstance(quantizer.__dict__.get("zero_point"), torch.Tensor)
 
 
+@pytest.mark.parametrize("scheme", ["int4", "fp8-fp8"])
+def test_disabled_quantizer_keeps_the_adapter_and_mixed_batches_are_refused(scheme, monkeypatch):
+    model = _model(scheme, monkeypatch)
+    x = _x()
+    up = _lora_layers(model)[0]
+    quantizer = up.get_base_layer().weight_fake_quantizer
+    with torch.no_grad():
+        quantizer.enabled = False  # delayed QAT / a teacher pass with the adapter still on
+        A, B = up.lora_A["default"].weight, up.lora_B["default"].weight
+        base = up.get_base_layer()
+        act = base._modules.get("activation_fake_quantizer")
+        h = x if act is None else act(x)
+        expected = F.linear(h, base.weight) + up.scaling["default"] * F.linear(x, B @ A)
+        torch.testing.assert_close(up(x), expected, rtol = 1e-5, atol = 1e-5)
+        quantizer.enabled = True
+        with pytest.raises(NotImplementedError, match = "mixes adapters"):
+            up(x, adapter_names = ["default"] * x.shape[0])
+
+
 def test_default_stays_base_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_QAT_LORA_MERGED", raising = False)
     model = _model("int4", monkeypatch, merged = None)

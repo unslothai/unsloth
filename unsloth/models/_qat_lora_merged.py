@@ -315,14 +315,23 @@ def _exact_lora_forward(self, x, *args, **kwargs):
     """LoRA Linear over an activation quantized base (fake quant int8 / fp8 activations): the base forward, whose
     weight quantizer returns Q(W + s B A) here, is bit for bit the exported layer; the adapter branch is added with
     value exactly 0 to carry the straight-through LoRA gradients, on a detached input so dX comes from the base."""
+    base = self.get_base_layer()
     adapter = _active_adapter(self)
-    if adapter is None or args or kwargs:
+    # A switched-off weight quantizer returns the plain base weight: then the adapter must add its real value.
+    if adapter is None or args or kwargs or not base.weight_fake_quantizer.enabled:
         return type(self).forward(self, x, *args, **kwargs)
     A, _, scale = adapter
-    out = self.get_base_layer()(x)
+    out = base(x)
     name = next(a for a in self.active_adapters if a in self.lora_A)
     lora = self.lora_B[name](self.lora_A[name](x.detach().to(A.dtype))) * scale
     return out + (lora - lora.detach()).to(out.dtype)
+
+
+def _refuse_mixed_batch(self, *args, **kwargs):
+    raise NotImplementedError(
+        "Unsloth: merged QAT-LoRA layers compute the base and the adapter as one merged weight, so a batch that "
+        "mixes adapters per row (adapter_names = ...) cannot run on them. Run one adapter per batch."
+    )
 
 
 def _microscaling_weight_forward(base):
@@ -425,6 +434,8 @@ def install_qat_lora_merged(model):
                 layer.__dict__["_unsloth_qat_lora_weight_forward"] = weight_forward
                 layer.forward = types.MethodType(_merged_microscaling_forward, layer)
             microscaling += 1
+        # PEFT's per-row adapter selection would split what the merged weight fuses: refuse it.
+        layer._mixed_batch_forward = types.MethodType(_refuse_mixed_batch, layer)
         layer.__dict__[_FLAG] = True
         count += 1
     _STATS["layers"] = count
