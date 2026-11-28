@@ -262,3 +262,20 @@ def test_rounded_checkpoint_from_another_prepared_model_is_not_quantized_twice()
     dst.load_state_dict(sd)
     for name, p in _stacks(dst).items():
         assert torch.equal(p.detach(), _stacks(src)[name].detach()), name
+
+
+def test_rounded_checkpoint_from_another_recipe_is_rounded_again():
+    """Rounded provenance only counts for the same recipe: int8-rounded stacks loaded into an int4 model get int4."""
+    src = _tiny_moe("gpt_oss")
+    for p in _stacks(src).values():
+        p.requires_grad_(False)
+    src = _prepare(src, "int8")
+    dst = _tiny_moe("gpt_oss")
+    for p in _stacks(dst).values():
+        p.requires_grad_(False)
+    dst = _prepare(dst, "int4")
+    dst.load_state_dict(src.state_dict())
+    for name, p in _stacks(dst).items():
+        want = _reference_int4(_stacks(src)[name].detach(), True)
+        assert torch.equal(p.detach(), want), name
+        assert not torch.equal(p.detach(), _stacks(src)[name].detach())

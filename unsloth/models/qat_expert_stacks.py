@@ -286,10 +286,17 @@ def _fingerprint(t):
     return (total, squares, weighted)
 
 
+def _recipe(quantizer, transposed):
+    """A stable description of the grid a stack is rounded onto (quantizer type, its config, layout)."""
+    config = getattr(quantizer, "config", quantizer)
+    return f"{type(quantizer).__name__}|{config!r}|transposed={bool(transposed)}"
+
+
 def _round_stack(owner, attr, quantizer, transposed):
     """Write fake_quant(stack) into the frozen stack once, and keep it rounded across load_state_dict. A load that
     brings rounded values back (this model's own state dict, or another prepared model's, whose state dict marks
-    its rounded stacks in the metadata) is kept as is, so nothing is quantized twice (int8 / cactus fake quant is
+    its rounded stacks and their recipe in the metadata, when that recipe matches) is kept as is, so nothing is
+    quantized twice (int8 / cactus fake quant is
     not idempotent); any other values (an unrounded checkpoint) are rounded again."""
     p = owner._parameters[attr]
     with torch.no_grad():
@@ -302,7 +309,7 @@ def _round_stack(owner, attr, quantizer, transposed):
 
     def mark(module, state_dict, prefix, local_metadata):
         rounded = module.__dict__.get(_ROUNDED, {})
-        local_metadata[_META] = {name: list(fp) for name, (_, _, fp) in rounded.items()}
+        local_metadata[_META] = {name: [*fp, _recipe(q, t)] for name, (q, t, fp) in rounded.items()}
 
     def before_load(module, state_dict, prefix, local_metadata, *args):
         module.__dict__[_INCOMING] = dict(local_metadata.get(_META) or {})
@@ -315,7 +322,9 @@ def _round_stack(owner, attr, quantizer, transposed):
             if w is None or w.dim() != 3 or w.requires_grad:
                 continue
             fp = _fingerprint(w)
-            if fp == own or (name in incoming and fp == tuple(incoming[name])):
+            theirs = incoming.get(name)
+            same_recipe = theirs is not None and len(theirs) == 4 and theirs[3] == _recipe(q, t)
+            if fp == own or (same_recipe and fp == tuple(theirs[:3])):
                 rounded[name] = (q, t, fp)
                 continue
             with torch.no_grad():
