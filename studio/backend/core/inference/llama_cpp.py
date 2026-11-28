@@ -27439,11 +27439,13 @@ class LlamaCppBackend:
 
                     # Windows integrated CUDA: llama.cpp's fitter reads the driver's free memory,
                     # which counts shared RAM past the commit the row was capped at; keep it free.
+                    # CUDA physical ids only: a Vulkan row's compact ordinal can collide with a
+                    # gap a CUDA probe left before a backend switch.
                     _commit_fit_by_idx = {
                         int(_idx): LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB.get(
                             int(_idx), 0
                         )
-                        for _idx, _free in gpus
+                        for _idx, _free in ([] if is_vulkan_backend else gpus)
                     }
                     if any(_commit_fit_by_idx.values()):
                         _fit_target_delta_mib += max(_commit_fit_by_idx.values())

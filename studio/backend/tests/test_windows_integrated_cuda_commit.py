@@ -213,3 +213,25 @@ def test_diffusion_fallback_never_credits_past_the_device_total():
         ):
             credited, capacity = diffusion_memory._unified_reclaimable_memory_mib(free, total)
         assert credited <= total and capacity == total
+
+
+def test_a_vulkan_launch_ignores_a_gap_a_cuda_probe_left_behind(tmp_path, monkeypatch):
+    """After a CUDA load and a switch to Vulkan, ordinal 0 is a Vulkan device, not the N1X."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    targets = []
+    for gap in (0, 53023):
+        backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 46_000, 46_000),), vulkan = True)
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_WINDOWS_COMMIT_FIT_HEADROOM_MIB",
+            {0: gap} if gap else {},
+            raising = False,
+        )
+        intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+        targets.append(h.last(_spawn_cmd(backend, intent), "--fit-target"))
+    assert targets[1] == targets[0]
