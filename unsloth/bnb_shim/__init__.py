@@ -104,6 +104,13 @@ def _real_unusable():
     except Exception:
         return False
     try:
+        # Pin BNB_ROCM_VERSION first (Windows ROCm wheels whose DLL suffix differs from
+        # torch.version.hip), as _gpu_init does, or a working install would probe as broken.
+        from unsloth.import_fixes import maybe_set_windows_rocm_bnb_version
+        maybe_set_windows_rocm_bnb_version()
+    except Exception:
+        pass
+    try:
         import bitsandbytes
     except Exception:
         return True

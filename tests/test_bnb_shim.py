@@ -59,7 +59,7 @@ def test_forced_install_serves_module_and_metadata():
             "dunder": bitsandbytes.__version__,
             "spec": importlib.util.find_spec("bitsandbytes") is not None,
             "mapped": "bitsandbytes" in mapping.get("bitsandbytes", []),
-            "first_finder": type(sys.meta_path[0]).__name__,
+            "finders": [type(f).__name__ for f in sys.meta_path],
             "devices": sorted(bitsandbytes.supported_torch_devices),
         }))
         """
@@ -68,7 +68,8 @@ def test_forced_install_serves_module_and_metadata():
     assert out["file"].startswith(os.path.join(REPO, "unsloth", "bnb_shim", "bitsandbytes"))
     assert out["version"] == out["dunder"] == "0.49.2"
     assert out["spec"] and out["mapped"]
-    assert out["first_finder"] == "_ShimFinder"
+    # Ahead of a real install (forced over it), else after the path finders.
+    assert "_ShimFinder" in out["finders"]
     assert "cuda" in out["devices"] and "cpu" in out["devices"]
 
 
@@ -317,3 +318,30 @@ def test_native_library_reads_as_missing():
         """
     )
     assert out == {"ready": False, "called": "raised"}
+
+
+def test_unusable_probe_pins_windows_rocm_version_first():
+    # A Windows ROCm wheel only loads once BNB_ROCM_VERSION is pinned: the probe must pin it before
+    # importing bitsandbytes, or a working install reads as broken and gets replaced.
+    out = run(
+        f"""
+        import types, torch
+        calls = []
+        fake_fixes = types.ModuleType("unsloth.import_fixes")
+        fake_fixes.maybe_set_windows_rocm_bnb_version = lambda: calls.append("pin")
+        sys.modules.setdefault("unsloth", types.ModuleType("unsloth"))
+        sys.modules["unsloth.import_fixes"] = fake_fixes
+        class Probe:
+            def find_spec(self, name, path = None, target = None):
+                if name == "bitsandbytes":
+                    calls.append("import")
+                    raise ImportError("probe stop")
+                return None
+        sys.meta_path.insert(0, Probe())
+        torch.cuda.is_available = lambda: True
+        unusable = shim._real_unusable()
+        print("OUT " + json.dumps({{"calls": calls, "unusable": unusable}}))
+        """,
+        mode = "auto",
+    )
+    assert out["calls"][:2] == ["pin", "import"], out
