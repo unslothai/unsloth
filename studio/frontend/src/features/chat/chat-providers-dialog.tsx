@@ -88,6 +88,7 @@ import {
   createProviderConfig,
   deleteProviderConfig,
   fetchCodexSubscriptionModels,
+  listProviderModelCapabilities,
   listProviderModels,
   listProviderRegistry,
   testProviderConnection,
@@ -96,7 +97,13 @@ import {
 
 import {
   type CustomReasoningConfig,
+  customReasoningConfigForSave,
+  customReasoningEffortLevels,
+  customReasoningEffortScale,
+  customReasoningStyleTakesEffort,
+  detectedCustomEffortLevels,
   normalizeCustomReasoningConfig,
+  withDetectedEffortLevels,
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
@@ -433,6 +440,7 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [effortDetecting, setEffortDetecting] = useState(false);
   // Kept apart from modelsLoading: an automatic catalog load must not hold up saving.
   const [catalogAutoLoad, setCatalogAutoLoad] = useState<{ key: string } | null>(null);
   const codexCatalogRequestRef = useRef(0);
@@ -489,6 +497,11 @@ export function ChatProvidersSettings({
     () => [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])],
     [selectedModelIds, manualModelIds],
   );
+  // Read when a detection answers, so ticks made while it ran still count.
+  const configuredModelsRef = useRef(autoCompactModels);
+  configuredModelsRef.current = autoCompactModels;
+  const endpointDraftRef = useRef("");
+  endpointDraftRef.current = `${baseUrlDraft}\n${extraHeadersDraft}`;
   const autoCompactModel = autoCompactModels.includes(autoCompactScope)
     ? autoCompactScope
     : null;
@@ -1010,6 +1023,56 @@ export function ChatProvidersSettings({
     return value;
   }
 
+  /** Asks the endpoint for its effort levels: OpenRouter-shaped /models entries or llama-server /props. */
+  async function detectEffortLevels({ silent = false }: { silent?: boolean } = {}): Promise<void> {
+    if (!showCustomReasoning) return;
+    if (
+      editingProvider?.hasApiKey &&
+      !apiKey.trim() &&
+      baseUrlDraft.trim() !== editingProvider.baseUrl
+    ) {
+      if (!silent) toast.info("Save the new Base URL first, then detect its effort levels.");
+      return;
+    }
+    const request = formCheckRequestRef.current;
+    const endpoint = `${baseUrlDraft}\n${extraHeadersDraft}`;
+    setEffortDetecting(true);
+    try {
+      const capabilities = await listProviderModelCapabilities({
+        providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
+        providerId: editingProviderId,
+        apiKey: apiKey.trim(),
+        baseUrl: parseBaseUrlForProvider(
+          baseUrlDraft,
+          supportsRemoteModelCatalog(providerType),
+          providerType,
+        ),
+        apiType: "chat_completions",
+        extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
+      });
+      if (request !== formCheckRequestRef.current || endpoint !== endpointDraftRef.current) return;
+      const levels = detectedCustomEffortLevels(capabilities, configuredModelsRef.current);
+      if (!levels) {
+        if (!silent) {
+          toast.info("This endpoint does not report its effort levels.", {
+            description: "Tick the levels it accepts.",
+          });
+        }
+        return;
+      }
+      setReasoningConfig((current) => withDetectedEffortLevels(current, levels, silent));
+      if (!silent) toast.success(`Effort levels detected: ${levels.join(", ")}`);
+    } catch (error) {
+      if (!silent) {
+        toast.error("Could not detect effort levels.", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    } finally {
+      setEffortDetecting(false);
+    }
+  }
+
   async function loadModels({
     autoLoad,
     keepSelection = false,
@@ -1178,6 +1241,15 @@ export function ChatProvidersSettings({
             .filter(Boolean)
             .join(" · "),
         });
+      }
+      if (
+        !silent &&
+        modelIds.length > 0 &&
+        reasoningConfig?.enabled &&
+        customReasoningStyleTakesEffort(reasoningConfig.style) &&
+        reasoningConfig.effort_levels === undefined
+      ) {
+        void detectEffortLevels({ silent: true });
       }
       if (editingProviderId) {
         const record = providersRef.current.find(
@@ -1420,7 +1492,7 @@ export function ChatProvidersSettings({
           ? { compactionMode: compactionModeDraft }
           : {}),
         reasoningConfig: isCustomReasoningConnection
-          ? (showCustomReasoning ? reasoningConfig : null)
+          ? (showCustomReasoning ? customReasoningConfigForSave(reasoningConfig) : null)
           : undefined,
         extraHeaders,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
@@ -1624,7 +1696,7 @@ export function ChatProvidersSettings({
           ? (compactionModeDraft === "summary" ? null : compactionModeDraft)
           : undefined,
         reasoningConfig: isCustomReasoningConnection
-          ? (showCustomReasoning ? reasoningConfig : null)
+          ? (showCustomReasoning ? customReasoningConfigForSave(reasoningConfig) : null)
           : undefined,
         extraHeaders,
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
@@ -2778,10 +2850,22 @@ export function ChatProvidersSettings({
                         id="provider-reasoning-support"
                         checked={reasoningConfig?.enabled === true}
                         aria-describedby="provider-reasoning-support-help"
-                        onCheckedChange={(checked) => setReasoningConfig({
-                          enabled: checked === true,
-                          style: reasoningConfig?.style ?? "reasoning_effort",
-                        })}
+                        onCheckedChange={(checked) => {
+                          const style = reasoningConfig?.style ?? "reasoning_effort";
+                          setReasoningConfig({
+                            ...reasoningConfig,
+                            enabled: checked === true,
+                            style,
+                          });
+                          if (
+                            checked === true &&
+                            customReasoningStyleTakesEffort(style) &&
+                            reasoningConfig?.effort_levels === undefined &&
+                            availableModels.length > 0
+                          ) {
+                            void detectEffortLevels({ silent: true });
+                          }
+                        }}
                       />
                       Enable reasoning controls
                     </label>
@@ -2800,6 +2884,7 @@ export function ChatProvidersSettings({
                         <Select
                           value={reasoningConfig.style}
                           onValueChange={(style) => setReasoningConfig({
+                            ...reasoningConfig,
                             enabled: true,
                             style: style as CustomReasoningConfig["style"],
                           })}
@@ -2823,6 +2908,60 @@ export function ChatProvidersSettings({
                                 ? 'Thinking off sends thinking: { type: "disabled" }.'
                                 : "Thinking off sends chat_template_kwargs: { enable_thinking: false }."}
                         </p>
+                      </div>
+                    </div>
+                  ) : null}
+                  {reasoningConfig?.enabled &&
+                  customReasoningStyleTakesEffort(reasoningConfig.style) ? (
+                    <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <Label className="text-sm font-medium">Effort levels</Label>
+                        <p id="provider-reasoning-levels-help" className="text-xs leading-snug text-muted-foreground">
+                          Levels this endpoint accepts. The Thinking menu offers these plus Off.
+                        </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="mt-1 w-fit"
+                          disabled={effortDetecting}
+                          onClick={() => void detectEffortLevels()}
+                        >
+                          {effortDetecting ? "Detecting..." : "Detect from endpoint"}
+                        </Button>
+                      </div>
+                      <div
+                        role="group"
+                        aria-label="Effort levels"
+                        aria-describedby="provider-reasoning-levels-help"
+                        className="grid grid-cols-3 gap-x-4 gap-y-2"
+                      >
+                        {customReasoningEffortScale().map((level) => {
+                          const selected = customReasoningEffortLevels(reasoningConfig);
+                          const checked = selected.includes(level);
+                          return (
+                            <label
+                              key={level}
+                              htmlFor={`provider-reasoning-level-${level}`}
+                              className="flex cursor-pointer items-center gap-2 text-sm"
+                            >
+                              <Checkbox
+                                id={`provider-reasoning-level-${level}`}
+                                checked={checked}
+                                disabled={checked && selected.length === 1}
+                                onCheckedChange={(next) => setReasoningConfig({
+                                  ...reasoningConfig,
+                                  effort_levels: customReasoningEffortScale().filter(
+                                    (candidate) => candidate === level
+                                      ? next === true
+                                      : selected.includes(candidate),
+                                  ),
+                                })}
+                              />
+                              {level}
+                            </label>
+                          );
+                        })}
                       </div>
                     </div>
                   ) : null}

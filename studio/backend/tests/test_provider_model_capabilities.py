@@ -574,3 +574,172 @@ def test_a_capped_live_list_keeps_the_connection_saved_models(listed_catalog, mo
     ids = [model.id for model in listed]
     assert len(ids) == 15
     assert ids[:3] == ["openai/older-19", "openai/fresh-a", "openai/fresh-b"]
+
+
+_HARMONY_TEMPLATE = (
+    "{%- if reasoning_effort not in ['low', 'medium', 'high'] -%}{{- raise_exception('bad') }}"
+    "{%- endif -%}Reasoning: {{ reasoning_effort }}"
+)
+
+
+def test_custom_maps_only_entries_that_report_reasoning():
+    assert [
+        m["id"] for m in provider_model_capabilities("custom", [_RAW_GPT, {"id": "plain"}])
+    ] == ["openai/gpt-5.5"]
+
+
+class _TemplateClient(_FakeClient):
+    templates: dict = {}
+    probed: list = []
+
+    async def llama_server_props(self, model_id):
+        type(self).probed.append(model_id)
+        template = type(self).templates.get(model_id)
+        if template is None:
+            return None
+        return {"chat_template": template, "model_alias": type(self).alias.get(model_id, model_id)}
+
+    alias: dict = {}
+
+
+@pytest.mark.parametrize(
+    "template, alias, expected",
+    [
+        (_HARMONY_TEMPLATE, "gpt-oss-20b", ["low", "medium", "high"]),
+        ("{% if enable_thinking %}<think>{% endif %}", "gpt-oss-20b", None),
+        (None, "gpt-oss-20b", None),
+        # The server ignored ?model= and described its resident model instead.
+        (_HARMONY_TEMPLATE, "resident-model", None),
+    ],
+)
+def test_custom_route_reads_efforts_from_the_served_template(
+    monkeypatch, template, alias, expected
+):
+    providers_route._model_capability_cache.clear()
+    _TemplateClient.raw = [_RAW_GPT, {"id": "gpt-oss-20b"}]
+    _TemplateClient.templates = {"gpt-oss-20b": template}
+    _TemplateClient.alias = {"gpt-oss-20b": alias}
+    _TemplateClient.probed = []
+    _TemplateClient.fail = False
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _TemplateClient)
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+    monkeypatch.setattr(providers_route, "validate_provider_base_url", lambda url: url)
+    found = asyncio.run(
+        providers_route.list_provider_model_capabilities(
+            ProviderModelsRequest(provider_type = "custom", base_url = "http://gateway.test/v1"),
+            _current_subject = "tester",
+            via_api_key = False,
+        )
+    )
+    providers_route._model_capability_cache.clear()
+    # The /models entry already reported its efforts, so only the bare one is probed.
+    assert _TemplateClient.probed == ["gpt-oss-20b"]
+    by_id = {entry["id"]: entry for entry in found}
+    assert by_id["openai/gpt-5.5"]["reasoning"]["supported_efforts"][-1] == "xhigh"
+    if expected is None:
+        assert "gpt-oss-20b" not in by_id
+    else:
+        assert by_id["gpt-oss-20b"]["reasoning"]["supported_efforts"] == expected
+
+
+@pytest.mark.parametrize(
+    "status, body, expected",
+    [
+        (200, {"chat_template": "tpl"}, {"chat_template": "tpl"}),
+        (200, ["not", "a", "dict"], None),
+        (404, {"error": "not found"}, None),
+    ],
+)
+def test_llama_server_template_is_read_from_props_beside_v1(status, body, expected):
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(status, json = body)
+
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    client = ExternalProviderClient(
+        provider_type = "custom",
+        base_url = "http://127.0.0.1:8080/v1",
+        api_key = "",
+        managed_loopback = True,
+    )
+    previous = ep_mod._http_client
+    ep_mod._http_client = mock_client
+    loop = asyncio.new_event_loop()
+    try:
+        got = loop.run_until_complete(client.llama_server_props("my model"))
+        loop.run_until_complete(mock_client.aclose())
+    finally:
+        ep_mod._http_client = previous
+        loop.close()
+    assert got == expected
+    assert seen == ["http://127.0.0.1:8080/props?model=my%20model"]
+
+
+def test_props_keeps_the_base_url_query():
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json = {"chat_template": "tpl"})
+
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    client = ExternalProviderClient(
+        provider_type = "custom",
+        base_url = "http://127.0.0.1:8080/v1?tenant=a",
+        api_key = "",
+        managed_loopback = True,
+    )
+    previous = ep_mod._http_client
+    ep_mod._http_client = mock_client
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(client.llama_server_props("m"))
+        loop.run_until_complete(mock_client.aclose())
+    finally:
+        ep_mod._http_client = previous
+        loop.close()
+    assert seen == ["http://127.0.0.1:8080/props?tenant=a&model=m"]
+
+
+def test_custom_capabilities_are_reread_on_every_detection(monkeypatch):
+    providers_route._model_capability_cache.clear()
+    _TemplateClient.raw = [{"id": "served"}]
+    # One listed model: its /props answer is its own even without a matching name.
+    _TemplateClient.alias = {"served": "/models/anything.gguf"}
+    _TemplateClient.templates = {"served": _HARMONY_TEMPLATE}
+    _TemplateClient.probed = []
+    _TemplateClient.calls = 0
+    _TemplateClient.fail = False
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _TemplateClient)
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+    monkeypatch.setattr(providers_route, "validate_provider_base_url", lambda url: url)
+
+    def detect():
+        return asyncio.run(
+            providers_route.list_provider_model_capabilities(
+                ProviderModelsRequest(provider_type = "custom", base_url = "http://swap.test/v1"),
+                _current_subject = "tester",
+                via_api_key = False,
+            )
+        )
+
+    assert detect()[0]["reasoning"]["supported_efforts"] == ["low", "medium", "high"]
+    # The server swapped to a model with no effort levels behind the same URL.
+    _TemplateClient.templates = {"served": "{% if enable_thinking %}{% endif %}"}
+    assert detect() == []
+    assert _TemplateClient.calls == 2
+    providers_route._model_capability_cache.clear()
+
+
+def test_props_names_cover_alias_path_and_file_name():
+    names = providers_route._props_model_names(
+        {"model_alias": "a", "model_path": "C:\\models\\Qwen3-8B-Q4_K_M.gguf"}
+    )
+    assert {"a", "Qwen3-8B-Q4_K_M.gguf", "Qwen3-8B-Q4_K_M"} <= names
+    assert providers_route._props_model_names({}) == set()

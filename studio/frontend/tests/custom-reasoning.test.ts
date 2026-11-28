@@ -257,3 +257,115 @@ test("switching same-model connections never leaks the contract and server sync 
     globalThis.fetch = original;
   }
 });
+
+test("an effort ladder drives the menu and the wire, and malformed ladders fail closed", () => {
+  for (const style of ["reasoning_effort", "reasoning"] as const) {
+    const config = { enabled: true, style, effort_levels: ["xhigh", "high"] };
+    const normalized = reasoning.normalizeCustomReasoningConfig(config);
+    assert.deepEqual(normalized, { ...config, effort_levels: ["high", "xhigh"] });
+    assert.deepEqual(
+      [
+        ...caps.getExternalReasoningCapabilities("custom", "same-model", {
+          reasoningConfig: normalized,
+        }).reasoningEffortLevels,
+      ],
+      ["none", "high", "xhigh"],
+    );
+    for (const [effort, fields] of [
+      ["xhigh", { reasoning_effort: "xhigh" }],
+      ["high", { reasoning_effort: "high" }],
+      ["none", { reasoning_effort: "none" }],
+      ["medium", {}],
+    ] as const) {
+      assert.deepEqual(
+        reasoning.customReasoningRequestFields(config, true, effort),
+        fields,
+      );
+    }
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(config, false, "xhigh"),
+      { reasoning_effort: "none" },
+    );
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(
+        { enabled: true, style, effort_levels: ["minimal", "low", "medium"] },
+        true,
+        "max",
+      ),
+      { reasoning_effort: "medium" },
+    );
+  }
+  for (const config of [
+    { enabled: true, style: "reasoning_effort", effort_levels: [] },
+    { enabled: true, style: "reasoning_effort", effort_levels: ["none"] },
+    { enabled: true, style: "reasoning_effort", effort_levels: ["ultra"] },
+    { enabled: true, style: "reasoning_effort", effort_levels: "high" },
+    { enabled: true, style: "thinking", effort_levels: ["high"] },
+  ]) {
+    assert.equal(reasoning.normalizeCustomReasoningConfig(config), undefined);
+    assert.deepEqual(
+      reasoning.customReasoningRequestFields(config, true, "high"),
+      {},
+    );
+  }
+});
+
+test("the opt-in rungs are Studio's effort scale without the Off row", () => {
+  assert.deepEqual(
+    [...reasoning.customReasoningEffortScale()],
+    ["minimal", "low", "medium", "high", "xhigh", "max"],
+  );
+});
+
+test("saving drops a default or inapplicable ladder so older rows keep their shape", () => {
+  const save = reasoning.customReasoningConfigForSave;
+  assert.equal(save(null), null);
+  assert.deepEqual(
+    save({ enabled: true, style: "reasoning", effort_levels: ["high", "low", "medium"] }),
+    { enabled: true, style: "reasoning" },
+  );
+  assert.deepEqual(
+    save({ enabled: true, style: "thinking", effort_levels: ["xhigh"] }),
+    { enabled: true, style: "thinking" },
+  );
+  assert.deepEqual(
+    save({ enabled: false, style: "reasoning_effort", effort_levels: ["max", "low"] }),
+    { enabled: false, style: "reasoning_effort", effort_levels: ["low", "max"] },
+  );
+});
+
+test("detected effort levels are the rungs every reporting model shares", () => {
+  const detect = reasoning.detectedCustomEffortLevels;
+  const entry = (id: string, efforts: string[] | null) => ({
+    id,
+    reasoning: efforts === null ? null : { supported_efforts: efforts },
+  });
+  const listed = [
+    entry("a", ["none", "low", "medium", "high", "xhigh"]),
+    entry("b", ["high", "xhigh", "max", "turbo"]),
+    entry("plain", null),
+  ];
+  assert.deepEqual(detect(listed, ["b"]), ["high", "xhigh", "max"]);
+  assert.deepEqual(detect(listed, ["a", "b"]), ["high", "xhigh"]);
+  // Every configured model must report: B alone reporting does not speak for "plain".
+  assert.equal(detect(listed, ["b", "plain"]), undefined);
+  // A configured model that did not report never takes another model's levels.
+  assert.equal(detect(listed, ["plain"]), undefined);
+  assert.equal(detect(listed, ["ninth-unprobed"]), undefined);
+  assert.deepEqual(detect(listed, []), ["high", "xhigh"]);
+  assert.equal(detect([entry("plain", null), entry("e", [])], []), undefined);
+  assert.equal(detect([entry("a", ["low"]), entry("b", ["max"])], []), undefined);
+});
+
+test("a background detection keeps levels the user set while it ran", () => {
+  const apply = reasoning.withDetectedEffortLevels;
+  const unset = { enabled: true, style: "reasoning_effort" };
+  const edited = { ...unset, effort_levels: ["xhigh", "max"] };
+  assert.deepEqual(apply(unset, ["low", "max"], true), { ...unset, effort_levels: ["low", "max"] });
+  assert.equal(apply(edited, ["low"], true), edited);
+  // An explicit Detect click is a request to replace them.
+  assert.deepEqual(apply(edited, ["low"], false), { ...unset, effort_levels: ["low"] });
+  const thinking = { enabled: true, style: "thinking" };
+  assert.equal(apply(thinking, ["low"], false), thinking);
+  assert.equal(apply(null, ["low"], false), null);
+});

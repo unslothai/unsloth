@@ -1427,6 +1427,9 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
     )
     try:
         models = await client.list_models()
+        capabilities = provider_model_capabilities(payload.provider_type, models)
+        if payload.provider_type == "custom":
+            capabilities += await _custom_template_capabilities(client, models, capabilities)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -1437,8 +1440,8 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         )
     finally:
         await client.close()
-    capabilities = provider_model_capabilities(payload.provider_type, models)
-    if capabilities:
+    # A Custom server can swap models behind one URL (llama-swap, router mode), so it is re-read each time.
+    if capabilities and payload.provider_type != "custom":
         now = time.monotonic()
         for key in [
             key
@@ -1448,6 +1451,62 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
             del _model_capability_cache[key]
         _model_capability_cache[cache_key] = (now, capabilities)
     return capabilities
+
+
+_TEMPLATE_PROBE_MAX_MODELS = 8
+
+
+def _props_model_names(props: dict) -> set[str]:
+    names = {props.get("model_alias"), props.get("model_path"), props.get("model")}
+    path = props.get("model_path")
+    if isinstance(path, str) and path:
+        base = path.replace("\\", "/").rsplit("/", 1)[-1]
+        names |= {base, base.removesuffix(".gguf")}
+    return {name for name in names if isinstance(name, str) and name}
+
+
+async def _custom_template_capabilities(client, models: list, known: list) -> list[dict]:
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    reported = {entry["id"] for entry in known}
+    ids = [
+        model["id"].strip()
+        for model in models
+        if isinstance(model.get("id"), str)
+        and model["id"].strip()
+        and model["id"].strip() not in reported
+    ][:_TEMPLATE_PROBE_MAX_MODELS]
+    answers = await asyncio.gather(*(client.llama_server_props(i) for i in ids))
+    found = []
+    for model_id, props in zip(ids, answers):
+        template = (props or {}).get("chat_template")
+        # A server that ignores ?model= describes only its resident model, so with several listed the
+        # answer must name this one.
+        if (
+            not isinstance(template, str)
+            or not template
+            or (len(models) > 1 and model_id not in _props_model_names(props))
+        ):
+            continue
+        flags = detect_reasoning_flags(template, model_id, log_level = "debug")
+        # "none" is the Off row, never a rung.
+        levels = [level for level in flags["reasoning_effort_levels"] if level != "none"]
+        if levels:
+            found.append(
+                {
+                    "id": model_id,
+                    "input_modalities": None,
+                    "reasoning": {
+                        "supported_efforts": levels,
+                        "mandatory": False,
+                        "default_effort": None,
+                        "default_enabled": None,
+                    },
+                    "max_output_tokens": None,
+                    "supported_parameters": None,
+                }
+            )
+    return found
 
 
 def _model_capability_names(model: dict) -> Optional[list[str]]:

@@ -8,7 +8,7 @@ from typing import Any
 
 REASONING_EFFORT_SCALE = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
-MODEL_CAPABILITY_PROVIDERS = frozenset({"openrouter"})
+MODEL_CAPABILITY_PROVIDERS = frozenset({"openrouter", "custom"})
 
 
 def _sorted_efforts(values: Any) -> list[str] | None:
@@ -72,8 +72,11 @@ def openrouter_model_capabilities(raw: dict[str, Any]) -> dict[str, Any] | None:
 def provider_model_capabilities(
     provider_type: str, models: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    if provider_type != "openrouter":
+    if provider_type not in MODEL_CAPABILITY_PROVIDERS:
         return []
+    if provider_type == "custom":
+        # Only gateways answering in OpenRouter's /models shape say anything per model.
+        models = [m for m in models if isinstance(m, dict) and isinstance(m.get("reasoning"), dict)]
     mapped = (openrouter_model_capabilities(m) for m in models if isinstance(m, dict))
     return [entry for entry in mapped if entry is not None]
 

@@ -473,6 +473,7 @@ export async function listProviderModelCapabilities(payload: {
   apiKey: string;
   baseUrl?: string | null;
   apiType?: ProviderApiType;
+  extraHeaders?: Record<string, string>;
 }): Promise<ProviderModelCapabilityInfo[]> {
   return withApiKeyEncryptionRetry(payload.apiKey, async (encryptedApiKey) => {
     const response = await authFetch("/api/providers/model-capabilities", {
@@ -484,6 +485,9 @@ export async function listProviderModelCapabilities(payload: {
         encrypted_api_key: encryptedApiKey,
         base_url: payload.baseUrl ?? null,
         ...(payload.apiType === undefined ? {} : { api_type: payload.apiType }),
+        ...(payload.extraHeaders === undefined
+          ? {}
+          : { extra_headers: payload.extraHeaders }),
       }),
     });
     return parseJsonOrThrow<ProviderModelCapabilityInfo[]>(response);
