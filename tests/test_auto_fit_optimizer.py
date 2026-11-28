@@ -740,6 +740,27 @@ def test_distributed_training_is_refused_except_fsdp2(af, monkeypatch):
     assert "torch 2.5" in af._distributed(trainer(fsdp2), model)[1]
 
 
+def test_planner_budgets_whole_fsdp2_weights_before_sharding(af):
+    """accelerate shards after the optimizer is built: the root group (outside the decoder blocks) stays whole for
+    the step, resharding blocks are whole two at a time, and without reshard_after_forward every block stays whole."""
+    from types import SimpleNamespace
+
+    model = _tiny_model().float()
+    full = {n: p.numel() * p.element_size() for n, p in model.named_parameters()}
+    root = sum(v for n, v in full.items() if "layers." not in n)
+    block = sum(v for n, v in full.items() if "layers.0." in n)
+    trainer = SimpleNamespace(
+        accelerator = SimpleNamespace(
+            state = SimpleNamespace(
+                fsdp_plugin = SimpleNamespace(fsdp_version = 2, reshard_after_forward = True)
+            )
+        )
+    )
+    assert af._fsdp_gathered(trainer, model) == (root, 2 * block)
+    trainer.accelerator.state.fsdp_plugin.reshard_after_forward = False
+    assert af._fsdp_gathered(trainer, model) == (root + 2 * block, 0)
+
+
 def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
     from types import SimpleNamespace
 

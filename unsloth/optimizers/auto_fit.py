@@ -1151,12 +1151,10 @@ def plan_auto_fit(
     margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
     # Reused weights (tied, shared, looped) keep their gradient until the step in both in-backward tiers.
     deferred = _reused_bytes(model, params) // world
-    gathered = 0
+    resident = 0
     if world > 1:
-        # FSDP2 all-gathers one block to compute and prefetches the next: about two blocks of full weights.
-        blocks = max(1, len(_fsdp_blocks(model)))
-        gathered = 2 * sum(p.numel() * p.element_size() for p in model.parameters()) // blocks
-    activations += gathered
+        resident, transient = _fsdp_gathered(trainer, model)
+        activations += transient
     # Gradient accumulation under FSDP2: the hooks step on the synchronized micro-batch only, so the earlier
     # micro-batches' gradients are held in every tier: as shards when every micro-batch is reduce-scattered, else
     # (no_sync) as FSDP2's whole, unsharded accumulators.
@@ -1167,9 +1165,9 @@ def plan_auto_fit(
             held = grads
         else:
             held = held_standard = grads * world
-    standard = grads + states + held_standard + max(activations, step_temp) + margin
-    in_backward = states + deferred + held + max(activations, live) + margin
-    lomo = deferred + held + max(activations, live_lomo) + margin
+    standard = grads + states + held_standard + resident + max(activations, step_temp) + margin
+    in_backward = states + deferred + held + resident + max(activations, live) + margin
+    lomo = deferred + held + resident + max(activations, live_lomo) + margin
     if usable_bytes is None:
         usable_bytes = _usable_bytes(params) if world == 1 else _usable_bytes(params, world)
     return dict(
@@ -1181,6 +1179,7 @@ def plan_auto_fit(
         states = states,
         deferred = deferred,
         held = held,
+        resident = resident,
         params = sum(p.numel() for p in params),
         seq = seq,
         batch = batch,
@@ -1204,6 +1203,60 @@ def _fsdp_reduces_every_micro_batch(trainer, model):
     state = getattr(getattr(trainer, "accelerator", None), "gradient_state", None)
     kwargs = getattr(state, "plugin_kwargs", None) or {}
     return bool(kwargs.get("sync_each_batch", False))
+
+
+def _fsdp_gathered(trainer, model):
+    """(resident, transient) bytes of whole (gathered) weights FSDP2 keeps on each rank while computing.
+
+    The root group (weights outside the decoder blocks: embeddings, final norm, an untied head) is never resharded
+    after the forward, so it stays whole for the whole step; so do blocks that do not reshard after the forward
+    (reshard_after_forward = False: Unsloth's native fit layout, UNSLOTH_FSDP2_RESHARD_AFTER_FORWARD=0, accelerate's
+    plugin option). Blocks that reshard are whole one at a time, plus the next one prefetched."""
+
+    def full_bytes(params, dtype = None):
+        return sum(
+            p.numel() * (dtype.itemsize if dtype is not None else p.element_size()) for p in params
+        )
+
+    sharded = any(_is_dtensor(p) for p in model.parameters())
+    if sharded:
+        resident, blocks = 0, []
+        root = id(model)
+        for module in model.modules():
+            get_state = getattr(module, "_get_fsdp_state", None)
+            if not callable(get_state):
+                continue
+            try:
+                state = get_state()
+            except Exception:
+                continue
+            groups = getattr(state, "_fsdp_param_groups", None)
+            if groups is None:
+                single = getattr(state, "_fsdp_param_group", None)
+                groups = [single] if single is not None else []
+            for group in groups:
+                if group is None:
+                    continue
+                dtype = getattr(getattr(group, "mp_policy", None), "param_dtype", None)
+                size = full_bytes([fp.sharded_param for fp in group.fsdp_params], dtype)
+                if id(module) == root or getattr(group, "post_forward_mesh_info", None) is None:
+                    resident += size
+                else:
+                    blocks.append(size)
+        return resident, 2 * max(blocks, default = 0)
+    plugin = _fsdp_plugin(trainer)
+    dtype = getattr(getattr(plugin, "mixed_precision_policy", None), "param_dtype", None)
+    names = _fsdp_blocks(model)
+    inside, block_sizes = set(), []
+    for name, module in model.named_modules():
+        if name in names:
+            params = list(module.parameters())
+            inside.update(id(p) for p in params)
+            block_sizes.append(full_bytes(params, dtype))
+    root_size = full_bytes([p for p in model.parameters() if id(p) not in inside], dtype)
+    if getattr(plugin, "reshard_after_forward", True) is False:
+        return root_size + sum(block_sizes), 0
+    return root_size, 2 * max(block_sizes, default = 0)
 
 
 def _fsdp_blocks(model):

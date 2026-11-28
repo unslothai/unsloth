@@ -285,6 +285,26 @@ def run_rank(rank, port, queue, cases):
     torch.distributed.init_process_group("gloo", rank = rank, world_size = 2)
     out = {}
     af = load_auto_fit()
+    try:
+        # The planner's whole-weight budget read from FSDP2's state: the root group stays whole (never resharded
+        # after the forward), a block that reshards is whole one at a time (+ the prefetched one), one that does
+        # not reshard stays whole too.
+        from torch.distributed.fsdp import fully_shard
+
+        model = tiny_llama()
+        full = {n: p.numel() * p.element_size() for n, p in model.named_parameters()}
+        fully_shard(model.model.layers[0], reshard_after_forward = False)
+        for layer in model.model.layers[1:]:
+            fully_shard(layer)
+        fully_shard(model)
+        block = sum(v for n, v in full.items() if "layers.1." in n)
+        out["_gathered"] = dict(
+            got = af._fsdp_gathered(None, model),
+            want = (sum(v for n, v in full.items() if "layers." not in n) + block, 2 * block),
+        )
+    except AttributeError as exc:
+        if "record_event" not in str(exc):
+            raise
     for name, (ga, clip, sync, mp, arm) in cases.items():
         try:
             data = batches(2, ga)

@@ -142,3 +142,9 @@ def test_hooks_not_run_falls_back_to_step(results):
         assert r["unarmed_vs_ref"] < TOL, r
         assert r["unarmed_late_steps"] == STEPS * r["inb_stats"]["total_params"], r
         assert r["unarmed_vs_ref"] < TOL, r
+
+
+def test_planner_reads_which_fsdp2_groups_stay_whole(results):
+    for rank in (0, 1):
+        got = results[rank]["_gathered"]
+        assert tuple(got["got"]) == tuple(got["want"]), got
