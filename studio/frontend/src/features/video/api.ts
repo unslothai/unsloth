@@ -331,11 +331,18 @@ export async function getVideoLoadProgress(
   );
 }
 
+/** Adds `preview=1` only from a visible page: the server skips all live-preview work for a render
+ *  no visible page polls, and resumes at the next poll that asks. */
+function withPreviewWatch(url: string): string {
+  if (globalThis.document?.visibilityState !== "visible") return url;
+  return `${url}${url.includes("?") ? "&" : "?"}preview=1`;
+}
+
 /** With `videoId`, a clip that already ended answers with its own outcome even after a
  *  successor took the progress record. */
 export async function getVideoGenerateProgress(videoId?: string): Promise<VideoGenerateProgress> {
   const query = videoId ? `?video_id=${encodeURIComponent(videoId)}` : "";
-  return parseJson(await authFetch(`/api/inference/video/generate-progress${query}`));
+  return parseJson(await authFetch(withPreviewWatch(`/api/inference/video/generate-progress${query}`)));
 }
 
 export async function loadVideoModel(body: VideoLoadRequest): Promise<VideoStatus> {

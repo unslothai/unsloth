@@ -144,6 +144,10 @@ CPP_WRAPPER_STATS = {"regions": 0, "fallbacks": 0}
 # Non-empty once the C++ wrapper probe failed: no block of the process uses the C++ wrapper after that.
 _CPP_WRAPPER_BROKEN = []
 _CPP_WRAPPER_PROBED = {}
+# A probe whose build ran out of memory says nothing about the toolchain: the block class probes again after
+# another threshold's worth of calls, and only this many times before it keeps the Python wrapper.
+_CPP_WRAPPER_PROBE_OOM = "out of memory while building"
+_CPP_WRAPPER_PROBE_OOM_RETRIES = 3
 
 
 def _install_cpp_wrapper_param_fix():
@@ -235,7 +239,7 @@ def _cpp_wrapper_probe(device):
             raise
         except Exception as e:
             if isinstance(getattr(e, "inner_exception", None), torch.OutOfMemoryError):
-                return "out of memory while building"  # not a broken toolchain: not cached
+                return _CPP_WRAPPER_PROBE_OOM  # not a broken toolchain: not cached
             why = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
         _CPP_WRAPPER_PROBED[key] = why
         if why is not None:
@@ -2821,6 +2825,7 @@ def _wrap(
         "region": None,
         "layers": set(),
         "calls": 0,
+        "probe_ooms": 0,
     }
 
     def cpp_wanted(kwargs):
@@ -2856,6 +2861,11 @@ def _wrap(
                     )
                     return False
             why = _cpp_wrapper_probe(hidden_states.device)
+            if why == _CPP_WRAPPER_PROBE_OOM and cpp["probe_ooms"] < _CPP_WRAPPER_PROBE_OOM_RETRIES:
+                # Memory pressure, not a broken toolchain: count the calls again and probe later.
+                cpp["probe_ooms"] += 1
+                cpp["calls"] = 0
+                return False
             if why is not None:
                 cpp["on"] = False
                 _rank0_note(

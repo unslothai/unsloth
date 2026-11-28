@@ -538,3 +538,63 @@ def test_gpt_oss_qlora_plans_ep_like_16bit():
     assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
     rows = {r["mode"]: r for r in sharded["modes"]}
     assert rows["ep"]["available"], rows["ep"]
+
+
+def test_bare_switch_in_a_custom_layout_reads_as_one():
+    plan = pp.plan({"parallel_mode": "custom", "parallel_spec": "fsdp, cp=2"}, _host(2), _model())
+    assert plan["spec"] == "fsdp=1,cp=2"
+    # A bare size is not a switch: "tp" must not quietly mean tp=1 (two data-parallel replicas).
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": "tp"}, _host(2), _model())
+    assert err.value.payload["code"] == "parallel_bad_spec"
+
+
+def test_plain_training_error_rewrites_only_the_cell_gate():
+    raw = (
+        "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: cell "
+        "'MoE gpt_oss x qlora x aux off x cp' lacks parity, engagement, compile evidence. Instead: a "
+        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis. (layout cp 2 x "
+        "cp_backend ulysses, trainer sft, model gpt_oss)"
+    )
+    assert pp.plain_training_error(raw) == (
+        "Unsloth has not verified context parallel for gpt_oss with these settings yet, so it refuses to "
+        "train it. Use DDP or FSDP2."
+    )
+    olmoe = (
+        "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: no "
+        "supported cell covers it ('Inkling 2 ...' differs in family='olmoe', hybrid=False). Instead: a "
+        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis. (layout cp 2 x ep 2, "
+        "trainer sft, model olmoe)"
+    )
+    assert pp.plain_training_error(olmoe).startswith(
+        "Unsloth has not verified expert parallel with context parallel for olmoe with these settings"
+    )
+    assert pp.plain_training_error("CUDA out of memory") == "CUDA out of memory"
+
+
+def test_fsdp2_on_a_moe_model_warns():
+    moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
+    assert any("mixture-of-experts" in w for w in moe["warnings"])
+    dense = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model())
+    assert not any("mixture-of-experts" in w for w in dense["warnings"])
+
+
+def test_unpinned_layer_split_shows_no_per_gpu_figure():
+    model = _model(need = 31.6, mode = "full")
+    model["per_gpu_gb"][2] = 16.4
+    host = _host(2, gpus = [{**_t4(i), "total_gb": 24.0, "free_gb": 15.0} for i in range(2)])
+    plan = pp.plan({"parallel_mode": "auto"}, host, model)
+    assert plan["mode"] == "layer_split", plan["reason"]
+    # Unpinned, the start-time selection picks the cards: no per-GPU figure until the count is known.
+    assert plan["estimate"]["per_gpu_gb"]["layer_split"] is None
+    pinned = pp.plan({"parallel_mode": "layer_split", "gpu_ids": [0, 1]}, host, model)
+    assert pinned["estimate"]["per_gpu_gb"]["layer_split"] == 16.4
+
+
+def test_the_cell_gate_is_left_to_the_load():
+    # An explicit backend no longer runs Core's cell gate at plan time: the load knows the model's traits.
+    olmoe = _model(moe = True, family = "olmoe")
+    plan = pp.plan(
+        {"parallel_mode": "custom", "parallel_spec": "cp=2,cp_backend=ulysses"}, _host(2), olmoe
+    )
+    assert plan["spec"] == "cp=2,cp_backend=ulysses"

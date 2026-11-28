@@ -17734,6 +17734,8 @@ class DiffusionBackend:
                         device = state.device,
                         publish = _publish_preview,
                         total_steps = progress_steps,
+                        # Only while a visible page polls this render's progress for its preview.
+                        watch = "image",
                     )
 
                 # Count GPU-finished steps: under CUDA graphs or on MPS the host enqueues all steps early.

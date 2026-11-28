@@ -1371,3 +1371,16 @@ def test_the_race_labels_its_batched_calls_and_verdicts_with_its_canvas(monkeypa
     assert report["sizes"]["2"]["graph_canvas"] == want
     assert want in seen and None in seen  # solo renders carry no canvas label
     assert cg._BATCH_CANVAS.get() is None
+
+
+def test_hidream_requests_stay_serial_but_its_own_batch_size_still_batches():
+    from core.inference import diffusion_families as families
+    from core.inference.diffusion import _generation_chunks
+
+    for name in ("hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"):
+        record = families.detect_family("", name)
+        assert record.name == "hidream-i1"
+        assert adapters.batched_forward(record) is False
+        assert adapters.adapter_for(record) is None
+    jobs = [("a", 1), ("a", 2), ("b", 3)]
+    assert _generation_chunks(record, jobs, 4) == [jobs]

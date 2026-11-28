@@ -315,8 +315,13 @@ def _launch(
         N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )
     kernel = kernels[1] if use_words else kernels[0]
-    # Above 4 rows (UNSLOTH_GEMV_MAX_ROWS) each program takes the largest of 4, 3, 2 dividing M.
-    m_rows = max(M, 1) if M <= 4 else next(r for r in (4, 3, 2, 1) if M % r == 0)
+    if isinstance(M, torch.SymInt):
+        # A dynamic batch under torch.compile: a row-count constexpr would pin the graph to one M
+        # (mark_dynamic raised, dynamic=True compiled a graph per M). One row per program keeps M runtime.
+        m_rows = 1
+    else:
+        # Above 4 rows (UNSLOTH_GEMV_MAX_ROWS) each program takes the largest of 4, 3, 2 dividing M.
+        m_rows = max(M, 1) if M <= 4 else next(r for r in (4, 3, 2, 1) if M % r == 0)
     m_groups = M // m_rows
     args = (
         X,

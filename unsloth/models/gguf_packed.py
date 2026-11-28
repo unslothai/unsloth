@@ -25,6 +25,7 @@ import contextlib
 import contextvars
 import functools
 import os
+import threading
 import types
 
 import torch
@@ -115,9 +116,12 @@ def _resolve_ops():
     zoo_types = getattr(zoo_kernels, "SUPPORTED_TYPES", None)
     zoo_types = None if zoo_types is None else frozenset(int(t) for t in zoo_types)
 
-    def _zoo_has(ggml_type):
-        # Types the zoo kernels do not decode stay on the reference.
-        return zoo_types is None or int(ggml_type) in zoo_types
+    forced = choice == "zoo"
+
+    def _zoo_has(ggml_type, packed):
+        # Types the zoo kernels do not decode stay on the reference, and by default so do blocks off CUDA: there the
+        # zoo runs the same torch decode inside an opaque custom op, which torch.compile cannot fuse (far slower).
+        return (forced or packed.is_cuda) and (zoo_types is None or int(ggml_type) in zoo_types)
 
     def dequantize(
         packed,
@@ -125,7 +129,7 @@ def _resolve_ops():
         shape,
         dtype = torch.float32,
     ):
-        if _zoo_has(ggml_type):
+        if _zoo_has(ggml_type, packed):
             return zoo_kernels.dequantize_gguf(packed, ggml_type, tuple(shape), dtype)
         return _ref.dequantize_gguf(packed, ggml_type, shape, dtype)
 
@@ -136,12 +140,15 @@ def _resolve_ops():
         shape,
         bias = None,
     ):
-        if _zoo_has(ggml_type):
+        if _zoo_has(ggml_type, packed):
+            # The bias in x's dtype, as the reference: the zoo's dequantize + F.linear path rejects a mixed bias.
+            if bias is not None and bias.dtype != x.dtype:
+                bias = bias.to(x.dtype)
             return zoo_kernels.gguf_linear(x, packed, ggml_type, tuple(shape), bias)
         return _reference_linear(x, packed, ggml_type, shape, bias)
 
     def linear_backward_input(grad_output, packed, ggml_type, shape):
-        if _zoo_has(ggml_type):
+        if _zoo_has(ggml_type, packed):
             return zoo_kernels.gguf_linear_backward_input(
                 grad_output, packed, ggml_type, tuple(shape)
             )
@@ -151,7 +158,7 @@ def _resolve_ops():
 
     def grouped_mm(x, packed, ggml_type, shape, counts, transpose_b):
         # Rows sorted by expert, counts[e] each; transpose_b: x @ W[e]^T (forward), else x @ W[e] (dX). None declines.
-        if zoo_grouped is None or not _zoo_has(ggml_type):
+        if zoo_grouped is None or not _zoo_has(ggml_type, packed):
             return None
         return zoo_grouped(
             x,
@@ -168,7 +175,7 @@ def _resolve_ops():
         linear = linear,
         linear_backward_input = linear_backward_input,
         grouped_mm = grouped_mm,
-        supports = lambda t: _zoo_has(t) or _ref.is_supported(t),
+        supports = lambda t: zoo_types is None or int(t) in zoo_types or _ref.is_supported(t),
     )
 
 
@@ -202,6 +209,10 @@ def _effective_weight(packed, ggml_type, shape, dtype, inverse):
 # the weight it decoded for the forward until then (one layer's 16-bit weights at a time) instead of decoding it
 # a third time for dX. A plain global, so a compiled layer guards on it.
 _IN_CHECKPOINT_RECOMPUTE = [False]
+# Recomputes in flight, every thread together: autograd runs one device's backward per thread, so two checkpoint
+# recomputes can overlap without nesting, and a saved previous value restored on exit could leave the flag on.
+_RECOMPUTE_DEPTH = [0]
+_RECOMPUTE_LOCK = threading.Lock()
 
 
 # UNSLOTH_GGUF_RECOMPUTE_REUSE=0 decodes for dX again (the memory of one layer's 16-bit weights back, one more
@@ -232,13 +243,16 @@ def _mirror_checkpoint_recompute():
 
     @contextlib.contextmanager
     def marker(*args, **kwargs):
-        previous = _IN_CHECKPOINT_RECOMPUTE[0]
-        _IN_CHECKPOINT_RECOMPUTE[0] = True
+        with _RECOMPUTE_LOCK:
+            _RECOMPUTE_DEPTH[0] += 1
+            _IN_CHECKPOINT_RECOMPUTE[0] = True
         try:
             with original(*args, **kwargs):
                 yield
         finally:
-            _IN_CHECKPOINT_RECOMPUTE[0] = previous
+            with _RECOMPUTE_LOCK:
+                _RECOMPUTE_DEPTH[0] -= 1
+                _IN_CHECKPOINT_RECOMPUTE[0] = _RECOMPUTE_DEPTH[0] > 0
 
     marker._unsloth_gguf_mirror = True
     marker.__wrapped__ = original
@@ -1515,7 +1529,7 @@ def is_gguf_packed_model(model):
     """Whether any Linear or expert stack of `model` (PEFT-wrapped or not) still holds GGUF blocks."""
     if not isinstance(model, nn.Module):
         return False
-    return any(
+    return bool(_merge_densified_bases(model)) or any(
         isinstance(module, UnslothGGUFLinear)
         or any(getattr(p, "packed_format", None) == "gguf" for p in module._parameters.values())
         for module in model.modules()
@@ -1572,6 +1586,28 @@ def _densify_in_place(module):
     module.__dict__[_GGUF_PACKED_STATE] = (packed, permutation, module.compute_dtype)
     _swap_class(module, nn.Linear)
     module.weight = nn.Parameter(weight, requires_grad = False)
+
+
+def _merge_densified_bases(model):
+    """{id: base} of the packed bases a PEFT merge densified in place while their LoRA wrapper is still there
+    (merge_adapter): the dense weight is base + delta, the kept GGUF blocks the base. After merge_and_unload the
+    wrapper is gone and the dense weight is the model's own."""
+    found = {}
+    for module in model.modules():
+        base = module._modules.get("base_layer")
+        if base is not None and _GGUF_PACKED_STATE in base.__dict__:
+            found[id(base)] = base
+    return found
+
+
+def _unmerged_packed_weight(module, dtype = None):
+    """The base weight of a Linear a PEFT merge densified in place, decoded from the GGUF blocks it kept: its dense
+    `weight` holds the merged value (base + adapter delta)."""
+    packed, permutation, compute_dtype = module.__dict__[_GGUF_PACKED_STATE]
+    shape = (module.out_features, module.in_features)
+    inverse = None if permutation is None else torch.argsort(permutation)
+    ggml_type = int(module.__dict__["_ggml_type_key"])
+    return _effective_weight(packed, ggml_type, shape, dtype or compute_dtype, inverse)
 
 
 def _restore_packed_in_place(module):
@@ -1647,6 +1683,7 @@ def _base_state_items(model, dtype):
     """(checkpoint name, 16-bit tensor) of every base weight: LoRA wrappers stripped, GGUF blocks dequantized."""
     base = model.get_base_model() if hasattr(model, "get_base_model") else model
     modules = dict(base.named_modules())
+    densified = _merge_densified_bases(base)
     seen = set()
     for key, tensor in base.state_dict(keep_vars = True).items():
         if "lora_" in key or "lora_magnitude_vector" in key:
@@ -1660,6 +1697,9 @@ def _base_state_items(model, dtype):
         owner = modules.get(owner_name)
         if leaf == "weight_packed" and isinstance(owner, UnslothGGUFLinear):
             name, value = name[: -len("_packed")], owner.dequantize_weight(dtype)
+        elif leaf == "weight" and id(owner) in densified:
+            # merge_adapter() densified this base in place: the merge adds the adapter itself, so write the base.
+            value = _unmerged_packed_weight(owner, dtype)
         elif getattr(tensor, "packed_format", None) == "gguf":
             value = tensor.dequantize(dtype = dtype)
         else:
@@ -1708,6 +1748,9 @@ def write_gguf_dense_base(
     if dtype is None:
         dtype = next(
             (m.compute_dtype for m in base.modules() if isinstance(m, UnslothGGUFLinear)),
+            None,
+        ) or next(
+            (m.__dict__[_GGUF_PACKED_STATE][2] for m in _merge_densified_bases(base).values()),
             torch.bfloat16,
         )
     tied = bool(getattr(base.config.get_text_config(), "tie_word_embeddings", False))
@@ -1755,9 +1798,14 @@ def write_gguf_dense_base(
 
 
 @contextlib.contextmanager
-def gguf_dense_base_for_merge(model, save_directory):
+def gguf_dense_base_for_merge(
+    model,
+    save_directory,
+    dtype = None,
+):
     """Yields a merge-base resolver pointing at a temporary dequantized copy of the base, or None when the model
-    is not a packed GGUF model. The copy sits beside `save_directory` and is removed afterwards."""
+    is not a packed GGUF model. The copy sits beside `save_directory` and is removed afterwards. `dtype`: the
+    copy's dtype (default the compute dtype); a float32 export decodes the blocks in float32."""
     if not is_gguf_packed_model(model):
         yield None
         return
@@ -1769,7 +1817,7 @@ def gguf_dense_base_for_merge(model, save_directory):
     directory = tempfile.mkdtemp(prefix = ".unsloth_gguf_dense_base_", dir = parent)
     try:
         print("Unsloth: dequantizing the packed GGUF base to 16-bit for the merge...")
-        write_gguf_dense_base(model, directory)
+        write_gguf_dense_base(model, directory, dtype = dtype)
 
         def resolver(
             model_name = None,

@@ -250,11 +250,23 @@ class _LocalShardMixin:
             config["min_8bit_size"] = 0 if full >= config["min_8bit_size"] else local.numel() + 1
         return config
 
-    def _shard_call(self, method, group, p, gindex, pindex, with_grad):
+    def _shard_call(
+        self,
+        method,
+        group,
+        p,
+        gindex,
+        pindex,
+        with_grad,
+        step = None,
+    ):
+        """bitsandbytes' `method` on a plain alias of p's local shard. `step(plain, group, alias, gindex, pindex)`,
+        when given, runs instead of the plain call (bfloat16 stochastic rounding wraps the update this way)."""
         DTensor = _dtensor_class()
         local = _local(p, DTensor)
+        plain = getattr(super(), method)
         if local is None:
-            return getattr(super(), method)(group, p, gindex, pindex)
+            return plain(group, p, gindex, pindex)
         state = self.state.pop(p, {})
         if local.numel() == 0:
             state.setdefault("step", 0)
@@ -268,7 +280,9 @@ class _LocalShardMixin:
             alias.grad = _local_grad(p.grad, DTensor).detach()
         self.state[alias] = state
         try:
-            return getattr(super(), method)(group, alias, gindex, pindex)
+            if step is not None:
+                return step(plain, group, alias, gindex, pindex)
+            return plain(group, alias, gindex, pindex)
         finally:
             self.state[p] = self.state.pop(alias)
             alias.grad = None

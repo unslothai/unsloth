@@ -87,8 +87,12 @@ def _innermost(optimizer):
 
 def _stock_classes():
     try:
+        import bitsandbytes
         import bitsandbytes.optim as bnb_optim
     except Exception:
+        return ()
+    if getattr(bitsandbytes, "__unsloth_shim__", False):
+        # Unsloth's bitsandbytes stand-in: its optimizers are torch ones with no 8-bit state.
         return ()
     names = ("Adam", "Adam8bit", "AdamW", "AdamW8bit")
     return tuple(

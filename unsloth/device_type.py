@@ -178,7 +178,12 @@ except Exception:
     ALLOW_PREQUANTIZED_MODELS = False
     ALLOW_BITSANDBYTES = False
 else:
-    if not native_kernels_ready(_bnb_probe, DEVICE_TYPE):
+    if getattr(_bnb_probe, "__unsloth_shim__", False):
+        # Unsloth's NF4 stand-in (unsloth/bnb_shim): needs a CUDA / ROCm GPU for its kernels.
+        if DEVICE_TYPE not in ("cuda", "hip"):
+            ALLOW_PREQUANTIZED_MODELS = False
+            ALLOW_BITSANDBYTES = False
+    elif not native_kernels_ready(_bnb_probe, DEVICE_TYPE):
         ALLOW_PREQUANTIZED_MODELS = False
         ALLOW_BITSANDBYTES = False
     del _bnb_probe

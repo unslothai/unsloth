@@ -1518,6 +1518,62 @@ from .int4_packed import (
     int4_matmul as _int4_matmul,
 )
 
+if DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM and getattr(bnb, "__unsloth_shim__", False):
+    # Unsloth's bitsandbytes stand-in has no native library: the paths that would call bitsandbytes'
+    # ctypes kernels (UNSLOTH_BNB_TRITON=0, pre-Volta GPUs, a failed Triton compile) use its torch
+    # dequantize, never Triton again.
+    def _shim_quant_state(quant_state):
+        if type(quant_state) is not list:
+            return quant_state
+        absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
+            _unpack_quant_state(quant_state)
+        )
+        state2 = None
+        if code2 is not None:
+            state2 = bnb_functional.QuantState(
+                absmax = absmax2, code = code2, blocksize = blocksize2, dtype = torch_float32
+            )
+        return bnb_functional.QuantState(
+            absmax = absmax,
+            shape = shape,
+            code = code,
+            blocksize = blocksize,
+            quant_type = _quant_type(quant_state),
+            dtype = dtype,
+            offset = offset if code2 is not None else None,
+            state2 = state2,
+        )
+
+    def _shim_dequantize(
+        W,
+        quant_state,
+        out = None,
+    ):
+        quant_state = _shim_quant_state(quant_state)
+        return bnb_functional._dequantize_4bit_impl(
+            W.reshape(-1, 1), quant_state, out = out, use_triton = False
+        )
+
+    def _fast_dequantize_ctypes(
+        W,
+        quant_state,
+        out = None,
+        use_global_buffer = False,
+    ):
+        out = _shim_dequantize(W, quant_state, out = out)
+        # Careful returning transposed data, as the other paths do.
+        return out.t() if W.shape[0] == 1 else out
+
+    def _fast_gemv_ctypes(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
+        W = _shim_dequantize(W, quant_state).to(X.dtype)
+        return torch_matmul(X, W.t(), out = out)
+
+
 _fast_dequantize_bnb = fast_dequantize
 _fast_gemv_bnb = fast_gemv
 

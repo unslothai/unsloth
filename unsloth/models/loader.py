@@ -22,6 +22,7 @@ from ._utils import (
     DISABLE_SDPA_MODEL_NAMES,
 )
 from ._custom_dtype import register_custom_dtype
+from ..bnb_shim import refuse_int8 as bnb_shim_refuse_int8, vllm_blocked as bnb_shim_vllm_blocked
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger, _vllm_will_load_weights, restore_transformers_family
 from .mistral import FastMistralModel
@@ -1450,6 +1451,7 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_4bit = False
 
         # Fail before any weights load.
+        bnb_shim_refuse_int8(load_in_8bit)
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -1547,6 +1549,20 @@ class FastLanguageModel(FastLlamaModel):
         # Same fallback as FastModel, before requiring vLLM: it cannot run below compute capability 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        if fast_inference and bnb_shim_vllm_blocked(
+            model_name,
+            load_in_4bit,
+            load_in_8bit,
+            load_in_16bit,
+            full_finetuning,
+            kwargs.get("quantization_config"),
+        ):
+            print(
+                "Unsloth: vLLM loads bitsandbytes 4-bit weights with its native library, which is "
+                "unavailable - will switch to Unsloth inference!"
+            )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:
@@ -2501,6 +2517,7 @@ class FastModel(FastBaseModel):
                 load_in_4bit = False
 
         # Fail before any weights load.
+        bnb_shim_refuse_int8(load_in_8bit)
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -2610,6 +2627,20 @@ class FastModel(FastBaseModel):
         # Same fallback as FastLanguageModel, before requiring vLLM: zoo's vLLM loader raises on compute capability < 7.
         if fast_inference and DEVICE_TYPE == "cuda" and torch.cuda.get_device_capability()[0] < 7:
             print("Unsloth: vLLM does not work on older GPUs - will switch to Unsloth inference!")
+            fast_inference = False
+            _drop_vllm_engine_kwargs(kwargs)
+        if fast_inference and bnb_shim_vllm_blocked(
+            model_name,
+            load_in_4bit,
+            load_in_8bit,
+            load_in_16bit,
+            full_finetuning,
+            kwargs.get("quantization_config"),
+        ):
+            print(
+                "Unsloth: vLLM loads bitsandbytes 4-bit weights with its native library, which is "
+                "unavailable - will switch to Unsloth inference!"
+            )
             fast_inference = False
             _drop_vllm_engine_kwargs(kwargs)
         if fast_inference:

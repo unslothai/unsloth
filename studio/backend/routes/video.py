@@ -1107,9 +1107,11 @@ async def _start_page_video(
 async def video_generate_progress(
     current_subject: str = Depends(get_current_subject),
     video_id: Optional[str] = Query(None, max_length = 128),
+    preview: bool = Query(False),
 ):
     """``video_id`` names the caller's clip: once it has ended its own outcome answers, even after
-    a successor's progress replaced it (the queue starts the next clip at once)."""
+    a successor's progress replaced it (the queue starts the next clip at once). ``preview``: a
+    visible page shows the running render's live preview, so the denoise loop keeps producing it."""
     from core.inference.video import get_video_backend
 
     backend = get_video_backend()
@@ -1138,6 +1140,9 @@ async def video_generate_progress(
     if progress is None:
         # The reservation changed hands mid-poll; the successor's progress is not ours to see.
         return account_access.hidden_generate_progress_response(VideoGenerateProgressResponse)
+    if preview is True:  # a direct call gets the Query default object
+        from core.inference.diffusion_preview import note_preview_watch
+        note_preview_watch("video")
     log_media_generation_progress("video", progress)
     return VideoGenerateProgressResponse(**progress)
 

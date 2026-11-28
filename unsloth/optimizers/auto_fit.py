@@ -7,9 +7,16 @@ A standard step keeps every gradient until optimizer.step(), so full finetuning 
 per weight and the optimizer state at once. When the planner predicts that this does not fit but the step
 fits without the stored gradients, each weight is stepped by the user's own optimizer as soon as its gradient
 is accumulated (a post-accumulate-grad hook), and the gradient is freed right away. AdamW / adamw_8bit / paged
-optimizers keep their math, state, LR schedule, bfloat16 stochastic rounding and checkpoint format. Only
-max_grad_norm changes: each tensor is clipped on its own (a global norm needs every gradient first). While the
-global norm stays under max_grad_norm the result is bitwise the standard step.
+optimizers keep their math, state, LR schedule, bfloat16 stochastic rounding and checkpoint format.
+
+max_grad_norm clips by the global norm, which is only known once every gradient has arrived, after most weights
+were stepped. So it is estimated while gradients arrive: this step's sum of squares so far, scaled by how much of
+the previous step's total the same tensors held. The estimate is never below the norm seen so far, converges to
+the exact norm as the last gradients arrive, and is exact for the weights stepped at optimizer.step() (tied and
+reused ones). The first step (no previous step yet) measures the norm with a gradient-only pass first.
+UNSLOTH_AUTO_FIT_CLIP = exact measures every step that way (a second forward and backward per step), = lagged uses
+the previous step's norm, = per_tensor clips each tensor by its own norm.
+While the global norm stays under max_grad_norm the result is bitwise the standard step.
 
 When even that does not fit, LOMO's update is used instead: plain SGD stepped the same way, with no optimizer
 state. This changes the optimizer.
@@ -27,6 +34,7 @@ import json
 import os
 import sys
 import weakref
+from collections.abc import Mapping
 
 import torch
 
@@ -46,6 +54,8 @@ _MARK = "_unsloth_updates_in_backward"
 _INSTALLED = "_unsloth_auto_fit_installed"
 _TIER = "_unsloth_auto_fit_tier"
 _TIER_FILE = "unsloth_auto_fit.json"  # in each checkpoint: the optimizer tier it was trained with
+_CLIP_ENV = "UNSLOTH_AUTO_FIT_CLIP"
+_CLIP_MODES = ("estimate", "exact", "lagged", "per_tensor")
 
 
 def auto_fit_mode():
@@ -56,6 +66,21 @@ def auto_fit_mode():
     if value in _FORCED:
         return value
     return "auto"
+
+
+def clip_mode():
+    """How the in-backward step applies max_grad_norm: 'estimate' (default), 'exact', 'lagged' or 'per_tensor'."""
+    value = os.environ.get(_CLIP_ENV, "").strip().lower()
+    if value in _CLIP_MODES:
+        return value
+    if os.environ.get("UNSLOTH_AUTO_FIT_EXACT_CLIP", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return "exact"
+    return "estimate"
 
 
 def _optim_name(args):
@@ -148,14 +173,16 @@ def _in_block_trial():
 
 
 def _norms(grads):
-    """float32 L2 norm of each gradient, in one multi-tensor launch where torch has it."""
+    """float32 L2 norm of each gradient (float64 for float64 gradients), in one multi-tensor launch where torch
+    has it."""
+    dtype = torch.float64 if any(g.dtype == torch.float64 for g in grads) else torch.float32
     foreach_norm = getattr(torch, "_foreach_norm", None)
     if foreach_norm is not None:
         try:
-            return list(foreach_norm(grads, 2.0, dtype = torch.float32))
+            return list(foreach_norm(grads, 2.0, dtype = dtype))
         except (TypeError, RuntimeError):
             pass
-    return [torch.linalg.vector_norm(g, 2.0, dtype = torch.float32) for g in grads]
+    return [torch.linalg.vector_norm(g, 2.0, dtype = dtype) for g in grads]
 
 
 def _queue_callback(callback):
@@ -210,8 +237,15 @@ class InBackwardOptimizer(torch.optim.Optimizer):
     the clipping run as a few multi-tensor launches per block instead of several per weight; each weight's update
     is the one the standard step makes. Shares the wrapped optimizer's param_groups and state (the LR scheduler,
     bfloat16 stochastic rounding, bitsandbytes overrides and checkpoints see the optimizer the Trainer built).
-    step() only steps weights whose gradient did not pass through a hook. `max_grad_norm` > 0 clips each gradient
-    by its own norm. `batch_bytes` = 0 steps each weight on its own as soon as its gradient is ready."""
+    step() only steps weights whose gradient did not pass through a hook. `batch_bytes` = 0 steps each weight on its
+    own as soon as its gradient is ready.
+
+    `max_grad_norm` > 0 clips by the global norm (`clip`: see clip_mode). A batch stepped before every gradient has
+    arrived uses an estimate: S, this step's sum of squared norms so far, times T / P, where T is the previous
+    step's total and P the previous step's sum over the same tensors. It is never below sqrt(S) (so never clips
+    less than the norm already seen implies), is exact when the gradients keep their relative sizes, and is the
+    exact norm for everything stepped by flush() at optimizer.step(). Under `measuring()` the hooks only measure (no step, gradients
+    freed), so the next pass can clip with the exact norm; the first step does that when `calibrate` is set."""
 
     def __init__(
         self,
@@ -219,6 +253,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         max_grad_norm = 0.0,
         model = None,
         batch_bytes = None,
+        clip = None,
     ):
         kind = _step_kind(optimizer)
         if kind is None:
@@ -226,6 +261,16 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self.optimizer = optimizer
         self._kind = kind
         self.max_grad_norm = float(max_grad_norm or 0.0)
+        self.clip = clip if clip in _CLIP_MODES else clip_mode()
+        # Measure the first step's norm with a gradient-only pass (the trainer path runs it).
+        self.calibrate = True
+        self._measuring = False
+        self._known_sq = None  # this step's exact squared norm, from a measuring pass
+        self._prev_sq = {}  # id(param) -> its squared norm in the previous step
+        self._prev_total = None  # the previous step's total squared norm
+        self._cur_sq = {}
+        self._prev_seen = {}  # device -> sum of _prev_sq over the tensors seen this step
+        self.measured_steps = 0
         self._armed = False
         self._done = set()
         self._norm_sq = {}
@@ -316,6 +361,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
     def _reset(self):
         self._done = set()
         self._norm_sq = {}
+        self._cur_sq = {}
+        self._prev_seen = {}
         self._calls = {}
         self._pending = []
         self._pending_ids = set()
@@ -423,6 +470,45 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         finally:
             self._armed = previous
 
+    @contextlib.contextmanager
+    def measuring(self):
+        """Hooks only measure: each gradient's norm is recorded and the gradient freed, nothing is stepped. On exit
+        the step's exact norm is kept for the stepping pass that follows."""
+        previous = self._armed
+        self._armed, self._measuring = True, True
+        ok = False
+        try:
+            yield self
+            ok = True
+        finally:
+            try:
+                if ok:
+                    self._flush_pending()
+                    left = [
+                        p
+                        for g in self.optimizer.param_groups
+                        for p in g["params"]
+                        if p.grad is not None
+                    ]
+                    if left:
+                        self._account(left)
+                    for p in left:
+                        p.grad = None
+                    self._known_sq = self._total_sq()
+                    self.measured_steps += 1
+            finally:
+                self._measuring = False
+                self._armed = previous
+                self._reset()
+                if not ok:
+                    self._known_sq = None
+
+    def wants_measure(self):
+        """True when the next training step should run a measuring pass first."""
+        if self.max_grad_norm <= 0 or self.clip == "per_tensor":
+            return False
+        return self.clip == "exact" or (self.calibrate and self._prev_total is None)
+
     def _locate(self, p):
         groups = self.optimizer.param_groups
         key = (id(groups), tuple(id(g) for g in groups), sum(len(g["params"]) for g in groups))
@@ -450,7 +536,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             return
         if self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
-        if id(p) in self._done:
+        if id(p) in self._done and not self._measuring:
             raise self._second_gradient(p)
         if id(p) in self._pending_ids:
             return  # accumulated again before its batch was stepped: stepped once, with the sum
@@ -496,24 +582,96 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         params = [p for p in params if p.grad is not None and self._locate(p) is not None]
         if not params:
             return
+        if self._measuring:
+            self._account(params)
+            for p in params:
+                p.grad = None
+            return
         for p in params:
             if id(p) in self._done:
                 raise self._second_gradient(p)
-        for p in params:
-            self._done.add(id(p))
+        self._clip(self._account(params))
+        self._step_only(params)
+
+    def _account(self, params):
+        """Each gradient's float32 norm (one multi-tensor launch per device), added to this step's running sum of
+        squares and recorded for the next step's estimate. Returns {device: (grads, norms, squares)}."""
         by_device = {}
         for p in params:
             by_device.setdefault(p.grad.device, []).append(p)
+        info = {}
         for device, group in by_device.items():
             grads = [p.grad.detach() for p in group]
             norms = torch.stack(_norms(grads))
-            square = (norms * norms).sum()
+            sq = norms * norms
             key = str(norms.device)
+            square = sq.sum()
             self._norm_sq[key] = square if key not in self._norm_sq else self._norm_sq[key] + square
-            if self.max_grad_norm > 0:
-                # torch.nn.utils.clip_grad_norm_'s coefficient, from each gradient's own norm.
-                coef = torch.clamp(self.max_grad_norm / (norms + 1e-6), max = 1.0)
-                torch._foreach_mul_(grads, list(coef.unbind(0)))
+            parts = sq.unbind(0)
+            if (
+                self.max_grad_norm > 0
+                and self.clip in ("estimate", "exact")
+                and self._prev_total is not None
+            ):
+                # The previous step's squares of these tensors (a tensor new this step counts as unchanged).
+                previous = torch.stack(
+                    [self._prev_sq.get(id(p), q).to(sq.device) for p, q in zip(group, parts)]
+                )
+                seen = previous.sum()
+                self._prev_seen[key] = (
+                    seen if key not in self._prev_seen else self._prev_seen[key] + seen
+                )
+            for p, q in zip(group, parts):
+                self._cur_sq[id(p)] = q
+            info[key] = (grads, norms, sq)
+        return info
+
+    def _total_sq(self):
+        squares = list(self._norm_sq.values())
+        if not squares:
+            return None
+        device = squares[0].device
+        return torch.stack([v.to(device) for v in squares]).sum()
+
+    def _clip(
+        self,
+        info,
+        final = False,
+    ):
+        """Scale the gradients in `info` by torch.nn.utils.clip_grad_norm_'s coefficient max / (norm + 1e-6), at most 1,
+        with the global norm this step will have (`final`: every gradient of the step is accounted, so it is exact)."""
+        max_norm = self.max_grad_norm
+        if max_norm <= 0:
+            return
+        for key, (grads, norms, sq) in info.items():
+            if self.clip == "per_tensor" and self._known_sq is None:
+                coef = list(torch.clamp(max_norm / (norms + 1e-6), max = 1.0).unbind(0))
+                torch._foreach_mul_(grads, coef)
+                continue
+            seen = self._total_sq().to(norms.device)  # this step so far, this batch included
+            if self._known_sq is not None:
+                total = self._known_sq.to(norms.device)
+            elif final or self._prev_total is None:
+                total = seen
+            elif self.clip == "lagged":
+                total = torch.maximum(seen, self._prev_total.to(norms.device))
+            else:
+                # (exact without a measuring pass, as when the step cannot be repeated, estimates the same way)
+                prev_seen = sum(
+                    (v.to(norms.device) for v in self._prev_seen.values()), torch.zeros_like(seen)
+                )
+                ratio = self._prev_total.to(norms.device) / prev_seen.clamp_min(1e-30)
+                total = torch.where(prev_seen > 0, torch.maximum(seen, seen * ratio), seen)
+            coef = torch.clamp(max_norm / (total.sqrt() + 1e-6), max = 1.0)
+            try:
+                torch._foreach_mul_(grads, coef)
+            except (TypeError, RuntimeError):
+                for g in grads:
+                    g.mul_(coef.to(g.dtype))
+
+    def _step_only(self, params):
+        for p in params:
+            self._done.add(id(p))
         with _no_global_step_hooks():
             if self._kind == "bitsandbytes":
                 for p in params:
@@ -559,31 +717,35 @@ class InBackwardOptimizer(torch.optim.Optimizer):
 
     def flush(self):
         """Step the weights left for the end: the last batch, reused ones, and gradients that reached .grad
-        without a hook."""
-        self._flush_pending()
-        left = []
+        without a hook. Every gradient of the step is known by now, so these are clipped with the exact norm."""
+        left = [p for p in self._pending if p.grad is not None and self._locate(p) is not None]
+        waiting = {id(p) for p in left}
+        self._pending, self._pending_ids, self._pending_bytes = [], set(), 0
         for group in self.optimizer.param_groups:
             for p in group["params"]:
-                if p.grad is None:
+                if p.grad is None or id(p) in waiting:
                     continue
-                if id(p) not in self._done:
-                    if self._reused(p):
-                        self.deferred_steps += 1
-                    else:
-                        self.late_steps += 1
-                # A weight the hook already stepped raises in _step_params: it received a second gradient.
+                if id(p) in self._done:
+                    raise self._second_gradient(p)  # the hook already stepped it: a second gradient
+                if self._reused(p):
+                    self.deferred_steps += 1
+                else:
+                    self.late_steps += 1
                 left.append(p)
-        # In batches of at most batch_bytes, each freed before the next: a multi-tensor step's temporaries span
-        # its whole batch, and the planner budgets them for one batch.
+        if not left:
+            return
+        self._clip(self._account(left), final = True)
+        # In batches of at most batch_bytes: a multi-tensor step's temporaries span its whole batch, and the
+        # planner budgets them for one batch.
         batch, size = [], 0
         for p in left:
             nbytes = p.grad.numel() * p.grad.element_size()
             if batch and size + nbytes > self.batch_bytes:
-                self._step_params(batch)
+                self._step_only(batch)
                 batch, size = [], 0
             batch.append(p)
             size += nbytes
-        self._step_params(batch)
+        self._step_only(batch)
 
     def total_norm(self):
         """L2 norm over every gradient this step saw (before clipping)."""
@@ -601,6 +763,11 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                 loss = closure()
         self.flush()
         self.hook_steps += len(self._done)
+        total = self._total_sq()
+        if total is not None:
+            # This step's norms are the next step's reference for the estimate.
+            self._prev_sq, self._prev_total = self._cur_sq, total.detach()
+        self._known_sq = None
         self._reset()
         return loss
 
@@ -1001,7 +1168,8 @@ def _decide(trainer, model, mode):
         f"({_gb(plan['states'])}) and activations, {_gb(plan['usable'])} free."
     )
     clip = (
-        f" max_grad_norm = {args.max_grad_norm} now clips each tensor by its own norm."
+        f" max_grad_norm = {args.max_grad_norm} clips by the global norm, estimated while gradients arrive"
+        f" (the first step measures it; {_CLIP_ENV}=exact measures every step with a second forward and backward)."
         if (getattr(args, "max_grad_norm", 0) or 0) > 0
         else ""
     )
@@ -1094,6 +1262,140 @@ def _wrap_clip(trainer):
     accelerator.clip_grad_norm_ = clip_grad_norm_
 
 
+_GENERATING = (
+    "GRPO",
+    "RLOO",
+    "OnlineDPO",
+    "PPO",
+    "XPO",
+    "NashMD",
+    "GKD",
+    "GOLD",
+    "MiniLLM",
+    "Distillation",
+)
+
+
+def _can_repeat_step(trainer):
+    """True when training_step can run twice on the same inputs with the same result: its inputs are not generated
+    inside the step (GRPO / RLOO sample completions in _prepare_inputs, online trainers in training_step)."""
+    try:
+        from transformers import Trainer
+    except Exception:
+        return False
+    cls = type(trainer)
+    if getattr(cls, "_prepare_inputs", None) is not getattr(Trainer, "_prepare_inputs", None):
+        return False
+    if hasattr(trainer, "_generate_and_score_completions"):
+        return False
+    return not any(any(k in klass.__name__ for k in _GENERATING) for klass in cls.__mro__)
+
+
+_BUFFER_COPY_BYTES = 256 << 20
+
+
+def _snapshot_buffers(model):
+    """(module, name, buffer, version, copy) for every buffer: a forward can update buffers in place (BatchNorm's
+    running statistics) or rebind them. Inference tensors are skipped: they cannot be updated in place. Copies are kept up to _BUFFER_COPY_BYTES in total (LLM buffers are a few
+    MB: rotary frequencies, masks)."""
+    out, budget = [], _BUFFER_COPY_BYTES
+    if model is None:
+        return out
+    for module in model.modules():
+        for name, buffer in list(module._buffers.items()):
+            if buffer is None:
+                continue
+            try:
+                version = buffer._version
+            except Exception:
+                version = None
+            nbytes = buffer.numel() * buffer.element_size()
+            copy = None
+            if version is not None and nbytes <= budget:
+                copy = buffer.detach().clone()
+                budget -= nbytes
+            out.append((module, name, buffer, version, copy))
+    return out
+
+
+def _restore_buffers(saved):
+    """Put every buffer back as it was. False when one changed in place without a copy to restore it from."""
+    complete = True
+    for module, name, buffer, version, copy in saved:
+        if module._buffers.get(name) is not buffer:
+            module._buffers[name] = buffer
+        if copy is not None:
+            # Always: batch_norm updates its running statistics inside the kernel, without bumping _version.
+            with torch.no_grad():
+                buffer.copy_(copy)
+        elif version is not None and buffer._version != version:
+            complete = False
+    return complete
+
+
+@contextlib.contextmanager
+def _repeatable(trainer, model):
+    """Run a training step that must leave no trace: the same random state afterwards (dropout draws the same
+    masks in the real pass), the model's buffers (running statistics) and the trainer's counters and logged
+    metrics unchanged. Yields a list that holds False after the pass when a buffer could not be restored."""
+    devices = (
+        sorted({p.device.index or 0 for p in model.parameters() if p.device.type == "cuda"})
+        if model is not None
+        else []
+    )
+    cpu = torch.random.get_rng_state()
+    cuda = [(d, torch.cuda.get_rng_state(d)) for d in devices]
+    numbers = {k: v for k, v in trainer.__dict__.items() if type(v) in (int, float)}
+    buffers = _snapshot_buffers(model)
+    restored = [True]
+    metrics = trainer.__dict__.get("_metrics")
+    # TRL's {mode: defaultdict(list)}: the dicts themselves are kept (and their types), only their contents restored.
+    saved = None
+    if isinstance(metrics, dict):
+        saved = {
+            k: (dict(v), {kk: list(vv) for kk, vv in v.items() if isinstance(vv, list)})
+            if isinstance(v, dict)
+            else (v, None)
+            for k, v in metrics.items()
+        }
+    try:
+        yield restored
+    finally:
+        torch.random.set_rng_state(cpu)
+        for d, state in cuda:
+            torch.cuda.set_rng_state(state, d)
+        restored[0] = _restore_buffers(buffers)
+        del buffers
+        for k, v in numbers.items():
+            trainer.__dict__[k] = v
+        if saved is not None:
+            for k in [k for k in metrics if k not in saved]:
+                del metrics[k]
+            for k, (value, lists) in saved.items():
+                if lists is None:
+                    metrics[k] = value
+                    continue
+                inner = metrics.get(k)
+                if not isinstance(inner, dict):
+                    metrics[k] = inner = dict(value)
+                inner.clear()
+                inner.update(value)
+                for kk, items in lists.items():
+                    inner[kk][:] = items
+
+
+def _fresh_views(obj):
+    """The same inputs as new tensor objects (views): torch.compile marks dynamic dimensions on the tensors a pass
+    sees, and the real pass must see its inputs as they were, or every compiled graph recompiles once."""
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape)
+    if isinstance(obj, (list, tuple)) and type(obj) in (list, tuple):
+        return type(obj)(_fresh_views(o) for o in obj)
+    if isinstance(obj, Mapping):
+        return {k: _fresh_views(v) for k, v in obj.items()}
+    return obj
+
+
 def _arm_training_step(trainer, wrapper):
     original = trainer.training_step
     if getattr(original, "_unsloth_in_backward", False):
@@ -1102,11 +1404,42 @@ def _arm_training_step(trainer, wrapper):
     else:
         previous = trainer.__dict__.get("training_step")  # another instance-level wrapper, or None
     wrapper_ref = weakref.ref(wrapper)
+    trainer_ref = weakref.ref(trainer)
+    repeatable = _can_repeat_step(trainer)
+    if not repeatable:
+        wrapper.calibrate = False
+        if wrapper.max_grad_norm > 0 and wrapper.clip == "exact":
+            wrapper.clip = "estimate"
+            print(
+                f"Unsloth: {_CLIP_ENV}=exact needs to run each training step twice, but this trainer generates its "
+                "inputs inside the step, so max_grad_norm uses the estimated global norm instead."
+            )
 
     def training_step(*args, **kwargs):
         opt = wrapper_ref()
         if opt is None:
             return original(*args, **kwargs)
+        if repeatable and opt.wants_measure():
+            # A gradient-only pass (the class's training_step, below instance-level wrappers that count batches):
+            # it measures the exact global norm, steps nothing and frees each gradient as it arrives.
+            owner = trainer_ref()
+            model = args[0] if args else kwargs.get("model")
+            with _repeatable(owner, model) as restored, opt.measuring():
+                type(owner).training_step(
+                    owner,
+                    *(args[:1] + tuple(_fresh_views(a) for a in args[1:])),
+                    **{k: v if k == "model" else _fresh_views(v) for k, v in kwargs.items()},
+                )
+            if not restored[0]:
+                # A buffer larger than the copy budget changed in the forward: it now holds two updates for this
+                # batch. Do not measure again; later steps estimate the norm.
+                opt.calibrate = False
+                if opt.clip == "exact":
+                    opt.clip = "estimate"
+                print(
+                    "Unsloth: the model's forward updates a large buffer in place, so max_grad_norm is no longer "
+                    "measured with a second pass; it uses the estimated global norm."
+                )
         with opt.armed():
             return original(*args, **kwargs)
 

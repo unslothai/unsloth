@@ -259,7 +259,9 @@ def _gguf_packed_stub():
     module = types.ModuleType("unsloth.models.gguf_packed")
     module.is_gguf_packed_model = lambda model: False
     module.write_gguf_dense_base = _not_reached
-    module.gguf_dense_base_for_merge = lambda model, save_directory: contextlib.nullcontext()
+    module.gguf_dense_base_for_merge = (
+        lambda model, save_directory, **kwargs: contextlib.nullcontext()
+    )
     return module
 
 

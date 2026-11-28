@@ -575,3 +575,23 @@ def test_the_escape_hatch_still_beats_a_host_memory_serial_request(monkeypatch):
     assert hw.dataset_map_num_proc(1, serial_as_none = False) == 3
     monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
     assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1
+
+
+def test_a_multi_gpu_rank_maps_in_process(monkeypatch):
+    """A Studio multi-GPU rank holds CUDA and NCCL threads, so a forked map worker can deadlock on a lock one of
+    them held; the other ranks then wait at the next collective until it times out."""
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC", raising = False)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
+    assert hw.dataset_map_num_proc(4) is None
+    assert hw.dataset_map_num_proc(None, serial_as_none = False) == 1
+    assert hw.light_map_num_proc(object(), 4) is None
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "1")
+    assert hw.dataset_map_num_proc(4) not in (None, 1)
+
+    # The escape hatch stays unvetoed, as on XPU.
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "3")
+    if hw._num_proc_override_is_set():
+        assert hw.dataset_map_num_proc(4) == 3

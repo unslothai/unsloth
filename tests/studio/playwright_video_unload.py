@@ -71,7 +71,10 @@ def main():
         expect(unloading).to_be_visible()
         # A generation finishing during teardown must not clear the indicator.
         generate = {"active": False, "phase": "completed", "step": 4, "total": 4, "video": None}
-        with page.expect_response("**/api/inference/video/generate-progress"):
+        # A visible page polls with ?preview=1, so match the path, not the whole URL.
+        with page.expect_response(
+            lambda r: urlparse(r.url).path == "/api/inference/video/generate-progress"
+        ):
             pass
         page.wait_for_timeout(1_000)
         expect(unloading).to_be_visible()

@@ -3874,3 +3874,17 @@ def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch
     inference_routes._refuse_mlx_loras(off, z_image)
     with pytest.raises(HTTPException):
         inference_routes._refuse_mlx_loras(on, z_image)
+
+
+def test_generate_progress_counts_a_watcher_only_when_the_poll_asks_for_the_preview(
+    client, monkeypatch
+):
+    from core.inference import diffusion_preview as DP
+
+    monkeypatch.setattr(DP, "_last_watch", {})
+    assert client.get("/api/inference/images/generate-progress").status_code == 200
+    assert "image" not in DP._last_watch
+    assert client.get("/api/inference/images/generate-progress?preview=0").status_code == 200
+    assert "image" not in DP._last_watch
+    assert client.get("/api/inference/images/generate-progress?preview=1").status_code == 200
+    assert set(DP._last_watch) == {"image"}

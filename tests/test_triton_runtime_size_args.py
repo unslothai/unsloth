@@ -38,6 +38,11 @@ CASES = {
         "_grouped_gemm_dW_per_expert_kernel": ("NUM_TOKENS",),
     },
     "rope_embedding.py": {"_rope_embedding_QK": ("seqlen",)},
+    # Element / byte / block counts only bound masks of the bitsandbytes stand-in's quantizer.
+    "nf4_quantize.py": {
+        "_quant4_kernel": ("n", "n_bytes", "n_blocks"),
+        "_quant8_kernel": ("n", "n_blocks"),
+    },
     "qk_norm_rope.py": {
         "_qk_norm_rope_forward": ("seqlen",),
         "_qk_norm_rope_backward": ("seqlen",),
@@ -61,6 +66,7 @@ KEEP_SPECIALIZED = {
 
 COMMENTED = (
     "nf4.py",
+    "nf4_quantize.py",
     "nf4_gemv.py",
     "fp8_lora.py",
     "multi_lora.py",
