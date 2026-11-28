@@ -194,6 +194,39 @@ def test_config_rule(tmp_path):
     )
 
 
+def test_config_probe_forwards_offline_and_cache_options(monkeypatch):
+    import transformers
+
+    import os
+
+    calls = []
+
+    def fake(name, **kwargs):
+        calls.append((dict(kwargs), os.environ.get("HF_HUB_OFFLINE")))
+        raise OSError("offline")
+
+    monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", fake)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    extra = {
+        "local_files_only": True,
+        "cache_dir": "/c",
+        "subfolder": None,
+        "attn_implementation": "sdpa",
+    }
+    assert oq._int8_auto_config_reason({"model_name": "org/m", "revision": "r"}, extra) is not None
+    ((seen, env),) = calls  # offline asked: one offline read, no network attempt
+    assert (
+        seen["local_files_only"] is True and seen["cache_dir"] == "/c" and seen["revision"] == "r"
+    )
+    assert env == "1" and "subfolder" not in seen and "attn_implementation" not in seen
+    calls.clear()
+    assert oq._int8_auto_config_reason({"model_name": "org/m"}, {"cache_dir": "/c"}) is not None
+    assert [c[0].get("local_files_only") for c in calls] == [
+        None,
+        True,
+    ]  # online, then the offline retry
+
+
 class _Block(torch.nn.Module):
     def __init__(self, i, o):
         super().__init__()

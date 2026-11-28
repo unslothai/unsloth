@@ -52,6 +52,7 @@ _BNB8_NAMES = ("bnb", "bnb_int8", "bnb_8bit", "bitsandbytes", "llm.int8", "llm_i
 # Triton int8 GEMM slower than bf16; sm90 / sm100 / sm121 are untimed.
 _INT8_AUTO_CAPABILITIES = ((12, 0),)
 AUTO_8BIT_ENV = "UNSLOTH_LOAD_IN_8BIT_AUTO"
+_CONFIG_OPTIONS = ("cache_dir", "local_files_only", "subfolder", "proxies")
 _AUTO_NOTICE = []
 _GROUP = {"nvfp4": 16, "mxfp4": 32}
 # Kill switch: 0 loads 16 bit and keeps it (no FP4 layers), to bisect a model against the 16-bit run.
@@ -172,16 +173,36 @@ def _int8_auto_config_reason(arguments, extra):
         or extra.get("quantization_config") is not None
     ):
         return "not a plain 16-bit checkpoint"
+    # The caller's config-loading options (offline, custom cache) and the loader's offline rule: offline when
+    # asked (local_files_only or HF_HUB_OFFLINE), else online with one offline retry on a network error.
+    options = {k: extra[k] for k in _CONFIG_OPTIONS if extra.get(k, None) is not None}
     try:
         from transformers import AutoConfig
-        config = AutoConfig.from_pretrained(
-            name,
-            token = arguments.get("token", None),
-            revision = arguments.get("revision", None),
-            trust_remote_code = bool(arguments.get("trust_remote_code", False)),
-        )
+        from .loader_utils import _force_hf_offline, _get_effective_local_files_only
+        offline = bool(_get_effective_local_files_only(dict(extra)))
     except Exception:
         return "its config could not be read"
+
+    def read(force_offline):
+        kwargs = dict(options, local_files_only = True) if force_offline else options
+        with _force_hf_offline() if force_offline else contextlib.nullcontext():
+            return AutoConfig.from_pretrained(
+                name,
+                token = arguments.get("token", None),
+                revision = arguments.get("revision", None),
+                trust_remote_code = bool(arguments.get("trust_remote_code", False)),
+                **kwargs,
+            )
+
+    try:
+        config = read(offline)
+    except Exception:
+        if offline:
+            return "its config could not be read"
+        try:
+            config = read(True)
+        except Exception:
+            return "its config could not be read"
     if getattr(config, "quantization_config", None) is not None:
         return "the checkpoint is pre-quantized"
     hidden = _text_hidden_size(config)
