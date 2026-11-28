@@ -173,3 +173,28 @@ def test_linear4bit_forward_backward_gpu():
     )
     assert out["fwd"] and out["bwd"] == 0.0, out
     assert out["wdtype"] == "torch.uint8"
+
+
+def test_quantize_compiles_one_variant_across_shapes():
+    # Weight shapes vary per layer: the element / byte / block counts are do_not_specialize, so a
+    # model load compiles each kernel once per (dtype, blocksize, quant type).
+    out = run(
+        f"""
+        import json, torch, triton
+        from bitsandbytes import _quantize as Q
+        from bitsandbytes import functional as F
+        assert Q.triton_quantize_available("cuda")
+        from unsloth.kernels import nf4_quantize as K
+
+        def variants(kernel):
+            while not isinstance(kernel, triton.runtime.jit.JITFunction):
+                kernel = kernel.fn
+            return sum(len(v[0]) for v in kernel.device_caches.values())
+
+        for shape in {SHAPES!r} + [(4096, 4096), (151936, 64), (1, 1000001)]:
+            x = torch.randn(shape, device = "cuda", dtype = torch.bfloat16)
+            F.quantize_4bit(x, blocksize = 64, quant_type = "nf4", compress_statistics = True)
+        print("OUT " + json.dumps({{"q4": variants(K._quant4_kernel), "q8": variants(K._quant8_kernel)}}))
+        """
+    )
+    assert out["q4"] <= 2 and out["q8"] <= 2, out

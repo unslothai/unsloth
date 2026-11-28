@@ -176,7 +176,11 @@ def install():
     if mode == "off":
         return False
     loaded = sys.modules.get(_NAME)
-    if loaded is not None and not is_shim(loaded) and mode == "auto":
+    if loaded is not None and is_shim(loaded):
+        # Already the stand-in (registered by another copy of this module): keep its classes.
+        _STATE["active"] = True
+        return True
+    if loaded is not None and mode == "auto":
         # Imported before Unsloth: whatever it is, the process already uses it.
         return False
     real = loaded is not None or _real_installed()

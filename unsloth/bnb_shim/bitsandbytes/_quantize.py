@@ -306,163 +306,30 @@ def dequantize_4bit_blockwise(
 # Triton (NVIDIA: exact PTX; ROCm: same algorithm, IEEE reciprocal).
 # ---------------------------------------------------------------------------------------------
 
-_EXACT = torch.version.hip is None and os.environ.get("TRITON_INTERPRET", "0") != "1"
-try:
-    import triton
-    import triton.language as tl
-except Exception:
-    triton = None
-
-if triton is not None:
-
-    @triton.jit
-    def _t_rcp(x, EXACT: tl.constexpr):
-        if EXACT:
-            return tl.inline_asm_elementwise(
-                "rcp.approx.ftz.f32 $0, $1;", "=r,r", [x], dtype = tl.float32, is_pure = True, pack = 1
-            )
-        else:
-            return 1.0 / x
-
-    @triton.jit
-    def _t_mul(a, b, EXACT: tl.constexpr):
-        if EXACT:
-            return tl.inline_asm_elementwise(
-                "mul.ftz.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype = tl.float32, is_pure = True, pack = 1
-            )
-        else:
-            return a * b
-
-    @triton.jit
-    def _t_ftz(x):
-        return tl.where(tl.abs(x) < 1.1754943508222875e-38, 0.0, x)
-
-    @triton.jit
-    def _t_absmax_input(x):
-        # |x| with subnormals flushed; NaN -> -FLT_MAX, which fmaxf from -FLT_MAX ignores.
-        a = _t_ftz(tl.abs(x))
-        return tl.where(a != a, -3.4028234663852886e38, a)
-
-    @triton.jit
-    def _t_nf4(x, T_ptr):
-        q = tl.zeros(x.shape, dtype = tl.int32)
-        for k in tl.static_range(15):
-            q += (x > tl.load(T_ptr + k)).to(tl.int32)
-        return q
-
-    @triton.jit
-    def _t_fp4(x, T_ptr):
-        a = tl.abs(x)
-        b = tl.zeros(x.shape, dtype = tl.int32)
-        for k in tl.static_range(7):
-            b += (a > tl.load(T_ptr + k)).to(tl.int32)
-        # bucket -> code: 0,1,6,7,4,5,2,3
-        code = tl.where(b < 2, b, tl.where(b < 4, b + 4, tl.where(b < 6, b, b - 4)))
-        sign = tl.where(x < 0, 8, 0)
-        return code + sign
-
-    @triton.jit
-    def _quant4_kernel(
-        A,
-        OUT,
-        ABSMAX,
-        T_ptr,
-        n,
-        n_bytes,
-        n_blocks,
-        BLOCK: tl.constexpr,
-        ROWS: tl.constexpr,
-        NF4: tl.constexpr,
-        EXACT: tl.constexpr,
-    ):
-        HALF: tl.constexpr = BLOCK // 2
-        rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
-        cols = tl.arange(0, HALF)
-        even = rows[:, None] * BLOCK + 2 * cols[None, :]
-        x0 = tl.load(A + even, mask = even < n, other = 0.0).to(tl.float32)
-        x1 = tl.load(A + even + 1, mask = (even + 1) < n, other = 0.0).to(tl.float32)
-        a0 = _t_absmax_input(x0)
-        a1 = _t_absmax_input(x1)
-        absmax = tl.maximum(tl.max(a0, axis = 1), tl.max(a1, axis = 1))
-        tl.store(ABSMAX + rows, absmax, mask = rows < n_blocks)
-        r = _t_rcp(absmax, EXACT)[:, None]
-        s0 = _t_mul(x0, r, EXACT)
-        s1 = _t_mul(x1, r, EXACT)
-        if not EXACT:
-            s0 = _t_ftz(s0)
-            s1 = _t_ftz(s1)
-        if NF4:
-            q0 = _t_nf4(s0, T_ptr)
-            q1 = _t_nf4(s1, T_ptr)
-        else:
-            q0 = _t_fp4(s0, T_ptr)
-            q1 = _t_fp4(s1, T_ptr)
-        byte = ((q0 << 4) | q1).to(tl.uint8)
-        offs = rows[:, None] * HALF + cols[None, :]
-        tl.store(OUT + offs, byte, mask = offs < n_bytes)
-
-    @triton.jit
-    def _quant8_kernel(
-        A,
-        OUT,
-        ABSMAX,
-        CODE,
-        n,
-        n_blocks,
-        BLOCK: tl.constexpr,
-        ROWS: tl.constexpr,
-        EXACT: tl.constexpr,
-    ):
-        rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
-        cols = tl.arange(0, BLOCK)
-        offs = rows[:, None] * BLOCK + cols[None, :]
-        mask = offs < n
-        x = tl.load(A + offs, mask = mask, other = 0.0).to(tl.float32)
-        absmax = tl.max(_t_absmax_input(x), axis = 1)
-        tl.store(ABSMAX + rows, absmax, mask = rows < n_blocks)
-        x = _t_mul(x, _t_rcp(absmax, EXACT)[:, None], EXACT)
-        if not EXACT:
-            x = _t_ftz(x)
-        pivot = tl.full(x.shape, 127, tl.int32)
-        upper_pivot = tl.full(x.shape, 255, tl.int32)
-        lower_pivot = tl.zeros(x.shape, tl.int32)
-        lower = tl.full(x.shape, -1.0, tl.float32)
-        upper = tl.full(x.shape, 1.0, tl.float32)
-        val = tl.load(CODE + pivot)
-        step = 64
-        for _ in tl.static_range(7):
-            gt = x > val
-            lower_pivot = tl.where(gt, pivot, lower_pivot)
-            lower = tl.where(gt, val, lower)
-            upper_pivot = tl.where(gt, upper_pivot, pivot)
-            upper = tl.where(gt, upper, val)
-            pivot = tl.where(gt, pivot + step, pivot - step)
-            val = tl.load(CODE + pivot)
-            step = step // 2
-        upper = tl.where(upper_pivot == 255, tl.load(CODE + 255), upper)
-        lower = tl.where(lower_pivot == 0, tl.load(CODE), lower)
-        gt = x > val
-        up = (upper + val) * 0.5
-        down = (lower + val) * 0.5
-        q = tl.where(
-            gt, tl.where(x > up, upper_pivot, pivot), tl.where(x < down, lower_pivot, pivot)
-        )
-        tl.store(OUT + offs, q.to(tl.uint8), mask = mask)
+# UNSLOTH_BNB_SHIM_TRITON=0 forces the torch path; read once, not inside traced code.
+_SHIM_TRITON = os.environ.get("UNSLOTH_BNB_SHIM_TRITON", "1") != "0"
+_KERNELS = None
 
 
 _TRITON = None
 
 
 def triton_quantize_available(device = None):
-    """Triton quantize kernels usable (UNSLOTH_BNB_SHIM_TRITON=0 forces the torch path)."""
-    global _TRITON
-    if triton is None or os.environ.get("UNSLOTH_BNB_SHIM_TRITON", "1") == "0":
+    """Unsloth's Triton quantize kernels (unsloth/kernels/nf4_quantize.py) are usable here. Decided
+    once, eagerly: under tracing an undecided process takes the torch path rather than probing."""
+    global _TRITON, _KERNELS
+    if not _SHIM_TRITON:
         return False
     if device is not None and torch.device(device).type != "cuda":
         return False
     if _TRITON is None:
+        if torch.compiler.is_compiling():
+            return False
         try:
-            # The NF4 kernels' PTX needs Volta or newer; ROCm runs the IEEE variant.
+            # Real Triton (an importable stub without a backend fails here) and Volta or newer
+            # on every visible card (the PTX needs sm70); ROCm runs the IEEE variant.
+            from unsloth.kernels import nf4_quantize
+            _KERNELS = nf4_quantize
             _TRITON = torch.cuda.is_available() and (
                 torch.version.hip is not None
                 or all(
@@ -519,29 +386,9 @@ def quantize_4bit_blockwise(
 
 
 def _quantize_4bit_triton(A, blocksize, quant_type):
-    n = A.numel()
-    blocks = -(n // -blocksize)
-    n_bytes = (n + 1) // 2
-    out = torch.empty(n_bytes, dtype = torch.uint8, device = A.device)
-    absmax = torch.empty(blocks, dtype = torch.float32, device = A.device)
-    if n == 0:
-        return out, absmax
-    rows = max(1, min(64, 4096 // blocksize))
-    with torch.cuda.device(A.device):
-        _quant4_kernel[(-(blocks // -rows),)](
-            A,
-            out,
-            absmax,
-            _thresholds(quant_type, A.device),
-            n,
-            n_bytes,
-            blocks,
-            BLOCK = blocksize,
-            ROWS = rows,
-            NF4 = quant_type == "nf4",
-            EXACT = _EXACT,
-        )
-    return out, absmax
+    return _KERNELS.quantize_4bit_triton(
+        A, _thresholds(quant_type, A.device), blocksize, quant_type == "nf4"
+    )
 
 
 def quantize_8bit_blockwise(
@@ -563,15 +410,4 @@ def quantize_8bit_blockwise(
 
 
 def _quantize_8bit_triton(A, code, blocksize):
-    n = A.numel()
-    blocks = -(n // -blocksize)
-    out = torch.empty(A.shape, dtype = torch.uint8, device = A.device)
-    absmax = torch.empty(blocks, dtype = torch.float32, device = A.device)
-    if n == 0:
-        return out, absmax
-    rows = max(1, min(16, 4096 // blocksize))
-    with torch.cuda.device(A.device):
-        _quant8_kernel[(-(blocks // -rows),)](
-            A, out, absmax, code, n, blocks, BLOCK = blocksize, ROWS = rows, EXACT = _EXACT
-        )
-    return out, absmax
+    return _KERNELS.quantize_8bit_triton(A, code, blocksize)
