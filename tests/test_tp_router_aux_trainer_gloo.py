@@ -51,6 +51,7 @@ cfg = trl.SFTConfig(completion_only_loss = True,
     learning_rate = 1e-3, lr_scheduler_type = "constant", report_to = "none", logging_steps = 1,
     save_strategy = "no", dataset_num_proc = 1, max_length = 32, padding_free = False, seed = 0,
     bf16 = False, fp16 = False,  # float32 end to end: the CPU route would autocast to bfloat16
+    average_tokens_across_devices = AVG,
 )
 trainer = trl.SFTTrainer(model = model, args = cfg, train_dataset = ds, processing_class = tok)
 trainer.train()
@@ -104,11 +105,12 @@ def _launch(
     ga,
     tmp,
     extra = None,
+    avg = True,
 ):
     from tests._rendezvous_port import free_port
 
     code = (
-        f"REPO = {_REPO!r}\nOUT = {str(tmp / f'out{world}')!r}\nGA = {ga}\nCOEF = {_COEF}\n"
+        f"REPO = {_REPO!r}\nOUT = {str(tmp / f'out{world}')!r}\nGA = {ga}\nCOEF = {_COEF}\nAVG = {avg}\n"
         + _WORKER
     )
     base = dict(extra or {})
@@ -140,19 +142,21 @@ def _launch(
 
 
 @pytest.mark.parametrize(
-    "world, ga, ref_ga",
+    "world, ga, ref_ga, avg",
     [
-        (2, 2, 2),
-        (4, 2, 4),
-    ],  # tp 2; dp 2 x tp 2 (each dp replica runs half of the one-process micro-batches)
-    ids = ["tp2", "dp2_tp2"],
+        (2, 2, 2, True),
+        (4, 2, 4, True),  # dp 2 x tp 2: each dp replica runs half of the one-process micro-batches
+        # No cross-device token averaging: the loss is not multiplied by the world size, nothing to correct.
+        (2, 2, 2, False),
+    ],
+    ids = ["tp2", "dp2_tp2", "tp2_no_token_average"],
 )
-def test_router_aux_loss_under_tp_matches_one_process(world, ga, ref_ga):
+def test_router_aux_loss_under_tp_matches_one_process(world, ga, ref_ga, avg):
     pytest.importorskip("trl")
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
-        (ref,) = _launch(1, ref_ga, tmp)
-        results = _launch(world, ga, tmp, {"UNSLOTH_TP_SIZE": "2"})
+        (ref,) = _launch(1, ref_ga, tmp, avg = avg)
+        results = _launch(world, ga, tmp, {"UNSLOTH_TP_SIZE": "2"}, avg = avg)
     assert not ref["tp"] and len(ref["losses"]) == 2
     for res in results:
         assert res["tp"], res

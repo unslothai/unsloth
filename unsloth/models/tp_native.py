@@ -7151,6 +7151,10 @@ def _tp_router_aux_scale(trainer, tp):
     inner = _causal_lm(getattr(trainer, "model", None))
     if inner is None or tp <= 1:
         return 1.0
+    # Without cross-device token averaging the Trainer neither gathers the count nor multiplies the loss by
+    # the world size: nothing is carried tp times.
+    if not getattr(getattr(trainer, "args", None), "average_tokens_across_devices", False):
+        return 1.0
     if any("unsloth_ga_scale_aux_loss" in fn.__code__.co_names for fn in _forward_functions(inner)):
         return 1.0
     if _compute_loss_adds_router_aux(getattr(type(trainer), "compute_loss", None)):
@@ -7159,7 +7163,7 @@ def _tp_router_aux_scale(trainer, tp):
 
 
 def _tp_router_aux(trainer, tp):
-    """Inside the training step only (where the loss is multiplied by the world size; evaluation is not),
+    """Inside a training step whose loss the Trainer multiplies by the world size (evaluation is not),
     run the CausalLM with router_aux_loss_coef x _tp_router_aux_scale. outputs.aux_loss stays unscaled."""
     from ..context_parallel import _causal_lm
 
@@ -7171,7 +7175,13 @@ def _tp_router_aux(trainer, tp):
 
     def training_step(self, *args, **kwargs):
         coef = vars(inner).get("router_aux_loss_coef")
-        if isinstance(coef, bool) or not isinstance(coef, (int, float)) or not coef:
+        num_items = kwargs.get("num_items_in_batch", args[2] if len(args) > 2 else None)
+        # Trainer.compute_loss multiplies by the world size only with a count that reaches the loss.
+        scaled = num_items is not None and (
+            getattr(self, "model_accepts_loss_kwargs", False)
+            or getattr(self, "compute_loss_func", None) is not None
+        )
+        if not scaled or isinstance(coef, bool) or not isinstance(coef, (int, float)) or not coef:
             return original(*args, **kwargs)
         inner.router_aux_loss_coef = coef * scale
         try:
