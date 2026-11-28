@@ -1304,14 +1304,13 @@ def _repeatable(trainer, model):
     cuda = [(d, torch.cuda.get_rng_state(d)) for d in devices]
     numbers = {k: v for k, v in trainer.__dict__.items() if type(v) in (int, float)}
     metrics = trainer.__dict__.get("_metrics")
-    saved_metrics = None
+    # TRL's {mode: defaultdict(list)}: the dicts themselves are kept (and their types), only their contents restored.
+    saved = None
     if isinstance(metrics, dict):
-        saved_metrics = {
-            k: (
-                {kk: list(vv) if isinstance(vv, list) else vv for kk, vv in v.items()}
-                if isinstance(v, dict)
-                else v
-            )
+        saved = {
+            k: (dict(v), {kk: list(vv) for kk, vv in v.items() if isinstance(vv, list)})
+            if isinstance(v, dict)
+            else (v, None)
             for k, v in metrics.items()
         }
     try:
@@ -1322,9 +1321,20 @@ def _repeatable(trainer, model):
             torch.cuda.set_rng_state(state, d)
         for k, v in numbers.items():
             trainer.__dict__[k] = v
-        if saved_metrics is not None:
-            metrics.clear()
-            metrics.update(saved_metrics)
+        if saved is not None:
+            for k in [k for k in metrics if k not in saved]:
+                del metrics[k]
+            for k, (value, lists) in saved.items():
+                if lists is None:
+                    metrics[k] = value
+                    continue
+                inner = metrics.get(k)
+                if not isinstance(inner, dict):
+                    metrics[k] = inner = dict(value)
+                inner.clear()
+                inner.update(value)
+                for kk, items in lists.items():
+                    inner[kk][:] = items
 
 
 def _fresh_views(obj):

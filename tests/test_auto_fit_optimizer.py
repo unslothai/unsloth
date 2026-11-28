@@ -406,9 +406,12 @@ def test_measuring_pass_leaves_no_trace(af):
     class Trainer:
         pass
 
+    from collections import defaultdict
+
     trainer = Trainer()
     trainer._total_train_tokens = 10
-    trainer._metrics = {"train": {"num_tokens": [10], "loss": [1.0]}}
+    train = defaultdict(list, {"num_tokens": [10], "loss": [1.0]})
+    trainer._metrics = {"train": train, "eval": defaultdict(list)}
     torch.manual_seed(5)
     want = torch.rand(3)
     torch.manual_seed(5)
@@ -417,9 +420,14 @@ def test_measuring_pass_leaves_no_trace(af):
         trainer._total_train_tokens += 5
         trainer._metrics["train"]["num_tokens"] = [15]
         trainer._metrics["train"]["loss"].append(2.0)
+        trainer._metrics["train"]["entropy"].append(0.5)
     assert torch.equal(torch.rand(3), want)
     assert trainer._total_train_tokens == 10
-    assert trainer._metrics == {"train": {"num_tokens": [10], "loss": [1.0]}}
+    assert trainer._metrics == {"train": {"num_tokens": [10], "loss": [1.0]}, "eval": {}}
+    assert (
+        trainer._metrics["train"] is train
+    )  # TRL appends to a missing key: still a defaultdict(list)
+    trainer._metrics["train"]["entropy"].append(0.1)
 
 
 def test_trainers_that_generate_inside_the_step_are_not_repeated(
