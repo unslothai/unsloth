@@ -130,6 +130,20 @@ class TestKvGpuShare:
         cells = 4096
         assert sum(widths) * cells == probe._estimate_kv_cache_bytes(4096, flash_attn = False)
 
+    def test_interval_hybrid_recurrent_layers_take_no_padded_v(self):
+        # Path 2 prices growing KV on attention layers only, FA on or off.
+        probe = _probe(
+            None,
+            n_layers = 4,
+            swa = 0,
+            _n_kv_heads_by_layer = [0, 0, 0, 8],
+            _ssm_inner_size = 64,
+            _full_attention_interval = 4,
+        )
+        assert probe._kv_gpu_share(2, 4096, flash_attn = False) == 1.0
+        assert probe._kv_gpu_share(2, 4096) == 1.0
+        assert probe._kv_gpu_share(1, 4096, flash_attn = False) == 0.0
+
     def test_nemotron_ffn_only_layers_are_not_recurrent(self, monkeypatch):
         probe = _probe(
             None,

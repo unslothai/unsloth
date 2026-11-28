@@ -19086,9 +19086,12 @@ class LlamaCppBackend:
         **_shape,
     ) -> "list[float]":
         """Per-layer bytes per cell as _estimate_kv_cache_bytes prices per-layer heads: one latent
-        per attention layer under MLA, else K plus V, with V padded to the widest layer when
-        flash attention is off (paths 4 and 5)."""
+        per attention layer under MLA and interval hybrids (path 2), else K plus V, with V padded
+        to the widest layer when flash attention is off (paths 4 and 5)."""
         if self._kv_lora_rank is not None:
+            return [float(h > 0) for h in heads]
+        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+            # Path 2 prices one equal width per attention layer and no V for recurrent ones.
             return [float(h > 0) for h in heads]
         bpe_k = _kv_bytes_per_elem(cache_type_kv)
         bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
