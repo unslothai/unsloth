@@ -193,6 +193,10 @@ def loader():
         _unsloth_load_begins = lambda: None,
         # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
         gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
+        # #20096: every fixture runs with the native bitsandbytes, never the NF4 stand-in, so no load is refused for
+        # int8 and vLLM is never steered away from a bitsandbytes model.
+        bnb_shim_refuse_int8 = lambda load_in_8bit: None,
+        bnb_shim_vllm_blocked = lambda *args, **kwargs: False,
         # #20022: the real check. No case passes gguf_packed, so it pops nothing and answers False.
         check_gguf_packed_request = _real_function(
             path.parent / "gguf_packed.py", "check_gguf_packed_request"
