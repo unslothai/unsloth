@@ -1333,6 +1333,7 @@ def _config_shapes(configs):
 
 def test_cuda_gate_and_tiles_ignore_the_rocm_path(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_ROCM_OPT_IN", [False])
     assert _config_shapes(LH._fwd_configs()) == [
         ({"BLOCK_M": 32, "BLOCK_N": 32}, 4, 1),
@@ -1353,6 +1354,7 @@ def test_cuda_gate_and_tiles_ignore_the_rocm_path(monkeypatch):
 
 def test_rocm_tiles_extend_the_cuda_list_on_gfx906_only(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     fwd, bwd = _config_shapes(LH._fwd_configs()), _config_shapes(LH._bwd_configs())
     _fake_rocm(monkeypatch, "gfx906:sramecc+:xnack-", False)
     assert _config_shapes(LH._fwd_configs()) == fwd + [
