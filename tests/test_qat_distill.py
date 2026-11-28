@@ -329,8 +329,12 @@ def test_dense_fallback_does_not_transform_logits_twice(monkeypatch):
     labels = x.clone()
     monkeypatch.setattr(rl, "_unsloth_gkd_logit_transforms", lambda model: (4.0, 0.5))
     monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    # A caller left hidden-state mode on: the dense path must still score vocabulary logits.
+    monkeypatch.setenv("UNSLOTH_RETURN_HIDDEN_STATES", "1")
     with torch.no_grad():
         dense = qd.qat_distill_compute_loss(_Trainer(), student, {"input_ids": x, "labels": labels})
+        assert os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] == "1"
+        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "0"
         s_logits = student(input_ids = x).logits
         with qd.qat_teacher(student):
             t_logits = student(input_ids = x).logits

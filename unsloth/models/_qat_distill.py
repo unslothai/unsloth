@@ -353,8 +353,8 @@ def qat_distill_compute_loss(
         reason = "UNSLOTH_FUSED_LINEAR=0"
 
     prior = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES")
-    if reason is None:
-        os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
+    # Set either way: a caller's UNSLOTH_RETURN_HIDDEN_STATES=1 would hand the dense path hidden states as logits.
+    os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1" if reason is None else "0"
     try:
         outputs = model(**forward_inputs)
         with torch.no_grad(), qat_teacher(unwrapped):
