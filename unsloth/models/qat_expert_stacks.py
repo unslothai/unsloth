@@ -233,15 +233,29 @@ def _skip(reason, fqn, skipped):
     skipped.append((fqn, reason))
 
 
-def _weight_quantizer(torchao_config):
-    for base_config, _ in torchao_config.base_config_and_filter_fns:
-        try:
-            q = expert_stack_weight_fake_quantizer(base_config)
-        except Exception:
-            q = None
-        if q is not None:
-            return q, base_config
-    return None, None
+def _linear_weight_quantizer(torchao_config, fqn, param, transposed, cache):
+    """The weight quantizer of the recipe whose filter takes one expert of this stack as a Linear: a stand-in
+    nn.Linear(K, N) on the meta device goes through the (config, filter) pairs in order, as torchao's prepare
+    walks them, so embedding-only recipes (int8-int4's int8 embeddings) and group-size filters apply."""
+    _, A, B = param.shape
+    K, N = (A, B) if transposed else (B, A)
+    key = (K, N, param.dtype)
+    if key not in cache:
+        probe = torch.nn.Linear(K, N, bias = False, device = "meta", dtype = param.dtype)
+        found = None
+        for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
+            try:
+                taken = filter_fn is None or bool(filter_fn(probe, fqn))
+            except Exception:
+                taken = False
+            if taken:
+                try:
+                    found = expert_stack_weight_fake_quantizer(base_config)
+                except Exception:
+                    found = None
+                break
+        cache[key] = found
+    return cache[key]
 
 
 def _quantize_stack(param, quantizer, transposed):
@@ -292,18 +306,13 @@ def prepare_expert_stacks_for_qat(model, torchao_config):
     stacks = _expert_stacks(model)
     if not stacks:
         return 0
-    quantizer, _ = _weight_quantizer(torchao_config)
     scheme = getattr(torchao_config, "qat_scheme", None)
     scheme = scheme if isinstance(scheme, str) else "custom"
-    skipped, covered = [], 0
+    skipped, covered, cache = [], 0, {}
     for fqn, owner, attr, proj, p in stacks:
-        if quantizer is None:
-            _skip("no_weight_quantizer", fqn, skipped)
-            continue
         if type(p) is not torch.nn.Parameter or p.dtype not in _FLOAT_DTYPES:
-            _skip(
-                "packed_or_quantized", fqn, skipped
-            )  # NF4 / NVFP4 / FP8 packed stacks stay as stored
+            # NF4 / NVFP4 / FP8 packed stacks stay as stored.
+            _skip("packed_or_quantized", fqn, skipped)
             continue
         if p.device.type == "meta":
             _skip("meta", fqn, skipped)
@@ -311,6 +320,11 @@ def prepare_expert_stacks_for_qat(model, torchao_config):
         transposed = _transposed(owner, attr, proj)
         if transposed is None:
             _skip("unknown_layout", fqn, skipped)
+            continue
+        quantizer = _linear_weight_quantizer(torchao_config, fqn, p, transposed, cache)
+        if quantizer is None:
+            # No recipe's filter takes these experts as Linears (embedding-only recipe, group size, ...).
+            _skip("no_linear_recipe", fqn, skipped)
             continue
         try:
             with torch.no_grad():

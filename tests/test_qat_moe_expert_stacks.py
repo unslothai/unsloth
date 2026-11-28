@@ -137,9 +137,9 @@ def test_kill_switch_and_unsupported_shape_warning(monkeypatch):
         torch.equal(p, before[k]) for k, p in _stacks(model).items()
     )  # the previous behaviour
     monkeypatch.delenv("UNSLOTH_QAT_EXPERT_STACKS")
-    # intermediate 64: the transposed down_proj contracts over K = 64, not a multiple of int4's group of 128.
+    # intermediate 64: the transposed down_proj contracts over K = 64, which int4's group-size filter (128) refuses.
     model = _tiny_moe("gpt_oss", intermediate = 64)
-    with pytest.warns(UserWarning, match = "unquantized.*down_proj \\(unsupported_shape\\)"):
+    with pytest.warns(UserWarning, match = "unquantized.*down_proj \\(no_linear_recipe\\)"):
         _prepare(model)
 
 
@@ -167,3 +167,27 @@ def test_lora_on_the_expert_stacks_trains_on_the_rounded_base():
     model(input_ids = ids, labels = ids).loss.backward()
     expert_lora = [p for n, p in model.named_parameters() if "lora_B" in n and "experts" in n]
     assert expert_lora and all(p.grad is not None and p.grad.abs().sum() > 0 for p in expert_lora)
+
+
+def test_mixed_recipes_take_the_linear_one():
+    """int8-int4 lists an int8 embedding recipe before the int4 PerGroup(32) Linear recipe: experts get the latter."""
+    from torchao.quantization import Int8DynamicActivationIntxWeightConfig
+    from torchao.quantization.granularity import PerGroup
+    from torchao.quantization.qat.fake_quantize_config import _infer_fake_quantize_configs
+    from torchao.quantization.qat.fake_quantizer import FakeQuantizerBase
+
+    model = _tiny_moe("gpt_oss")
+    originals = {k: v.detach().clone() for k, v in _stacks(model).items()}
+    for p in _stacks(model).values():
+        p.requires_grad_(False)
+    model = _prepare(model, "int8-int4")
+    cfg = Int8DynamicActivationIntxWeightConfig(
+        weight_dtype = torch.int4, weight_granularity = PerGroup(32)
+    )
+    q = FakeQuantizerBase.from_config(_infer_fake_quantize_configs(cfg)[1])
+    for name, p in _stacks(model).items():
+        want = torch.stack([q(e.t().contiguous()).t() for e in originals[name]]).detach()
+        assert torch.equal(p.detach(), want), name
+        assert (
+            torch.unique(p.detach()[0, :32, 0]).numel() <= 16
+        )  # one int4 group: at most 16 levels
