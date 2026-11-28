@@ -306,6 +306,8 @@ def run_rank(rank, port, queue, cases):
     except AttributeError as exc:
         if "record_event" not in str(exc):
             raise
+    # Every rank plans with the smallest free memory of any rank, so all pick the same tier.
+    out["_min_over_ranks"] = af._min_over_ranks(1000 + 500 * rank, torch.device("cpu"))
     for name, (ga, clip, sync, mp, arm) in cases.items():
         try:
             data = batches(2, ga)

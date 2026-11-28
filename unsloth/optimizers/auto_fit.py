@@ -1354,13 +1354,34 @@ def _usable_bytes(params, world = 1):
         free, _ = torch.cuda.mem_get_info(device)
         free = int(free)
     if world > 1:
-        # Weights still whole on this GPU (accelerate's FSDP2 shards them after the optimizer is built): only
-        # 1 / world of them stays.
+        # Weights not sharded yet (accelerate's FSDP2 shards them after the optimizer is built): 1 / world of them
+        # stays on this GPU. Whole on this GPU now: the rest is freed; still on the host: the shard is still to come.
         whole = sum(
             p.numel() * p.element_size() for p in params if not _is_dtensor(p) and p.is_cuda
         )
-        free += whole - whole // world
+        host = sum(
+            p.numel() * p.element_size() for p in params if not _is_dtensor(p) and not p.is_cuda
+        )
+        free += whole - whole // world - host // world
+        free = _min_over_ranks(free, device)
     return free
+
+
+def _min_over_ranks(value, device):
+    """The smallest value over the ranks: every FSDP2 rank must pick the same tier (an in-backward rank runs
+    all-reduces a standard one never joins, and AdamW and SGD shards would train differently)."""
+    try:
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()) or dist.get_world_size() <= 1:
+            return value
+        backend = str(dist.get_backend()).lower()
+        on = device if "nccl" in backend else torch.device("cpu")
+        t = torch.tensor([int(value)], dtype = torch.int64, device = on)
+        dist.all_reduce(t, op = dist.ReduceOp.MIN)
+        return int(t.item())
+    except Exception:
+        return value
 
 
 def _single_process(trainer):

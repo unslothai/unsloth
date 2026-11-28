@@ -162,3 +162,7 @@ def test_planner_reads_which_fsdp2_groups_stay_whole(results):
     for rank in (0, 1):
         got = results[rank]["_gathered"]
         assert tuple(got["got"]) == tuple(got["want"]), got
+
+
+def test_ranks_agree_on_the_memory_budget(results):
+    assert results[0]["_min_over_ranks"] == results[1]["_min_over_ranks"] == 1000

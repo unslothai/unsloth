@@ -763,6 +763,16 @@ def test_planner_budgets_whole_fsdp2_weights_before_sharding(af):
     assert af._fsdp_group_bytes(model) == [block, block, root]
 
 
+def test_free_memory_reserves_the_shard_of_host_resident_weights(af, monkeypatch):
+    """Planning before accelerate moves the model to the GPU: the rank's weight shard still has to arrive there."""
+    params = [torch.nn.Parameter(torch.zeros(1000, 250)) for _ in range(4)]  # 4 MB on the host
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (100 << 20, 200 << 20))
+    monkeypatch.setattr(af, "_min_over_ranks", lambda value, device: value)
+    assert af._usable_bytes(params, world = 2) == (100 << 20) - 4 * 1000 * 250 * 4 // 2
+
+
 def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
     from types import SimpleNamespace
 
