@@ -651,14 +651,29 @@ _add(
         compile = "opaque",
         backend = "unsloth.kernels.int8_lora (UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
         gates = {
-            "sm75": Gate("refused", "the Triton int8 GEMM needs compute capability 8.0+"),
-            "sm80": Gate(
+            "sm75": Gate(
                 "refused",
-                "A100: the Triton int8 GEMM runs at 0.22x bf16 (Triton >= 3.8 sm8x int8 tiles spill)",
+                "T4: Triton (3.8) does not compile int8 dots for sm_75. cuBLAS int8 (torch._int_mm) runs at "
+                "1.76x / 1.81x an fp16 GEMM there (geomean over Qwen3 1.7B-8B layers, forward / input gradient), "
+                "but the block rotation and its undo in the input gradient have no fast Triton path on sm_75 "
+                "(over its shared memory, or no tensor cores: the un-rotation epilogue alone takes 4-80x the "
+                "whole fp16 GEMM)",
+            ),
+            "sm80": Gate(
+                "explicit",
+                evidence = "A100 40GB, Unsloth LoRA r=16 on all linears, bs x 2048 tokens, 25 steps, fresh process "
+                "per run, interleaved: 1.055x / 1.106x / 1.155x bf16 step time at Qwen3-1.7B (bs 4) / 4B (bs 3) "
+                "/ 8B (bs 2), bf16 A/A 0.1-0.2% over 3 runs; peak memory 8-21% lower. GEMMs alone: 1.5x bf16 "
+                "forward, 1.1-1.4x input gradient once Triton 3.8's prefetch split is skipped (0.2x before). Eval "
+                "loss after 100 steps at Qwen3-1.7B vs bf16 (A/A 0.03%): +0.12% with the int8 forward, +0.05% "
+                "on the exact base. sm86 / sm87 (A10, RTX 30, Orin) share this gate untimed",
             ),
             "sm89": Gate(
-                "refused",
-                "L4: the Triton int8 GEMM runs at 0.52-0.55x bf16 (Triton >= 3.8 sm8x int8 tiles spill)",
+                "explicit",
+                evidence = "L4, same setup: 1.25x bf16 step time at Qwen3-1.7B (bs 4, bf16 A/A 9.0%: the card "
+                "slows as it warms) and 1.22x at Qwen3-4B (bs 1, A/A 2.5%); Qwen3-8B does not fit 16-bit LoRA on "
+                "24 GB. GEMMs alone: 1.7x bf16 forward, 1.5x input gradient once Triton 3.8's prefetch split "
+                "is skipped (0.5x before). Numerics are bit-identical to the A100 / sm120 kernels",
             ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
             "sm100": Gate("unprobed", "B200: correctness only, never timed"),
@@ -670,7 +685,12 @@ _add(
                 "100 LoRA steps vs bf16 (A/A 0.02-0.05%): +0.02% on the exact base, +0.16% with the int8 "
                 "forward at Qwen3-1.7B (fp8 rowwise: +0.10% / +0.42%)",
             ),
-            "rocm": Gate("refused", "the int8 kernels are CUDA Triton only"),
+            "rocm": Gate(
+                "refused",
+                "the int8 kernels are CUDA Triton only; on gfx1151 (Radeon 8060S, ROCm 7.13, Triton 3.6) the best "
+                "int8 tiles over Qwen3 4B / 8B layers at 4k / 8k tokens are 0.94x bf16 for the forward and 0.80x "
+                "for the input gradient with the activation quantization (1.08x / 0.84x the GEMMs alone)",
+            ),
         },
         notes = "block-Hadamard (128) rotated per-token int8 activations and per-row int8 weight, int32 "
         "accumulation, dequant and LoRA term in the GEMM epilogue; the input gradient reuses the same int8 "
