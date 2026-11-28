@@ -61,7 +61,7 @@ def _load(root, relative, name):
     return module
 
 
-def _worker(rank, world, port, out, root, device, layout, sr_env):
+def _worker(rank, world, port, out, root, device, layout, sr_env, sr_first):
     try:
         if sr_env is None:
             os.environ.pop("UNSLOTH_BF16_STOCHASTIC_ROUNDING", None)
@@ -100,8 +100,13 @@ def _worker(rank, world, port, out, root, device, layout, sr_env):
         params = list(model.parameters())
         # 8-bit blockwise state for the weights, 32-bit for the small biases (bitsandbytes' min_8bit_size).
         opt = bnb.optim.AdamW8bit(params, lr = LR, weight_decay = 0.0, min_8bit_size = 4096)
-        assert fsdp2_bnb_optim.localize_bnb_optimizer(opt)
-        covered = sr.enable_bf16_stochastic_rounding(opt, seed = 7, verbose = False)
+        if sr_first:
+            # A Trainer may build the scheduler (which enables the rounding) before FSDP2 / TP localize.
+            covered = sr.enable_bf16_stochastic_rounding(opt, seed = 7, verbose = False)
+            assert fsdp2_bnb_optim.localize_bnb_optimizer(opt)
+        else:
+            assert fsdp2_bnb_optim.localize_bnb_optimizer(opt)
+            covered = sr.enable_bf16_stochastic_rounding(opt, seed = 7, verbose = False)
         g = torch.Generator().manual_seed(100)  # same data on both ranks (TP needs it)
         for step in range(STEPS):
             x = torch.randn(8, 128, generator = g).to(device = device, dtype = torch.bfloat16)
@@ -149,6 +154,7 @@ def _run(
     device,
     layout,
     sr_env = None,
+    sr_first = False,
 ):
     pytest.importorskip("bitsandbytes")
     if device == "cpu":
@@ -160,7 +166,7 @@ def _run(
             pytest.skip("requires 2 CUDA devices (NCCL, one per rank)")
         if not torch.distributed.is_nccl_available():
             pytest.skip("requires NCCL")
-    results = _spawn(_worker, ROOT, device, layout, sr_env)
+    results = _spawn(_worker, ROOT, device, layout, sr_env, sr_first)
     assert len(results) == 1 and "error" not in results[0], results
     if "skip" in results[0]:
         pytest.skip(results[0]["skip"])
@@ -168,16 +174,17 @@ def _run(
 
 
 CASES = [
-    pytest.param("cpu", "fsdp2", id = "cpu-fsdp2"),
-    pytest.param("cpu", "tp", id = "cpu-tp"),
-    pytest.param("cuda", "fsdp2", id = "cuda-fsdp2", marks = pytest.mark.gpu),
-    pytest.param("cuda", "tp", id = "cuda-tp", marks = pytest.mark.gpu),
+    pytest.param("cpu", "fsdp2", False, id = "cpu-fsdp2"),
+    pytest.param("cpu", "tp", False, id = "cpu-tp"),
+    pytest.param("cpu", "fsdp2", True, id = "cpu-fsdp2-rounding-enabled-before-localize"),
+    pytest.param("cuda", "fsdp2", False, id = "cuda-fsdp2", marks = pytest.mark.gpu),
+    pytest.param("cuda", "tp", False, id = "cuda-tp", marks = pytest.mark.gpu),
 ]
 
 
-@pytest.mark.parametrize("device, layout", CASES)
-def test_bnb_adamw_rounds_dtensor_shards_stochastically(device, layout):
-    ranks = _run(device, layout)
+@pytest.mark.parametrize("device, layout, sr_first", CASES)
+def test_bnb_adamw_rounds_dtensor_shards_stochastically(device, layout, sr_first):
+    ranks = _run(device, layout, sr_first = sr_first)
     for r in ranks:
         assert all(r["dtensor"]) and r["dtype_kept"], r
         assert r["covered"] == r["n_params"], r
