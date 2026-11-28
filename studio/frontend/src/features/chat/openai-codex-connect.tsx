@@ -16,6 +16,7 @@ import {
   type CodexOAuthFlow,
   type ProviderAuthStatus,
 } from "./api/providers-api";
+import { SubscriptionConnectionSection } from "./subscription-connection-section";
 
 export function isTrustedCodexAuthUrl(raw: string): boolean {
   try {
@@ -172,17 +173,16 @@ export function OpenAICodexConnect({
 
   const visibleError = error || (flow?.status === "error" ? flow.message || "Authorization failed." : "");
   return (
-    <section className="space-y-3 rounded-xl border border-border/70 bg-background/45 p-4">
-      <div>
-        <p className="text-sm font-medium">ChatGPT subscription</p>
-        <p className="text-xs text-muted-foreground">
-          {connected
-            ? "Connected securely on this Unsloth installation."
-            : authStatus === "reauthorization_required"
-              ? "Your saved authorization is no longer valid. Reconnect to continue."
-              : "Authorize in your system browser. Tokens never enter browser storage."}
-        </p>
-      </div>
+    <SubscriptionConnectionSection
+      title="ChatGPT subscription"
+      description={
+        connected
+          ? "Connected securely on this Unsloth installation."
+          : authStatus === "reauthorization_required"
+            ? "Your saved authorization is no longer valid. Reconnect to continue."
+            : "Authorize in your system browser. Tokens never enter browser storage."
+      }
+    >
       {flow?.method === "device" && flow.status === "pending" ? (
         <div data-reload-snapshot-sensitive className="space-y-2 text-sm">
           <p>Enter this code in ChatGPT:</p>
@@ -232,6 +232,6 @@ export function OpenAICodexConnect({
           <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void disconnect()}>Disconnect locally</Button>
         )}
       </div>
-    </section>
+    </SubscriptionConnectionSection>
   );
 }

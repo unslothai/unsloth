@@ -88,6 +88,7 @@ export function providerModelDisplayName(
   modelId: string,
 ): string {
   if (!providerType) return modelId;
+  if (providerType === "github_copilot" && modelId === "auto") return "Copilot Auto";
   hydrate();
   return NAMES.get(providerType)?.[modelId] ?? modelId;
 }

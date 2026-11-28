@@ -32171,12 +32171,20 @@ async def _proxy_to_external_provider(
                 current, payload.external_model or payload.model
             )
             may_use_saved = _request_may_use_saved_provider_key(request)
-            api_key = await asyncio.to_thread(
-                resolve_provider_api_key_or_400,
-                payload.provider_id,
-                payload.encrypted_api_key,
-                allow_saved_key = may_use_saved,
-            )
+            if provider_type == "github_copilot":
+                from routes.github_copilot_auth import resolve_access
+                api_key = await resolve_access(
+                    payload.provider_id,
+                    payload.encrypted_api_key,
+                    allow_saved_key = may_use_saved,
+                )
+            else:
+                api_key = await asyncio.to_thread(
+                    resolve_provider_api_key_or_400,
+                    payload.provider_id,
+                    payload.encrypted_api_key,
+                    allow_saved_key = may_use_saved,
+                )
             if not payload.encrypted_api_key:
                 # Saved headers can carry credentials: same gate as the saved key.
                 extra_headers = current.get("extra_headers") if may_use_saved else None

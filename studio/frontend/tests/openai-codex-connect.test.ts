@@ -31,6 +31,15 @@ type ConnectComponent = (props: ConnectProps) => ReturnType<typeof createElement
 let vite: ViteDevServer;
 let OpenAICodexConnect: ConnectComponent;
 
+interface CopilotProps {
+  providerId: string | null;
+  authStatus?: ConnectProps["authStatus"];
+  chatEnabled: boolean;
+  onChanged: () => Promise<void>;
+  onStartChat: () => void;
+}
+let GitHubCopilotConnect: (props: CopilotProps) => ReturnType<typeof createElement>;
+
 before(async () => {
   vite = await createServer({
     appType: "custom",
@@ -40,6 +49,8 @@ before(async () => {
     "/src/features/chat/openai-codex-connect.tsx",
   );
   OpenAICodexConnect = loaded.OpenAICodexConnect as ConnectComponent;
+  const copilot = await vite.ssrLoadModule("/src/features/chat/github-copilot-connect.tsx");
+  GitHubCopilotConnect = copilot.GitHubCopilotConnect;
 });
 
 after(async () => {
@@ -120,4 +131,35 @@ test("renders cancelled, reconnect-required, and connected states", () => {
   assert.match(connected, /Connected securely/);
   assert.match(connected, /Disconnect locally/);
   assert.doesNotMatch(connected, /Connect in browser/);
+});
+
+test("Copilot uses the same subscription section and sign-in button as ChatGPT", () => {
+  const props: CopilotProps = {
+    providerId: null,
+    chatEnabled: false,
+    onChanged: async () => undefined,
+    onStartChat: () => undefined,
+  };
+  const copilot = renderToStaticMarkup(createElement(GitHubCopilotConnect, props));
+  const codex = render({ providerId: null });
+  const sectionClass = (markup: string) => markup.match(/<section[^>]+class="([^"]+)"/)?.[1];
+
+  assert.ok(sectionClass(codex));
+  assert.equal(sectionClass(copilot), sectionClass(codex));
+  assert.match(
+    copilot,
+    /Authorize in your system browser with a GitHub device code\. Tokens never enter browser storage\./,
+  );
+  for (const markup of [codex, copilot]) {
+    assert.match(markup, /<button[^>]+data-variant="dark"[^>]*>Connect in browser<\/button>/);
+  }
+
+  const connected = renderToStaticMarkup(createElement(GitHubCopilotConnect, {
+    ...props,
+    providerId: "provider-1",
+    chatEnabled: true,
+    authStatus: "connected",
+  }));
+  assert.match(connected, />Start chat</);
+  assert.match(connected, />Disconnect locally</);
 });

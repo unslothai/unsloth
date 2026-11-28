@@ -252,12 +252,14 @@ def create_provider(
     compaction_mode: Optional[str] = None,
     auto_compact_percent: Optional[int] = None,
     auto_compact_percent_by_model: Optional[dict] = None,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
     extra_headers_json = _encode_extra_headers(extra_headers)
     now = datetime.now(timezone.utc).isoformat()
-    conn = get_connection()
+    conn = connection or get_connection()
     try:
         conn.execute(
             """
@@ -290,9 +292,11 @@ def create_provider(
                 now,
             ),
         )
-        conn.commit()
+        if connection is None:
+            conn.commit()
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()
 
 
 def update_provider(
@@ -380,15 +384,17 @@ def update_provider(
             conn.close()
 
 
-def delete_provider(id: str) -> bool:
+def delete_provider(id: str, *, connection: sqlite3.Connection | None = None) -> bool:
     """Delete a provider by ID. Returns True if a row was deleted."""
-    conn = get_connection()
+    conn = connection or get_connection()
     try:
         cursor = conn.execute("DELETE FROM llm_providers WHERE id = ?", (id,))
-        conn.commit()
+        if connection is None:
+            conn.commit()
         return cursor.rowcount > 0
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()
 
 
 def _row_to_provider(row: sqlite3.Row) -> dict:

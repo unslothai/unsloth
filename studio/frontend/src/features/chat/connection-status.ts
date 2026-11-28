@@ -79,7 +79,8 @@ export function connectionStatus(
 ): ConnectionStatus {
   if (!options.enabled) return { tone: "muted", label: "Off" };
   if (options.checking) return { tone: "muted", label: "Checking" };
-  if (provider.authKind === "chatgpt_oauth") {
+  const subscription = provider.authKind === "chatgpt_oauth" || provider.authKind === "github_oauth";
+  if (subscription) {
     if (provider.authStatus === "reauthorization_required") {
       return {
         tone: "warn",
@@ -91,7 +92,7 @@ export function connectionStatus(
       return {
         tone: "warn",
         label: "Not signed in",
-        detail: "Sign in with ChatGPT.",
+        detail: provider.authKind === "github_oauth" ? "Sign in with GitHub." : "Sign in with ChatGPT.",
       };
     }
   } else if (!provider.hasApiKey && !options.keyOptional) {
@@ -129,7 +130,7 @@ export function connectionStatus(
   }
   return {
     tone: "muted",
-    label: provider.authKind === "chatgpt_oauth" ? "Signed in" : "Ready",
+    label: subscription ? "Signed in" : "Ready",
   };
 }
 

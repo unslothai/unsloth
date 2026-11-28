@@ -70,6 +70,7 @@ filelock==4.2.4; python_version >= "3.11"
 filelock==3.32.2; python_version >= "3.10" and python_version < "3.11"
 filelock==3.19.1; python_version < "3.10"
 httpx==0.28.1
+microsoft-copilot-sdk==2.0.3; python_version >= "3.11"
 httpcore==1.0.9
 # certifi is the CA trust store, not an ordinary library: an exact pin freezes it,
 # so distrusted roots stay trusted and newly added ones never arrive. It is pinned

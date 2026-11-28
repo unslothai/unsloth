@@ -1651,25 +1651,29 @@ export function ChatSettingsPanel({
                 info="Penalizes any token that has already appeared at least once, encouraging the model to introduce new topics. 0 = off."
               />
             ) : null}
-            <ParamSlider
-              label="Max Tokens"
-              value={params.maxTokens}
-              min={
-                isExternalModel
-                  ? getExternalMinOutputTokens(externalProviderType)
-                  : MAX_TOKENS_MIN
-              }
-              max={maxTokensMax}
-              step={64}
-              onChange={set("maxTokens")}
-              format={(v) =>
-                (!isExternalModel || maxTokensUnboundedAtMax) &&
-                v >= maxTokensMax
-                  ? "Max"
-                  : undefined
-              }
-              info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
-            />
+            {externalProviderType !== "github_copilot" ? (
+              <ParamSlider
+                label="Max Tokens"
+                value={params.maxTokens}
+                min={
+                  isExternalModel
+                    ? getExternalMinOutputTokens(externalProviderType)
+                    : MAX_TOKENS_MIN
+                }
+                max={maxTokensMax}
+                step={64}
+                onChange={set("maxTokens")}
+                format={(v) =>
+                  (!isExternalModel || maxTokensUnboundedAtMax) &&
+                  v >= maxTokensMax
+                    ? "Max"
+                    : undefined
+                }
+                info="Maximum number of tokens to generate per response. Generation stops at this limit or when the model emits an end-of-sequence token."
+              />
+            ) : (
+              <p className="text-xs text-muted-foreground">Copilot manages response length.</p>
+            )}
             {showSeed ? (
               <div className="flex min-h-8 items-center justify-between gap-3">
                 <div className="flex min-w-0 items-center gap-1.5">

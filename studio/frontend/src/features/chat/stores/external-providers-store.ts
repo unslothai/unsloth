@@ -18,6 +18,8 @@ interface ExternalProvidersState {
   /** Switched off in Settings > Connections: listed there, offered nowhere else. Every sync refills it; persisted so the rows' browser-only options outlive a reload. */
   disabledProviders: ExternalProviderConfig[];
   connectionsEnabled: boolean;
+  chatModelRequest: { checkpoint: string; newChat: string } | null;
+  setChatModelRequest: (request: ExternalProvidersState["chatModelRequest"]) => void;
   setProviders: (providers: ExternalProviderConfig[]) => void;
   setDisabledProviders: (providers: ExternalProviderConfig[]) => void;
   setConnectionsEnabled: (enabled: boolean) => void;
@@ -31,6 +33,8 @@ export const useExternalProvidersStore = create<ExternalProvidersState>(
     providers: loadExternalProviders(),
     disabledProviders: loadExternalProviders(DISABLED_EXTERNAL_PROVIDERS_KEY),
     connectionsEnabled: loadConnectionsEnabled(),
+    chatModelRequest: null,
+    setChatModelRequest: (request) => set({ chatModelRequest: request }),
     setProviders: (providers) => {
       set({ providers });
       saveExternalProviders(providers);
