@@ -325,8 +325,9 @@ def _resolve(estimate, install_trainer_init):
 def _describe(choice, entries):
     head = f"Unsloth: {FLAG}=auto picked {'DDP (UNSLOTH_FSDP2=0)' if choice == DDP else 'native FSDP2 (UNSLOTH_FSDP2=1)'}"
     first = entries[0]
-    if choice == DDP and first.get("route"):
-        return f"{head}: {first['why']}."
+    routed = next((e for e in entries if e.get("route")), None)
+    if choice == DDP and routed is not None:
+        return f"{head}: {routed['why']}."
     if choice == DDP:
         tight = min(entries, key = lambda e: e["capacity"] - e["need"])
         return (
