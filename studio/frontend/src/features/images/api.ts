@@ -488,6 +488,12 @@ export async function getDiffusionLoadProgress(
  *  no visible page polls, and resumes at the next poll that asks. */
 function withPreviewWatch(url: string): string {
   if (globalThis.document?.visibilityState !== "visible") return url;
+  // The page's "Live preview" switch (usePersistedToggle): off mid-render stops the work, not only the display.
+  try {
+    if (globalThis.localStorage?.getItem("unsloth_images_live_preview_off") === "true") return url;
+  } catch {
+    // storage blocked: keep asking while visible
+  }
   return `${url}${url.includes("?") ? "&" : "?"}preview=1`;
 }
 

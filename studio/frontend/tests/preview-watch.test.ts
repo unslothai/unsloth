@@ -83,3 +83,27 @@ test("a visible page asks for the preview; a hidden tab or no document does not"
     "/api/inference/video/generate-progress",
   ]);
 });
+
+test("the Images page's Live preview switch turned off stops asking, even while visible", async () => {
+  const calls: string[] = [];
+  const { image } = polls(calls);
+  const g = globalThis as { localStorage?: unknown };
+  const had = "localStorage" in g;
+  const prev = g.localStorage;
+  const store: Record<string, string> = { unsloth_images_live_preview_off: "true" };
+  g.localStorage = { getItem: (k: string) => store[k] ?? null };
+  try {
+    await withVisibility("visible", async () => {
+      await image();
+      delete store.unsloth_images_live_preview_off;
+      await image();
+    });
+  } finally {
+    if (had) g.localStorage = prev;
+    else delete g.localStorage;
+  }
+  assert.deepEqual(calls, [
+    "/api/inference/images/generate-progress",
+    "/api/inference/images/generate-progress?preview=1",
+  ]);
+});
