@@ -48,9 +48,10 @@ EXPECTED = {
         16: ("both", _W8),
         24: ("model", _W8),
         32: ("model", _W8),
+        # Hosted INT8 where bf16 does not stay resident (the 57 GB bf16 pair).
         48: ("dit", _AO),
-        # Hosted INT8 even where bf16 stays resident; the 29 GB pair leaves room for the text encoder.
-        80: ("none", _AO),
+        # bf16 where it stays resident: INT8 failed the 0.05 video bar (see video_families), text encoder streamed.
+        80: ("dit", _BF),
     },
     "hv15-480p": {
         8: ("model", _W8),
@@ -246,6 +247,14 @@ def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
     elif precision == _AO:
         assert spy.seeded == ["int8"] and not spy.quant
         assert status["transformer_quant"] == "int8"
+
+
+def test_explicit_int8_still_seeds_the_hosted_a14b_pair_where_bf16_fits(fake_runtime, monkeypatch):
+    """Auto keeps bf16 on an 80 GiB card, but an explicit INT8 pick still loads the hosted INT8 expert pair."""
+    spy = _spoof(monkeypatch, tier_gib = 80)
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"], transformer_quant = "int8")
+    assert status["transformer_quant"] == "int8"
+    assert spy.seeded == ["int8"] and not spy.quant
 
 
 def _streaming_supported(monkeypatch):

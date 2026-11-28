@@ -867,8 +867,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 gated = True,
                 backend = "flashinfer",
             ),
-            # Same rule: INT8 1.12x faster than bf16 (peak 52.4 vs 80.5 GB), so INT8 even when bf16 is resident.
-            auto_prequant_when_resident = frozenset({"int8"}),
+            # No auto_prequant_when_resident: Auto keeps bf16 where the DiT stays resident. Re-gate 2026-11-28 (A100 80GB,
+            # Studio defaults, 17 frames, 24 clips): INT8 weights 0.296 mean / 0.451 max LPIPS vs bf16, 0.116 above a
+            # bf16 attention-kernel swap (CI 0.082 to 0.149, margin 0.01), for 1.27x per step. INT8 stays where bf16
+            # does not fit and on request.
             untiled_vae = _WAN21_VAE_UNTILED,
         ),
         comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)
