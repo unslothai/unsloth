@@ -806,11 +806,14 @@ export function DecisionApiSection({
             >
               <Switch
                 checked={settings.inputModalities.includes("image")}
-                disabled={busy || settings.modelLocked}
+                disabled={busy}
                 aria-label={t("settings.apiKeys.decisionApi.connectionImages")}
                 onCheckedChange={(on) =>
                   void apply(
-                    { inputModalities: on ? ["text", "image"] : ["text"] },
+                    {
+                      inputModalities: on ? ["text", "image"] : ["text"],
+                      expectedModel: settings.model,
+                    },
                     false,
                   )
                 }

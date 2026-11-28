@@ -789,6 +789,33 @@ def test_switching_the_connection_drops_a_declaration_made_for_another_model(ups
     assert upstream.calls == []
 
 
+def test_a_declaration_for_a_connection_no_longer_configured_is_refused(upstream):
+    client = _client()
+    name = _connection()
+    client.put("/api/settings/systemone", json = {"model": name})
+    providers_db.update_provider("deciders", models = ["jev-latest", "jev-1.13"])
+    client.put("/api/settings/systemone", json = {"model": "connection:deciders:jev-1.13"})
+    stale = client.put(
+        "/api/settings/systemone",
+        json = {"input_modalities": ["text", "image"], "expected_model": name},
+    )
+    assert stale.status_code == 409
+    assert client.get("/api/settings/systemone").json()["input_modalities"] == ["text"]
+
+
+def test_an_environment_selected_connection_can_still_be_declared(upstream, monkeypatch):
+    client = _client()
+    name = _connection()
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", name)
+    saved = client.put(
+        "/api/settings/systemone",
+        json = {"input_modalities": ["text", "image"], "expected_model": name},
+    )
+    assert saved.status_code == 200, saved.text
+    assert _post_images(client, [IMAGE]).status_code == 200
+    assert json.loads(upstream.calls[-1].content)["images"] == [IMAGE]
+
+
 @pytest.mark.parametrize(
     "images,fragment",
     [
