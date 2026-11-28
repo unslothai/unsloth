@@ -70,8 +70,8 @@ Once a model is registered, registry.registry.MODEL_REGISTRY is updated with the
 The `tests/test_model_registry.py` file contains tests for the model registry.
 
 Also, each model registration file is an executable module that checks that all registered models are available on `huggingface_hub`.
-```python
-python unsloth.registry._llama.py
+```bash
+python -m unsloth.registry._llama
 ```
 
 Prints the following (abridged) output:
