@@ -697,3 +697,20 @@ def test_mention_name_memo_skips_reparse_on_later_turns(monkeypatch):
     assert mentions._cached_mentioned_skill_names(text) == ["someone"]
     assert mentions._cached_mentioned_skill_names(text + " @other") == ["someone", "other"]
     assert len(calls) == 2
+
+
+def test_load_mentioned_skills_scans_each_history_text_once(mention_client, monkeypatch):
+    monkeypatch.setattr(mentions, "_NAMES_CACHE", type(mentions._NAMES_CACHE)())
+    calls = []
+    real = mentions.mentioned_skill_names
+    monkeypatch.setattr(
+        mentions, "mentioned_skill_names", lambda text: calls.append(text) or real(text)
+    )
+    history = [
+        {"role": "user", "content": "@skill-creator sum"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "thanks @nobody"},
+    ]
+    _load(messages = [dict(m) for m in history])
+    _load(messages = [dict(m) for m in history])
+    assert sorted(calls) == ["@skill-creator sum", "thanks @nobody"]

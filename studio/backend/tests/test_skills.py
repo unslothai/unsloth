@@ -1685,6 +1685,7 @@ def test_parse_memo_rereads_edits_and_keeps_permission_checks(isolated_skills, m
     root = _write_skill(home, "agents", "memo", description = "First.")
     assert skills.read_skill_instructions("memo").endswith("Instructions")
     assert skills.list_skills()[0]["description"] == "First."
+    assert len(skills._PARSE_CACHE) == 1
     # Different bytes re-parse; a now-invalid manifest is reported, not served from the memo.
     (root / "SKILL.md").write_text(
         "---\nname: memo\ndescription: Second.\n---\nNew", encoding = "utf-8"
