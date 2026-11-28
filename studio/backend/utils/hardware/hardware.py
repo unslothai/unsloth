@@ -8247,7 +8247,12 @@ def _unmasked_ids_are_smi_rows() -> bool:
         return False
 
 
-def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
+def apply_gpu_ids(
+    gpu_ids,
+    backend: Optional[str] = None,
+    rocm_build: Optional[bool] = None,
+) -> None:
+    """rocm_build: the spawning parent's ROCm verdict, so a worker that never imports torch skips the probe."""
     if gpu_ids is None:
         return
 
@@ -8313,8 +8318,8 @@ def apply_gpu_ids(gpu_ids, backend: Optional[str] = None) -> None:
         return
 
     # From the BUILD: a stale ROCR var on an NVIDIA node would move a CUDA pin elsewhere.
-    _rocm_build = IS_ROCM
-    if not _rocm_build:
+    _rocm_build = IS_ROCM or bool(rocm_build)
+    if not _rocm_build and rocm_build is None:
         try:
             import torch as _torch
             _rocm_build = (
