@@ -248,6 +248,23 @@ def test_a_backlog_too_long_for_one_summary_call_is_folded_in_oldest_first():
     assert _SUMMARY in _system_text(sent)
 
 
+def test_a_backlog_beyond_the_call_limit_does_not_save_partial_coverage(monkeypatch):
+    monkeypatch.setattr(cloud_compaction, "SUMMARY_MAX_CALLS", 1)
+    chunks, summaries, [sent] = _bodies(
+        _SummarisingHandler,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 6_000,
+        thread_id = _saved_thread("beyond-summary-call-limit"),
+    )
+    assert not summaries
+    assert "[Conversation summary]" not in _system_text(sent)
+    assert sent["messages"][-1]["content"] == "latest question"
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True
+    assert not truncation.get("summarized")
+    assert not cloud_compaction._memory_summaries
+
+
 def test_a_chat_within_the_threshold_asks_for_no_summary():
     chunks, summaries, [sent] = _bodies(
         _SummarisingHandler,

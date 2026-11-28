@@ -420,8 +420,8 @@ def summary_chunks(
     messages: list[dict], count_message: Callable[[dict], int], input_budget: Optional[int]
 ) -> list[list[dict]]:
     """The summary call has to fit the same window, so a backlog too long for one call is
-    folded in oldest first, each call carrying the summary so far. Past SUMMARY_MAX_CALLS the
-    oldest turns are left out rather than holding the reply up indefinitely."""
+    folded in oldest first, each call carrying the summary so far. Refuse to claim coverage
+    when the work cannot fit the call limit."""
     if not input_budget or input_budget <= 0:
         return [messages]
     chunks: list[list[dict]] = [[]]
@@ -430,17 +430,15 @@ def summary_chunks(
         # render_transcript clips long messages, so price them at what is actually sent.
         cost = min(count_message(message), _TRANSCRIPT_MESSAGE_CHARS // 3)
         if chunks[-1] and spent + cost > input_budget:
+            if len(chunks) >= SUMMARY_MAX_CALLS:
+                raise SummaryFailed(
+                    f"Conversation needs more than {SUMMARY_MAX_CALLS} summary calls."
+                )
             chunks.append([])
             spent = 0
         chunks[-1].append(message)
         spent += cost
-    if len(chunks) > SUMMARY_MAX_CALLS:
-        logger.warning(
-            "cloud_compaction.summary_chunks_dropped",
-            dropped_messages = sum(len(chunk) for chunk in chunks[:-SUMMARY_MAX_CALLS]),
-            chunks = len(chunks),
-        )
-    return chunks[-SUMMARY_MAX_CALLS:]
+    return chunks
 
 
 def summary_first_line_timeout(prompt_tokens: Optional[int]) -> float:
