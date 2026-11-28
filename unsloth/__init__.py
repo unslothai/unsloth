@@ -1208,6 +1208,7 @@ if _IS_MLX:
         if (
             not getattr(args, "streaming", False)
             and not getattr(args, "preserve_dataset_order", False)
+            and not getattr(args, "group_by_length", False)
             and not getattr(args, "_unsloth_mlx_dataset_order_explicit", False)
             and not _mlx_dataset_order_edited(args)
         ):

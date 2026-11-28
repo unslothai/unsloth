@@ -628,6 +628,31 @@ def test_mlx_trainer_preserves_explicit_dataset_order():
     assert explicit_no_clip.args.max_grad_norm == 0.0
 
 
+def test_mlx_trainer_group_by_length_keeps_implicit_dataset_order():
+    """The implicit torch_randperm default must not conflict with group_by_length."""
+    unsloth = _import_mlx_unsloth()
+    from unsloth_zoo.mlx.trainer import _resolve_text_dataset_order
+
+    trainer = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(max_steps = 1, group_by_length = True),
+    )
+    user_order = unsloth.UnslothTrainer(
+        model = _DummyModel(),
+        tokenizer = None,
+        train_dataset = [],
+        args = unsloth.UnslothTrainingArguments(
+            max_steps = 1, group_by_length = True, dataset_order = "torch_randperm"
+        ),
+    )
+
+    assert _resolve_text_dataset_order(trainer.args) == "length_grouped"
+    with pytest.raises(ValueError, match = "group_by_length=True conflicts"):
+        _resolve_text_dataset_order(user_order.args)
+
+
 def test_mlx_trainer_uses_model_context_length_when_implicit():
     """UnslothTrainer should mirror CUDA's max_length bridge precedence."""
     unsloth = _import_mlx_unsloth()
