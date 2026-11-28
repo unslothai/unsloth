@@ -98,7 +98,7 @@ test("a WebVTT file keeps its header, notes, identifiers and cue settings", () =
   );
 });
 
-test("WebVTT translation preserves CR, LF and CRLF cue boundaries", async () => {
+test("WebVTT translation keeps the cues of CR, LF and CRLF files, and writes CR as LF", async () => {
   for (const eol of ["\r", "\n", "\r\n"]) {
     const source = [
       "WEBVTT",
@@ -112,10 +112,11 @@ test("WebVTT translation preserves CR, LF and CRLF cue boundaries", async () => 
       "Goodbye",
       "",
     ].join(eol);
+    const written = eol === "\r" ? source.replaceAll("\r", "\n") : source;
     const doc = parseSubtitles(source);
     assert.ok(doc);
     assert.equal(doc.format, "vtt");
-    assert.equal(rebuildSubtitles(doc, []), source);
+    assert.equal(rebuildSubtitles(doc, []), written);
     const output = await translateSubtitles(
       doc,
       async (prompt) => {
@@ -124,10 +125,11 @@ test("WebVTT translation preserves CR, LF and CRLF cue boundaries", async () => 
       },
       { signal: new AbortController().signal, onPhase() {}, onOutput() {} },
     );
+    const newline = eol === "\r" ? "\n" : eol;
     assert.equal(
       output,
-      source
-        .replace(`Hello${eol}world`, `Bonjour${eol}monde`)
+      written
+        .replace(`Hello${newline}world`, `Bonjour${newline}monde`)
         .replace("Goodbye", "Au revoir"),
     );
   }
