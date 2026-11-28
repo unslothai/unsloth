@@ -191,3 +191,35 @@ def test_mixed_recipes_take_the_linear_one():
         assert (
             torch.unique(p.detach()[0, :32, 0]).numel() <= 16
         )  # one int4 group: at most 16 levels
+
+
+def test_name_filters_are_checked_for_every_stack():
+    """A custom TorchAOConfig whose filters pick recipes by name: same-shaped stacks follow their own names."""
+    from torchao.quantization import Int4WeightOnlyConfig, IntxWeightOnlyConfig
+    from torchao.quantization.granularity import PerAxis
+
+    from unsloth.models._utils import TorchAOConfig
+
+    int8 = IntxWeightOnlyConfig(weight_dtype = torch.int8, granularity = PerAxis(0))
+    config = TorchAOConfig(
+        qat_scheme = None,
+        base_config_and_filter_fns = [
+            (Int4WeightOnlyConfig(group_size = 128), lambda m, fqn: isinstance(m, torch.nn.Linear) and "layers.0." in fqn),
+            (int8, lambda m, fqn: isinstance(m, torch.nn.Linear) and "layers.1." in fqn),
+        ],
+    )  # fmt: skip
+    model = _tiny_moe("gpt_oss")
+    originals = {k: v.detach().clone() for k, v in _stacks(model).items()}
+    for p in _stacks(model).values():
+        p.requires_grad_(False)
+    model = _prepare(model, config)
+    from torchao.quantization.qat.fake_quantize_config import _infer_fake_quantize_configs
+    from torchao.quantization.qat.fake_quantizer import FakeQuantizerBase
+
+    q8 = FakeQuantizerBase.from_config(_infer_fake_quantize_configs(int8)[1])
+    for name, p in _stacks(model).items():
+        if "layers.0." in name:
+            want = _reference_int4(originals[name], True)
+        else:
+            want = torch.stack([q8(e.t().contiguous()).t() for e in originals[name]]).detach()
+        assert torch.equal(p.detach(), want), name

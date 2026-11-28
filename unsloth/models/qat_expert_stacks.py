@@ -236,26 +236,24 @@ def _skip(reason, fqn, skipped):
 def _linear_weight_quantizer(torchao_config, fqn, param, transposed, cache):
     """The weight quantizer of the recipe whose filter takes one expert of this stack as a Linear: a stand-in
     nn.Linear(K, N) on the meta device goes through the (config, filter) pairs in order, as torchao's prepare
-    walks them, so embedding-only recipes (int8-int4's int8 embeddings) and group-size filters apply."""
+    walks them, so embedding-only recipes (int8-int4's int8 embeddings), group-size and name filters apply.
+    Filters run for every stack (they may read the name); only the quantizer built per recipe is cached."""
     _, A, B = param.shape
     K, N = (A, B) if transposed else (B, A)
-    key = (K, N, param.dtype)
-    if key not in cache:
-        probe = torch.nn.Linear(K, N, bias = False, device = "meta", dtype = param.dtype)
-        found = None
-        for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
-            try:
-                taken = filter_fn is None or bool(filter_fn(probe, fqn))
-            except Exception:
-                taken = False
-            if taken:
+    probe = torch.nn.Linear(K, N, bias = False, device = "meta", dtype = param.dtype)
+    for base_config, filter_fn in torchao_config.base_config_and_filter_fns:
+        try:
+            taken = filter_fn is None or bool(filter_fn(probe, fqn))
+        except Exception:
+            taken = False
+        if taken:
+            if id(base_config) not in cache:
                 try:
-                    found = expert_stack_weight_fake_quantizer(base_config)
+                    cache[id(base_config)] = expert_stack_weight_fake_quantizer(base_config)
                 except Exception:
-                    found = None
-                break
-        cache[key] = found
-    return cache[key]
+                    cache[id(base_config)] = None
+            return cache[id(base_config)]
+    return None
 
 
 def _quantize_stack(param, quantizer, transposed):
