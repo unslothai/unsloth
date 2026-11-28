@@ -124,8 +124,8 @@ def _refuse_bnb_state(optimizer, state_dict):
 
 
 def torch_optimizer_fallback(name, base):
-    """A factory named `name`: calling it returns a `base` (torch) optimizer, ignoring
-    bitsandbytes-only arguments."""
+    """A `base` subclass named `name` whose construction returns a plain `base` (torch) optimizer,
+    ignoring bitsandbytes-only arguments."""
 
     def __new__(cls, params, *args, **kwargs):
         for key in _BNB_ONLY:
@@ -155,8 +155,10 @@ def torch_optimizer_fallback(name, base):
             hook(_refuse_bnb_state)
         return optimizer
 
+    # A torch.optim subclass, so transformers >= 5 (which calls anything else a factory) builds it
+    # like a class; __new__ hands back the plain `base` instance, so __init__ here never runs.
     return type(
         name,
-        (),
+        (base,),
         {"__new__": __new__, "__module__": "bitsandbytes.optim", "__qualname__": name},
     )

@@ -308,6 +308,11 @@ def test_optimizers_fall_back_and_int8_refuses():
             lion = str(e)
         print("OUT " + json.dumps({
             "exact_torch": type(opt) is torch.optim.AdamW, "factory_module": bnb.optim.AdamW.__module__,
+            # transformers >= 5 treats anything that is not a torch.optim.Optimizer subclass as a factory.
+            "optimizer_subclass": all(
+                isinstance(c, type) and issubclass(c, torch.optim.Optimizer)
+                for c in (bnb.optim.AdamW, bnb.optim.AdamW8bit, bnb.optim.PagedAdamW8bit, bnb.optim.Adam8bit)
+            ),
             "stepped": float(p[0]), "notices": printed.getvalue().count("runs torch.optim.AdamW"),
             "fp16": fp16, "resume": resume, "int8": int8, "lion": lion, "group_sizes": group_sizes,
             "manager": type(bnb.optim.GlobalOptimManager.get_instance()).__name__,
@@ -316,6 +321,7 @@ def test_optimizers_fall_back_and_int8_refuses():
     )
     # A real torch optimizer: Unsloth's torch-optimizer paths (checkpoints, FSDP2, rounding) apply.
     assert out["exact_torch"] and out["factory_module"] == "bitsandbytes.optim"
+    assert out["optimizer_subclass"]
     assert out["stepped"] < 1.0 and out["notices"] == 1
     assert "float16" in out["fp16"] and "8-bit state" in out["resume"]
     assert out["group_sizes"] == [1]
