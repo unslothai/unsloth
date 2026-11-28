@@ -5842,6 +5842,7 @@ export const ar = {
     mustDiffer: "يجب أن تختلف كلمة المرور الجديدة عن كلمة المرور الحالية.",
     pleaseWait: "يُرجى الانتظار...",
     continueAsOwner: "المتابعة بصفتك المالك",
+    continueAsProxyUser: "المتابعة باسم {name}",
     signInWithUsername: "سجّل الدخول باستخدام اسم المستخدم وكلمة المرور.",
     bootstrapping: "لا تزال المصادقة تُهيّئ حساب المسؤول الافتراضي.",
     signInToChange:

@@ -5831,6 +5831,7 @@ export const ko = {
     mustDiffer: "새 비밀번호는 현재 비밀번호와 달라야 합니다.",
     pleaseWait: "잠시 기다려 주세요...",
     continueAsOwner: "소유자로 계속",
+    continueAsProxyUser: "{name}(으)로 계속",
     signInWithUsername: "사용자 이름과 비밀번호로 로그인하세요.",
     bootstrapping: "인증 시스템이 아직 기본 관리자 계정을 초기화하는 중입니다.",
     signInToChange:

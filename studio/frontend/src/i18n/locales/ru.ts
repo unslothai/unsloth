@@ -5870,6 +5870,7 @@ export const ru = {
     mustDiffer: "Новый пароль должен отличаться от текущего.",
     pleaseWait: "Подождите...",
     continueAsOwner: "Продолжить как владелец",
+    continueAsProxyUser: "Продолжить как {name}",
     signInWithUsername: "Войдите с помощью имени пользователя и пароля.",
     bootstrapping: "Система аутентификации ещё создаёт учётную запись администратора по умолчанию.",
     signInToChange:

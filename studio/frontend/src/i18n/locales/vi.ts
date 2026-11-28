@@ -6243,6 +6243,7 @@ export const vi = {
     mustDiffer: "Mật khẩu mới phải khác mật khẩu hiện tại của bạn.",
     pleaseWait: "Vui lòng chờ...",
     continueAsOwner: "Tiếp tục với tư cách chủ sở hữu",
+    continueAsProxyUser: "Tiếp tục với tên {name}",
     signInWithUsername: "Đăng nhập bằng tên người dùng và mật khẩu của bạn.",
     bootstrapping:
       "Hệ thống xác thực vẫn đang khởi tạo tài khoản quản trị mặc định.",

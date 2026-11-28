@@ -6299,6 +6299,7 @@ export const nl = {
     mustDiffer: "Nieuw wachtwoord moet verschillen van je huidige wachtwoord.",
     pleaseWait: "Even geduld...",
     continueAsOwner: "Doorgaan als eigenaar",
+    continueAsProxyUser: "Doorgaan als {name}",
     signInWithUsername: "Log in met je gebruikersnaam en wachtwoord.",
     bootstrapping:
       "De verificatie is het standaard beheerdersaccount nog aan het aanmaken.",

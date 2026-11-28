@@ -6336,6 +6336,7 @@ export const es419 = {
     mustDiffer: "La contraseña nueva debe ser distinta de la actual.",
     pleaseWait: "Espera un momento...",
     continueAsOwner: "Continuar como propietario",
+    continueAsProxyUser: "Continuar como {name}",
     signInWithUsername: "Inicia sesión con tu nombre de usuario y contraseña.",
     bootstrapping:
       "La autenticación aún está creando la cuenta de administrador predeterminada.",

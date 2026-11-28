@@ -5941,6 +5941,7 @@ export const he = {
     mustDiffer: "הסיסמה החדשה חייבת להיות שונה מהסיסמה הנוכחית.",
     pleaseWait: "נא להמתין...",
     continueAsOwner: "המשך כבעל ההתקנה",
+    continueAsProxyUser: "המשך בתור {name}",
     signInWithUsername: "התחבר באמצעות שם המשתמש והסיסמה שלך.",
     bootstrapping: "מערכת האימות עדיין מכינה את חשבון המנהל המוגדר כברירת מחדל.",
     signInToChange:

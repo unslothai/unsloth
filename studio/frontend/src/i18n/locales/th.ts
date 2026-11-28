@@ -5974,6 +5974,7 @@ export const th = {
     mustDiffer: "รหัสผ่านใหม่ต้องแตกต่างจากรหัสผ่านปัจจุบัน",
     pleaseWait: "โปรดรอสักครู่...",
     continueAsOwner: "ดำเนินการต่อในฐานะเจ้าของ",
+    continueAsProxyUser: "ดำเนินการต่อในชื่อ {name}",
     signInWithUsername: "ลงชื่อเข้าใช้ด้วยชื่อผู้ใช้และรหัสผ่านของคุณ",
     bootstrapping: "ระบบยืนยันตัวตนยังคงกำลังเตรียมบัญชีผู้ดูแลระบบเริ่มต้น",
     signInToChange:

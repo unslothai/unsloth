@@ -5742,6 +5742,7 @@ export const zhCN = {
     mustDiffer: "新密码必须与当前密码不同。",
     pleaseWait: "请稍候...",
     continueAsOwner: "以所有者身份继续",
+    continueAsProxyUser: "以 {name} 身份继续",
     signInWithUsername: "使用你的用户名和密码登录。",
     bootstrapping: "身份验证仍在初始化默认管理员账户。",
     signInToChange:

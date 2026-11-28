@@ -162,3 +162,31 @@ export async function loginFromForm(
     throw error;
   }
 }
+
+/** The account a trusted forward-auth proxy signed in (see UNSLOTH_STUDIO_TRUSTED_USER_HEADER), or null. */
+export async function fetchProxySession(): Promise<string | null> {
+  try {
+    const response = await fetch(apiUrl("/api/auth/proxy-session"));
+    if (!response.ok) return null;
+    const result = (await response.json()) as { username?: string | null };
+    return typeof result.username === "string" && result.username
+      ? result.username
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function loginWithProxySession(): Promise<TokenResponse> {
+  const response = await fetch(apiUrl("/api/auth/proxy-login"), {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new LoginError(
+      formatApiErrorBody(payload) ?? "Login failed.",
+      response.status,
+    );
+  }
+  return response.json();
+}

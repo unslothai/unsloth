@@ -6085,6 +6085,7 @@ export const sv = {
     mustDiffer: "Det nya lösenordet måste skilja sig från ditt nuvarande lösenord.",
     pleaseWait: "Vänta...",
     continueAsOwner: "Fortsätt som ägare",
+    continueAsProxyUser: "Fortsätt som {name}",
     signInWithUsername: "Logga in med ditt användarnamn och lösenord.",
     bootstrapping: "Autentiseringen håller fortfarande på att skapa standardadministratörskontot.",
     signInToChange:

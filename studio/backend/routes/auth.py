@@ -33,6 +33,7 @@ from models.auth import (
     CreateApiKeyResponse,
     DesktopInitialPasswordRequest,
     DesktopLoginRequest,
+    ProxySessionResponse,
     RefreshTokenRequest,
     UpdateApiKeyRequest,
 )
@@ -566,6 +567,45 @@ def desktop_login(payload: DesktopLoginRequest, request: Request) -> Token | Res
         token_type = "bearer",
         must_change_password = False,
         account_id = _account_id_of(username),
+    )
+
+
+# Sync defs: SQLite reads must not block the event loop.
+@router.get("/proxy-session", response_model = ProxySessionResponse)
+def proxy_session(request: Request) -> ProxySessionResponse:
+    """Name the account a trusted forward-auth proxy signed in, so the login page can offer it.
+
+    Null unless UNSLOTH_STUDIO_TRUSTED_USER_HEADER is set, the request came through a proxy
+    allowlisted in UNSLOTH_STUDIO_PROXY_HOSTS (and carries UNSLOTH_STUDIO_TRUSTED_PROXY_SECRET
+    when that is set), and the header names an active account that has finished setup.
+    """
+    from auth.proxy_header import proxy_account
+
+    account = proxy_account(request.scope)
+    return ProxySessionResponse(username = account.username if account else None)
+
+
+@router.post("/proxy-login", response_model = Token)
+def proxy_login(request: Request) -> Token:
+    """Sign in as the account a trusted forward-auth proxy names in its user header.
+
+    Same conditions as GET /api/auth/proxy-session; the account must already exist.
+    """
+    from auth.proxy_header import proxy_account
+
+    account = proxy_account(request.scope)
+    if account is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "Sign-in through the reverse proxy is not available for this request.",
+        )
+    logger.info("Signed in %s through the trusted reverse proxy header", account.username)
+    return Token(
+        access_token = create_access_token(subject = account.username, secret = account.jwt_secret),
+        refresh_token = create_refresh_token(subject = account.username, secret = account.jwt_secret),
+        token_type = "bearer",
+        must_change_password = False,
+        account_id = _account_id_of(account.username),
     )
 
 

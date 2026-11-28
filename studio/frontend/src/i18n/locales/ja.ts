@@ -5791,6 +5791,7 @@ export const ja = {
     mustDiffer: "新しいパスワードは現在のパスワードと異なるものにしてください。",
     pleaseWait: "お待ちください...",
     continueAsOwner: "所有者として続行",
+    continueAsProxyUser: "{name} として続行",
     signInWithUsername: "ユーザー名とパスワードでサインインしてください。",
     bootstrapping: "認証システムはまだデフォルトの管理者アカウントを初期化中です。",
     signInToChange:

@@ -5853,6 +5853,7 @@ export const hi = {
     mustDiffer: "नया पासवर्ड आपके वर्तमान पासवर्ड से अलग होना चाहिए।",
     pleaseWait: "कृपया प्रतीक्षा करें...",
     continueAsOwner: "स्वामी के रूप में जारी रखें",
+    continueAsProxyUser: "{name} के रूप में जारी रखें",
     signInWithUsername: "अपने उपयोगकर्ता नाम और पासवर्ड से साइन इन करें।",
     bootstrapping: "प्रमाणीकरण अभी भी डिफ़ॉल्ट एडमिन खाता तैयार कर रहा है।",
     signInToChange:
