@@ -59,6 +59,7 @@ def gpu(monkeypatch):
     for k in (R.ENABLE_ENV, R.LEGACY_ENABLE_ENV, R.WINOGRAD_ENV):
         monkeypatch.delenv(k, raising = False)
     monkeypatch.setenv(R.SELFCHECK_ENV, "0")
+    monkeypatch.setenv(R.PREBUILD_ENV, "0")  # inline compile; the prebuild gate has its own tests
     monkeypatch.setattr(torch.version, "hip", "7.13.0-fake", raising = False)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
@@ -486,3 +487,262 @@ def test_vendored_kernels_match_conv3d_under_triton_interpreter():
         env = env,
     )
     assert r.returncode == 0 and "INTERP_OK" in r.stdout, (r.stdout + r.stderr)[-3000:]
+
+
+# ---- cold Triton cache: MIOpen until a prebuild child has compiled the variant ----
+
+# (weight, input at _conv_forward) of every distinct Wan 2.2 TI2V-5B decoder conv at 480x832 and 704x1280 (gfx1151 run).
+WAN_480 = [
+    ([48, 48, 1, 1, 1], [1, 48, 3, 30, 52]),
+    ([1024, 48, 3, 3, 3], [1, 48, 3, 32, 54]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 3, 32, 54]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 3, 62, 106]),
+    ([512, 1024, 1, 1, 1], [1, 1024, 1, 120, 208]),
+    ([512, 1024, 3, 3, 3], [1, 1024, 3, 122, 210]),
+    ([512, 512, 3, 3, 3], [1, 512, 3, 122, 210]),
+    ([256, 512, 1, 1, 1], [1, 512, 1, 240, 416]),
+    ([256, 512, 3, 3, 3], [1, 512, 3, 242, 418]),
+    ([256, 256, 3, 3, 3], [1, 256, 3, 242, 418]),
+    ([12, 256, 3, 3, 3], [1, 256, 3, 242, 418]),
+    ([2048, 1024, 3, 1, 1], [1, 1024, 3, 30, 52]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 4, 62, 106]),
+    ([2048, 1024, 3, 1, 1], [1, 1024, 4, 60, 104]),
+    ([512, 1024, 1, 1, 1], [1, 1024, 4, 120, 208]),
+    ([512, 1024, 3, 3, 3], [1, 1024, 6, 122, 210]),
+    ([512, 512, 3, 3, 3], [1, 512, 6, 122, 210]),
+    ([256, 512, 1, 1, 1], [1, 512, 4, 240, 416]),
+    ([256, 512, 3, 3, 3], [1, 512, 6, 242, 418]),
+    ([256, 256, 3, 3, 3], [1, 256, 6, 242, 418]),
+    ([12, 256, 3, 3, 3], [1, 256, 6, 242, 418]),
+]
+WAN_720 = [
+    ([48, 48, 1, 1, 1], [1, 48, 3, 44, 80]),
+    ([1024, 48, 3, 3, 3], [1, 48, 3, 46, 82]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 3, 46, 82]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 3, 90, 162]),
+    ([512, 1024, 1, 1, 1], [1, 1024, 1, 176, 320]),
+    ([512, 1024, 3, 3, 3], [1, 1024, 3, 178, 322]),
+    ([512, 512, 3, 3, 3], [1, 512, 3, 178, 322]),
+    ([256, 512, 1, 1, 1], [1, 512, 1, 352, 640]),
+    ([256, 512, 3, 3, 3], [1, 512, 3, 354, 642]),
+    ([256, 256, 3, 3, 3], [1, 256, 3, 354, 642]),
+    ([12, 256, 3, 3, 3], [1, 256, 3, 354, 642]),
+    ([2048, 1024, 3, 1, 1], [1, 1024, 3, 44, 80]),
+    ([1024, 1024, 3, 3, 3], [1, 1024, 4, 90, 162]),
+    ([2048, 1024, 3, 1, 1], [1, 1024, 4, 88, 160]),
+    ([512, 1024, 1, 1, 1], [1, 1024, 4, 176, 320]),
+    ([512, 1024, 3, 3, 3], [1, 1024, 6, 178, 322]),
+    ([512, 512, 3, 3, 3], [1, 512, 6, 178, 322]),
+    ([256, 512, 1, 1, 1], [1, 512, 4, 352, 640]),
+    ([256, 512, 3, 3, 3], [1, 512, 6, 354, 642]),
+    ([256, 256, 3, 3, 3], [1, 256, 6, 354, 642]),
+    ([12, 256, 3, 3, 3], [1, 256, 6, 354, 642]),
+]
+_Z3 = (0, 0, 0)
+_O3 = (1, 1, 1)
+
+
+@pytest.fixture
+def cold(gpu, monkeypatch, tmp_path):
+    """The default gate (prebuild on) over an empty Triton cache dir; children recorded, never spawned."""
+    cfg = pytest.importorskip("core.inference.rocm_triton_conv3d._config")
+    monkeypatch.setattr(cfg, "get_arch", lambda: "gfx1151")
+    monkeypatch.delenv(R.PREBUILD_ENV, raising = False)
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_VAE_PREBUILD", raising = False)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(tmp_path / "triton"))
+    monkeypatch.setattr(R, "KICK_DEBOUNCE_S", 3600.0)  # the timer never fires: tests call _kick
+    kicks: list = []
+
+    def spawn(
+        job,
+        logger,
+        target = None,
+        timeout = None,
+        on_exit = None,
+    ):
+        kicks.append(job)
+        return True
+
+    from core.inference import diffusion_vae_prebuild as VP
+
+    monkeypatch.setattr(VP, "_spawn", spawn)
+    for d in (R._READY, R._VKEYS, R._PENDING, R._ATTEMPTS):
+        d.clear()
+    R._PB.clear()
+    for k in [k for k in R._STATE if isinstance(k, tuple)]:
+        R._STATE.pop(k)
+    gpu.kicks = kicks
+    yield gpu
+    R.cancel_pending()
+    for d in (R._READY, R._VKEYS, R._PENDING, R._ATTEMPTS):
+        d.clear()
+    R._PB.clear()
+
+
+def _keys(shapes, dtype = torch.bfloat16):
+    mod = R._kernels()
+    return {R._variant_key(mod, x, w, _O3, _Z3, _O3, dtype, True, True) for w, x in shapes}
+
+
+def _wan_decoder():
+    """One bias-carrying Conv3d per distinct Wan 2.2 decoder layer, already causally padded (padding 0)."""
+    vae = torch.nn.Module()
+    vae.decoder = torch.nn.ModuleList()
+    for w in sorted({tuple(w) for w, _x in WAN_480}):
+        vae.decoder.append(torch.nn.Conv3d(w[1], w[0], w[2:], device = "meta", dtype = torch.bfloat16))
+    return vae
+
+
+def test_tiny_inputs_compile_what_a_real_480p_and_720p_decode_loads(cold, monkeypatch):
+    """Spatial sizes are runtime ints, so the prebuild's tiny inputs plus the tuned literal shapes cover every
+    variant of both resolutions; 720p's extra variants are exactly its literal-config layers."""
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+    vae = _wan_decoder()
+    assert R.install(vae) == len(vae.decoder)
+    assert R.prebuild(vae) > 0
+    job = cold.kicks[-1]
+    built = {s["key"] for s in job["specs"]}
+    assert _keys(WAN_480) <= built and _keys(WAN_720) <= built
+    assert job["selfcheck"] == ["bfloat16"] and job["owner"] == "video"
+    tiny = [s for s in job["specs"] if s["x"][3] * s["x"][4] <= 100]
+    assert (
+        len(tiny) >= len(vae.decoder) and len(job["specs"]) - len(tiny) <= 8
+    )  # only literal shapes are big
+    assert _keys(WAN_720) - _keys(
+        WAN_480
+    )  # 720p hits tuned literal configs (5 more variants measured)
+
+
+def test_cold_call_runs_miopen_and_queues_the_variant(cold):
+    vae = _vae()
+    R._STATE["mod"].calls = 0
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+        assert R.install(vae) == 2
+    x = _x((1, 8, 3, 6, 6))
+    with torch.no_grad():
+        y = vae.conv(x)
+        y2 = vae.conv(x)
+    assert torch.equal(y, F.conv3d(x, vae.conv.weight, vae.conv.bias, padding = 1)) and torch.equal(
+        y, y2
+    )
+    assert cold.calls == 0 and R.COUNTS["fallback_cold"] == 2 and R.COUNTS["routed"] == 0
+    assert any(
+        k.startswith("selfcheck|") for k in R._PENDING
+    )  # self-check compiles in the child too
+    R._kick()
+    assert len(cold.kicks) == 1 and cold.kicks[0]["selfcheck"] == ["bfloat16"]
+    R._child_exit(0)  # the child died before writing anything: still MIOpen, no compile here
+    with torch.no_grad():
+        vae.conv(x)
+    assert cold.calls == 0
+
+
+def test_a_low_memory_skip_is_rearmed_by_the_next_cold_call(cold, monkeypatch):
+    vae = _vae()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+        assert R.install(vae) == 2
+    x = _x((1, 8, 3, 6, 6))
+    with torch.no_grad():
+        vae.conv(x)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(torch.cuda, "mem_get_info", lambda *_a: (1 << 20, 128 * GiB))
+        assert R._kick() is False
+    assert R._PENDING and R._PB.get("timer") is None and not cold.kicks
+    with torch.no_grad():
+        vae.conv(x)  # same variant, still cold: it must re-arm the prebuild
+    assert R._PB.get("timer") is not None
+    assert R._kick() is True and len(cold.kicks) == 1
+
+
+def test_manifest_listed_variant_routes_and_matches(cold, monkeypatch):
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+    vae = _vae()
+    R.install(vae)
+    x = _x((1, 8, 3, 6, 6))
+    with torch.no_grad():
+        vae.conv(x)  # cold: queues the self-check
+        vae.conv(x)  # self-check passes in this test (SELFCHECK_ENV=0): queues the variant
+    R._kick()
+    path = R._manifest_path()
+    sk = R._sc_key(R._kernels(), torch.bfloat16)
+    R._merge_manifest(path, selfcheck = {sk: True})
+    R._child_exit(0)
+    with torch.no_grad():
+        vae.conv(x)
+    R._kick()
+    vk = next(s["key"] for s in cold.kicks[-1]["specs"] if s["w"] == [8, 8, 3, 3, 3])
+    assert cold.calls == 0
+    R._merge_manifest(path, keys = (vk,))
+    R._child_exit(0)
+    with torch.no_grad():
+        y = vae.conv(x)
+    assert cold.calls == 1 and R.COUNTS["routed"] == 1
+    assert torch.equal(y, F.conv3d(x, vae.conv.weight, vae.conv.bias, padding = 1))
+
+
+def test_failed_child_selfcheck_keeps_miopen(cold, monkeypatch):
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+    vae = _vae()
+    R.install(vae)
+    R._merge_manifest(
+        R._manifest_path(), selfcheck = {R._sc_key(R._kernels(), torch.bfloat16): False}
+    )
+    with torch.no_grad():
+        vae.conv(_x())
+        vae.conv(_x())
+    assert cold.calls == 0 and not R._PENDING
+
+
+def test_child_compiles_specs_and_writes_the_manifest(cold, monkeypatch):
+    monkeypatch.setattr(R, "_child_device", lambda _t, _i: torch.device("cpu"))
+    mod = R._kernels()
+    path = R._manifest_path()
+    good = R._spec(
+        (1, 8, 3, 6, 6), (8, 8, 3, 3, 3), _O3, (1, 1, 1), _O3, torch.bfloat16, True, True, 0
+    )
+    good["key"] = R._variant_key(
+        mod, good["x"], good["w"], _O3, (1, 1, 1), _O3, torch.bfloat16, True, True
+    )
+    stale = dict(good, key = "not this call's variant")
+    R._prebuild_child(
+        {
+            "device": 0,
+            "manifest": path,
+            "winograd": False,
+            "selfcheck": ["bfloat16"],
+            "specs": [good, stale],
+        }
+    )
+    data = R._read_manifest(path)
+    assert data["keys"] == [good["key"]] and data["selfcheck"] == {
+        R._sc_key(mod, torch.bfloat16): True
+    }
+    assert mod.calls == 1  # the stale spec never launched
+
+
+def test_opt_out_compiles_inline_as_before(cold, monkeypatch):
+    monkeypatch.setattr(R, "DEFAULT_ON_VAES", ("Module",))
+    for env in (R.PREBUILD_ENV, "UNSLOTH_DIFFUSION_VAE_PREBUILD"):
+        monkeypatch.setenv(env, "0")
+        vae = _vae()
+        R.install(vae)
+        before = cold.calls
+        with torch.no_grad():
+            vae.conv(_x())
+        assert cold.calls == before + 1 and R.prebuild(vae) == 0
+        monkeypatch.delenv(env)
+
+
+def test_video_load_kicks_the_router_prebuild_and_unload_cancels(cold, monkeypatch):
+    from core.inference import diffusion_vae_prebuild as VP
+
+    seen = []
+    monkeypatch.setattr(R, "prebuild", lambda vae, logger = None: seen.append(vae) or 3)
+    pipe = types.SimpleNamespace(vae = object())
+    assert VP.maybe_kick_video(pipe) is True and seen == [pipe.vae]
+    R._PENDING["k"] = {"device": 0}
+    R._arm_timer()
+    VP.cancel_all("video")
+    assert not R._PENDING and R._PB.get("timer") is None

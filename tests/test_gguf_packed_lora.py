@@ -757,3 +757,223 @@ def test_load_context_restores_transformers(tmp_path):
         dict(quantizer.GgufHfQuantizer.__dict__),
     )
     assert after == before
+
+
+# A tiny Qwen3.5 GGUF in both layouts: the separate attn_qkv / attn_gate / ssm_beta / ssm_alpha tensors, or the
+# `[attn_qkv | attn_gate]` and `[ssm_beta | ssm_alpha]` row stacks current llama.cpp converters (and so
+# `save_pretrained_gguf`) write. Same bytes either way.
+# ----------------------------------------------------------------------------------------------------------
+
+_Q35 = dict(hidden = 256, ffn = 512, heads = 2, kv = 1, head_dim = 128, k_heads = 1, v_heads = 2, layers = 4)
+
+
+def _write_qwen35_gguf(
+    path,
+    fused,
+    fused_type = "Q8_0",
+    keep = None,
+    shard = None,
+):
+    """keep: write only tensors whose name it accepts (values are drawn either way, so shards of one file agree);
+    shard = (index, count) adds llama.cpp's split.* keys."""
+    gguf = pytest.importorskip("gguf")
+    c = _Q35
+    value_dim, key_dim = c["v_heads"] * c["head_dim"], c["k_heads"] * c["head_dim"]
+    arch = "qwen35"
+    writer = gguf.GGUFWriter(str(path), arch)
+    for key, value in {
+        "context_length": 256,
+        "embedding_length": c["hidden"],
+        "feed_forward_length": c["ffn"],
+        "block_count": c["layers"],
+        "attention.head_count": c["heads"],
+        "attention.head_count_kv": c["kv"],
+        "attention.key_length": c["head_dim"],
+        "attention.value_length": c["head_dim"],
+        "rope.dimension_count": 32,
+        "full_attention_interval": 4,
+        "ssm.conv_kernel": 4,
+        "ssm.state_size": c["head_dim"],
+        "ssm.group_count": c["k_heads"],
+        "ssm.time_step_rank": c["v_heads"],
+        "ssm.inner_size": value_dim,
+    }.items():
+        writer.add_uint32(f"{arch}.{key}", value)
+    writer.add_float32(f"{arch}.attention.layer_norm_rms_epsilon", 1e-6)
+    writer.add_float32(f"{arch}.rope.freq_base", 10000.0)
+    writer.add_array(f"{arch}.rope.dimension_sections", [6, 5, 5, 0])
+    if shard is not None:
+        writer.add_uint16("split.no", shard[0])
+        writer.add_uint16("split.count", shard[1])
+    writer.add_string("tokenizer.ggml.model", "llama")
+    writer.add_array("tokenizer.ggml.tokens", [f"t{i}" for i in range(_VOCAB)])
+    rng = np.random.default_rng(0)
+    seed = iter(range(1000))
+
+    def blocks(rows, cols, type_name):
+        return _blocks(type_name, rows, cols, next(seed), scale = 1e-3).numpy()
+
+    def add(name, data, **kwargs):
+        if keep is None or keep(name):
+            writer.add_tensor(name, data, **kwargs)
+
+    def quantized(name, data, type_name):
+        add(name, data, raw_dtype = getattr(gguf.GGMLQuantizationType, type_name))
+
+    def floats(
+        name,
+        *shape,
+        offset = 0.0,
+    ):
+        add(name, (offset + 0.1 * rng.standard_normal(shape)).astype(np.float32))
+
+    quantized("token_embd.weight", blocks(_VOCAB, c["hidden"], "Q8_0"), "Q8_0")
+    floats("output_norm.weight", c["hidden"], offset = 1.0)
+    for layer in range(c["layers"]):
+        p = f"blk.{layer}."
+        floats(p + "attn_norm.weight", c["hidden"], offset = 1.0)
+        floats(p + "post_attention_norm.weight", c["hidden"], offset = 1.0)
+        quantized(p + "ffn_gate.weight", blocks(c["ffn"], c["hidden"], "Q4_K"), "Q4_K")
+        quantized(p + "ffn_up.weight", blocks(c["ffn"], c["hidden"], "Q4_K"), "Q4_K")
+        quantized(p + "ffn_down.weight", blocks(c["hidden"], c["ffn"], "Q6_K"), "Q6_K")
+        if (layer + 1) % 4 == 0:
+            quantized(
+                p + "attn_q.weight",
+                blocks(2 * c["heads"] * c["head_dim"], c["hidden"], "Q4_K"),
+                "Q4_K",
+            )
+            quantized(
+                p + "attn_k.weight", blocks(c["kv"] * c["head_dim"], c["hidden"], "Q4_K"), "Q4_K"
+            )
+            quantized(
+                p + "attn_v.weight", blocks(c["kv"] * c["head_dim"], c["hidden"], "Q6_K"), "Q6_K"
+            )
+            quantized(
+                p + "attn_output.weight",
+                blocks(c["hidden"], c["heads"] * c["head_dim"], "Q4_K"),
+                "Q4_K",
+            )
+            floats(p + "attn_q_norm.weight", c["head_dim"], offset = 1.0)
+            floats(p + "attn_k_norm.weight", c["head_dim"], offset = 1.0)
+            continue
+        qkv = blocks(2 * key_dim + value_dim, c["hidden"], fused_type)
+        gate = blocks(value_dim, c["hidden"], fused_type)
+        beta = blocks(c["v_heads"], c["hidden"], fused_type)
+        alpha = blocks(c["v_heads"], c["hidden"], fused_type)
+        if fused:
+            quantized(p + "attn_qkv_gate.weight", np.concatenate([qkv, gate]), fused_type)
+            quantized(p + "ssm_beta_alpha.weight", np.concatenate([beta, alpha]), fused_type)
+        else:
+            quantized(p + "attn_qkv.weight", qkv, fused_type)
+            quantized(p + "attn_gate.weight", gate, fused_type)
+            quantized(p + "ssm_beta.weight", beta, fused_type)
+            quantized(p + "ssm_alpha.weight", alpha, fused_type)
+        quantized(p + "ssm_out.weight", blocks(c["hidden"], value_dim, "Q4_K"), "Q4_K")
+        add(p + "ssm_a", -np.exp(0.1 * rng.standard_normal(c["v_heads"])).astype(np.float32))
+        floats(p + "ssm_dt.bias", c["v_heads"])
+        floats(p + "ssm_conv1d.weight", 2 * key_dim + value_dim, 4)
+        floats(p + "ssm_norm.weight", c["head_dim"])
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+
+def _packed_from(path):
+    from transformers import AutoModelForCausalLM
+    with gp.gguf_packed_load(str(path)):
+        return AutoModelForCausalLM.from_pretrained(
+            path.parent,
+            gguf_file = path.name,
+            dtype = torch.float32,
+            attn_implementation = "eager",
+            quantization_config = gp.gguf_packed_quantization_config(),
+        )
+
+
+@pytest.mark.parametrize("fused_type", ["Q8_0", "Q4_K"])
+def test_fused_qwen35_layout_loads_packed(tmp_path, fused_type):
+    # Main refuses the fused file (parameters with no tensor); it must load to exactly the unfused file's model.
+    _new_gguf_path()
+    pytest.importorskip("transformers.models.qwen3_5")
+    from transformers import AutoModelForCausalLM
+
+    _write_qwen35_gguf(tmp_path / "fused.gguf", fused = True, fused_type = fused_type)
+    _write_qwen35_gguf(tmp_path / "split.gguf", fused = False, fused_type = fused_type)
+    fused, split = _packed_from(tmp_path / "fused.gguf"), _packed_from(tmp_path / "split.gguf")
+    packed = {n for n, m in fused.named_modules() if isinstance(m, gp.UnslothGGUFLinear)}
+    for leaf in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a"):
+        assert f"model.layers.0.linear_attn.{leaf}" in packed, leaf
+    a, b = fused.state_dict(), split.state_dict()
+    assert a.keys() == b.keys()
+    for key in a:
+        assert a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]), key
+
+    # And to transformers' own dense load of the unfused file, weight for weight.
+    dense = AutoModelForCausalLM.from_pretrained(
+        tmp_path, gguf_file = "split.gguf", dtype = torch.float32, attn_implementation = "eager"
+    )
+    reference = dense.state_dict()
+    for name, module in fused.named_modules():
+        if isinstance(module, gp.UnslothGGUFLinear):
+            assert torch.equal(module.weight, reference[f"{name}.weight"]), name
+    ids = torch.randint(0, _VOCAB, (2, 7), generator = torch.Generator().manual_seed(0))
+    with torch.no_grad():
+        logits = fused(input_ids = ids).logits
+        assert torch.equal(logits, split(input_ids = ids).logits)
+        torch.testing.assert_close(logits, dense(input_ids = ids).logits, rtol = 1e-5, atol = 1e-4)
+
+
+def test_fused_qwen35_layout_in_a_split_gguf(tmp_path):
+    # Fused tensors in one shard, the ssm_out their split points come from in another, and a metadata-only first
+    # shard: the load must equal the single unfused file's.
+    _new_gguf_path()
+    pytest.importorskip("transformers.models.qwen3_5")
+    fused_names = ("attn_qkv_gate.weight", "ssm_beta_alpha.weight")
+
+    def in_second(name):
+        return name.endswith(fused_names) or name == "token_embd.weight"
+
+    paths = [tmp_path / f"m-{i:05d}-of-00003.gguf" for i in (1, 2, 3)]
+    _write_qwen35_gguf(paths[0], fused = True, keep = lambda name: False, shard = (0, 3))
+    _write_qwen35_gguf(paths[1], fused = True, keep = in_second, shard = (1, 3))
+    _write_qwen35_gguf(paths[2], fused = True, keep = lambda name: not in_second(name), shard = (2, 3))
+    _write_qwen35_gguf(tmp_path / "unfused.gguf", fused = False)
+    loaded, want = _packed_from(paths[0]), _packed_from(tmp_path / "unfused.gguf")
+    a, b = loaded.state_dict(), want.state_dict()
+    assert a.keys() == b.keys()
+    for key in a:
+        assert a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]), key
+
+
+def test_fused_split_is_row_slices_of_the_same_bytes():
+    _new_gguf_path()
+    from transformers.integrations.gguf.reader import GgufHeader, TensorInfo
+
+    q8 = ref.GGML_TYPE_IDS["Q8_0"]
+    row = ref.row_bytes(q8, 256)
+    tensors = (
+        TensorInfo("blk.0.attn_qkv_gate.weight", (768, 256), q8, 4096, 768 * row),
+        TensorInfo("blk.0.ssm_beta_alpha.weight", (4, 256), 0, 0, 4 * 256 * 4),
+        TensorInfo("blk.0.ssm_out.weight", (256, 256), q8, 0, 256 * row),
+        TensorInfo("blk.3.attn_q.weight", (512, 256), q8, 0, 512 * row),
+    )
+    header = GgufHeader("x.gguf", "qwen35", tensors, 0)
+    split = {t.name: t for t in gp._split_fused_gguf_tensors(header).tensors}
+    assert split["blk.0.attn_qkv.weight"] == TensorInfo(
+        "blk.0.attn_qkv.weight", (512, 256), q8, 4096, 512 * row
+    )
+    assert split["blk.0.attn_gate.weight"] == TensorInfo(
+        "blk.0.attn_gate.weight", (256, 256), q8, 4096 + 512 * row, 256 * row
+    )
+    assert (
+        split["blk.0.ssm_beta.weight"].offset == 0
+        and split["blk.0.ssm_alpha.weight"].offset == 2 * 256 * 4
+    )
+    assert "blk.0.attn_qkv_gate.weight" not in split and "blk.3.attn_q.weight" in split
+    # A file without fused tensors passes through as is; one the split cannot place is refused, not guessed.
+    plain = GgufHeader("x.gguf", "qwen35", tensors[2:], 0)
+    assert gp._split_fused_gguf_tensors(plain) is plain
+    orphan = GgufHeader("x.gguf", "qwen35", tensors[:1], 0)
+    with pytest.raises(NotImplementedError, match = "attn_qkv_gate"):
+        gp._split_fused_gguf_tensors(orphan)

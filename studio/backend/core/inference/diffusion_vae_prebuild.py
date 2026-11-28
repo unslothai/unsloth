@@ -2,7 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Child process warms Triton cache for fused VAE kernels without weights; parent never waits;
-UNSLOTH_DIFFUSION_VAE_PREBUILD=0 disables"""
+UNSLOTH_DIFFUSION_VAE_PREBUILD=0 disables. On ROCm the video load's child builds the Triton conv3d router's
+variants instead (``diffusion_rocm_triton_conv3d.prebuild``)."""
 
 from __future__ import annotations
 
@@ -184,6 +185,8 @@ def maybe_kick_video(pipe: Any, logger: Any = None) -> bool:
     try:
         import torch
 
+        if is_rocm_torch(torch) and torch.cuda.is_available():
+            return _maybe_kick_rocm_conv3d(pipe, logger)
         if is_rocm_torch(torch) or not torch.cuda.is_available():
             return False
         job = plan(pipe)
@@ -207,6 +210,17 @@ def maybe_kick_video(pipe: Any, logger: Any = None) -> bool:
         return False
 
 
+def _maybe_kick_rocm_conv3d(pipe: Any, logger: Any) -> bool:
+    """ROCm gfx11: the Triton conv3d router's variants (``diffusion_rocm_triton_conv3d.prebuild``); a no-op unless
+    the router wrapped this VAE."""
+    import sys
+
+    router = sys.modules.get(f"{__package__}.diffusion_rocm_triton_conv3d")
+    if router is None:
+        return False
+    return router.prebuild(getattr(pipe, "vae", None), logger) > 0
+
+
 def _pending_runtime_bytes(pipe: Any) -> int:
     """Streamed-tier seed + prefetch window: budgeted but not yet allocated when this gate reads free memory."""
     reserve = getattr(pipe, "_unsloth_measured_reserve", None)
@@ -217,7 +231,13 @@ def _pending_runtime_bytes(pipe: Any) -> int:
     return (int(reserve[0] or 0) + max(0, int(_stream_window_mib(pipe)))) << 20
 
 
-def _spawn(job: dict, logger: Any) -> bool:
+def _spawn(
+    job: dict,
+    logger: Any,
+    target: tuple = (__name__, "_child_entry"),
+    timeout: float = _CHILD_TIMEOUT_S,
+    on_exit: Any = None,
+) -> bool:
     import multiprocessing as mp
 
     from utils.native_path_leases import (
@@ -233,7 +253,7 @@ def _spawn(job: dict, logger: Any) -> bool:
     with native_path_secret_removed_for_child_start():
         proc = ctx.Process(
             target = run_without_native_path_secret,
-            args = (__name__, "_child_entry", {}, job),
+            args = (target[0], target[1], {}, job),
             daemon = True,
         )
         proc.start()
@@ -249,10 +269,15 @@ def _spawn(job: dict, logger: Any) -> bool:
         return False
 
     def reap() -> None:
-        proc.join(_CHILD_TIMEOUT_S)
+        proc.join(timeout)
         _stop(proc)
         if logger is not None:
             logger.info("diffusion.vae_prebuild: child exited (%s)", proc.exitcode)
+        if on_exit is not None:
+            try:
+                on_exit(proc.exitcode)
+            except Exception:  # noqa: BLE001
+                pass
 
     threading.Thread(target = reap, name = "unsloth-vae-prebuild-reaper", daemon = True).start()
     if logger is not None:
@@ -280,6 +305,14 @@ def _stop(proc: Any) -> None:
 
 def cancel_all(owner: Optional[str] = None) -> int:
     """Kill ``owner``'s ("image" / "video"; None = all) live prebuild children on unload. Never raises."""
+    if owner in (None, "video"):
+        import sys
+        router = sys.modules.get(f"{__package__}.diffusion_rocm_triton_conv3d")
+        if router is not None:
+            try:
+                router.cancel_pending()
+            except Exception:  # noqa: BLE001
+                pass
     with _LIVE_LOCK:
         procs = [p for p, (o, _d) in _LIVE.items() if owner is None or o == owner]
     for proc in procs:

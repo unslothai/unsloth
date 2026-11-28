@@ -23,6 +23,12 @@ CUBLAS_MESSAGE = (
 E4M3 = torch.float8_e4m3fn
 
 
+@pytest.fixture(autouse = True)
+def _fresh_tensorwise_cache(monkeypatch):
+    # rowwise_supported caches a failed tensorwise probe per device; each test probes from scratch.
+    monkeypatch.setattr(FL, "_TENSORWISE_MISSING", set(), raising = False)
+
+
 def _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype):
     out = (a.float() @ b.float()) * scale_a.float() * scale_b.float()
     return out.to(out_dtype or torch.bfloat16)
@@ -416,3 +422,79 @@ def test_direct_route_size_gate(monkeypatch, rows, N, K, route):
         w = torch.empty(N, K, device = "cuda", dtype = E4M3)
         s = torch.empty(N, 1, device = "cuda", dtype = torch.float32)
         assert F8._fp8_rowwise_direct_route(X, w, s) == route
+
+
+# gfx1151 (and other ROCm GPUs before MI300): no fp8 _scaled_mm at all, tensorwise included.
+NO_FP8_MESSAGE = "torch._scaled_mm is only supported on CUDA devices with compute capability >= 9.0 or 8.9, or ROCm MI300+"
+
+
+@pytest.mark.parametrize("hip", [None, "7.2.0"], ids = ["cuda_build", "rocm_build"])
+def test_no_tensorwise_fp8_is_cached_without_a_verdict(monkeypatch, hip):
+    monkeypatch.setattr(torch.version, "hip", hip, raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    calls = []
+
+    def no_fp8(*args):
+        calls.append("tensor" if args[2].numel() == 1 else "row")
+        raise RuntimeError(NO_FP8_MESSAGE)
+
+    monkeypatch.setattr(FL, "_scaled_mm", no_fp8)
+    device = torch.device("cpu")
+    assert FL.rowwise_supported(device) is True  # no verdict: row-wise is not singled out
+    assert FL.rowwise_supported(device) is True
+    assert calls == ["tensor"]  # the failing GEMM is not re-run
+    assert FL._ROWWISE_PROBED == {} and FL._ROWWISE_UNSUPPORTED == set()
+
+
+def test_wrong_tensorwise_answer_is_cached_without_a_verdict(monkeypatch):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    calls = []
+
+    def zeros(a, b, scale_a, scale_b, out_dtype, fast_accum):
+        calls.append(scale_a.numel())
+        return _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype) * 0
+
+    monkeypatch.setattr(FL, "_scaled_mm", zeros)
+    assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert calls == [1]
+
+
+@pytest.mark.parametrize(
+    "oom", [torch.OutOfMemoryError("allocation failed"), RuntimeError("HIP out of memory")]
+)
+def test_tensorwise_probe_out_of_memory_probes_again(monkeypatch, oom):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    calls = []
+
+    def oom_once(a, b, scale_a, scale_b, out_dtype, fast_accum):
+        calls.append("tensor" if scale_a.numel() == 1 else "row")
+        if len(calls) == 1:
+            raise oom
+        return _reference_scaled_mm(a, b, scale_a, scale_b, out_dtype)
+
+    monkeypatch.setattr(FL, "_scaled_mm", oom_once)
+    device = torch.device("cpu")
+    assert FL.rowwise_supported(device) is True
+    assert FL._ROWWISE_PROBED == {} and not getattr(FL, "_TENSORWISE_MISSING", set())
+    assert FL.rowwise_supported(device) is True  # probed again, now a real verdict
+    assert calls == ["tensor", "tensor", "row"] and FL._ROWWISE_PROBED == {device: True}
+
+
+def test_tensorwise_failure_with_broken_context_probes_again(monkeypatch):
+    monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set(), raising = False)
+    monkeypatch.setattr(FL, "_ROWWISE_PROBED", {}, raising = False)
+    calls = []
+
+    def no_fp8(*args):
+        calls.append(1)
+        raise RuntimeError(NO_FP8_MESSAGE)
+
+    monkeypatch.setattr(FL, "_scaled_mm", no_fp8)
+    monkeypatch.setattr(FL, "_cuda_context_ok", lambda device: False)
+    assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert FL.rowwise_supported(torch.device("cpu")) is True
+    assert calls == [1, 1]

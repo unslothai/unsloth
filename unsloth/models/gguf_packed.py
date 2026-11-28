@@ -729,12 +729,17 @@ def _merged_header(path):
     return first._replace(tensors = tensors), owner
 
 
-def _split_state_dict(owners):
+def _split_state_dict(owners, header):
+    """Every tensor of `header` (the merged, split-aware header), each read from its own shard's file."""
     from transformers.integrations.gguf.reader import load_gguf_state_dict
 
+    by_shard = {}
+    for info in header.tensors:
+        shard = owners[info.name]
+        by_shard.setdefault(id(shard), (shard, []))[1].append(info)
     state_dict = {}
-    for header in {id(h): h for h in owners.values()}.values():
-        state_dict.update(load_gguf_state_dict(header))
+    for shard, infos in by_shard.values():
+        state_dict.update(load_gguf_state_dict(shard._replace(tensors = tuple(infos))))
     return state_dict
 
 
@@ -907,10 +912,93 @@ def _gguf_architecture(path):
     return metadata.get("general.architecture")
 
 
+# Tensors newer llama.cpp converters (and so `save_pretrained_gguf`) write as one: `[first | second]` stacked on rows,
+# each half exactly what the unfused file stores under its own name. Leaf name -> (first, second, rows of first from
+# the same block's tensors).
+def _rows_of_attn_qkv(block, fused_rows):
+    # attn_gate is in_proj_z: one row per value element, which ssm_out (out_proj) consumes as its columns.
+    out_proj = block.get("ssm_out.weight")
+    return None if out_proj is None else fused_rows - out_proj.shape[-1]
+
+
+def _rows_of_ssm_beta(block, fused_rows):
+    # beta and alpha each carry one row per value head.
+    return fused_rows // 2 if fused_rows % 2 == 0 else None
+
+
+_FUSED_ROW_SPLITS = {
+    "attn_qkv_gate.weight": ("attn_qkv.weight", "attn_gate.weight", _rows_of_attn_qkv),
+    "ssm_beta_alpha.weight": ("ssm_beta.weight", "ssm_alpha.weight", _rows_of_ssm_beta),
+}
+
+
+def _block_leaf(name):
+    """`blk.3.attn_qkv_gate.weight` -> ("3", "attn_qkv_gate.weight"); ("", "") outside the blocks."""
+    if not name.startswith("blk."):
+        return "", ""
+    index, _, leaf = name[len("blk.") :].partition(".")
+    return index, leaf
+
+
+def _fused_source_name(name):
+    """`blk.3.attn_qkv.weight` -> `blk.3.attn_qkv_gate.weight` (the fused tensor a split half came from)."""
+    index, leaf = _block_leaf(name)
+    for fused, (first, second, _) in _FUSED_ROW_SPLITS.items():
+        if leaf in (first, second):
+            return f"blk.{index}.{fused}"
+    raise KeyError(name)
+
+
+def _split_fused_gguf_tensors(header):
+    """The header with each fused tensor listed as its two halves: row slices of the same bytes (GGUF blocks never
+    span rows), so the tensor map, the packed plan and the loaded bytes are exactly an unfused file's."""
+    if header is None or not any(
+        _block_leaf(info.name)[1] in _FUSED_ROW_SPLITS for info in header.tensors
+    ):
+        return header
+    blocks = {}
+    for info in header.tensors:
+        index, leaf = _block_leaf(info.name)
+        if leaf:
+            blocks.setdefault(index, {})[leaf] = info
+    tensors = []
+    for info in header.tensors:
+        index, leaf = _block_leaf(info.name)
+        split = _FUSED_ROW_SPLITS.get(leaf)
+        if split is None:
+            tensors.append(info)
+            continue
+        first, second, first_rows_of = split
+        block, rows = blocks[index], int(info.shape[0])
+        first_rows = first_rows_of(block, rows) if len(info.shape) == 2 else None
+        if (
+            first_rows is None
+            or not 0 < first_rows < rows
+            or info.nbytes % rows
+            or first in block
+            or second in block
+        ):
+            raise NotImplementedError(
+                f"Unsloth: `gguf_packed = True` cannot split the fused GGUF tensor {info.name} "
+                f"{tuple(info.shape)}. Load without `gguf_packed` to use transformers' dense loader."
+            )
+        row_nbytes = info.nbytes // rows
+        for name, start, count in ((first, 0, first_rows), (second, first_rows, rows - first_rows)):
+            tensors.append(
+                info._replace(
+                    name = f"blk.{index}.{name}",
+                    shape = (count, *info.shape[1:]),
+                    offset = info.offset + start * row_nbytes,
+                    nbytes = count * row_nbytes,
+                )
+            )
+    return header._replace(tensors = tuple(tensors))
+
+
 def _check_every_parameter_fed(quantizer, model):
     """Refuse a load that would leave parameters randomly initialised: a GGUF layout the tensor map does not know
-    (for example Qwen3.5 files from a converter that fuses attn_qkv_gate / ssm_beta_alpha) loads with MISSING keys
-    otherwise."""
+    (for example a converter that fuses tensors under a name neither the map nor `_FUSED_ROW_SPLITS` knows) loads
+    with MISSING keys otherwise."""
     header, mapping = getattr(quantizer, "header", None), getattr(quantizer, "mapping", None)
     if header is None or not mapping:
         return
@@ -1057,6 +1145,12 @@ def gguf_packed_load(gguf_path = None):
                 # Split files: one header over every shard. Weight scales: kept out of the tensor map and folded
                 # into their weights after the load.
                 header, owners = _merged_header(gguf_file)
+                # Fused attn_qkv_gate / ssm_beta_alpha (current llama.cpp converters) read as the unfused pair: row
+                # slices of the same bytes in the same shard.
+                header = _split_fused_gguf_tensors(header)
+                for info in header.tensors:
+                    if info.name not in owners:
+                        owners[info.name] = owners[_fused_source_name(info.name)]
                 scales = _weight_scale_tensors(header)
                 if scales:
                     drop = {info.name for info in scales.values()}
@@ -1085,8 +1179,7 @@ def gguf_packed_load(gguf_path = None):
                 and owners
                 and any(h.path != self.header.path for h in owners.values())
             ):
-                names = {info.name for info in self.header.tensors}
-                return {k: v for k, v in _split_state_dict(owners).items() if k in names}
+                return _split_state_dict(owners, self.header)
             state_dict = saved_get_state_dict(self, checkpoint_file, model)
             scales = getattr(self, "_unsloth_weight_scales", None)
             if scales and isinstance(state_dict, dict):
@@ -1554,13 +1647,13 @@ def write_gguf_dense_base(
         os.replace(old, os.path.join(directory, new))
         renamed[f"model-{index:05d}.safetensors"] = new
     weight_map = {name: renamed[file] for name, file in weight_map.items()}
-    with open(os.path.join(directory, "model.safetensors.index.json"), "w") as f:
+    with open(os.path.join(directory, "model.safetensors.index.json"), "w", encoding = "utf-8") as f:
         json.dump({"metadata": {"total_size": total}, "weight_map": weight_map}, f, indent = 2)
     config = base.config.to_dict()
     config.pop("quantization_config", None)
     config.pop("unsloth_gguf_packed", None)
     config["torch_dtype"] = config["dtype"] = str(dtype).replace("torch.", "")
-    with open(os.path.join(directory, "config.json"), "w") as f:
+    with open(os.path.join(directory, "config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2, default = str)
     return directory
 

@@ -139,24 +139,37 @@ def test_in_backward_is_bitwise_the_standard_adamw_step(af, sr, monkeypatch, cli
     assert _weights_equal(standard, head)
 
 
-def test_each_gradient_is_freed_inside_backward(af):
-    """At most the gradient being stepped (and a tied one still accumulating) is alive during backward."""
+@pytest.mark.parametrize("batch_bytes", [None, 0])
+def test_each_gradient_is_freed_inside_backward(af, batch_bytes):
+    """Ready gradients wait for their batch's step: at most the largest weight's size of them is alive next to the
+    one arriving (batch_bytes = 0: only the one being stepped, plus a tied one still accumulating)."""
     model = _tiny_model().float()
     base = torch.optim.AdamW(model.parameters(), lr = 1e-3)
-    wrapper = af.InBackwardOptimizer(base)
+    wrapper = af.InBackwardOptimizer(base, batch_bytes = batch_bytes)
     params = [p for p in model.parameters() if p.requires_grad]
-    live = []
+    size = lambda q: q.numel() * q.element_size()
+    live, live_bytes = [], []
+
+    def record(_p):
+        alive = [q for q in params if q.grad is not None]
+        live.append(len(alive))
+        live_bytes.append(sum(size(q) for q in alive))
+
     for p in params:
-        p.register_post_accumulate_grad_hook(
-            lambda _p: live.append(sum(q.grad is not None for q in params))
-        )
+        p.register_post_accumulate_grad_hook(record)
     ids = torch.randint(0, 96, (2, 12))
     with wrapper.armed():
         model(input_ids = ids, labels = ids).loss.backward()
+    assert all(p.grad is None for p in params)  # all stepped by the end of backward
     wrapper.step()
     assert all(p.grad is None for p in params)
-    # Our hook ran first and freed the previous gradients: only this one's (plus the tied head's) remain.
-    assert max(live) <= 2, live
+    largest = max(size(p) for p in params)
+    if batch_bytes == 0:
+        # Our hook ran first and freed the previous gradients: only this one's (plus the tied head's) remain.
+        assert max(live) <= 2, live
+    else:
+        assert max(live_bytes) <= 2 * largest < sum(size(p) for p in params), live_bytes
+        assert max(live) > 2  # batched
     assert len(base.state) == len(params)
 
 
@@ -649,3 +662,175 @@ def test_resuming_keeps_the_optimizer_family(af, sr, monkeypatch, tmp_path):
     assert type(resumed._unsloth_in_backward_optimizer.optimizer) is torch.optim.SGD
     assert resumed.state.global_step == 3
     del first
+
+
+def test_reentrant_checkpointing_steps_one_batch_per_block(af, monkeypatch):
+    """Each checkpointed block's backward is its own graph task: its gradients (and the head's, ready before it)
+    are stepped together when it ends, not one launch sequence per weight."""
+    x = torch.randn(4, 8)
+    model = _Blocks(False)
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(model.parameters(), lr = 1e-2), batch_bytes = 1 << 20
+    )
+    batches = []
+    step_params = wrapper._step_params
+    monkeypatch.setattr(
+        wrapper, "_step_params", lambda params: (batches.append(len(params)), step_params(params))
+    )
+    with wrapper.armed():
+        model(x).backward()
+        assert all(p.grad is None for p in model.parameters())  # stepped inside backward
+    wrapper.step()
+    assert [b for b in batches if b] == [4, 2]  # head + block b, then block a
+    assert wrapper.hook_steps == 6 and wrapper.late_steps == 0
+
+
+class _Trial(torch.nn.Module):
+    """A block whose first call also runs a throwaway forward under Unsloth's block-trial flag (as compiled
+    decoder blocks check their region on the first call), then the real one."""
+
+    def __init__(self, flag):
+        super().__init__()
+        torch.manual_seed(0)
+        self.flag = flag
+        self.proj = torch.nn.Linear(8, 8)
+        self.head = torch.nn.Linear(8, 1)
+
+    def forward(self, x):
+        self.flag[0] = True
+        try:
+            with torch.enable_grad():
+                self.proj(x.detach().requires_grad_())  # the trial: no gradient reaches the weight
+        finally:
+            self.flag[0] = False
+        return self.head(torch.tanh(self.proj(x))).square().mean()
+
+
+def test_a_block_trial_forward_is_not_a_reuse(af, monkeypatch):
+    """Unsloth's first-call block trial ran every block's modules twice on step 1, so every layer's gradient was
+    kept until optimizer.step() (all layer gradients alive at once on the first step)."""
+    import sys
+    import types
+
+    flag = [False]
+    monkeypatch.setitem(
+        sys.modules, "unsloth.models._block_compile", types.SimpleNamespace(_IN_TRIAL = flag)
+    )
+    x = torch.randn(4, 8)
+    standard, head = _Trial(flag), _Trial(flag)
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    wrapper = af.InBackwardOptimizer(torch.optim.AdamW(head.parameters(), lr = 1e-2), model = head)
+    for _ in range(2):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+    assert wrapper.deferred_steps == 0 and wrapper.hook_steps == 2 * 4
+
+
+def test_reuse_counting_does_not_break_a_compiled_block(af, monkeypatch):
+    """The reuse counter's forward pre-hooks sit on every module that holds a weight, including the ones inside
+    Unsloth's compiled decoder blocks: they must compile to nothing instead of splitting the graph."""
+    import sys
+
+    pytest.importorskip("torch._dynamo")
+    monkeypatch.setitem(sys.modules, af.__name__, af)  # dynamo imports the hook's module by name
+
+    class Block(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = torch.nn.Linear(8, 8)
+            self.b = torch.nn.Linear(8, 8)
+
+        def forward(self, x):
+            return self.b(torch.tanh(self.a(x)))
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(Block(), torch.nn.Linear(8, 1))
+    wrapper = af.InBackwardOptimizer(torch.optim.SGD(model.parameters(), lr = 1e-2), model = model)
+    torch._dynamo.reset()
+    compiled = torch.compile(model[0], backend = "eager", fullgraph = True)
+    x = torch.randn(4, 8)
+    with wrapper.armed():
+        model[1](compiled(x)).square().mean().backward()  # fullgraph: a graph break raises
+    wrapper.step()
+    assert wrapper.hook_steps == 6 and wrapper.deferred_steps == 0
+    torch._dynamo.reset()
+
+
+def test_deferred_weights_are_stepped_in_bounded_batches(af, monkeypatch):
+    """The weights left for optimizer.step() (a looped block's) are stepped in batches of at most batch_bytes, so a
+    multi-tensor step's temporaries never span every deferred weight at once."""
+    x = torch.randn(4, 8)
+    standard, head = _Looped(), _Looped()
+    opt = torch.optim.AdamW(standard.parameters(), lr = 1e-2)
+    weight = head.block.proj.weight
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(head.parameters(), lr = 1e-2),
+        model = head,
+        batch_bytes = weight.numel() * weight.element_size(),
+    )
+    sizes = []
+    step_params = wrapper._step_params
+    monkeypatch.setattr(
+        wrapper,
+        "_step_params",
+        lambda params: (
+            sizes.append(
+                sum(p.grad.numel() * p.grad.element_size() for p in params if p.grad is not None)
+            ),
+            step_params(params),
+        ),
+    )
+    for _ in range(2):
+        standard(x).backward()
+        opt.step()
+        opt.zero_grad()
+        with wrapper.armed():
+            head(x).backward()
+        wrapper.step()
+    assert _weights_equal(standard, head)
+    assert wrapper.deferred_steps == 2 * 2
+    assert max(sizes) <= wrapper.batch_bytes
+
+
+def test_ready_batches_never_exceed_batch_bytes(af, monkeypatch):
+    """A gradient that would push the waiting batch past batch_bytes steps that batch first; only a weight larger
+    than batch_bytes is stepped alone, so a multi-tensor update never spans more than the planner budgets."""
+    model = _tiny_model().float()
+    params = [p for p in model.parameters() if p.requires_grad]
+    size = lambda q: q.numel() * q.element_size()
+    limit = 3 * max(size(p) for p in params if p.dim() == 2 and p.shape[0] != 96)
+    wrapper = af.InBackwardOptimizer(
+        torch.optim.AdamW(model.parameters(), lr = 1e-3), batch_bytes = limit
+    )
+    batches = []
+    step_params = wrapper._step_params
+    monkeypatch.setattr(
+        wrapper,
+        "_step_params",
+        lambda ps: (batches.append([size(p) for p in ps if p.grad is not None]), step_params(ps)),
+    )
+    ids = torch.randint(0, 96, (2, 12))
+    with wrapper.armed():
+        model(input_ids = ids, labels = ids).loss.backward()
+    wrapper.step()
+    batches = [b for b in batches if b]
+    assert len(batches) > 1 and any(len(b) > 1 for b in batches)
+    assert all(sum(b) <= limit or len(b) == 1 for b in batches), batches
+
+
+def test_planner_budgets_the_batch_workspace(af, monkeypatch):
+    """While a batch steps, the gradient that arrived is alive too, and torch's foreach AdamW without the one-pass
+    kernel adds a moment-sized temporary over the batch: one more largest weight in the in-backward budget."""
+    model = _plan_model()
+    largest = max(p.numel() * p.element_size() for p in model.parameters())
+    monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
+    one_pass = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
+    monkeypatch.setenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "0")
+    foreach = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
+    assert foreach["in_backward"] - one_pass["in_backward"] == largest
+    assert one_pass["in_backward"] - one_pass["states"] - (256 << 20) == 2 * largest

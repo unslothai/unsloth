@@ -109,6 +109,8 @@ def _cuda_context_ok(device) -> bool:
 
 _ROWWISE_UNSUPPORTED = set()  # devices whose torch build has no row-wise _scaled_mm
 _ROWWISE_PROBED = {}
+# Devices whose tensorwise fp8 _scaled_mm fails too: no verdict, not re-probed.
+_TENSORWISE_MISSING = set()
 
 
 def _note_rowwise_unsupported(device):
@@ -129,23 +131,28 @@ def rowwise_supported(device) -> bool:
     """False when this device's tensorwise fp8 _scaled_mm runs and the row-wise one does not: any failure counts
     ("Rowwise scaling is not currently supported on your device" on the Windows wheels, cuBLASLt
     CUBLAS_STATUS_NOT_SUPPORTED on older ones, a wrong answer). One small GEMM pair per device, cached. No verdict
-    (True, not cached) when tensorwise fails too, on out of memory, or when the context is broken afterwards.
-    ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs (gfx1151, or fnuz-only MI300) fail its
-    tensorwise GEMM and give no verdict, so the answer always comes from the device."""
+    (True) when tensorwise fails too (cached per device, so it is not re-run), and not cached on out of memory or
+    when the context is broken afterwards. ROCm runs the same real probe: builds and GPUs without these fp8 GEMMs
+    (gfx1151, or fnuz-only MI300) fail its tensorwise GEMM and give no verdict, so the answer always comes from
+    the device."""
     device = torch.device(device)
     if device in _ROWWISE_UNSUPPORTED:
         return False
     verdict = _ROWWISE_PROBED.get(device)
     if verdict is not None:
         return verdict
+    if device in _TENSORWISE_MISSING:
+        return True
     try:
         x = torch.ones((64, 128), device = device).to(E4M3)
         one = torch.ones((), device = device, dtype = torch.float32)
         if not _probe_gemm(x, one, one):
+            _TENSORWISE_MISSING.add(device)
             return True
         rows = torch.ones((64, 1), device = device, dtype = torch.float32)
-    except Exception:  # no tensorwise fp8 GEMM either: nothing proven
-        _cuda_context_ok(device)
+    except Exception as exc:  # no tensorwise fp8 GEMM either: nothing proven
+        if _cuda_context_ok(device) and not _is_oom(exc):
+            _TENSORWISE_MISSING.add(device)
         return True
     try:
         verdict = _probe_gemm(x, rows, rows.t())

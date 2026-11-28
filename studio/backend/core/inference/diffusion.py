@@ -398,6 +398,7 @@ from . import diffusion_te_residency as te_residency
 from . import diffusion_gguf_compile as gguf_compile
 from . import diffusion_bg_compile as bg_compile
 from . import diffusion_cuda_graph as cuda_graph
+from . import diffusion_batch_trace as batch_trace
 from . import diffusion_int8_cutlass_defer as int8_defer
 from .diffusion_block_graph import compile_below_hooks_enabled, compile_pipe_below_offload_hooks
 from . import diffusion_render_thread as render_thread
@@ -1188,6 +1189,19 @@ def _record_load_lora_specs(pipe: Any, loras: Any) -> None:
         pass
 
 
+def _race_adapters_active(pipe: Any) -> bool:
+    """Whether the load carries adapters with a non-zero weight: applied now, baked in, or requested at load."""
+    if pipe is None:
+        return False
+    if any(
+        float(entry[2]) != 0
+        for entry in getattr(pipe, "_unsloth_loras", ()) or ()
+        if len(entry) > 2
+    ):
+        return True
+    return any(float(spec.get("weight", 0) or 0) != 0 for spec in _load_lora_specs(pipe))
+
+
 def _load_lora_specs(pipe: Any) -> list:
     baked = _baked_lora_specs(pipe)
     if baked:
@@ -1861,7 +1875,12 @@ def _generation_chunks(
     per modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
     and the next image's encode would bring it back for the rest of the chunk)."""
-    if layer_count or is_flux3_family(family) or is_anima_family(family):
+    from .diffusion_batch_adapters import BATCHED_FORWARD_ATTR
+
+    # A family that says its call fuses the rows (``batched_forward``) chunks like any other.
+    if getattr(family, BATCHED_FORWARD_ATTR, None) is not True and (
+        layer_count or is_flux3_family(family) or is_anima_family(family)
+    ):
         return [[job] for job in jobs]
     return chunk_jobs(jobs, batch_size)
 
@@ -5017,11 +5036,12 @@ def _pipe_tokenizers(pipe: Any) -> list:
 
 
 def _key_tokenizes(family: Any, pipe: Any) -> bool:
-    from .diffusion_text_length import FLUX_T5_FAMILIES
-    return (
-        getattr(family, "name", None) in FLUX_T5_FAMILIES
-        or getattr(family, "textual_inversion", None) is not None
-    )
+    from .diffusion_batch_adapters import DEFAULT_ADAPTER, adapter_for, key_tokenizes
+
+    adapter = adapter_for(family, pipe)
+    if adapter is not None and adapter is not DEFAULT_ADAPTER:
+        return bool(getattr(adapter, "tokenizes", True))
+    return key_tokenizes(family)
 
 
 def prime_coalesce_tokenizers(family: Any, pipe: Any) -> None:
@@ -5097,13 +5117,14 @@ def _clip_chunk_counts(pipe: Any, prompt: str) -> Optional[tuple]:
 def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     """What a prompt must share with batch neighbours to render as alone; None = never batch it.
 
-    MiniMax-H3 / Qwen-Image-2.1 gain nothing batched; MOSS batches only where its layer-major win was measured;
-    FLUX.1 pads T5 per call; SD / SDXL chunk per call."""
-    from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
-    from .diffusion_qwenimage21 import _CLASS as QWENIMAGE21_CLASS
+    The family's batch adapter decides (diffusion_batch_adapters): a family whose call does not fuse the rows
+    (``batched_forward`` False: MiniMax-H3, Qwen-Image-2.1, FLUX.3, Anima, layered by default) never batches;
+    MOSS batches only where its layer-major win was measured (diffusion_moss_image.coalesce_key); FLUX.1 pads T5 per
+    call; SD / SDXL chunk per call."""
+    from .diffusion_batch_adapters import adapter_for
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
 
-    name = getattr(family, "name", None)
-    if name == MOSS_IMAGE_FAMILY_NAME:
+    if getattr(family, "name", None) == MOSS_IMAGE_FAMILY_NAME:
         if getattr(pipe, "transformer", None) is None:
             return None
         try:  # the MOSS module needs diffusers at import; a missing or broken one renders alone
@@ -5111,29 +5132,20 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
             return coalesce_key(pipe)
         except Exception:  # noqa: BLE001 - an unreadable load renders alone
             return None
-    if name == MINIMAX_H3_IMAGE_FAMILY_NAME:
-        return None
-    if type(getattr(pipe, "transformer", None)).__name__ == QWENIMAGE21_CLASS:
+    adapter = adapter_for(family, pipe)
+    if adapter is None:
         return None
     pipe = _KeyPipe(pipe) if pipe is not None else None
     try:
         with _KEY_TOKENIZE_LOCK:
-            return _coalesce_prompt_key(family, name, pipe, prompt)
+            return adapter.prepare(family, pipe, prompt)
     except Exception:  # noqa: BLE001 - a prompt that cannot be measured renders alone
         return None
 
 
 def _coalesce_prompt_key(family: Any, name: Any, pipe: Any, prompt: str) -> Optional[tuple]:
-    from .diffusion_prompt_weighting import has_prompt_syntax
-    from .diffusion_text_length import FLUX_T5_FAMILIES, flux_t5_sequence_length
-
-    if name in FLUX_T5_FAMILIES:
-        bucket = flux_t5_sequence_length(getattr(pipe, "tokenizer_2", None), [prompt])
-        return None if bucket is None else ("t5 bucket", bucket)
-    if getattr(family, "textual_inversion", None) is not None:
-        chunks = _clip_chunk_counts(pipe, prompt)
-        return None if chunks is None else ("clip", has_prompt_syntax(prompt), chunks)
-    return ()
+    from .diffusion_batch_adapters import DEFAULT_ADAPTER
+    return DEFAULT_ADAPTER.prepare(family, pipe, prompt)
 
 
 def _per_call_activation_scale(state: Any) -> Optional[str]:
@@ -5159,6 +5171,27 @@ def _per_call_activation_scale(state: Any) -> Optional[str]:
     return None
 
 
+def _chunk_rows(kwargs: dict) -> int:
+    """Images one pipe call renders: one generator per image, else prompts x images per prompt."""
+    generator = kwargs.get("generator")
+    if isinstance(generator, (list, tuple)) and generator:
+        return len(generator)
+    prompt = kwargs.get("prompt")
+    count = len(prompt) if isinstance(prompt, (list, tuple)) else 1
+    try:
+        return count * max(1, int(kwargs.get("num_images_per_prompt") or 1))
+    except (TypeError, ValueError):
+        return count
+
+
+def _batch_trace_snapshot() -> Optional[dict]:
+    try:
+        from .diffusion_batch_trace import snapshot
+        return snapshot()
+    except Exception:  # noqa: BLE001 - status never fails on a counter
+        return None
+
+
 def _denoiser_streams_from_host(state: Any) -> bool:
     """Denoiser weights stream from host each render (any offload with an unpinned group; unreadable = streamed)."""
     policy = getattr(state, "offload_policy", OFFLOAD_NONE) or OFFLOAD_NONE
@@ -5169,6 +5202,90 @@ def _denoiser_streams_from_host(state: Any) -> bool:
     from .diffusion_memory import DENOISER_RESIDENT
 
     return denoiser_offload(getattr(state, "pipe", None), policy) != DENOISER_RESIDENT
+
+
+def _default_request_batching(state: Any) -> dict[str, Any]:
+    """Today's rules: the conservative answer for any load, card and shape no race has measured."""
+    scaled = _per_call_activation_scale(state)
+    if scaled is not None:
+        # Per-tensor activation scale from the call's amax: one prompt would set every member's quantization.
+        return {
+            "mode": "serial",
+            "reason": f"per-tensor dynamic activation scales ({scaled}): one request would set every batch "
+            "member's quantization, so concurrent requests render one at a time",
+        }
+    if not _denoiser_streams_from_host(state):
+        # Measured (A100 / RTX PRO 6000, batch 4): resident 0.81x-1.19x of serial, streamed 1.47x-3.35x.
+        return {
+            "mode": "serial",
+            "reason": "resident weights: a shared call is no faster than one request at a time, so "
+            "concurrent requests render one at a time",
+            "measurable": True,
+        }
+    if getattr(state, "cuda_graphs", ()):
+        # A new batch size would record graphs inside a user's slot; batching measured no faster. Only an idle race
+        # records batch-size graphs (diffusion_cuda_graph.batch_rows).
+        return {
+            "mode": "serial",
+            "reason": "CUDA graphs replay one batch size; concurrent requests render one at a time",
+            "measurable": True,
+        }
+    if "compiled" in (state.speed_optims or ()) and compiled_shapes_are_static(
+        state.pipe, state.speed_mode
+    ):
+        return {
+            "mode": "compiled_sizes",
+            "reason": "static compile: concurrent requests share a call only at batch sizes already compiled",
+        }
+    return {
+        "mode": "any",
+        "reason": "concurrent requests with the same settings share one call",
+    }
+
+
+def _step_cache_couples_rows(state: Any, steps: Optional[int]) -> bool:
+    """Whether FBCache can run this call: it decides skips from one batch-wide residual mean, so one request's image
+    would decide whether another's blocks run. A static schedule decides by step only and is row-independent.
+    Unknown steps on an AUTO cache count as engaged."""
+    from .diffusion_cache import TC_FBCACHE, auto_step_cache_mode
+
+    if getattr(state, "cache_auto", False):
+        if steps is None:
+            return True
+        try:
+            return auto_step_cache_mode(int(steps)) == TC_FBCACHE
+        except (TypeError, ValueError):
+            return True
+    return getattr(state, "transformer_cache", None) == TC_FBCACHE
+
+
+def _measured_sizes(
+    state: Any,
+    width: Any,
+    height: Any,
+    guidance: Optional[float],
+    steps: Optional[int] = None,
+    layout: Any = None,
+) -> dict[int, dict]:
+    from . import diffusion_batch_race
+    from .image_request_batching import batch_max
+
+    if _race_adapters_active(getattr(state, "pipe", None)):
+        # Verdicts are raced adapter-free and not keyed by adapter set: an adapted load keeps today's rules.
+        return {}
+    try:
+        found = diffusion_batch_race.lookup(
+            state, width, height, guidance, range(2, batch_max() + 1), steps = steps
+        )
+        from .diffusion_batch_quality import gate
+
+        # A win serves only where an offline G2c verdict passes for this family, card and path.
+        return {
+            k: gate(diffusion_batch_race.effective_verdict(v, k, state, layout = layout), state)
+            for k, v in found.items()
+        }
+    except Exception:  # noqa: BLE001 - no verdict: today's rules
+        return {}
 
 
 def _note_small_host_hosted_int8(pipe: Any, reason: str, *, picked: bool) -> None:
@@ -17725,7 +17842,8 @@ class DiffusionBackend:
                     ):
                         # img2img / inpaint / controlnet pipes share the denoiser: predict from this call's scheduler
                         bind_adaln_pipe(pipe)
-                        return pipe(**chunk_kwargs).images
+                        with batch_trace.denoiser_calls(pipe, _chunk_rows(chunk_kwargs)):
+                            return pipe(**chunk_kwargs).images
 
                 # Re-check an AUTO cache decision against the ACTUAL step count; explicit choices never toggle.
                 if state.cache_auto:
@@ -18290,54 +18408,207 @@ class DiffusionBackend:
         return prompt_key, private
 
     def request_batching(self) -> Optional[dict[str, str]]:
-        """``mode`` (``any`` / ``compiled_sizes`` / ``serial``) and reason for status; None when nothing is loaded."""
+        """``mode`` (``any`` / ``compiled_sizes`` / ``measured`` / ``serial``) and reason for status; None when nothing
+        is loaded. ``measured``: today's rule is serial, but an idle race measured a batch size that wins on this load
+        (diffusion_batch_race), so requests share a call at the winning sizes only."""
         state = self._state
         if state is None:
             return None
-        scaled = _per_call_activation_scale(state)
-        if scaled is not None:
-            # Per-tensor activation scale from the call's amax: one prompt would set every member's quantization.
-            return {
-                "mode": "serial",
-                "reason": f"per-tensor dynamic activation scales ({scaled}): one request would set every batch "
-                "member's quantization, so concurrent requests render one at a time",
-            }
-        if not _denoiser_streams_from_host(state):
-            # Measured (A100 / RTX PRO 6000, batch 4): resident 0.81x-1.19x of serial, streamed 1.47x-3.35x.
-            return {
-                "mode": "serial",
-                "reason": "resident weights: a shared call is no faster than one request at a time, so "
-                "concurrent requests render one at a time",
-            }
-        if getattr(state, "cuda_graphs", ()):
-            # A new batch size recaptures graphs inside the slot and an OOM split drops them; batching measured no faster.
-            return {
-                "mode": "serial",
-                "reason": "CUDA graphs replay one batch size; concurrent requests render one at a time",
-            }
-        if "compiled" in (state.speed_optims or ()) and compiled_shapes_are_static(
-            state.pipe, state.speed_mode
-        ):
-            return {
-                "mode": "compiled_sizes",
-                "reason": "static compile: concurrent requests share a call only at batch sizes already compiled",
-            }
-        return {
-            "mode": "any",
-            "reason": "concurrent requests with the same settings share one call",
-        }
+        from .diffusion_batch_adapters import batched_forward
 
-    def coalesce_batch_sizes(self, width: int, height: int) -> Optional[frozenset]:
-        """Allowed batch sizes at this shape: None = any, empty = none; static compile offers only already-compiled sizes."""
+        if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
+            return {
+                "mode": "serial",
+                "reason": "this family's pipeline renders one image per forward, so concurrent requests render one "
+                "at a time",
+            }
+        if not getattr(state, "cache_auto", False) and _step_cache_couples_rows(state, None):
+            return {
+                "mode": "serial",
+                "reason": "the step cache (FBCache) decides skips from the whole call, so one request would decide "
+                "another's; concurrent requests render one at a time",
+            }
+        policy = _default_request_batching(state)
+        if policy["mode"] == "serial" and policy.get("measurable"):
+            from . import diffusion_batch_race
+            from .diffusion_batch_quality import any_quality_ok
+            if diffusion_batch_race.any_promoted(state) and any_quality_ok(state):
+                policy = {
+                    "mode": "measured",
+                    "reason": "an idle race on this card measured a faster shared call: concurrent requests share "
+                    "one call at the measured batch sizes and shapes only",
+                }
+        policy.pop("measurable", None)
+        return policy
+
+    def coalesce_batch_sizes(
+        self,
+        width: int,
+        height: int,
+        guidance: Optional[float] = None,
+        steps: Optional[int] = None,
+        layout: Any = None,
+    ) -> Optional[frozenset]:
+        """Allowed batch sizes at this shape: None = any, empty = none; static compile offers only already-compiled sizes.
+        A race verdict at this shape refines it: a measured loser is dropped, a measured winner is offered. ``layout``:
+        the request's prompt layout key (coalesce_plan), which a verdict won by graph replay must match."""
         policy = self.request_batching()
         state = self._state
         if policy is None or policy["mode"] == "serial":
             return frozenset()
+        if _step_cache_couples_rows(state, steps):
+            # An AUTO cache engages FBCache at this step count: its skip decision would couple the rows.
+            return frozenset()
+        measured = _measured_sizes(state, width, height, guidance, steps, layout)
+        winners = frozenset(k for k, v in measured.items() if v.get("promoted"))
+        # A win the quality gate holds back (no G2c PASS) is not a loss: it keeps today's rule for its size, and only
+        # a measured speed loss takes a size away from the default policy.
+        losers = frozenset(
+            k for k, v in measured.items() if not v.get("promoted") and not v.get("quality_gate")
+        )
+        if policy["mode"] == "measured":
+            return winners
         if policy["mode"] == "any":
-            return None
+            if not losers:
+                return None
+            from .image_request_batching import batch_max
+            return frozenset(range(2, batch_max() + 1)) - losers
         dims = (int(width), int(height))
         shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
-        return frozenset(int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims)
+        compiled = frozenset(int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims)
+        return compiled - losers
+
+    def coalesce_seeded_ok(
+        self,
+        width: Any,
+        height: Any,
+        guidance: Optional[float],
+        images: int,
+        steps: Optional[int] = None,
+        layout: Any = None,
+    ) -> bool:
+        """Whether an explicitly seeded request may share a call: the measured path at this shape is neighbour-exact
+        and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join. A load that
+        still admits unmeasured sizes (policy ``any``) can fire at one of them, so every admitted size needs a verdict."""
+        state = self._state
+        if state is None:
+            return False
+        from . import diffusion_batch_race
+        from .image_request_batching import batch_max
+
+        admitted = self.coalesce_batch_sizes(width, height, guidance, steps, layout)
+        sizes = set(range(2, batch_max() + 1)) if admitted is None else set(admitted)
+        sizes = {k for k in sizes if k > int(images or 1)}
+        if not sizes:
+            return False
+        measured = _measured_sizes(state, width, height, guidance, steps, layout)
+        return all(diffusion_batch_race.seeded_join_ok(measured.get(k)) for k in sizes)
+
+    def batch_race(
+        self,
+        *,
+        width: int,
+        height: int,
+        steps: Optional[int] = None,
+        guidance: Optional[float] = None,
+        sizes: tuple = (2, 4),
+        repeats: int = 5,
+        accuracy: bool = True,
+    ) -> dict:
+        """Race serial against batched on this idle engine and persist the verdicts (an explicit warm-up; never runs
+        while a request holds or waits for the slot)."""
+        from . import diffusion_batch_race
+        from .image_request_batching import collecting
+
+        state = self._state
+        if state is None:
+            raise diffusion_batch_race.RaceRefused("no image model is loaded")
+        load_token = self._load_token
+
+        def idle() -> bool:
+            with self._generation_cancel_lock:
+                waiting = bool(self._queued_generate_cancels) or bool(
+                    getattr(self, "_generate_riders", {})
+                )
+            return (
+                self._state is state
+                and self._load_token == load_token
+                and not waiting
+                and not self._slot_turns
+                and self.generation_holder() is None
+                and not collecting()
+            )
+
+        from .diffusion_batch_adapters import batched_forward
+
+        if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
+            raise diffusion_batch_race.RaceRefused(
+                "this family's pipeline renders one image per forward"
+            )
+        if getattr(state, "speed_deferred", False):
+            # The deferred profile engages on a load's third render: inside the race it would install graphs after
+            # the race snapshotted its handles (graph timings recorded as eager, no eager arm, batch graphs kept).
+            raise diffusion_batch_race.RaceRefused(
+                "this load's speed profile is still deferred (it engages on the third image); render a few images, "
+                "then race"
+            )
+        if _race_adapters_active(getattr(state, "pipe", None)):
+            # The race renders without loras, which generate() reads as none: it would unload or zero the adapters (or,
+            # baked under streamed graphs, refuse mid-race), and verdicts are not keyed by adapter set.
+            raise diffusion_batch_race.RaceRefused(
+                "this load has active LoRA adapters; race an adapter-free load"
+            )
+        if _step_cache_couples_rows(state, steps):
+            raise diffusion_batch_race.RaceRefused(
+                "FBCache runs at this step count; its batch-wide skip decision couples the rows"
+            )
+        policy = _default_request_batching(state)
+        if policy["mode"] == "serial" and not policy.get("measurable"):
+            raise diffusion_batch_race.RaceRefused(policy["reason"])
+        allowed = None
+        # From the load's compile state, not the policy mode: resident and graphed loads answer serial before it.
+        if "compiled" in (state.speed_optims or ()) and compiled_shapes_are_static(
+            state.pipe, state.speed_mode
+        ):
+            dims = (int(width), int(height))
+            shapes = getattr(state.compile_cache_ctx, "shapes", None) or ()
+            compiled = {int(shape[2]) for shape in list(shapes) if tuple(shape[:2]) == dims}
+            allowed = compiled.__contains__
+        # The race prompts' layout key: a verdict won by graph replay holds only for requests in the same layout.
+        layout = None
+        try:
+            keys = [
+                coalesce_prompt_key(state.family, state.pipe, p)
+                for p in diffusion_batch_race.RACE_PROMPTS[: max([2, *(int(k) for k in sizes)])]
+            ]
+            if keys and keys[0] is not None and all(k == keys[0] for k in keys):
+                layout = keys[0]
+        except Exception:  # noqa: BLE001 - unknown layout: a graphed verdict then admits nothing
+            layout = None
+        report = diffusion_batch_race.run_race(
+            self.generate,
+            state,
+            idle = idle,
+            width = width,
+            height = height,
+            steps = steps,
+            guidance = guidance,
+            sizes = sizes,
+            repeats = repeats,
+            accuracy = accuracy,
+            allowed_sizes = allowed,
+            layout = layout,
+        )
+        from .diffusion_batch_quality import gate
+
+        # The persisted verdict is the speed race's; whether a win serves also needs a passing G2c verdict.
+        for verdict in (report.get("sizes") or {}).values():
+            if isinstance(verdict, dict) and verdict.get("promoted"):
+                gated = gate(verdict, state)
+                verdict["serves"] = bool(gated.get("promoted"))
+                if gated.get("quality_gate"):
+                    verdict["quality_gate"] = gated["quality_gate"]
+        return report
 
     @contextmanager
     def generation_rider(self, cancel: threading.Event):
@@ -18775,6 +19046,7 @@ class DiffusionBackend:
                 or getattr(state, "cuda_graphs", ())
             ),
             "request_batching": self.request_batching(),
+            "batch_trace": _batch_trace_snapshot(),
             "cfg_batch": cfg_batch_status(state.pipe),
             "zimage_cfg_split": zimage_cfg_split_status(state.pipe),
             "resolved": resolved,

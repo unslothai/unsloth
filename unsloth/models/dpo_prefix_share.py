@@ -97,36 +97,49 @@ def _layer_us_threshold() -> float:
 
 
 _MATMUL_FLOPS = {}
+# One 4096 x 4096 operand squared into a preallocated product: 64 MiB live (the operand pair plus a
+# fresh product held 96 MiB). The size the cost gate was tuned at.
+_PROBE_N = 4096
+
+
+def _is_oom(exc) -> bool:
+    oom = getattr(torch, "OutOfMemoryError", None)
+    return (isinstance(oom, type) and isinstance(exc, oom)) or "out of memory" in str(exc).lower()
 
 
 def _matmul_flops(device) -> Optional[float]:
-    """Dense 16-bit GEMM FLOP/s of ``device``, measured once per device; None when it cannot be read."""
+    """Dense 16-bit GEMM FLOP/s of ``device``, measured once per device; None when it cannot be read.
+    Out of memory is no answer: nothing is cached and the next call probes again."""
     key = str(device)
     if key in _MATMUL_FLOPS:
         return _MATMUL_FLOPS[key]
     flops = None
+    a = out = None
     try:
         dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-        n = 4096
+        n = _PROBE_N
         with torch.no_grad(), torch.cuda.device(device):
             # Constant operands: drawing them would advance the training RNG (dropout, sampling).
             a = torch.full((n, n), 0.5, device = device, dtype = dtype)
-            b = torch.full((n, n), 0.5, device = device, dtype = dtype)
+            out = torch.empty_like(a)
             for _ in range(2):
-                a @ b
+                torch.matmul(a, a, out = out)
             start = torch.cuda.Event(enable_timing = True)
             end = torch.cuda.Event(enable_timing = True)
             start.record()
             for _ in range(5):
-                a @ b
+                torch.matmul(a, a, out = out)
             end.record()
             end.synchronize()
             seconds = start.elapsed_time(end) / 1e3
-            del a, b
         if seconds > 0:
             flops = 5 * 2 * n**3 / seconds
     except Exception as exc:
         _log(f"matmul throughput probe failed ({exc!r})")
+        if _is_oom(exc):
+            return None
+    finally:
+        del a, out
     _MATMUL_FLOPS[key] = flops
     return flops
 
@@ -153,9 +166,12 @@ def _cost_min_saved(causal_lm, device) -> int:
     if cache is not None and cache[:2] == (str(device), threshold_us):
         return cache[2]
     params = _layer_params(causal_lm)
-    flops = _matmul_flops(device) if threshold_us > 0 and params else None
+    probed = threshold_us > 0 and params
+    flops = _matmul_flops(device) if probed else None
     tokens = math.ceil(threshold_us * 1e-6 * flops / (2 * params)) if flops else 0
     _log(f"cost gate: {tokens} saved tokens (layer {params} params, {flops} FLOP/s)")
+    if probed and flops is None and str(device) not in _MATMUL_FLOPS:
+        return tokens  # the probe ran out of memory: no answer to keep
     try:
         causal_lm._unsloth_dpo_prefix_share_cost_min = (str(device), threshold_us, tokens)
     except Exception:
@@ -206,9 +222,11 @@ def build_pair_layout(
     min_tok_r = None,
     min_saved = None,
     max_segment_cap = None,
+    cost_min_saved = None,
 ):
     """PairLayout for input_ids [2B, L] (right padded, row i paired with row i + B), or None. Each
-    row keeps at least one own token; positions stay the column index."""
+    row keeps at least one own token; positions stay the column index. ``cost_min_saved`` (a callable
+    giving a further saved-token floor) runs only once every other gate passes: it may probe the GPU."""
     from ..utils.prefix_grouper_kernel import build_seg_info_multigroup
 
     if not (isinstance(input_ids, torch.Tensor) and isinstance(attention_mask, torch.Tensor)):
@@ -258,6 +276,8 @@ def build_pair_layout(
     if min_saved is None:
         min_saved = _min_saved()
     if tok_r < min_tok_r or sum(shared) < min_saved:
+        return None
+    if cost_min_saved is not None and sum(shared) < cost_min_saved():
         return None
 
     seg, meta = build_seg_info_multigroup(specs, device)
@@ -553,17 +573,30 @@ def _pre_hook(module, args, kwargs):
         return None
     _LAST_SIZED = None
     min_saved = None
+    cost = []
+
+    def cost_min_saved():
+        # Last gate: the cost gate's one-time GEMM probe runs only for a batch that would share.
+        cost.append(_effective_min_saved(state.causal_lm, input_ids.device))
+        return cost[-1]
+
     try:
-        min_saved = _effective_min_saved(state.causal_lm, input_ids.device)
         layout = build_pair_layout(
             input_ids,
             attention_mask,
-            min_saved = min_saved,
+            min_saved = _min_saved(),
             max_segment_cap = _segment_cap(state.causal_lm),
+            cost_min_saved = (
+                None
+                if os.environ.get("UNSLOTH_DPO_PREFIX_SHARE_MIN_SAVED") is not None
+                else cost_min_saved
+            ),
         )
     except Exception as exc:
         _log(f"layout failed ({exc!r}); unshared forward")
         layout = None
+    if cost:
+        min_saved = cost[-1]
     if layout is None:
         DECLINED_COUNT += 1
         sized = _LAST_SIZED

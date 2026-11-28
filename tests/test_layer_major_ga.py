@@ -45,6 +45,9 @@ def ga(monkeypatch):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     assert mod.run_layer_major is engine.run_layer_major
+    # The module is loaded by path (no package), so its relative import of unsloth.models._utils fails; these
+    # CPU-model tests must not size windows against a GPU the host happens to have.
+    monkeypatch.setattr(mod, "_usable_cuda_bytes", lambda device: 1 << 40)
     # Patch transformers.Trainer itself, as Unsloth does (monkeypatch puts the originals back after the test).
     monkeypatch.setattr(transformers.Trainer, "training_step", transformers.Trainer.training_step)
     monkeypatch.setattr(
@@ -1057,10 +1060,20 @@ def test_caller_side_modes_are_ineligible(ga, tmp_path, monkeypatch, kind):
 
         def on_step_end(self, args, state, control, **kwargs):
             self.ctx.__exit__(None, None, None)
+            self.ctx = None
 
-    _with_init(monkeypatch, lambda self: self.add_callback(Enter()))
+    cb = Enter()
+    _with_init(monkeypatch, lambda self: self.add_callback(cb))
+    if kind == "function_mode":
+        # Dynamo tracing the compiled mask builders under a user mode is not under test here.
+        monkeypatch.setattr(torch._dynamo.config, "disable", True)
     engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", steps = 1)
+    try:
+        _train(mod, tmp_path, monkeypatch, "1", steps = 1)
+    finally:
+        # A step that raised never reached on_step_end: a mode left on the stack would decline every later test.
+        if cb.ctx is not None:
+            cb.ctx.__exit__(None, None, None)
     assert _windows(engine) == 0
 
 

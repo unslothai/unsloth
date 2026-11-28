@@ -198,12 +198,22 @@ def test_rloo_kill_switch_and_fallbacks(monkeypatch):
     assert model.forwards == ["logits", "logits"]
     assert "UNSLOTH_FUSED_LINEAR=0" in t._unsloth_rloo_fused_fallbacks
     monkeypatch.delenv("UNSLOTH_FUSED_LINEAR")
-    # Vision inputs keep TRL's body.
-    if "pixel_values" in _trl_source("_get_per_token_logps_and_entropies").split(")", 1)[0]:
+    # A vision batch over several chunks keeps TRL's body: TRL slices its image rows per chunk.
+    signature = _trl_source("_get_per_token_logps_and_entropies").split(")", 1)[0]
+    if "pixel_values" in signature:
         t = _trainer(T)
         ids, mask, k = _batch()
-        t._get_per_token_logps_and_entropies(model, ids, mask, k, pixel_values = torch.zeros(3, 1))
-        assert t._unsloth_rloo_fused_fallbacks == {"vision inputs": 1}
+        extra = {"num_images": [1] * ids.shape[0]} if "num_images" in signature else {}
+        t._get_per_token_logps_and_entropies(
+            model,
+            ids,
+            mask,
+            k,
+            batch_size = 2,
+            pixel_values = torch.zeros(3, H, dtype = torch.float64),
+            **extra,
+        )
+        assert t._unsloth_rloo_fused_fallbacks == {"vision inputs over several chunks": 1}
 
 
 def test_rloo_forward_ignoring_the_flag_hands_back_to_trl():
@@ -250,3 +260,63 @@ def test_rloo_fused_scorer_compiles_without_graph_breaks():
     torch._dynamo.reset()
     explain = torch._dynamo.explain(fn)(hidden)
     assert explain.graph_break_count == 0, explain.break_reasons
+
+
+class _VisionModel(_Model):
+    """Image rows shift every position's hidden state, so a forward that dropped them would score differently."""
+
+    def forward(
+        self,
+        input_ids,
+        attention_mask = None,
+        logits_to_keep = 0,
+        use_cache = None,
+        pixel_values = None,
+        **kwargs,
+    ):
+        assert pixel_values is not None and pixel_values.shape[0] == input_ids.shape[0]
+        assert "num_images" not in kwargs and "num_tiles" not in kwargs, sorted(kwargs)
+        self.seen = sorted(["pixel_values", *kwargs])
+        h = torch.tanh(self.mix(self.embed(input_ids) + pixel_values[:, None, :]))
+        if logits_to_keep:
+            h = h[:, -logits_to_keep:]
+        hidden = os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES", "0") == "1"
+        self.forwards.append("hidden" if hidden else "logits")
+        if hidden:
+            return SimpleNamespace(logits = h)
+        return SimpleNamespace(logits = self.lm_head(h))
+
+
+def test_rloo_vision_batch_in_one_chunk_is_fused_and_matches_trl_fp64():
+    signature = _trl_source("_get_per_token_logps_and_entropies").split(")", 1)[0]
+    if "pixel_values" not in signature:
+        pytest.skip("this TRL's RLOO takes no image inputs")
+    T, S = _methods()
+    ids, mask, k = _batch()
+    pixel_values = torch.randn(
+        ids.shape[0], H, generator = torch.Generator().manual_seed(2), dtype = torch.float64
+    )
+    extra = {"pixel_values": pixel_values}
+    if "num_images" in signature:
+        extra["num_images"] = [1] * ids.shape[0]
+    results = []
+    for cls in (T, S):
+        model = _VisionModel()
+        t = _trainer(cls)
+        calls = fused_linear.CALLS["logprobs"]
+        out = t._get_per_token_logps_and_entropies(
+            model, ids, mask, k, compute_entropy = True, **extra
+        )
+        cm = mask[:, -k:].double()
+        loss = -((out[0].double() * torch.linspace(-1, 1, k)).mul(cm).sum() / cm.sum())
+        loss.backward()
+        results.append(
+            (out, model, fused_linear.CALLS["logprobs"] - calls, model.mix.weight.grad.clone())
+        )
+    (fused, fused_model, fused_calls, fused_grad), (stock, stock_model, _, stock_grad) = results
+    assert fused_model.forwards == ["hidden"] and fused_calls == 1
+    assert stock_model.forwards == ["logits"]
+    assert fused_model.seen == stock_model.seen == ["pixel_values"]
+    torch.testing.assert_close(fused[0].double(), stock[0].double(), atol = 1e-5, rtol = 1e-5)
+    torch.testing.assert_close(fused[1].double(), stock[1].double(), atol = 1e-5, rtol = 1e-5)
+    torch.testing.assert_close(fused_grad, stock_grad, atol = 1e-6, rtol = 1e-5)

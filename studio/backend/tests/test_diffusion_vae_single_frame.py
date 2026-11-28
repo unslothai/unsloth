@@ -131,3 +131,27 @@ def test_compile_cache_key_matches_the_later_vae_compile(monkeypatch, single_fra
         applied = ds.apply_speed_optims(pipe, target, is_gguf = False, family = family, speed_mode = mode)
         assert applied["compiled_vae_decode"] is key, (mode, single_frame, compile_env)
         assert ds.vae_decode_compile_allowed(pipe, mode) is key
+
+
+def test_a_coalesced_call_decodes_each_image_like_its_own_request():
+    """Several requests in one call: one image per decoder pass (one feature map at a time), each bit-identical to the
+    image decoded alone; a single user's multi-image call keeps its one batched pass."""
+    from core.inference import diffusion_cuda_graph as cg
+
+    fast = _tiny_vae()
+    assert sf.install(fast) is True
+    passes = []
+    real = fast.decoder.forward
+    fast.decoder.forward = lambda x, *a, **k: passes.append(x.shape[0]) or real(x, *a, **k)
+    z = torch.randn(3, 4, 1, 16, 16)
+    with torch.no_grad():
+        alone = [fast._decode(z[i : i + 1]).sample for i in range(3)]
+        passes.clear()
+        with cg.batch_rows(3):
+            together = fast._decode(z).sample
+        assert passes == [1, 1, 1]
+        for i in range(3):
+            assert torch.equal(together[i : i + 1], alone[i])
+        passes.clear()
+        fast._decode(z)
+        assert passes == [3]
