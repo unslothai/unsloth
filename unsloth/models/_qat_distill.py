@@ -430,6 +430,7 @@ def qat_distill_compute_loss(
             raise RuntimeError(
                 "Unsloth: qat_distill could not obtain logits from the student and the teacher."
             )
+        # The forward already applied the logit scale and softcapping to the logits it returned.
         ce, kd = dense_qat_distill_losses(
             student_states.to(device),
             teacher_states.to(device),
@@ -437,8 +438,6 @@ def qat_distill_compute_loss(
             divisor,
             beta,
             temperature,
-            scale,
-            softcap,
         )
         _STATS["dense"] += 1
 

@@ -316,3 +316,26 @@ def test_dense_fallback_matches_fused():
     finally:
         os.environ.pop("UNSLOTH_FUSED_LINEAR")
     assert abs(fused.item() - dense.item()) <= 2e-3 * abs(dense.item())
+
+
+def test_dense_fallback_does_not_transform_logits_twice(monkeypatch):
+    """The forward already applied the logit scale / softcapping to the logits it returns (Gemma 2 and the like):
+    the dense fallback must score those logits as they are."""
+    import unsloth.models.rl_replacements as rl
+
+    student, _ = _student("int8", distill = {"coef": 0.5, "beta": 0.0, "temperature": 1.0})
+    student.train()
+    x = _ids(2, 12, seed = 5)
+    labels = x.clone()
+    monkeypatch.setattr(rl, "_unsloth_gkd_logit_transforms", lambda model: (4.0, 0.5))
+    monkeypatch.setenv("UNSLOTH_FUSED_LINEAR", "0")
+    with torch.no_grad():
+        dense = qd.qat_distill_compute_loss(_Trainer(), student, {"input_ids": x, "labels": labels})
+        s_logits = student(input_ids = x).logits
+        with qd.qat_teacher(student):
+            t_logits = student(input_ids = x).logits
+    shifted = torch.full_like(labels, -100)
+    shifted[:, :-1] = labels[:, 1:]
+    divisor = (shifted != -100).sum().float()
+    ce, kd = qd.dense_qat_distill_losses(s_logits, t_logits, shifted, divisor, 0.0, 1.0)
+    torch.testing.assert_close(dense.float(), (0.5 * ce + 0.5 * kd).float(), rtol = 1e-4, atol = 1e-5)
