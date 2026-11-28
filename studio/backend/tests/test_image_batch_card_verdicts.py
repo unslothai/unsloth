@@ -25,7 +25,12 @@ def _no_local_file(monkeypatch, tmp_path):
 
 def _on_card(monkeypatch, name):
     monkeypatch.setattr(quality, "pipe_device_class", lambda pipe: name)
-    return types.SimpleNamespace(transformer = object())
+    # A word-count tokenizer: "a" and "b" condition to one token, "b c d" to three.
+    return types.SimpleNamespace(
+        transformer = object(),
+        t5_tokenizer = lambda text, **_: {"input_ids": text.split()},
+        text_conditioner = types.SimpleNamespace(config = types.SimpleNamespace(min_sequence_length = 0)),
+    )
 
 
 def _anima():
@@ -63,6 +68,28 @@ def test_anima_fuses_rows_on_a_card_with_a_verdict(monkeypatch, card):
     assert admits_without_pipe(record) is True
     jobs = [("a", 1), ("a", 2), ("b", 3)]
     assert _generation_chunks(record, jobs, 4, pipe = pipe) == [jobs]
+
+
+def test_anima_chunks_each_conditioned_length_on_its_own(monkeypatch):
+    # The pipeline fuses only rows of one conditioned length; one chunk per such run gives every fused call its own
+    # encode, denoise and decode phase, so the text encoder is released again before each run's denoise.
+    from core.inference.diffusion import _generation_chunks
+
+    record = _anima()
+    pipe = _on_card(monkeypatch, A100_40)
+    jobs = [("a", 1), ("b", 2), ("b c d", 3), ("e f g", 4), ("h", 5)]
+    assert _generation_chunks(record, jobs, 4, pipe = pipe) == [jobs[:2], jobs[2:4], jobs[4:]]
+    assert _generation_chunks(record, jobs, 2, pipe = pipe) == [jobs[:2], jobs[2:4], jobs[4:]]
+
+
+def test_anima_chunks_one_image_per_run_when_rows_are_switched_off(monkeypatch):
+    from core.inference import diffusion_anima as an
+    from core.inference.diffusion import _generation_chunks
+
+    monkeypatch.setenv(an.BATCH_ROWS_ENV, "0")
+    pipe = _on_card(monkeypatch, A100_40)
+    jobs = [("a", 1), ("a", 2)]
+    assert _generation_chunks(_anima(), jobs, 4, pipe = pipe) == [[j] for j in jobs]
 
 
 def test_anima_stays_one_image_per_forward_on_a_card_without_a_verdict(monkeypatch):

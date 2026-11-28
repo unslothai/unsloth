@@ -1890,6 +1890,12 @@ def _generation_chunks(
         or (is_anima_family(family) and not (pipe is not None and batched_forward(family, pipe)))
     ):
         return [[job] for job in jobs]
+    if is_anima_family(family):
+        # Anima fuses only rows of one conditioned length; one chunk per such run keeps each call's phase hooks.
+        from .diffusion_anima import prompt_length_runs
+        return [
+            chunk for run in prompt_length_runs(pipe, jobs) for chunk in chunk_jobs(run, batch_size)
+        ]
     return chunk_jobs(jobs, batch_size)
 
 
