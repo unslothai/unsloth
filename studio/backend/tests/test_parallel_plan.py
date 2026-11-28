@@ -580,47 +580,25 @@ def test_custom_expert_parallel_needs_a_moe_model():
     assert "mixture-of-experts" in err.value.payload["message"]
 
 
-@pytest.mark.parametrize(
-    "heads, cp, tp, backend",
-    [
-        ([(16, 8)], 2, 1, "ulysses"),
-        ([(16, 2)], 4, 1, "ulysses"),
-        ([(14, 2)], 4, 1, "ring"),
-        ([(16, 8)], 2, 2, "ulysses"),
-        ([(16, 8), (16, 3)], 2, 1, "ring"),  # every attention layer kind must split
-        ([], 2, 1, None),
-    ],
-)
-def test_auto_cp_backend_follows_core(heads, cp, tp, backend):
-    assert pp._auto_cp_backend(heads, cp, tp) == backend
-
-
-def test_context_parallel_checks_the_cell_of_the_backend_auto_picks():
-    # OLMoE x Ulysses cp has no parity evidence: Unsloth refused it at load, after the weights were read.
-    olmoe = {**_model(moe = True, family = "olmoe"), "attention_heads": [(16, 16)]}
-    with pytest.raises(pp.ParallelPlanError) as err:
-        pp.plan({"parallel_mode": "cp"}, _host(2), olmoe)
-    message = err.value.payload["message"]
-    assert message.startswith(
-        "Unsloth has not verified context parallel for olmoe (LoRA, gradient checkpointing) yet"
-    ), message
-    assert "CELLS" not in message and "parity" not in message
-    rows = {r["mode"]: r for r in pp.plan({"parallel_mode": "auto"}, _host(2), olmoe)["modes"]}
-    assert not rows["cp"]["available"]
-    dense = {**_model(), "attention_heads": [(16, 8)]}
-    assert pp.plan({"parallel_mode": "cp"}, _host(2), dense)["spec"] == "cp=2"
-
-
 def test_plain_training_error_rewrites_only_the_cell_gate():
     raw = (
         "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: cell "
         "'MoE gpt_oss x qlora x aux off x cp' lacks parity, engagement, compile evidence. Instead: a "
-        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis."
+        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis. (layout cp 2 x "
+        "cp_backend ulysses, trainer sft, model gpt_oss)"
     )
-    raw += " (layout cp 2 x cp_backend ulysses, trainer sft, model gpt_oss)"
     assert pp.plain_training_error(raw) == (
-        "Unsloth has not verified context parallel for gpt_oss yet, so it refuses to train it. "
-        "Use DDP or FSDP2."
+        "Unsloth has not verified context parallel for gpt_oss with these settings yet, so it refuses to "
+        "train it. Use DDP or FSDP2."
+    )
+    olmoe = (
+        "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: no "
+        "supported cell covers it ('Inkling 2 ...' differs in family='olmoe', hybrid=False). Instead: a "
+        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis. (layout cp 2 x ep 2, "
+        "trainer sft, model olmoe)"
+    )
+    assert pp.plain_training_error(olmoe).startswith(
+        "Unsloth has not verified expert parallel with context parallel for olmoe with these settings"
     )
     assert pp.plain_training_error("CUDA out of memory") == "CUDA out of memory"
 
@@ -635,69 +613,3 @@ def test_sharded_full_finetune_notes_the_optimizer_and_moe_fsdp2_warns():
     assert not any("adamw_torch" in n for n in notes("fsdp2", _model()))
     moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
     assert any("mixture-of-experts" in w for w in moe["warnings"])
-    # Without bfloat16 (T4, V100) Unsloth trains float32 weights, which need no rounding.
-    t4 = _host(2, gpus = [{**_t4(i), "sm": 7} for i in range(2)])
-    plan = pp.plan({"parallel_mode": "fsdp2", "optim": "adamw_8bit"}, t4, _model(mode = "full"))
-    assert not any("adamw_torch" in n for n in plan["notes"])
-
-
-def test_context_parallel_keeps_a_cell_core_measured():
-    # Core has full evidence for OLMoE full finetuning x Ulysses cp with the router aux loss on and no
-    # gradient checkpointing; the load-time fields (attention, compile) are the load's to check.
-    olmoe = {
-        **_model(moe = True, family = "olmoe", mode = "full"),
-        "attention_heads": [(16, 16)],
-        "router_aux_loss": True,
-    }
-    host = {**_host(2), "torch": (2, 15)}
-    plan = pp.plan({"parallel_mode": "cp", "gradient_checkpointing": "none"}, host, olmoe)
-    assert plan["spec"] == "cp=2"
-    with pytest.raises(pp.ParallelPlanError):
-        pp.plan({"parallel_mode": "cp", "gradient_checkpointing": "unsloth"}, host, olmoe)
-
-
-def test_layer_split_estimate_keeps_the_selected_optimizer():
-    # A full finetune under FSDP2 steps with torch AdamW, a layer split keeps 8-bit AdamW.
-    model = {**_model(need = 6.0, mode = "full"), "fsdp2_per_gpu_gb": {2: 4.2}}
-    model["per_gpu_gb"][2] = 3.7
-    row = pp.plan({"parallel_mode": "auto"}, _host(2), model)["estimate"]["per_gpu_gb"]
-    assert (row["fsdp2"], row["layer_split"]) == (4.2, 3.7)
-    t4 = _host(2, gpus = [{**_t4(i), "sm": 7} for i in range(2)])
-    row = pp.plan({"parallel_mode": "auto"}, t4, model)["estimate"]["per_gpu_gb"]
-    assert (row["fsdp2"], row["layer_split"]) == (3.7, 3.7)
-
-
-def _config(**fields):
-    return types.SimpleNamespace(**fields)
-
-
-def test_router_aux_loss_follows_cores_rule(monkeypatch):
-    # OLMoE ships router_aux_loss_coef 0.01 and output_router_logits False: an SFTConfig without its own
-    # router_aux_loss_coef (TRL 0.23) leaves the loss off; one with it turns the loss on from the coefficient.
-    olmoe = _config(num_experts = 64, router_aux_loss_coef = 0.01, output_router_logits = False)
-    monkeypatch.setattr(pp, "_sft_config_has_aux_coef", lambda: False)
-    assert pp._router_aux_loss(olmoe) is False
-    monkeypatch.setattr(pp, "_sft_config_has_aux_coef", lambda: True)
-    assert pp._router_aux_loss(olmoe) is True
-    assert pp._router_aux_loss(_config(num_attention_heads = 16)) is False
-
-
-def test_attention_heads_read_the_text_config():
-    # Inkling-2-Mini keeps its heads under text_config: auto and an explicit Ulysses must plan alike.
-    inkling = _config(text_config = _config(num_attention_heads = 24, num_key_value_heads = 8))
-    assert pp._attention_heads(inkling) == [(24, 8)]
-    assert pp._auto_cp_backend(pp._attention_heads(inkling), 4) == "ulysses"
-    assert pp._attention_heads(_config(num_attention_heads = 16)) == [(16, 16)]
-    assert pp._attention_heads(_config()) == []
-
-
-def test_ring_context_parallel_checks_the_rows_unpacked():
-    # Unsloth's SFTTrainer turns packing off under ring cp: 14 heads over cp=4 resolve auto to ring, and the
-    # packed request plans as Core will check it (Qwen2.5-0.5B-Instruct heads).
-    a100 = _host(4, gpus = [{**_t4(i), "sm": 8, "name": "A100"} for i in range(4)])
-    a100["torch"] = (2, 9)
-    model = {**_model(family = "qwen2"), "attention_heads": [(14, 2)]}
-    plan = pp.plan(
-        {"parallel_mode": "custom", "parallel_spec": "cp=4", "packing": True}, a100, model
-    )
-    assert plan["spec"] == "cp=4"

@@ -9,7 +9,6 @@ refuses are refused here, with Unsloth's reason, before any VRAM moves.
 
 from __future__ import annotations
 
-import functools
 import importlib.util
 import os
 import re
@@ -292,7 +291,6 @@ def model_facts(
     facts: dict = {
         "required_gb": None,
         "per_gpu_gb": {},
-        "fsdp2_per_gpu_gb": {},
         "is_moe": False,
         "family": "",
         "multimodal": False,
@@ -322,26 +320,6 @@ def model_facts(
     for key, value in (meta.get("vram_breakdown") or {}).items():
         if key.startswith("min_per_gpu_") and value is not None:
             facts["per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
-    if training_type == "Full Finetuning" and bnb_adamw(optimizer):
-        # Sharded full finetunes step with torch AdamW (worker._optimizer_for_run): size the shards for it.
-        try:
-            _, sharded = hw.estimate_required_model_memory_gb(
-                model_name,
-                hf_token = hf_token,
-                training_type = training_type,
-                load_in_4bit = load_in_4bit,
-                batch_size = batch_size,
-                max_seq_length = max_seq_length,
-                lora_rank = lora_rank,
-                target_modules = target_modules,
-                gradient_checkpointing = gradient_checkpointing,
-                optimizer = "adamw_torch",
-            )
-        except Exception:  # noqa: BLE001 -- keep the first estimate's shards
-            sharded = {}
-        for key, value in (sharded.get("vram_breakdown") or {}).items():
-            if key.startswith("min_per_gpu_") and value is not None:
-                facts["fsdp2_per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
     try:
         estimate_model = hw._resolve_model_identifier_for_gpu_estimate(
             model_name, hf_token = hf_token
@@ -362,65 +340,7 @@ def model_facts(
         experts = getattr(text, "num_local_experts", None) or getattr(text, "num_experts", None)
         if isinstance(experts, int):
             facts["num_experts"] = experts
-        facts["router_aux_loss"] = _router_aux_loss(config)
-        facts["attention_heads"] = _attention_heads(config)
     return facts
-
-
-def _router_aux_loss(config) -> bool:
-    """Whether SFT trains with the router load balancing loss on, by Core's own rule (_aux_loss_on): a TRL
-    SFTConfig with router_aux_loss_coef turns it on from the config's coefficient, an older one only follows
-    output_router_logits."""
-    caps = _core_module("parallel_capabilities")
-    aux_on = getattr(caps, "_aux_loss_on", None)
-    if aux_on is None:
-        return False
-    args = types.SimpleNamespace(router_aux_loss_coef = None) if _sft_config_has_aux_coef() else None
-    try:
-        return bool(aux_on(types.SimpleNamespace(config = config), args, "sft"))
-    except Exception:  # noqa: BLE001 -- an unreadable config plans without the aux loss
-        return False
-
-
-@functools.lru_cache(maxsize = 1)
-def _sft_config_has_aux_coef() -> bool:
-    try:
-        import dataclasses
-
-        from trl import SFTConfig
-        return "router_aux_loss_coef" in {f.name for f in dataclasses.fields(SFTConfig)}
-    except Exception:  # noqa: BLE001
-        return False
-
-
-def _attention_heads(config) -> list:
-    """(heads, kv heads) per attention layer kind, read as context_parallel._model_heads reads them (text_config
-    first, then a per-layer view, then the global layers' kv count)."""
-    text = getattr(config, "text_config", None) or config
-    heads = getattr(text, "num_attention_heads", None)
-    if not isinstance(heads, int) or heads <= 0:
-        return []
-    try:
-        layers = list(getattr(text, "per_layer_config", None) or ())
-    except (AttributeError, TypeError):
-        layers = []
-    counts = set()
-    for layer in layers or [text]:
-        h = getattr(layer, "num_attention_heads", None)
-        h = h if isinstance(h, int) else heads
-        kv = getattr(layer, "num_key_value_heads", None)
-        counts.add((h, kv if isinstance(kv, int) and kv > 0 else h))
-    global_kv = getattr(text, "num_global_key_value_heads", None)
-    layer_types = getattr(text, "layer_types", None) or ()
-    if (
-        not layers
-        and isinstance(global_kv, int)
-        and global_kv > 0
-        and getattr(text, "attention_k_eq_v", False)
-        and (not layer_types or "full_attention" in layer_types)
-    ):
-        counts.add((heads, global_kv))
-    return sorted(counts)
 
 
 # The bitsandbytes AdamW names Unsloth keeps on DTensor shards (fsdp2_native._BNB_LOCAL_SHARD_OPTIMS): their step
@@ -556,7 +476,7 @@ def _parse_spec(raw: str, world: int) -> dict:
 def layout_shards_weights(spec: Optional[str], world: int) -> bool:
     """FSDP2 or tensor parallel in this layout, by Core's own parse: every rank holds only shards of the weights."""
     try:
-        sizes = _parse_spec(_normalize_spec(spec), world)
+        sizes = _parse_spec(spec, world)
     except ParallelPlanError:
         return False
     return bool(sizes.get("fsdp")) or sizes.get("tp", 1) > 1
@@ -574,6 +494,7 @@ def _core_check(
         return
     fields = getattr(caps.Query, "__dataclass_fields__", {})
     if int(sizes.get("ep") or 1) > 1 and model and not model.get("is_moe", True):
+        # Core loads the whole model before it finds no expert block to shard.
         raise ParallelPlanError(
             "parallel_unsupported",
             request.get("parallel_mode"),
@@ -583,8 +504,6 @@ def _core_check(
     cp_backend = sizes.get("cp_backend")
     if cp_backend == "auto":
         cp_backend = None
-    if sizes["cp"] > 1 and cp_backend is None:
-        cp_backend = _auto_cp_backend(model.get("attention_heads"), sizes["cp"], sizes["tp"])
     sm = _sm(gpus or []) if any(g.get("sm") is not None for g in gpus or []) else host.get("sm")
     ep = int(sizes.get("ep") or 1)
     ep_blocker = model.get("ep_blocker")
@@ -612,8 +531,7 @@ def _core_check(
         "hybrid": bool(model.get("hybrid")),
         "windowed": bool(model.get("windowed")),
         "mode": model.get("mode", "lora"),
-        # Unsloth's SFTTrainer turns packing off under ring context parallel (as Core's query_from reads it).
-        "packing": bool(request.get("packing")) and not (sizes["cp"] > 1 and cp_backend == "ring"),
+        "packing": bool(request.get("packing")),
         "torch": tuple(host.get("torch") or (0, 0)),
         "sm": sm,
         "dp": sizes["dp"],
@@ -627,12 +545,11 @@ def _core_check(
         "optim": str(request.get("optim") or "").lower(),
         "cp_backend": cp_backend,
         "pp_schedule": sizes.get("pp_schedule"),
-        "router_aux_loss": bool(model.get("router_aux_loss")),
-        "memory": _MEMORY_OF_CHECKPOINTING.get(_checkpointing(request), "none"),
     }
     query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        caps.check(query, cells = False)
+        # cp_backend "auto" resolves only at load, so the cell check is left to Unsloth then.
+        caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
@@ -651,144 +568,33 @@ def _core_check(
             _plain_core_message(message),
             alternative,
         )
-    # An unresolved cp_backend "auto" (head counts unknown) leaves the cell check to Unsloth at load.
-    if not (sizes["cp"] > 1 and cp_backend is None) and not _cell_may_run(caps, query, request):
-        raise ParallelPlanError(
-            "parallel_unsupported",
-            request.get("parallel_mode"),
-            unverified_layout_message(_layout_words(sizes), model, request),
-        )
 
 
-# Query fields only the loaded model and trainer know (attention kernel, compile, ...): any value may match.
-_LOAD_TIME_FIELDS = (
-    "attention",
-    "compile",
-    "kernels",
-    "loss",
-    "expert_lora",
-    "moe_backend",
-    "tiled",
-    "block_swap",
-    "direct_params",
-    "tp_blocker",
-)
-_MEMORY_OF_CHECKPOINTING = {"unsloth": "unsloth_offload", True: "gc", False: "none"}
-
-
-def _checkpointing(request: dict):
-    """gradient_checkpointing as trainer.normalize_gradient_checkpointing reads it: "unsloth", True or False."""
-    value = request.get("gradient_checkpointing")
-    text = str(value if value is not None else "").strip().lower()
-    if text in ("false", "0", "no", "none", "off"):
-        return False
-    if text in ("true", "1", "yes"):
-        return True
-    return "unsloth"
-
-
-def _cell_may_run(caps, query, request: dict) -> bool:
-    """Core's cell gate (parallel_capabilities.check) as the plan can know it: the load refuses an unverified cell
-    only when some cell with full evidence could not match. Load-time fields match any value; checkpointing
-    on matches any checkpoint kind (Unsloth's, offloaded or not, or torch's)."""
-    status, _ = caps.cell_status(query)
-    strict = callable(getattr(caps, "_strict", None)) and caps._strict()
-    if status != "unverified" or not (caps._gated(query) or strict):
-        return True
-    checkpointing = _checkpointing(request) is not False
-    for cell in caps.CELLS:
-        if cell.missing() or (cell.min_torch is not None and tuple(query.torch) < cell.min_torch):
-            continue
-        for key, allowed in cell.match.items():
-            if key in _LOAD_TIME_FIELDS:
-                continue
-            if key == "memory":
-                if any(m != "none" for m in allowed) if checkpointing else "none" in allowed:
-                    continue
-                break
-            if getattr(query, key) not in allowed:
-                break
-        else:
-            return True
-    return False
-
-
+# Core's cell gate (parallel_capabilities.check, at load): a layout it has no parity / engagement evidence for.
+_UNVERIFIED = "has no numeric parity / engagement / compile evidence"
 _AXIS_WORDS = (
     ("ep", "expert parallel"),
     ("tp", "tensor parallel"),
     ("pp", "pipeline parallel"),
     ("cp", "context parallel"),
 )
-_MODE_WORDS = {"lora": "LoRA", "qlora": "QLoRA", "full": "full finetuning"}
-
-
-def _layout_words(sizes: dict) -> str:
-    words = [label for axis, label in _AXIS_WORDS if int(sizes.get(axis) or 1) > 1]
-    if sizes.get("fsdp"):
-        words.append("FSDP2")
-    return " with ".join(words) or "this multi-GPU layout"
-
-
-def _auto_cp_backend(
-    heads: Optional[list],
-    cp: int,
-    tp: int = 1,
-) -> Optional[str]:
-    """What Unsloth's cp_backend "auto" picks (context_parallel.resolve_cp_backend): Ulysses when every attention
-    layer kind's heads per tensor parallel rank split over cp, else ring. None when the head counts are unknown."""
-    if not heads:
-        return None
-    for n_heads, n_kv in heads:
-        n_heads //= max(tp, 1)
-        n_kv = n_kv // tp if tp > 1 and n_kv % tp == 0 else n_kv
-        if not (
-            n_heads > 0
-            and n_kv > 0
-            and n_heads % cp == 0
-            and n_heads % n_kv == 0
-            and (n_kv % cp == 0 or cp % n_kv == 0)
-        ):
-            return "ring"
-    return "ulysses"
-
-
-# Core's cell gate: a layout it has no parity / engagement evidence for on this model.
-_UNVERIFIED = "has no numeric parity / engagement / compile evidence"
-
-
-def unverified_layout_message(
-    layout: str,
-    model: Optional[dict] = None,
-    request: Optional[dict] = None,
-) -> str:
-    """Core's cell-gate refusal in plain words, naming the configuration it has no evidence for."""
-    model = model or {}
-    family = model.get("family")
-    parts = [_MODE_WORDS.get(model.get("mode", ""))]
-    if request is not None:
-        parts += [
-            "packing" if request.get("packing") else None,
-            "gradient checkpointing" if _checkpointing(request) is not False else None,
-        ]
-    run = ", ".join(part for part in parts if part)
-    subject = f"{layout} for {family}" + (f" ({run})" if run else "") if family else layout
-    return f"Unsloth has not verified {subject} yet, so it refuses to train it. Use DDP or FSDP2."
 
 
 def plain_training_error(text: str) -> str:
-    """A training error as the Train page shows it: Core's cell-gate refusal without its test cells."""
+    """A training error as the Train page shows it: Core's cell-gate refusal names test cells and internal tooling,
+    so it is reworded from its layout and model family."""
     if not (isinstance(text, str) and _UNVERIFIED in text):
         return text
     family = re.search(r"family='([^']+)'", text) or re.search(
         r"cell '(?:MoE )?([a-z0-9_.]+) x ", text
     )
     layout = re.search(r"\(layout ([^)]*)\)", text)
-    sizes = {
-        k: int(v)
-        for k, v in re.findall(r"\b(ep|tp|pp|cp) (\d+)", layout.group(1) if layout else "")
-    }
-    return unverified_layout_message(
-        _layout_words(sizes), {"family": family.group(1)} if family else None
+    sizes = dict(re.findall(r"\b(ep|tp|pp|cp) (\d+)", layout.group(1) if layout else ""))
+    words = " with ".join(label for axis, label in _AXIS_WORDS if int(sizes.get(axis, 1)) > 1)
+    subject = (words or "this multi-GPU layout") + (f" for {family.group(1)}" if family else "")
+    return (
+        f"Unsloth has not verified {subject} with these settings yet, so it refuses to train it. "
+        "Use DDP or FSDP2."
     )
 
 
@@ -892,34 +698,10 @@ def _sizes_for(mode: str, world: int) -> dict:
     return sizes
 
 
-def _bfloat16_gpus(gpus: list) -> bool:
-    sm = _sm(gpus)
-    return sm is None or sm >= 8
-
-
-def _fsdp2_gb(
-    model: dict,
-    n: int,
-    bf16: bool = True,
-) -> Optional[float]:
-    """Per-GPU need under FSDP2: a bfloat16 full finetune there steps with torch AdamW (worker._optimizer_for_run)."""
-    torch_adamw = (model.get("fsdp2_per_gpu_gb") or {}).get(n) if bf16 else None
-    return torch_adamw or (model.get("per_gpu_gb") or {}).get(n)
-
-
-def _estimate_row(
-    model: dict,
-    n: int,
-    bf16: bool = True,
-) -> dict:
+def _estimate_row(model: dict, n: int) -> dict:
     single = model.get("required_gb")
-    split = (model.get("per_gpu_gb") or {}).get(max(n, 1))
-    return {
-        "single": single,
-        "ddp": single,
-        "fsdp2": _fsdp2_gb(model, max(n, 1), bf16),
-        "layer_split": split,
-    }
+    sharded = (model.get("per_gpu_gb") or {}).get(max(n, 1))
+    return {"single": single, "ddp": single, "fsdp2": sharded, "layer_split": sharded}
 
 
 def _gpus_differ(gpus: list) -> bool:
@@ -986,14 +768,15 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             and shards
             and model.get("mode") == "full"
             and bnb_adamw(request.get("optim") or "adamw_8bit")
-            and _bfloat16_gpus(chosen)  # older cards (T4, V100) train float32 weights
         ):
             notes.append(
-                "Full finetuning with sharded weights uses adamw_torch: bitsandbytes AdamW loses most bfloat16 updates there."
+                "Full finetuning with sharded bfloat16 weights steps with adamw_torch: bitsandbytes AdamW loses "
+                "most bfloat16 updates there."
             )
         if multi and sizes and sizes.get("fsdp") and model.get("is_moe"):
             warnings.append(
-                "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits each GPU."
+                "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits "
+                "each GPU."
             )
         return {
             "requested_mode": requested or AUTO,
@@ -1004,10 +787,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "launcher": "multi_process" if multi else "single_process",
             "distributed_backend": host.get("distributed_backend") if multi else None,
             "reason": reason,
-            "estimate": {
-                "required_gb": need,
-                "per_gpu_gb": _estimate_row(model, n or 1, _bfloat16_gpus(chosen or gpus)),
-            },
+            "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
             "notes": notes,
@@ -1063,7 +843,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 + ("" if _fits(need, gpus) else ", and not every GPU has room for a full copy")
                 + f"; GPU {largest['index']} ({largest['name']}) holds it whole, so it trains there alone.",
             )
-        shard = _fsdp2_gb(model, len(gpus), _bfloat16_gpus(gpus))
+        shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
                 _core_check(
