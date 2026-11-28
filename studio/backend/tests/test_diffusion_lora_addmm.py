@@ -152,3 +152,22 @@ def test_install_idempotent():
     first = lora_layer.Linear.forward
     assert la.install()
     assert lora_layer.Linear.forward is first
+
+
+@pytest.mark.parametrize("scale_as_tensor", [False, True])
+def test_compiled_forward_compiles_once(scale_as_tensor):
+    # Both paths (epilogue, and PEFT for a tensor scale as baked loads pin) must not recompile on every call.
+    from torch._dynamo.testing import CompileCounter
+
+    m = _model(adapters = ("a", "b"))
+    if scale_as_tensor:
+        m[0].scaling = {k: torch.tensor(float(v)) for k, v in m[0].scaling.items()}
+    x = torch.randn(4, 64)
+    torch._dynamo.reset()
+    counter = CompileCounter()
+    compiled = torch.compile(m, backend = counter)
+    with torch.no_grad():
+        for _ in range(3):
+            torch.testing.assert_close(compiled(x), _stock(m, x))
+    assert counter.frame_count == 1
+    torch._dynamo.reset()

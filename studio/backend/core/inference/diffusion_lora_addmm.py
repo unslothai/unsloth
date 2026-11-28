@@ -21,7 +21,15 @@ from typing import Any
 
 LORA_ADDMM_ENV = "UNSLOTH_DIFFUSION_LORA_ADDMM"
 _PATCHED = "_unsloth_lora_addmm"
-CALLS = [0, 0]  # [epilogue path, PEFT path]
+CALLS = [0, 0]  # [epilogue path, PEFT path], eager calls only
+
+
+def _count(path: int) -> None:
+    import torch
+
+    # a traced write to a global is guarded on its value: every compiled call would recompile
+    if not torch.compiler.is_compiling():
+        CALLS[path] += 1
 
 
 def enabled() -> bool:
@@ -80,11 +88,11 @@ def _forward(original: Any) -> Any:
 
         # autograd (training, or a grad-mode call) keeps PEFT's graph
         if args or kwargs or not enabled() or x.dim() < 2 or torch.is_grad_enabled():
-            CALLS[1] += 1
+            _count(1)
             return original(self, x, *args, **kwargs)
         active = _plain_adapters(self, x)
         if active is None:
-            CALLS[1] += 1
+            _count(1)
             return original(self, x, *args, **kwargs)
         result = self.base_layer(x)
         if not active:
@@ -96,11 +104,11 @@ def _forward(original: Any) -> Any:
             or result.shape[:-1] != x.shape[:-1]
         ):
             # Rare base layers (a subclass output, another dtype): PEFT's own sum on the output already computed.
-            CALLS[1] += 1
+            _count(1)
             for a in active:
                 result = result + self.lora_B[a](self.lora_A[a](x)) * self.scaling[a]
             return result
-        CALLS[0] += 1
+        _count(0)
         x2 = x.reshape(-1, x.shape[-1])
         out = result.reshape(-1, result.shape[-1])
         for a in active:
