@@ -377,8 +377,7 @@ def _trainable_name(name: str) -> bool:
 
 
 def _snapshot_data_files(snapshot: Path) -> Optional[list[PurePosixPath]]:
-    """Every file datasets would consider, relative to the snapshot and sorted the way
-    fsspec returns them, or None when the snapshot is too large to compare with."""
+    """Files datasets would consider, relative to snapshot in fsspec order; None if too large."""
     found: list[PurePosixPath] = []
     try:
         root = snapshot.resolve(strict = True)
@@ -570,8 +569,7 @@ def _nonempty(snapshot: Path, name: str) -> bool:
 
 
 def _unreadable_metadata(snapshot: Path, name: str) -> bool:
-    """Refused by _snapshot_metadata_file (too big or outside the cache) but still read, so it
-    blocks; an empty file is refused too but blocks nothing."""
+    """Refused (too big or outside cache) yet still read: it blocks, but empty ones do not."""
     return (
         _metadata_present(snapshot, name)
         and _snapshot_metadata_file(snapshot, name) is None
@@ -580,8 +578,7 @@ def _unreadable_metadata(snapshot: Path, name: str) -> bool:
 
 
 def _declares_configs(snapshot: Path, name: str) -> bool:
-    """Whether this standalone yaml file names configs the loader would build. Unreadable
-    counts as declaring, since datasets reads it as a card and we cannot see what it says."""
+    """Whether this yaml names configs; unreadable counts as declaring: content is unseen."""
     if not _metadata_present(snapshot, name):
         return False
     path = _snapshot_metadata_file(snapshot, name)
@@ -603,8 +600,7 @@ def _declares_configs(snapshot: Path, name: str) -> bool:
 
 
 def _declares_splits(payload: Any) -> bool:
-    """Whether dataset_info states its splits. An empty statement is still authoritative:
-    datasets exposes no config at all rather than falling back to the files."""
+    """Whether dataset_info states splits, even if empty (datasets then skips file inference)."""
     entries = payload if isinstance(payload, list) else [payload]
     return any(isinstance(item, dict) and "splits" in item for item in entries)
 
@@ -722,8 +718,7 @@ def local_dataset_options(request: LocalDatasetOptionsRequest) -> LocalDatasetOp
 def hub_dataset_options(
     request: HubDatasetOptionsRequest, hf_token = None
 ) -> HubDatasetOptionsResponse:
-    """Configs and splits resolved from the repo's files through ``HF_ENDPOINT``, as training
-    resolves them, for when no datasets-server answers (a mirror, ModelScope). Reads no rows."""
+    """Configs and splits via HF_ENDPOINT when no datasets-server answers; reads no rows."""
     from datasets import DownloadConfig
     from datasets.load import dataset_module_factory
     from fastapi import HTTPException

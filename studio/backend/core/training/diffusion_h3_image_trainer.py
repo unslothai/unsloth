@@ -79,7 +79,7 @@ H3_IMAGE_BF16_MIN_FREE_GB = 56.0
 # "grid" (default): the 6 distilled sigmas. "continuous" (diagnostic): needs the dense AdaLN projections (+13B params).
 SIGMA_MODE_ENV = "UNSLOTH_H3_IMAGE_TRAIN_SIGMAS"
 
-# The conditioner the run encodes with: "int8" (Studio's hosted ConvRot copy, default) or "bf16" (66.7 GB).
+# The conditioner the run encodes with: "int8" (Studio's hosted ConvRot copy, default) or "bf16" (the read layers only, about 51.5 GB).
 TEXT_ENCODER_ENV = "UNSLOTH_H3_IMAGE_TRAIN_TEXT_ENCODER"
 
 

@@ -98,8 +98,7 @@ def test_a_logger_that_raises_does_not_escape_the_atexit_handler(monkeypatch):
 
 
 def test_the_atexit_handler_quiets_stdlib_loggers_too(monkeypatch, capsys):
-    """Stdlib loggers from other libraries fire during teardown and print their own traceback about
-    a closed handler instead of raising, so the except above never sees them."""
+    """Stdlib loggers at teardown print a closed-handler traceback, which except never sees."""
     stream = io.StringIO()
     handler = logging.StreamHandler(stream)
     stream.close()
@@ -166,8 +165,7 @@ class _UnkillableProcess(_StubbornProcess):
 
 
 def test_an_unkillable_server_is_still_reported(monkeypatch):
-    """The second wait raises from inside the handler, so nothing catches it; the warning must come
-    first or an unkillable server goes unreported."""
+    """Warn before the second wait raises uncaught, else an unkillable server goes unreported."""
     recorder = _RecordingLogger()
     monkeypatch.setattr(mod, "logger", recorder)
     backend = _stub()

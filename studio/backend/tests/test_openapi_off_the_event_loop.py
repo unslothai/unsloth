@@ -32,8 +32,7 @@ def main_module():
 
 @pytest.fixture(scope = "module")
 def real_schema(main_module):
-    """Builds the real OpenAPI schema before the probe starts, since generating it holds the GIL in
-    stretches that would trip the event-loop probe."""
+    """Build the OpenAPI schema first: generating holds the GIL and trips the event-loop probe."""
     return main_module.app.openapi()
 
 

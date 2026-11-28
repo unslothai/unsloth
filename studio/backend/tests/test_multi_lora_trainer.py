@@ -360,11 +360,13 @@ def test_seed_init_is_independent_of_batch_order():
 
 def test_completion_masking_masks_the_prompt():
     tokenizer = _tokenizer()
+    tokenizer.chat_template = "{{ messages }}"
     tokenizer._unsloth_input_part = "[U]"
     tokenizer._unsloth_output_part = "[B]"
     info = {
         "dataset": Dataset.from_dict({"text": ["[U] w1 w2 w3 [B] w4 w5 [EOS]"] * 3}),
-        "final_format": "",
+        "final_format": "alpaca",
+        "dataset_template": None,
     }
     tok, rows = mlt._tokenize_member(
         info, tokenizer, {"train_on_completions": True}, "tiny/qwen3", 64

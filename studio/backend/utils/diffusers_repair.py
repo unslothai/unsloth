@@ -310,8 +310,7 @@ def _loaded_replaceable_modules() -> "list[str]":
 
 
 def repair_diffusers_before_imports(echo: Callable[[str], None] = lambda _line: None) -> bool:
-    """Returns True if the build was installed; raises on peer lock timeout or an interrupted own
-    install."""
+    """Returns True if installed; raises on a peer lock timeout or an interrupted own install."""
     main_active = _main_pin_active()
     if _opted_out(main_active) or not _MAIN_PIN.is_file() or not _INSTALLER.is_file():
         return False

@@ -1,7 +1,7 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-# New Apple Silicon installs on macOS 14+ get torch 2.13 (fused MPS attention); existing 2.4-2.14 installs keep theirs.
+# New Apple Silicon installs on macOS 14+ get torch 2.14.1 (fused MPS attention); existing 2.4-2.14 installs keep theirs.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -82,15 +82,15 @@ _stub_python 3.13
 
 echo "=== preservation never waits on PyPI; only a fresh home takes 2.13 ==="
 _PRESERVE_BLOCK=$(sed -n '/^_PRESERVE_TORCH_CONSTRAINT="\$TORCH_CONSTRAINT"$/,/^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_MACOS_NEW_INSTALL_ROUTE" = true \]; then$/p' "$INSTALL_SH"
-    printf '    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"\n    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"\nfi\n')
+    printf '    TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"\n    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"\nfi\n')
 assert_eq "block found in install.sh" "yes" "$(printf '%s' "$_PRESERVE_BLOCK" | grep -q _MACOS_NEW_INSTALL_ROUTE=true && echo yes)"
 assert_eq "install.sh new-install body matches the replayed one" "yes" \
     "$(grep -A2 '^if \[ -z "\$_PREV_TORCH_PIN" \] && \[ "\$_MACOS_NEW_INSTALL_ROUTE" = true \]; then$' "$INSTALL_SH" | tail -2 \
-        | tr -d '\n' | grep -qF 'TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"' && echo yes)"
+        | tr -d '\n' | grep -qF 'TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"' && echo yes)"
 substep() { :; }
 eval "$(grep -E '^_(CU130|MACOS)_(TORCH_CEILING|NEW_INSTALL_TORCH)=' "$INSTALL_SH")"
 assert_eq "macOS ceiling" "2.15.0" "$_MACOS_TORCH_CEILING"
-assert_eq "macOS new-install spec" "torch>=2.13.0,<2.14.0" "$_MACOS_NEW_INSTALL_TORCH"
+assert_eq "macOS new-install spec" "torch>=2.14.1,<2.15.0" "$_MACOS_NEW_INSTALL_TORCH"
 SKIP_TORCH=false; TORCH_INDEX_URL="$CPU"; PACKAGE_NAME="unsloth"
 _run_block() {  # $1 existing-install flag, $2 previous torch version, $3 default floor
     _EXISTING_INSTALL="$1"; _PREV_TORCH_VER="$2"
@@ -100,7 +100,7 @@ _run_block() {  # $1 existing-install flag, $2 previous torch version, $3 defaul
 for gate in unreachable capped open; do
     case "$gate" in
         unreachable) export UNSLOTH_PYPI_JSON_URL="http://127.0.0.1:9/unreachable" ;;
-        capped) _pypi_fixture "torch<2.13.0,>=2.4.0" ;;
+        capped) _pypi_fixture "torch<2.14.0,>=2.4.0" ;;
         open) _pypi_fixture "torch<2.15.0,>=2.4.0" ;;
     esac
     _run_block true "2.13.0"
@@ -115,7 +115,7 @@ for gate in unreachable capped open; do
     assert_eq "PyPI $gate: existing home with unreadable torch stays on the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
     _run_block false ""
     want="torch>=2.6,<2.12.0"; tv="torchvision>=0.19,<0.27.0"
-    [ "$gate" = open ] && want="torch>=2.13.0,<2.14.0" && tv="torchvision>=0.28.0,<0.29.0"
+    [ "$gate" = open ] && want="torch>=2.14.1,<2.15.0" && tv="torchvision>=0.29.0,<0.30.0"
     assert_eq "PyPI $gate: fresh home default" "$want" "$TORCH_CONSTRAINT"
     assert_eq "PyPI $gate: fresh home torchvision" "$tv" "$TORCHVISION_CONSTRAINT"
 done
@@ -125,9 +125,9 @@ assert_eq "preservation keeps the 2.4 floor below Python 3.13" "torch>=2.4,<2.15
 _run_block true "2.15.0"
 assert_eq "2.15 is outside the window: old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.11.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.13" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 moves an existing home to 2.14.1" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 UNSLOTH_TORCH_UPGRADE=1; _run_block true "2.13.0"; unset UNSLOTH_TORCH_UPGRADE
-assert_eq "UNSLOTH_TORCH_UPGRADE=1 on a resident 2.13 takes the 2.13 window" "torch>=2.13.0,<2.14.0" "$TORCH_CONSTRAINT"
+assert_eq "UNSLOTH_TORCH_UPGRADE=1 (Repair) on a resident 2.13 takes the 2.14.1 window" "torch>=2.14.1,<2.15.0" "$TORCH_CONSTRAINT"
 PACKAGE_NAME="unsloth-fork"; _run_block false ""; PACKAGE_NAME="unsloth"
 assert_eq "--package other than unsloth: fresh home keeps the old default" "torch>=2.6,<2.12.0" "$TORCH_CONSTRAINT"
 MACOS_MAJOR=13; _run_block false ""; MACOS_MAJOR=15

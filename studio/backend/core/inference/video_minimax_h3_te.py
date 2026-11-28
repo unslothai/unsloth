@@ -24,8 +24,7 @@ H3_TE_INT8 = "int8"
 # Hosted Q4_K_M GGUF: 18.2 GB vs 27.2, but 5.8% hidden_states[50] error vs bf16 against int8's 1.6%.
 H3_TE_Q4_K_M = "q4_k_m"
 H3_TE_QUANT_FILES: dict[str, str] = {
-    # Built from MiniMaxAI text_encoder/ with quantize_convrot_int8_weight; reads the official path
-    # only.
+    # From MiniMaxAI text_encoder/ via quantize_convrot_int8_weight; reads official path only.
     H3_TE_INT8: "text_encoders/official/qwen3vl_32b_minimax_h3_int8_convrot.safetensors",
     H3_TE_Q4_K_M: "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
 }
@@ -238,6 +237,188 @@ def _terminator_layer_class() -> Any:
     return H3TextEncoderTerminatorLayer
 
 
+# Checkpoint keys the read-layer conditioner has no module for: decoder layers 50+, the final norm, the head.
+_H3_TE_UNREAD_KEYS = (
+    r"^model\.language_model\.layers\.(?:5\d|[6-9]\d|[1-9]\d{2,})\.",
+    r"^model\.language_model\.norm\.",
+    r"^lm_head\.",
+)
+assert H3_TE_READ_LAYER == 50, "_H3_TE_UNREAD_KEYS spells out layers >= 50"
+
+
+def h3_trim_read_layers_(encoder: Any) -> Any:
+    """Gives a built Qwen3-VL conditioner the hosted int8 layout in place: ``H3_TE_READ_LAYER`` real decoder layers,
+    a pass-through 51st slot, no final norm, no head. ``hidden_states[50]`` is unchanged: the dropped layers run after
+    it and the norm only ever followed the read layer. Raises when the stack is not deeper than the read layer."""
+    import torch
+
+    config = getattr(encoder.config, "text_config", encoder.config)
+    language_model = encoder.model.language_model
+    layers = int(config.num_hidden_layers)
+    if layers <= H3_TE_READ_LAYER:
+        raise ValueError(
+            f"the text_encoder has {layers} layers; MiniMax-H3 reads "
+            f"hidden_states[{H3_TE_READ_LAYER}] and needs more than that"
+        )
+    del language_model.layers[H3_TE_READ_LAYER:]
+    language_model.layers.append(_terminator_layer_class()())
+    config.num_hidden_layers = H3_TE_READ_LAYER + 1
+    language_model.norm = torch.nn.Identity()
+    encoder.lm_head = torch.nn.Identity()
+    return encoder
+
+
+@lru_cache(maxsize = 1)
+def h3_read_layers_text_encoder_class() -> Any:
+    """``Qwen3VLForConditionalGeneration`` that trims itself to the read layers as it is built, so
+    ``from_pretrained`` never reads or allocates decoder layers 50-63, the final norm or the head (about 15 GB of the
+    66.7 GB bf16 release). Same state dict names, same ``hidden_states[50]``, bit for bit."""
+    import transformers
+
+    base = transformers.Qwen3VLForConditionalGeneration
+
+    class H3ReadLayersQwen3VLForConditionalGeneration(base):
+        _keys_to_ignore_on_load_unexpected = list(
+            getattr(base, "_keys_to_ignore_on_load_unexpected", None) or ()
+        ) + list(_H3_TE_UNREAD_KEYS)
+
+        def __init__(self, config: Any, *args: Any, **kwargs: Any) -> None:
+            text_config = getattr(config, "text_config", config)
+            layers = int(text_config.num_hidden_layers)
+            if layers <= H3_TE_READ_LAYER:
+                raise ValueError(
+                    f"the text_encoder has {layers} layers; MiniMax-H3 reads "
+                    f"hidden_states[{H3_TE_READ_LAYER}] and needs more than that"
+                )
+            # Build only the layers the read needs (on meta under from_pretrained), then trim the slot after them.
+            text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
+            super().__init__(config, *args, **kwargs)
+            h3_trim_read_layers_(self)
+
+    H3ReadLayersQwen3VLForConditionalGeneration.__qualname__ = (
+        H3ReadLayersQwen3VLForConditionalGeneration.__name__
+    )
+    return H3ReadLayersQwen3VLForConditionalGeneration
+
+
+def _h3_read_layers_spec_target(pipe: Any) -> Any:
+    """The modular pipeline's ``text_encoder`` spec when loading it would build the read-layer conditioner: it
+    names stock ``Qwen3VLForConditionalGeneration``, the pipeline reads ``hidden_states[H3_TE_READ_LAYER]`` and no
+    encoder is seeded yet. Else None."""
+    try:
+        import transformers
+
+        specs = getattr(pipe, "_component_specs", None)
+        candidate = specs.get("text_encoder") if isinstance(specs, dict) else None
+        layer = getattr(pipe, "text_encoder_layer", H3_TE_READ_LAYER)
+        if (
+            candidate is not None
+            and getattr(candidate, "type_hint", None)
+            is transformers.Qwen3VLForConditionalGeneration
+            and layer == H3_TE_READ_LAYER
+            and getattr(pipe, "text_encoder", None) is None
+        ):
+            return candidate
+    except Exception:  # noqa: BLE001 -- unknown: the stock class may load
+        return None
+    return None
+
+
+def h3_read_layers_spec(pipe: Any) -> Any:
+    """Context manager: while it is open the modular pipeline's ``text_encoder`` spec builds the read-layer
+    conditioner instead of the whole Qwen3-VL. A no-op unless ``_h3_read_layers_spec_target`` accepts the spec;
+    the spec's class is restored on exit."""
+    import contextlib
+
+    @contextlib.contextmanager
+    def _swap():
+        spec = _h3_read_layers_spec_target(pipe)
+        if spec is not None:
+            try:
+                spec.type_hint = h3_read_layers_text_encoder_class()
+            except Exception:  # noqa: BLE001 -- the stock spec loads the whole conditioner, same output
+                spec = None
+        try:
+            yield spec is not None
+        finally:
+            if spec is not None:
+                import transformers
+                spec.type_hint = transformers.Qwen3VLForConditionalGeneration
+
+    return _swap()
+
+
+# The released conditioner's shape (unsloth/MiniMax-H3 text_encoder/config.json); sizes what the read-layer load
+# never holds, so its budgets follow from the stock ones instead of being typed in.
+H3_TE_RELEASE_SHAPE: dict[str, int] = {
+    "num_hidden_layers": 64,
+    "hidden_size": 5120,
+    "intermediate_size": 25600,
+    "num_attention_heads": 64,
+    "num_key_value_heads": 8,
+    "head_dim": 128,
+    "vocab_size": 151936,
+}
+
+
+def h3_te_unread_bytes(shape: Optional[dict] = None, *, bytes_per_param: int = 2) -> int:
+    """Bytes of decoder layers ``H3_TE_READ_LAYER``.., the final norm and the untied ``lm_head``: what the
+    read-layer conditioner does not load. 15.21 GB in bf16 for the release."""
+    c = shape or H3_TE_RELEASE_SHAPE
+    hidden, head_dim = c["hidden_size"], c["head_dim"]
+    per_layer = (
+        2 * hidden * c["num_attention_heads"] * head_dim  # q, o
+        + 2 * hidden * c["num_key_value_heads"] * head_dim  # k, v
+        + 3 * hidden * c["intermediate_size"]  # gate, up, down
+        + 2 * hidden  # input / post-attention norms
+        + 2 * head_dim  # q / k norms
+    )
+    unread_layers = max(0, c["num_hidden_layers"] - H3_TE_READ_LAYER)
+    return bytes_per_param * (unread_layers * per_layer + c["vocab_size"] * hidden + hidden)
+
+
+H3_TE_UNREAD_BF16_GB = h3_te_unread_bytes() / 1e9
+
+
+def h3_te_read_layers_gb(stock_bf16_gb: float) -> float:
+    """The read-layer conditioner's bf16 GB, from a budget sized for the whole released one."""
+    return max(0.0, float(stock_bf16_gb) - H3_TE_UNREAD_BF16_GB)
+
+
+def h3_is_read_layers_encoder(module: Any) -> bool:
+    """Whether ``module`` is a conditioner with the read-layer layout (the bf16 class here, or the hosted one)."""
+    try:
+        layers = module.model.language_model.layers
+        return (
+            len(layers) == H3_TE_READ_LAYER + 1
+            and type(layers[H3_TE_READ_LAYER]).__name__ == "H3TextEncoderTerminatorLayer"
+        )
+    except Exception:  # noqa: BLE001 -- not a Qwen3-VL conditioner: price it whole
+        return False
+
+
+def h3_bf16_te_gb(
+    stock_bf16_gb: float,
+    *,
+    pipe: Any = None,
+    module: Any = None,
+) -> float:
+    """bf16 conditioner budget: the read-layer size only where that is what is (or will be) loaded -- a loaded
+    read-layer module, or a pipeline whose spec ``h3_read_layers_spec`` swaps. ``stock_bf16_gb`` otherwise
+    (a stock class, another spec class, or nothing known)."""
+    if module is None and pipe is not None:
+        module = getattr(pipe, "text_encoder", None)
+    if module is not None:
+        return (
+            h3_te_read_layers_gb(stock_bf16_gb)
+            if h3_is_read_layers_encoder(module)
+            else stock_bf16_gb
+        )
+    if pipe is not None and _h3_read_layers_spec_target(pipe) is not None:
+        return h3_te_read_layers_gb(stock_bf16_gb)
+    return float(stock_bf16_gb)
+
+
 # Hosted keys use ComfyUI's flattened Qwen3-VL names; transformers nests them under ``model.``.
 def h3_te_remap_key(key: str) -> str:
     """A hosted checkpoint tensor name in transformers' ``Qwen3VLForConditionalGeneration`` naming."""
@@ -325,8 +506,7 @@ def load_h3_quantized_text_encoder(
         # One slot past the read layer, so the read lands on the raw state, not the post-norm one.
         text_config.num_hidden_layers = H3_TE_READ_LAYER + 1
 
-        # Params to meta (replaced by assign=True); non-persistent rotary buffers must be real on CPU,
-        # else a dense 51 GB CPU rebuild.
+        # Non-persistent rotary buffers must be real on CPU, else a dense 51 GB CPU rebuild.
         with init_empty_weights(include_buffers = False):
             encoder = transformers.Qwen3VLForConditionalGeneration(config)
 
@@ -540,8 +720,7 @@ def h3_te_stream_enabled() -> bool:
 
 
 def h3_te_pin_allowed(payload_bytes: int = 0, device: Any = None) -> bool:
-    """Whether a payload may be pinned in full (not one arena), under the group switch and the ~1
-    GiB Windows/WSL cap; never raises"""
+    """Whether to pin a payload whole: group switch and ~1 GiB Windows/WSL cap; never raises."""
     try:
         import os
 
@@ -740,8 +919,7 @@ def _arena_view(arena: Any, tensor: Any, offset: int) -> Any:
 
 
 def _fill_arena(arena: Any, *, entries: list) -> None:
-    """Copies each tensor to its offset and zeroes the rest, on a thread pool (copy_, zero_ and their page faults
-    release the GIL). Writing every byte faults the arena's pages in the copy itself, with no separate zero pass."""
+    """Copy and zero on a thread pool (GIL released); the copy faults pages in; no zero pass."""
     jobs = []  # (destination, source tensor or None to zero)
     end = 0
     for tensor, _owners, offset in entries:
@@ -987,8 +1165,7 @@ def stream_h3_text_encoder(
         if "record_stream" in params:
             kwargs["record_stream"] = True
         if "low_cpu_mem_usage" in params:
-            # Already pinned in place, so diffusers' pin_memory() returns the same tensor: no second host copy.
-            # With the table left mapped, the onload pins only what is not pinned yet: nothing once the table is out.
+            # Pinned tensors are not copied; with the table mapped, onload pins only the rest.
             kwargs["low_cpu_mem_usage"] = not pin or table is not None
         elif not pin:
             return None

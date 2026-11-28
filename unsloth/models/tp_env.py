@@ -54,6 +54,7 @@ __all__ = [
 
 _UNSET = object()
 _LAYOUT = _UNSET
+_LAYOUT_SIGNATURE = None  # parallel_env.layout_signature() when _LAYOUT was read
 _DEPTH = {"load": 0, "peft": 0}
 _DDP_MESH = "_unsloth_tp_ddp_mesh"
 
@@ -61,21 +62,25 @@ _DDP_MESH = "_unsloth_tp_ddp_mesh"
 from ..parallel_env import PP_SCHEDULES as _PP_SCHEDULES  # noqa: F401  (old import path)
 from ..parallel_env import ParallelLayout as TPEnvLayout
 from ..parallel_env import _int_env  # noqa: F401
+from ..parallel_env import layout_signature as _layout_signature
 from ..parallel_env import read_layout as _read_layout
 
 
 def env_layout():
     """The layout from UNSLOTH_TP_SIZE (read once), or None when tensor parallelism is not requested."""
-    global _LAYOUT
+    global _LAYOUT, _LAYOUT_SIGNATURE
     if _LAYOUT is _UNSET:
-        _LAYOUT = _read_layout()
+        layout = _read_layout()
+        _LAYOUT_SIGNATURE = _layout_signature()
+        _LAYOUT = layout
     return _LAYOUT
 
 
 def _reset_env_layout():
     """Tests: read the environment again."""
-    global _LAYOUT
+    global _LAYOUT, _LAYOUT_SIGNATURE
     _LAYOUT = _UNSET
+    _LAYOUT_SIGNATURE = None
 
 
 def env_hint():
@@ -130,6 +135,11 @@ _REFUSED_PIPELINE_LOAD_FLAGS = (
     ("full_finetuning", "full finetuning (full_finetuning = True; use UNSLOTH_FSDP2=1 instead)"),
     ("qat_scheme", "QAT (qat_scheme)"),
 )
+
+
+def _gguf_packed_asked(values):
+    """The loader's rule (check_gguf_packed_request): `gguf_packed = True` together with a gguf_file."""
+    return bool(values.get("gguf_packed")) and bool(values.get("gguf_file"))
 
 
 def _bound(fn, args, kwargs):
@@ -211,6 +221,14 @@ def tensor_parallel_env_load(fn):
             layout.pp > 1
         ):  # tensor parallel alone trains these; pipeline parallel v1 trains LoRA adapters
             refused += [what_ for key, what_ in _REFUSED_PIPELINE_LOAD_FLAGS if values.get(key)]
+        if layout.tp > 1 and _gguf_packed_asked(values):
+            # Before the load: tensor parallel shards dense weights only (apply_tensor_parallel refuses them too).
+            refused.append(
+                "packed GGUF weights (gguf_packed = True; load the gguf_file without gguf_packed to dequantize it "
+                "to 16-bit for tensor parallel"
+                + (", or set UNSLOTH_TP_SIZE=1 and keep UNSLOTH_PP_SIZE" if layout.pp > 1 else "")
+                + ")"
+            )
         if refused:
             raise NotImplementedError(
                 f"Unsloth: {layout.env_vars} ({what}) does not support "

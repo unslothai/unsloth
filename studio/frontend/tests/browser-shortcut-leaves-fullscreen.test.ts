@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// A page in the browser panel relays Cmd/Ctrl+F, L, D, ... to the panel. While the page was full
-// screen, the find bar or address bar opened under it, out of sight.
+// Page-relayed Cmd/Ctrl+F, L, D must leave fullscreen, or the find/address bar opens unseen.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";

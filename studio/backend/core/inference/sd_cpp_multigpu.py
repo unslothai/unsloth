@@ -166,9 +166,9 @@ def split_for_load(
     logger: Any = None,
 ) -> Optional[SdCppCardSplit]:
     """Split for this load, else None. Only without offload flags; balanced / low_vram / cpu_offload stay one card."""
-    from .diffusion_multigpu import current_selection, multigpu_all_enabled
+    from .diffusion_multigpu import current_selection, multigpu_all_enabled, peer_selection
 
-    selection = current_selection()
+    selection = peer_selection(current_selection())
     if selection is None or not multigpu_all_enabled() or not selection.secondaries:
         return None
     if primary is None and selection.automatic:

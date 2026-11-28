@@ -19,8 +19,7 @@ logger = get_logger(__name__)
 # Core's top-k keys plus the raw config.json aliases transformers maps through attribute_map.
 _NUM_EXPERTS_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 _TOP_K_KEYS = ("num_experts_per_tok", "top_k", "moe_top_k", "top_k_experts", "moe_topk", "moe_k")
-# Decoder layers that hand state to the next layer (prev_* arguments), which Core refuses since it
-# calibrates one layer at a time: GLM-5 / HY-V4 sparse-attention top-k indices, ZAYA router states.
+# Layers passing state on (prev_* args) are refused: Core calibrates one layer at a time.
 _STATEFUL_MODEL_TYPES = frozenset({"glm_moe_dsa", "glm5_next", "glm5_next_text", "hy_v4", "zaya"})
 # Hash-routed MoE (tid2eid): Core refuses it since dropped experts cannot be remapped.
 _HASH_ROUTED_MODEL_TYPES = frozenset({"deepseek_v4"})
@@ -62,8 +61,7 @@ def _model_parallel(distributed) -> bool:
     )
 
 
-# Quantization a 16-bit load unpacks (gpt-oss mxfp4; bitsandbytes only for Hub ids Unsloth maps to
-# 16-bit); anything else stays packed and Core refuses it only after a full load.
+# 16-bit loads unpack mxfp4; bitsandbytes for mapped Hub ids; others stay packed, refused late.
 _UNPACKED_QUANT_METHODS = {"mxfp4"}
 # Older ModelOpt exports declare quantization here (attach_hf_quant_config reads it too).
 _HF_QUANT_CONFIG = "hf_quant_config.json"
@@ -71,8 +69,7 @@ _HF_QUANT_CONFIG = "hf_quant_config.json"
 
 @functools.lru_cache(maxsize = 1)
 def _int_to_float_mapper() -> dict:
-    """Unsloth's quantized-to-16-bit Hub id table, read from mapper.py (plain data) without importing
-    unsloth, which would initialize the GPU stack in the server process."""
+    """Returns mapper.py's table as plain data; importing unsloth would init the GPU stack."""
     import importlib.util
 
     spec = importlib.util.find_spec("unsloth")
@@ -231,9 +228,8 @@ def moe_export_info(
     _depth = 0,
     adapter_base: Optional[str] = None,
 ) -> Optional[dict]:
-    """MoE info for a local checkpoint / model folder or a Hub id (a LoRA folder resolves to its
-    base, or to ``adapter_base`` when the caller already authorized it). None for a dense model, a
-    repo without config.json or a malformed one; ``MoeProbeError`` when the config could not be read."""
+    """MoE info for a local folder or Hub id; a LoRA folder resolves to its base (or adapter_base if
+    authorized). None for dense or no/malformed config.json; MoeProbeError if unreadable."""
     try:
         from utils.models.diffusion_lm import _local_adapter_base
         from utils.models.model_config import _read_raw_config_json
@@ -333,8 +329,7 @@ def _calibration_dataset(dataset: Optional[str], hf_token):
 
 
 def current_reap_key(backend: Any):
-    """The REAP settings the loaded model was pruned with, else None. A key whose model is no
-    longer the loaded one (an unload that failed part way before a new load) is not this model's."""
+    """REAP settings of the loaded model, else None; a key left by a failed unload is stale."""
     key = getattr(backend, "_reap_key", None)
     ref = getattr(backend, "_reap_model", None)
     model = getattr(backend, "current_model", None)
@@ -447,8 +442,7 @@ def sync_reap_report(
     name: str = REPORT_NAME,
     files: Optional[List[str]] = None,
 ) -> None:
-    """After an export: the report when the exported model is pruned, else remove one a previous
-    REAP export left in a reused folder, so the folder never describes other weights."""
+    """Writes the report if pruned, else deletes a stale one that would describe other weights."""
     if current_reap_key(backend) is not None:
         write_reap_report(backend, output_path, name, files)
         return

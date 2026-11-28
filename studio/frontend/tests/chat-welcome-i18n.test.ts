@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The empty chat's greeting follows the UI language (#13391): every line is a
-// welcome.* message key, not English baked into thread.tsx.
+// Greeting follows UI language (#13391): lines are welcome keys, not English in thread.tsx.
 
 import assert from "node:assert/strict";
 import test from "node:test";

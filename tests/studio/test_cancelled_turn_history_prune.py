@@ -84,6 +84,10 @@ def _send_path_slice() -> str:
         "  const externalProvider = undefined, externalSelection = undefined;\n"
         "  const providerCompactionTargetConnectionKey = null;\n"
         "  const toExternalBackendProviderType = (providerType: any) => providerType;\n"
+        "  const runtime: any = { models: [] }, params: any = {};\n"
+        "  const queuedRunSettings = undefined, continuation = undefined;\n"
+        "  const isServedByLlamaCpp = (_: any) => false;\n"
+        "  const previousAudioTurn = (..._: any[]): any => undefined;\n"
         # The provider-dependent flag is covered by external-preserve-thinking.test.ts.
         + "  const replayReasoning = !isExternalRequest;\n"
         + body

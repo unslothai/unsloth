@@ -180,14 +180,14 @@ def plan_for_load(
 ) -> Optional[ReplicaLoadPlan]:
     """Replica cards, None for one server. Auto only for one-card primaries; an explicit count may drop a companion
     split if the primary's spill and one replica fit the host; a block split always keeps."""
-    from .diffusion_multigpu import current_selection, multigpu_all_enabled
+    from .diffusion_multigpu import current_selection, multigpu_all_enabled, peer_selection
 
     mode, cap = replica_setting()
     if mode == "off" or not server_mode or device != "cuda" or off_torch is not None:
         return None
     if list(offload or ()):
         return None
-    selection = current_selection()
+    selection = peer_selection(current_selection())
     if selection is None or not multigpu_all_enabled() or not selection.secondaries:
         return None
     if mode == "auto" and not selection.automatic:

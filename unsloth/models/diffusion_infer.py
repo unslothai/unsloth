@@ -104,7 +104,6 @@ class Progress:
             self._flush(wait = True)
 
     def close(self):
-        """Deliver the last queued frame, then never call on_frame again."""
         if self.on_frame is not None and not self.closed:
             self._flush(wait = True)
         self.closed = True
@@ -125,8 +124,7 @@ _CAPTURE_LOCKS = {}
 
 
 def side_stream(device):
-    """One warm-up / capture side stream per device for the whole process: cuBLAS keeps a workspace per stream,
-    so a fresh stream per capture grows memory call after call."""
+    """One side stream per device, reused: fresh streams make cuBLAS workspace memory grow."""
     device = torch.device(device)
     index = device.index if device.index is not None else torch.cuda.current_device()
     stream = _SIDE_STREAMS.get(index)
@@ -136,8 +134,7 @@ def side_stream(device):
 
 
 def capture_lock(device):
-    """Serialises warm-up + capture on a device's shared side stream: two first-time captures from different
-    threads would otherwise interleave on it and invalidate each other."""
+    """Serialize warm-up and capture on the side stream; concurrent threads would invalidate."""
     device = torch.device(device)
     index = device.index if device.index is not None else torch.cuda.current_device()
     return _CAPTURE_LOCKS.setdefault(index, threading.Lock())
@@ -167,9 +164,8 @@ def graphs_disabled():
 
 
 def host_synced_moe(base):
-    """True when an MoE block would run an expert loop that copies counts to the host (not the grouped
-    dispatch): that forward cannot be captured, and a failed capture is not free (on some torch versions it
-    leaves the CUDA RNG unusable), so graphs are not attempted."""
+    """True if an MoE expert loop copies counts to the host: it cannot be captured, so graphs are
+    skipped; a failed capture can leave the CUDA RNG unusable on some torch versions."""
     for module in base.modules():
         experts = getattr(module, "experts", None)
         if isinstance(experts, torch.nn.ModuleList) and len(experts):
@@ -273,8 +269,7 @@ class BlockHead:
             with head_returns_hidden(head):
                 return base(x).logits
 
-        # Not a bound method: a BlockHead -> GraphedForward -> BlockHead cycle would keep the graphs and their
-        # memory pool alive after the call until a full gc pass.
+        # Not a bound method: a BlockHead cycle keeps graphs and memory pool alive until gc.
         self._forward = forward
         self.graphed = GraphedForward(forward, owner = base) if graphs else None
 

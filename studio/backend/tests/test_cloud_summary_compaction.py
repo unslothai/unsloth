@@ -538,6 +538,80 @@ def test_compact_summarises_a_cloud_chat_that_still_fits():
     assert _SUMMARY in _system_text(after)
 
 
+def _saved_chat(thread_id: str, chat: list[dict]) -> list[str]:
+    _saved_thread(thread_id)
+    ids: list[str] = []
+    for index, message in enumerate(m for m in chat if m["role"] != "system"):
+        ids.append(f"{thread_id}-{index}")
+        studio_db.upsert_chat_message(
+            {
+                "id": ids[-1],
+                "threadId": thread_id,
+                "parentId": ids[-2] if len(ids) > 1 else None,
+                "role": message["role"],
+                "content": [{"type": "text", "text": message["content"]}],
+                "createdAt": index + 2,
+            }
+        )
+    return ids
+
+
+def _fork(thread_id: str, message_id: str) -> str:
+    fork_id = f"{thread_id}-fork"
+    studio_db.fork_chat_thread(
+        source_thread_id = thread_id,
+        branch_message_id = message_id,
+        new_thread_id = fork_id,
+        created_at = 999,
+        id_factory = iter(f"{fork_id}-{index}" for index in range(100)).__next__,
+    )
+    return fork_id
+
+
+def test_a_fork_of_a_compacted_chat_keeps_its_summary_with_auto_compact_off():
+    chat = _long_chat()
+    ids = _saved_chat("thread-fork-compacted", chat)
+    _, [_], _ = _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = "thread-fork-compacted",
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+    )
+    fork = _fork("thread-fork-compacted", ids[-1])
+    cloud_compaction._memory_summaries.clear()
+
+    later = [*chat, {"role": "assistant", "content": "ok"}, {"role": "user", "content": "next"}]
+    for thread in ("thread-fork-compacted", fork):
+        chunks, summaries, [sent] = _bodies(_OverflowAt8k, messages = later, thread_id = thread)
+        assert summaries == [] and not [c for c in chunks if "error" in c]
+        assert _SUMMARY in _system_text(sent)
+        assert sent["messages"][-1]["content"] == "next"
+
+
+def test_a_fork_before_the_compacted_turns_does_not_replay_the_summary():
+    chat = _long_chat()
+    ids = _saved_chat("thread-fork-early", chat)
+    _bodies(
+        _SummarisingHandler,
+        messages = chat,
+        thread_id = "thread-fork-early",
+        compact_context = True,
+        context_overflow = "truncate_oldest",
+    )
+    fork = _fork("thread-fork-early", ids[1])
+
+    diverged = list(chat[:3])
+    for index in range(12):
+        diverged.append({"role": "user", "content": f"other question {index}"})
+        diverged.append({"role": "assistant", "content": f"other answer {index}"})
+    diverged.append({"role": "user", "content": "next"})
+    _, summaries, [sent] = _bodies(_SummarisingHandler, messages = diverged, thread_id = fork)
+    assert summaries == []
+    assert _SUMMARY not in _system_text(sent)
+    assert sent["messages"][1:] == diverged[1:]
+
+
 def test_compact_without_a_saved_thread_is_ignored():
     chunks, summaries, [sent] = _bodies(
         _SummarisingHandler,
@@ -709,122 +783,125 @@ def test_a_long_prompt_read_under_keep_alives_does_not_count_against_the_total(m
     assert asyncio.run(cloud_compaction.collect_summary(stream())) == "read"
 
 
-def test_compact_on_anthropic_lowers_the_native_trigger_for_a_long_chat():
-    thread = _saved_thread("thread-anthropic-native")
-    chunks, sent = _proxy(
-        "anthropic",
-        _long_chat(turns = 60, turn = "word " * 800),
-        handler = _AnthropicCompactingHandler,
-        model = "claude-sonnet-4-6",
-        thread_id = thread,
-        compact_context = True,
-        context_overflow = "truncate_oldest",
-        compaction_threshold = 150_000,
-    )
-    assert sent["context_management"]["edits"][0]["trigger"]["value"] == 50_000
-    [truncation] = _truncations(chunks)
-    assert truncation["summarized"] is True and truncation["manual"] is True
-    assert truncation["checkpoint_started"] is True
-    assert studio_db.list_chat_thread_summaries(thread) == []
+class _AnthropicAnswering(_AnthropicCompactingHandler):
+    events = [
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {}},
+        {"type": "message_stop"},
+    ]
+
+    def do_POST(self) -> None:  # noqa: N802
+        self.server.headers.append(dict(self.headers))  # type: ignore[attr-defined]
+        super().do_POST()
 
 
-def test_compact_on_a_short_anthropic_chat_uses_the_summary_call():
-    thread = _saved_thread("thread-anthropic-short")
+class _ResponsesAnswering(_Handler):
+    def do_POST(self) -> None:  # noqa: N802
+        length = int(self.headers.get("Content-Length") or 0)
+        self.server.recorded.append(json.loads(self.rfile.read(length) or b"{}"))  # type: ignore[attr-defined]
+        self.server.headers.append(dict(self.headers))  # type: ignore[attr-defined]
+        sse = (
+            b'data: {"type":"response.output_text.delta","delta":"ok"}\n\n'
+            b'data: {"type":"response.completed","response":{"status":"completed","output":[],'
+            b'"usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(sse)))
+        self.end_headers()
+        self.wfile.write(sse)
+
+
+_CLOUD = {
+    "openai": (_ResponsesAnswering, "gpt-5.5"),
+    "anthropic": (_AnthropicAnswering, "claude-sonnet-4-6"),
+}
+
+
+def _cloud_calls(monkeypatch, provider_type, messages, **fields):
+    monkeypatch.setattr(ep_mod, "_is_openai_family_cloud", lambda _base_url: True)
+    handler, model = _CLOUD[provider_type]
     recorded: list[dict] = []
+    headers: list[dict] = []
 
-    class Recording(_AnthropicCompactingHandler):
+    class Recording(handler):
         def do_POST(self) -> None:  # noqa: N802
             self.server.recorded = recorded  # type: ignore[attr-defined]
+            self.server.headers = headers  # type: ignore[attr-defined]
             super().do_POST()
 
-    _proxy(
-        "anthropic",
+    chunks, _ = _proxy(provider_type, messages, handler = Recording, model = model, **fields)
+    return chunks, list(zip(recorded, headers))
+
+
+def _is_provider_summary_call(body: dict) -> bool:
+    return "You write the handover summary" in json.dumps(body)
+
+
+def _asks_for_provider_compaction(body: dict, headers: dict) -> bool:
+    beta = {key.lower(): value for key, value in headers.items()}.get("anthropic-beta", "")
+    return "context_management" in body or "compact-2026-01-12" in beta
+
+
+@pytest.mark.parametrize("provider_type", sorted(_CLOUD))
+def test_openai_and_claude_chats_are_summarised_by_unsloth_alone(monkeypatch, provider_type):
+    chunks, calls = _cloud_calls(monkeypatch, provider_type, _long_chat(), **_SMALL_TRIGGER)
+    assert [_is_provider_summary_call(body) for body, _ in calls] == [True, False]
+    assert not any(_asks_for_provider_compaction(*call) for call in calls)
+    assert "[Conversation summary]" in json.dumps(calls[-1][0])
+    [truncation] = _truncations(chunks)
+    assert truncation["summarized"] is True and truncation["summary_source"] == "unsloth"
+
+
+@pytest.mark.parametrize("provider_type", sorted(_CLOUD))
+def test_compact_on_openai_and_claude_uses_the_summary_call(monkeypatch, provider_type):
+    thread = _saved_thread(f"thread-{provider_type}-compact")
+    chunks, calls = _cloud_calls(
+        monkeypatch,
+        provider_type,
         _long_chat(turns = 2),
-        handler = Recording,
-        model = "claude-sonnet-4-6",
         thread_id = thread,
         compact_context = True,
         context_overflow = "truncate_oldest",
         compaction_threshold = 150_000,
     )
-    summary_call, sent = recorded
-    assert "handover summary" in json.dumps(summary_call["system"])
-    # The summary is a turn, not part of the system prompt.
-    assert "[Conversation summary]" not in json.dumps(sent["system"])
-    assert "[Conversation summary]" in json.dumps(sent["messages"][0])
-    assert [m["role"] for m in sent["messages"]] == ["user", "assistant", "user"]
-    assert sent["context_management"]["edits"][0]["trigger"]["value"] == 150_000
+    assert [_is_provider_summary_call(body) for body, _ in calls] == [True, False]
+    assert not any(_asks_for_provider_compaction(*call) for call in calls)
+    [truncation] = _truncations(chunks)
+    assert truncation["manual"] is True and truncation["summary_source"] == "unsloth"
     assert len(studio_db.list_chat_thread_summaries(thread)) == 1
 
 
-def test_compact_on_openai_responses_lowers_the_native_threshold(monkeypatch):
-    monkeypatch.setattr(ep_mod, "_is_openai_family_cloud", lambda _base_url: True)
-    captured: list[dict] = []
-
-    class Responses(_Handler):
-        def do_POST(self) -> None:  # noqa: N802
-            length = int(self.headers.get("Content-Length") or 0)
-            captured.append(json.loads(self.rfile.read(length) or b"{}"))
-            self.server.recorded.append(captured[-1])  # type: ignore[attr-defined]
-            sse = (
-                b"event: response.completed\n"
-                b'data: {"type":"response.completed",'
-                b'"response":{"output":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n'
-            )
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(sse)))
-            self.end_headers()
-            self.wfile.write(sse)
-
-    _proxy(
-        "openai",
-        _long_chat(turns = 2),
-        handler = Responses,
-        model = "gpt-5.5",
-        thread_id = _saved_thread("thread-openai-native"),
-        compact_context = True,
+@pytest.mark.parametrize(
+    "provider_type, saved",
+    [
+        ("openai", {"type": "compaction", "encrypted_content": "enc-saved"}),
+        ("anthropic", {"type": "compaction", "content": "PRIOR SUMMARY"}),
+    ],
+)
+def test_a_saved_provider_compaction_is_still_replayed(monkeypatch, provider_type, saved):
+    chat = [
+        {"role": "user", "content": "question 0"},
+        {"role": "assistant", "content": [saved, {"type": "text", "text": "answer 0"}]},
+        {"role": "user", "content": "latest question"},
+    ]
+    _, [(sent, headers)] = _cloud_calls(
+        monkeypatch,
+        provider_type,
+        chat,
         context_overflow = "truncate_oldest",
         compaction_threshold = 150_000,
     )
-    [sent] = captured
-    assert sent["context_management"] == [{"type": "compaction", "compact_threshold": 1_000}]
-
-
-@pytest.mark.parametrize(
-    "threshold, uncapped, window, trigger",
-    [
-        (750_000, None, 1_000_000, 200_000),
-        (750_000, True, 1_000_000, 750_000),
-        (750_000, True, 400_000, 400_000),
-        (10_000, True, 1_000_000, 50_000),
-        (10_000, None, 1_000_000, 50_000),
-    ],
-)
-def test_the_connection_trigger_lifts_the_default_cap_on_anthropic(
-    threshold, uncapped, window, trigger
-):
-    _, sent = _proxy(
-        "anthropic",
-        _long_chat(turns = 1),
-        handler = _AnthropicCompactingHandler,
-        model = "claude-sonnet-4-6",
-        context_overflow = "truncate_oldest",
-        compaction_threshold = threshold,
-        compaction_uncapped = uncapped,
-        context_window = window,
-    )
-    assert sent["context_management"]["edits"][0]["trigger"]["value"] == trigger
-
-
-def test_the_native_trigger_clamps():
-    assert ep_mod.anthropic_compaction_trigger(1) == 50_000
-    assert ep_mod.anthropic_compaction_trigger(900_000) == 200_000
-    assert ep_mod.anthropic_compaction_trigger(900_000, uncapped = True) == 900_000
-    assert ep_mod.anthropic_compaction_trigger(1, uncapped = True) == 50_000
-    assert ep_mod.openai_compaction_threshold(1) == 1_000
-    assert ep_mod.openai_compaction_threshold(900_000) == 200_000
-    assert ep_mod.openai_compaction_threshold(900_000, uncapped = True) == 900_000
+    assert "context_management" not in sent
+    if provider_type == "openai":
+        assert sent["input"][0] == saved
+        assert "question 0" not in json.dumps(sent["input"])
+    else:
+        assert sent["messages"][1]["content"][0] == saved
+        beta = {key.lower(): value for key, value in headers.items()}["anthropic-beta"]
+        assert "compact-2026-01-12" in beta
 
 
 def test_the_connection_trigger_sets_where_the_summary_fit_starts():
@@ -1111,8 +1188,70 @@ def test_a_reused_summary_still_recalls_for_the_newest_turn(rag_home, rag_conn, 
     assert truncation["recalled_chunks"] > 0
 
 
-# Every chat connection without server-side compaction: native Anthropic and OpenAI have their own
-# tests, the ChatGPT subscription needs a saved login, Lemonade is a managed engine.
+def _long_system_prompt_chat(thread: str) -> list[dict]:
+    chat = _recall_chat(thread)
+    # Too long for the summary alone to bring the prompt under the trigger.
+    chat[0] = {"role": "system", "content": "Answer briefly. " + "rule " * 4_000}
+    return chat
+
+
+def test_a_summary_that_still_needs_trimming_recalls_the_summarised_wording(
+    rag_home, rag_conn, stub_embeddings
+):
+    thread = "thread-summary-trim-recall"
+    chat = _long_system_prompt_chat(thread)
+    chunks, [_], [sent] = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER
+    )
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
+    assert all("055 794 3321" not in str(m["content"]) for m in sent["messages"][:-1])
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+    assert "Was there a phone number on the report?" in str(sent["messages"][-1]["content"])
+
+
+def test_a_saved_summary_trimmed_after_a_failed_one_recalls_the_summarised_wording(
+    rag_home, rag_conn, stub_embeddings
+):
+    thread = "thread-summary-trim-recall-after-failure"
+    chat = _long_system_prompt_chat(thread)
+    _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
+    later = [
+        *chat,
+        {"role": "assistant", "content": "I cannot see one."},
+        {"role": "user", "content": "Check the cardiology report again for the telefono."},
+    ]
+    chunks, _, [sent] = _bodies(_CutOffSummary, messages = later, thread_id = thread, **_SMALL_TRIGGER)
+    assert _SUMMARY in _system_text(sent)
+    [truncation] = _truncations(chunks)
+    assert truncation["summary_failed"] is True and truncation["dropped_messages"] > 0
+    assert "055 794 3321" in str(sent["messages"][-1]["content"])
+
+
+def test_turns_trimmed_after_a_summary_are_archived_before_the_summarised_backlog(
+    rag_home, rag_conn, stub_embeddings, monkeypatch
+):
+    from test_external_conversation_archive import _chat, _persist
+
+    monkeypatch.setenv("RAG_ARCHIVE_EMBED_MAX_CHUNKS", "1")
+    thread = "thread-summary-trim-capped"
+    chat = _chat()
+    chat[0] = {"role": "system", "content": "Answer briefly. " + "rule " * 4_000}
+    chat[21] = {"role": "user", "content": "My locker code is 4417. " + chat[21]["content"]}
+    chat[-1] = {"role": "user", "content": "What was my locker code?"}
+    _persist(thread, chat)
+    chunks, [_], [sent] = _bodies(
+        _SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER
+    )
+    [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
+    assert all("4417" not in str(m["content"]) for m in sent["messages"][:-1])
+    assert "4417" in str(sent["messages"][-1]["content"])
+
+
+# Every chat connection: native Anthropic and OpenAI have their own tests, the ChatGPT
+# subscription needs a saved login, Lemonade is a managed engine.
 _SUMMARISED_PROVIDERS = sorted(
     name
     for name, info in PROVIDER_REGISTRY.items()
@@ -1170,20 +1309,15 @@ def test_a_self_hosted_server_without_a_catalogued_window_is_summarised(provider
 
 
 def test_summarised_turns_are_archived_when_more_must_be_dropped(
-    rag_home, rag_conn, stub_embeddings, monkeypatch
+    rag_home, rag_conn, stub_embeddings
 ):
     from core.rag import conversation_archive
 
-    def fit(messages, payload, **_):
-        body = [m for m in messages if m["role"] != "system"]
-        kept = [m for m in messages if m["role"] == "system"] + body[2:]
-        return kept, {"dropped_messages": 2, "boundary_messages": 2, "fits": True}, 256
-
-    monkeypatch.setattr(ri, "_fit_external_context", fit)
     thread = "thread-summary-drop-archive"
-    chat = _recall_chat(thread)
+    chat = _long_system_prompt_chat(thread)
     chunks, [_], _ = _bodies(_SummarisingHandler, messages = chat, thread_id = thread, **_SMALL_TRIGGER)
     [truncation] = _truncations(chunks)
+    assert truncation["dropped_messages"] > 0 and "summarized" not in truncation
     assert truncation["archived_messages"] > 2
     assert conversation_archive.has_archive(thread)
 
@@ -1446,3 +1580,220 @@ def test_a_prompt_the_fit_cannot_shrink_below_the_threshold_still_fits_with_its_
     prompt = ri._external_token_counter(ri.ChatCompletionRequest(messages = chat), None)(chat)
     assert prompt > _SMALL_TRIGGER["compaction_threshold"]
     assert prompt + sent["max_tokens"] <= _SMALL_TRIGGER["context_window"]
+
+
+@pytest.mark.parametrize("force", [None, "manual"])
+def test_an_image_edit_reference_before_the_newest_turn_is_not_summarised(force):
+    from models.inference import ChatCompletionRequest
+
+    chat = _long_chat(turns = 2, turn = "word " * 40)
+    reference = {
+        "role": "assistant",
+        "content": [{"type": "image_generation_call", "id": "ig_1", "response_id": "resp_1"}],
+    }
+    chat.insert(len(chat) - 1, reference)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "latest"}],
+        provider_type = "openai",
+        model = "gpt-5-nano",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 2_000,
+        max_tokens = 256,
+    )
+    tools = [{"type": "function", "function": {"name": "t", "description": "d " * 3_000}}]
+    plan = ri._plan_external_compaction(chat, payload, tools = tools, force = force)
+    assert plan.to_summarise == chat[1:-2]
+    kept = cloud_compaction.apply_summary(chat, _SUMMARY, plan.cut)
+    assert kept[-2:] == [reference, chat[-1]]
+
+
+def _tool_turn(
+    results: int,
+    size: int,
+    code: int = 0,
+) -> list[dict]:
+    turn = []
+    for n in range(1, results + 1):
+        fn = {"name": "python", "arguments": json.dumps({"code": f"step({n})" + " pass;" * code})}
+        turn += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": f"c{n}", "type": "function", "function": fn}],
+            },
+            {"role": "tool", "tool_call_id": f"c{n}", "content": f"STEP {n} " + "harbor " * size},
+        ]
+    return turn
+
+
+def test_an_overflow_inside_a_tool_turn_shortens_its_older_results():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run the six steps."},
+        *_tool_turn(4, 600),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, summaries, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert not [c for c in chunks if "error" in c]
+    refused, resent = chats
+    assert len(json.dumps(resent["messages"])) < len(json.dumps(refused["messages"])) // 2
+    sent = json.dumps(resent["messages"])
+    assert "Run the six steps." in sent and chat[-1]["content"] in sent
+    results = [m["content"] for m in resent["messages"] if m["role"] == "tool"]
+    assert [r.split(" ")[:2] for r in results] == [["STEP", str(n)] for n in range(1, 5)]
+
+
+def test_an_overflow_from_long_tool_arguments_evicts_the_turns_older_exchanges():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "Run the eight steps."},
+        *_tool_turn(8, 10, code = 400),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert not [c for c in chunks if "error" in c]
+    refused, resent = chats
+    assert len(json.dumps(resent["messages"])) < len(json.dumps(refused["messages"]))
+    sent = json.dumps(resent["messages"])
+    assert "Run the eight steps." in sent and chat[-1]["content"] in sent
+
+
+def test_an_overflow_nothing_can_shrink_is_refused_once():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run one step."},
+        *_tool_turn(1, 3_000),
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+    )
+    assert len(chats) == 1
+    [error] = [c["error"] for c in chunks if "error" in c]
+    assert "maximum context length" in error["message"]
+
+
+class _ToolSteps(_SummarisingHandler):
+    steps = 6
+    overflow_chars = 9_000
+
+    def do_POST(self) -> None:  # noqa: N802
+        raw = self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}"
+        body = json.loads(raw)
+        # The newest call id, not the tool turns sent: a refit may evict older exchanges.
+        done = max(
+            (
+                int(call["id"].rsplit("_", 1)[1])
+                for m in body["messages"]
+                for call in m.get("tool_calls") or ()
+            ),
+            default = 0,
+        )
+        fits = len(json.dumps(body["messages"])) <= self.overflow_chars
+        if _is_summary_call(body) or not fits or done >= self.steps:
+            self.rfile = __import__("io").BytesIO(raw)
+            return super().do_POST()
+        self.server.recorded.append(body)  # type: ignore[attr-defined]
+        code = f'print("STEP {done + 1} " + "harbor " * 500)'
+        call = {
+            "index": 0,
+            "id": f"call_{done + 1}",
+            "type": "function",
+            "function": {"name": "python", "arguments": json.dumps({"code": code})},
+        }
+        payload = (
+            "".join(
+                "data: "
+                + json.dumps({"choices": [{"index": 0, "delta": delta, "finish_reason": end}]})
+                + "\n\n"
+                for delta, end in (
+                    ({"role": "assistant", "tool_calls": [call]}, None),
+                    ({}, "tool_calls"),
+                )
+            ).encode()
+            + b"data: [DONE]\n\n"
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@pytest.mark.parametrize("threshold", [100_000, None])
+def test_an_overflow_mid_tool_loop_recovers_by_shortening_the_turns_results(threshold, monkeypatch):
+    async def connected(self) -> bool:
+        return False
+
+    monkeypatch.setattr(Request, "is_disconnected", connected)
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run the six steps."},
+    ]
+    chunks, _, chats = _bodies(
+        _ToolSteps,
+        messages = chat,
+        enable_tools = True,
+        enabled_tools = ["python"],
+        permission_mode = "off",
+        context_overflow = "truncate_oldest",
+        compaction_threshold = threshold,
+    )
+    assert not [c for c in chunks if "error" in c]
+    final = chats[-1]["messages"]
+    calls = [c["id"] for m in final for c in m.get("tool_calls") or ()]
+    assert calls[-1] == "call_6" and len(set(calls)) == len(calls)
+    assert "harbor " * 500 in final[-1]["content"]
+    assert any(m["role"] == "user" and m["content"] == "Run the six steps." for m in final)
+    assert any(c.get("choices") and c["choices"][0]["delta"].get("content") == "ok" for c in chunks)
+
+
+def test_an_overflow_resuming_a_tool_turn_keeps_its_newest_result_whole():
+    chat = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "q0"},
+        {"role": "assistant", "content": "a0"},
+        {"role": "user", "content": "Run one step."},
+        *_tool_turn(1, 3_000),
+        {"role": "assistant", "content": "Le résultat"},
+    ]
+
+    class Refused(_SummarisingHandler):
+        overflow_chars = len(json.dumps(chat)) - 100
+
+    chunks, _, chats = _bodies(
+        Refused,
+        messages = chat,
+        context_overflow = "truncate_oldest",
+        compaction_threshold = 100_000,
+        continue_final_message = True,
+    )
+    assert chat[-2]["content"] in json.dumps(chats[-1]["messages"])

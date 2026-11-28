@@ -32,6 +32,25 @@ export function unmarkLiteralThinkTags(text: string): string {
     : text;
 }
 
+// OpenRouter ships reasoning as delta.reasoning_details[] whatever the provider.
+export function deltaReasoningText(delta: unknown): string {
+  if (!delta || typeof delta !== "object") return "";
+  const { reasoning_content: content, reasoning_details: details } = delta as {
+    reasoning_content?: unknown;
+    reasoning_details?: unknown;
+  };
+  const fromDetails = Array.isArray(details)
+    ? details
+        .map((part) => {
+          if (!part || typeof part !== "object") return "";
+          const text = (part as { text?: unknown }).text;
+          return typeof text === "string" ? text : "";
+        })
+        .join("")
+    : "";
+  return (typeof content === "string" ? content : "") + fromDetails;
+}
+
 export function extractDeltaText(delta: unknown): {
   text: string;
   structuredReasoningContinues: boolean;

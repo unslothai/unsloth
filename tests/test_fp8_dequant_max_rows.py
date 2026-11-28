@@ -6,6 +6,7 @@ import torch
 from torch._subclasses.fake_tensor import FakeTensorMode
 
 from unsloth.kernels import fp8 as F8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 L2 = 48 * 1024 * 1024  # L4
 SMALL = (6144, 2048)  # Qwen3-1.7B MLP: 24 MiB in bf16, L2 resident
@@ -15,6 +16,7 @@ LARGE = (14336, 4096)  # Llama-3.1-8B MLP: 112 MiB in bf16
 @pytest.fixture
 def route(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
 

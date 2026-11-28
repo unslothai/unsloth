@@ -336,10 +336,18 @@ def _pattern_value(patterns: dict, module: str, default):
     return default
 
 
+def _vllm_scales_lora_per_module() -> bool:
+    try:
+        installed = tuple(int(n) for n in re.findall(r"\d+", version("vllm") or "")[:2])
+    except PackageNotFoundError:
+        return False
+    return installed >= (0, 32)
+
+
 def _mixed_lora_scale(adapter_dir: str) -> bool:
     """True when rank_pattern / alpha_pattern give a module a scale other than lora_alpha / r.
 
-    vLLM (PEFTHelper) applies that one scale to every module, so such an adapter scores wrong.
+    vLLM before 0.32 applies that one scale to every module, so such an adapter scores wrong.
     Patterns are resolved per module like PEFT does, against the module names stored in the
     adapter weights; without readable weights the pattern keys stand in for module names.
     """
@@ -946,6 +954,22 @@ def evaluate(
                 model_args["pretrained"] = _vllm_base(effective_base)
                 model_args["lora_local_path"] = _local_adapter(model)
                 rank = _adapter_rank(model_args["lora_local_path"])
+                per_module = _vllm_scales_lora_per_module()
+                if per_module:
+                    # vLLM 0.32+ PEFTHelper.validate_legal checks max_lora_rank against every rank_pattern value
+                    patterns = (
+                        _read_config(Path(model_args["lora_local_path"]) / "adapter_config.json")
+                        or {}
+                    ).get("rank_pattern")
+                    if isinstance(patterns, dict):
+                        rank = max(
+                            [rank]
+                            + [
+                                v
+                                for v in patterns.values()
+                                if isinstance(v, int) and not isinstance(v, bool)
+                            ]
+                        )
                 merge_hint = (
                     "Use --backend unsloth or --backend hf to evaluate it, or merge it with "
                     "`unsloth export <adapter> <output_dir> --format merged-16bit` "
@@ -956,11 +980,11 @@ def evaluate(
                         f"--backend vllm supports LoRA ranks up to {_VLLM_LORA_RANKS[-1]}, "
                         f"but this adapter was trained with rank {rank}. {merge_hint}"
                     )
-                if _mixed_lora_scale(model_args["lora_local_path"]):
+                if not per_module and _mixed_lora_scale(model_args["lora_local_path"]):
                     _fail(
-                        "--backend vllm scales every LoRA module by lora_alpha / r and ignores "
-                        "rank_pattern / alpha_pattern, so this adapter would be scored with the "
-                        f"wrong weights. {merge_hint}"
+                        "--backend vllm before 0.32 scales every LoRA module by lora_alpha / r and "
+                        "ignores rank_pattern / alpha_pattern, so this adapter would be scored with "
+                        f"the wrong weights. Upgrade vLLM to 0.32 or newer. {merge_hint}"
                     )
                 if rank > 16:
                     model_args["max_lora_rank"] = next(r for r in _VLLM_LORA_RANKS if r >= rank)

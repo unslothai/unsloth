@@ -47,12 +47,16 @@ def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
     # "c" = MAP_PRIVATE: writable views, the file is never written.
     reader = GGUFReader(gguf_checkpoint_path, "c")
     unquantized = (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16)
+    # gguf-py returns BF16 as raw uint8 [..., 2 * D] only GGUFLinear decodes (BF16 norms break, diffusers#15406);
+    # a bfloat16 view of the mapped bytes loads like F16.
+    bf16 = getattr(gguf.GGMLQuantizationType, "BF16", None)
     parsed_parameters = {}
     nbytes = 0
     for tensor in reader.tensors:
         name = tensor.name
         quant_type = tensor.tensor_type
-        is_gguf_quant = quant_type not in unquantized
+        is_bf16 = bf16 is not None and quant_type == bf16
+        is_gguf_quant = quant_type not in unquantized and not is_bf16
         if is_gguf_quant and quant_type not in SUPPORTED_GGUF_QUANT_TYPES:
             _supported_quants_str = "\n".join([str(type) for type in SUPPORTED_GGUF_QUANT_TYPES])
             raise ValueError(
@@ -65,6 +69,8 @@ def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
                 )
             )
         weights = torch.from_numpy(tensor.data)
+        if is_bf16:
+            weights = weights.view(torch.bfloat16)
         nbytes += int(tensor.data.nbytes)
         parsed_parameters[name] = (
             GGUFParameter(weights, quant_type = quant_type) if is_gguf_quant else weights

@@ -188,9 +188,12 @@ def mica_basis(W, r):
 
 
 def _routed(base):
-    # Routed compressed-tensors linears: loader_utils' wrapper (the saved original) densifies them first.
-    return type(base).__name__ == "_UnslothNVFP4Linear" or getattr(
-        base, "_unsloth_compressed_tensors_fp8", False
+    # Routed compressed-tensors linears: loader_utils' wrapper (the saved original) densifies them first. Packed
+    # GGUF linears: gguf_packed's wrapper refuses inits that rewrite the base, which stays in its GGUF blocks.
+    return (
+        type(base).__name__ == "_UnslothNVFP4Linear"
+        or getattr(base, "_unsloth_compressed_tensors_fp8", False)
+        or getattr(base, "_unsloth_gguf_packed_linear", False)
     )
 
 
@@ -231,8 +234,7 @@ def _pissa_init(self, adapter_name, init_lora_weights):
         # PEFT's svd_lowrank(q = r, niter = N), device-independent so reloads rebuild the same residual.
         n_iter, n_oversamples = int(parts[-1]), 0
     if _pp_placeholder(weight):
-        # Another pipeline stage owns this layer (pipeline_sharded_loading): its rank computes the init from
-        # the real weight, and the split drops this adapter. The fast path draws no global RNG either.
+        # Other stage owns it, inits from real weight; split drops its adapter; no global RNG.
         return
     if not torch.isfinite(weight).all():
         return _ORIGINAL["pissa_init"](self, adapter_name, init_lora_weights)
@@ -327,8 +329,7 @@ def fast_lora_init(force = False):
 
 
 def record_fast_pissa(model):
-    """PEFT re-runs PiSSA when loading an adapter, and only the same algorithm rebuilds the residual base
-    training saw: saves of this model mark their adapter folders so Unsloth's loaders can tell."""
+    """PEFT re-runs PiSSA on load; marked saves let Unsloth loaders use the same algorithm."""
     original = model.save_pretrained
     if getattr(original, "_unsloth_fast_pissa", False):
         return

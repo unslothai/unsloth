@@ -281,6 +281,21 @@ RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_adapter_off_teacher)
 RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_adapter_off_teacher)
 
 
+def distillation_trainer_teacher_tokenizer(call_args, extra_args):
+    # TRL checks only vocab_size: Qwen2.5 and Qwen3 share 151936 rows but Qwen3 adds <think> / </think>.
+    if "teacher_model" not in call_args or "processing_class" not in call_args:
+        return ""
+    return (
+        "from unsloth.models._on_policy_distillation import check_teacher_tokenizer as _unsloth_check_teacher_tokenizer\n"
+        # The superclass gets `tokenizer` when the caller used that alias (rl.py), so check the same object.
+        "_unsloth_check_teacher_tokenizer(teacher_model, locals().get('tokenizer') if locals().get('tokenizer') is not None else processing_class, type(self).__name__)\n"
+    )
+
+
+RL_EXTRA_ARGS["gkd_trainer"].append(distillation_trainer_teacher_tokenizer)
+RL_EXTRA_ARGS["distillation_trainer"].append(distillation_trainer_teacher_tokenizer)
+
+
 def grpo_trainer_distillation_teacher(call_args, extra_args):
     # GRPOTrainer(..., teacher_model = model) for unsloth_distillation_coef; TRL's GRPOTrainer has no such argument.
     return "_unsloth_grpo_teacher_model = kwargs.pop('teacher_model', None)\n"
@@ -735,7 +750,50 @@ def dpo_trainer_concatenated_inputs(function_name, function):
     return function
 
 
+def _unsloth_dpo_align_mm_token_type_ids(prompt_input_ids, mm_token_type_ids, input_ids):
+    # Legacy DPO rows keep mm_token_type_ids at prompt width, while the forward gets prompt + completion after
+    # flush, truncation or padding-free packing. Processors label tokens by id, so relabel the final ids from
+    # the (token id, type) pairs the prompt carries; completions are text unless they repeat a media token.
+    if not isinstance(mm_token_type_ids, torch.Tensor) or not isinstance(input_ids, torch.Tensor):
+        return mm_token_type_ids
+    if mm_token_type_ids.shape == input_ids.shape:
+        return mm_token_type_ids
+    if (
+        not isinstance(prompt_input_ids, torch.Tensor)
+        or prompt_input_ids.shape != mm_token_type_ids.shape
+    ):
+        return mm_token_type_ids
+    mm_token_type_ids = mm_token_type_ids.to(input_ids.device)
+    prompt_input_ids = prompt_input_ids.to(input_ids.device)
+    rebuilt = torch.zeros(input_ids.shape, dtype = mm_token_type_ids.dtype, device = input_ids.device)
+    is_media = mm_token_type_ids != 0
+    pairs = torch.stack(
+        (prompt_input_ids[is_media], mm_token_type_ids[is_media].to(prompt_input_ids.dtype))
+    )
+    for token_id, token_type in torch.unique(pairs, dim = 1).t().tolist():
+        rebuilt.masked_fill_(input_ids == token_id, token_type)
+    return rebuilt
+
+
+def _dpo_trainer_align_mm_token_type_ids(function):
+    if "_unsloth_dpo_align_mm_token_type_ids" in function:
+        return function
+    anchor = (
+        "            else:\n" '                model_kwargs["attention_mask"] = attention_mask\n'
+    )
+    return function.replace(
+        anchor,
+        anchor
+        + '            if "mm_token_type_ids" in model_kwargs:\n'
+        + '                model_kwargs["mm_token_type_ids"] = _unsloth_dpo_align_mm_token_type_ids(\n'
+        + '                    concatenated_batch["prompt_input_ids"], model_kwargs["mm_token_type_ids"], input_ids\n'
+        + "                )\n",
+        1,
+    )
+
+
 def _dpo_trainer_extend_vision_model_kwargs(function):
+    function = _dpo_trainer_align_mm_token_type_ids(function)
     if all(_k in function for _k in _DPO_VISION_KEYS):
         return function
 
@@ -995,6 +1053,7 @@ RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(dpo_trainer_vision_process_
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_vision_signature_columns)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_inputs)
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_concatenated_forward)
+RL_PRE_ITEMS["dpo_trainer"].append(inspect.getsource(_unsloth_dpo_align_mm_token_type_ids))
 RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
@@ -1235,6 +1294,76 @@ def online_dpo_trainer__forward(function_name, function):
 
 
 RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward)
+
+
+def _unsloth_online_dpo_mm_types(self, model, prompt_ids, completion_ids, vision_inputs):
+    """mm_token_type_ids for Online DPO's forward, or None. Transformers 5.x M-RoPE models (Qwen2-VL, Qwen2.5-VL,
+    ...) refuse image_grid_thw without them, and TRL < 1.17 never puts them in vision_inputs. Prompt image / video
+    tokens are rebuilt from prompt_ids; completion tokens are text. Models whose forward has no such argument
+    (transformers 4.x) get nothing."""
+    if not isinstance(vision_inputs, dict) or "mm_token_type_ids" in vision_inputs:
+        return None
+    if vision_inputs.get("image_grid_thw") is None and vision_inputs.get("video_grid_thw") is None:
+        return None
+    base = model
+    try:
+        base = self.accelerator.unwrap_model(model)
+    except Exception:
+        pass
+    get_base_model = getattr(base, "get_base_model", None)
+    if callable(get_base_model):
+        try:
+            base = get_base_model()
+        except Exception:
+            pass
+    try:
+        if "mm_token_type_ids" not in inspect.signature(type(base).forward).parameters:
+            return None
+    except (TypeError, ValueError):
+        return None
+    prompt_types = _unsloth_fix_mm_token_type_ids(
+        getattr(self, "processing_class", None), prompt_ids, None
+    )
+    if not isinstance(prompt_types, torch.Tensor) or prompt_types.shape != prompt_ids.shape:
+        return None
+    return torch.cat([prompt_types, prompt_types.new_zeros(completion_ids.shape)], dim = 1)
+
+
+_ONLINE_DPO_VISION_CALL = re.compile(
+    r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, \*\*model_kwargs\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+
+
+def online_dpo_trainer__forward_mm_token_type_ids(function_name, function):
+    """TRL 0.2x - 1.16 Online DPO ``_forward`` passes image_grid_thw but not mm_token_type_ids, which transformers
+    5.x M-RoPE models require. TRL 1.17+ passes them itself, so the runtime check leaves its kwargs alone."""
+    if function_name != "_forward" or "_unsloth_online_dpo_mm_types" in function:
+        return function
+    if "vision_inputs" not in function:
+        return function  # TRL without vision Online DPO
+    calls = list(_ONLINE_DPO_VISION_CALL.finditer(function))
+    if len(calls) != 1:
+        return function
+    i = calls[0].group("indent")
+    block = (
+        f'{i}if vision_inputs is not None and "mm_token_type_ids" not in model_kwargs:\n'
+        f"{i}    _unsloth_mm_token_type_ids = _unsloth_online_dpo_mm_types(\n"
+        f"{i}        self, model, prompt_ids, completion_ids, vision_inputs\n"
+        f"{i}    )\n"
+        f"{i}    if _unsloth_mm_token_type_ids is not None:\n"
+        f'{i}        model_kwargs["mm_token_type_ids"] = _unsloth_mm_token_type_ids\n'
+    )
+    return function[: calls[0].start()] + block + function[calls[0].start() :]
+
+
+RL_FUNCTIONS["online_dpo_trainer"].append(online_dpo_trainer__forward_mm_token_type_ids)
+for _online_dpo_mm_item in (
+    _unsloth_get_mm_token_id,
+    _unsloth_fix_mm_token_type_ids,
+    _unsloth_online_dpo_mm_types,
+):
+    RL_PRE_ITEMS["online_dpo_trainer"].append(inspect.getsource(_online_dpo_mm_item))
 
 
 _WRAPPED_PACKING_SETUP = (
@@ -11007,8 +11136,22 @@ def _unsloth_odpo_chunked_head(self, model, batch, method):
         reason = "UNSLOTH_FUSED_LINEAR=0"
     elif _unsloth_preference_chunked_off():
         reason = "UNSLOTH_PREFERENCE_CHUNKED=0"
-    elif any(k != "attention_mask" and k != "input_ids" for k in batch):
-        # Vision rows (pixel_values, image_grid_thw, ...) keep TRL's layout.
+    elif any(
+        k
+        not in (
+            "attention_mask",
+            "input_ids",
+            # TRL's vision kwargs: the forward places image tokens by position, so the final hidden states line up
+            # with prompt_completion_ids and TRL's completion slice reads them as it reads logits.
+            "pixel_values",
+            "pixel_attention_mask",
+            "image_sizes",
+            "image_grid_thw",
+            "token_type_ids",
+            "mm_token_type_ids",
+        )
+        for k in batch
+    ):
         reason = "extra model inputs"
     if reason is not None:
         try:

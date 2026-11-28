@@ -28,8 +28,7 @@ def _denoisers(pipe: Any) -> list:
 
 
 def companions_fit_beside_denoiser(pipe: Any, companions: Iterable[Any]) -> bool:
-    """Whether the denoiser can stay beside the companions: free memory plus idle allocator cache
-    (minus CUDA graph pools) covers them with a margin."""
+    """Free memory + idle allocator cache - CUDA graph pools covers companions with a margin."""
     try:
         import torch
 
@@ -98,9 +97,8 @@ ENCODE_ONCE_MEMO_ATTR = "_unsloth_encode_once_memo"
 
 @contextlib.contextmanager
 def encode_once(runner: Any):
-    """Per request, identical keyword-only encode_prompt calls reuse a device copy of the first call
-    outputs, taken right after it so its in-place edits never reach them; tensor or positional
-    calls pass through."""
+    """Per request, identical keyword-only encode_prompt calls reuse a device copy of the first
+    call's outputs, taken right after so in-place edits never reach it; others pass through."""
     encode = getattr(runner, "encode_prompt", None)
     if not callable(encode):
         yield

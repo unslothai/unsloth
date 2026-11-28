@@ -4378,6 +4378,8 @@ export const zhCN = {
       unsupportedFileType: "不支持的文件类型",
       uploadOneFileType: "上传一个 {types} 文件。",
       datasetUploaded: "数据集已上传",
+      importPandasJson: "将 .json 作为 pandas 列格式导入",
+      importSemicolonCsv: "对 .csv 使用分号作为分隔符",
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",

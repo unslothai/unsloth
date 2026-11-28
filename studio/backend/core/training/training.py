@@ -281,6 +281,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "local_datasets": values.get("local_datasets"),
         "local_eval_datasets": values.get("local_eval_datasets"),
         "format_type": values.get("format_type", ""),
+        "prefer_native_alpaca": values.get("prefer_native_alpaca", False),
         "subset": values.get("subset"),
         "train_split": values.get("train_split", "train"),
         "eval_split": values.get("eval_split"),
@@ -3395,6 +3396,12 @@ class TrainingBackend:
                 self._terminal_finalize_payload = dict(db_action_kwargs)
 
             elif etype == "error":
+                from core.training.parallel_plan import plain_training_error
+
+                event = {
+                    **event,
+                    "error": plain_training_error(event.get("error", "Unknown error")),
+                }
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
                 # Nothing left to save: drop an in-flight watchdog to its grace, not the save backstop.

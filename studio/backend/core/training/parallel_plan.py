@@ -382,6 +382,16 @@ def _single_process_feature(request: dict) -> Optional[str]:
     return None
 
 
+_BARE_FLAGS = ("fsdp", "fsdp2")
+
+
+def _normalize_spec(raw: Optional[str]) -> str:
+    """A bare switch ("fsdp,cp=2") reads as fsdp=1; Core takes only key=value parts. A bare size ("tp") stays
+    as written, so Core refuses it instead of it meaning 1."""
+    parts = [p.strip() for p in str(raw or "").replace(";", ",").split(",")]
+    return ",".join(f"{p}=1" if p.lower() in _BARE_FLAGS else p for p in parts if p)
+
+
 def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
     if mode == DDP:
         return f"dp={world}"
@@ -389,7 +399,7 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
         return f"dp={world},fsdp=1"
     if mode in (TP, PP, CP, EP):
         return f"{_AXIS_OF_MODE[mode]}={world}"
-    return str(custom or "").strip()
+    return _normalize_spec(custom)
 
 
 def _spec_example(world: int) -> str:
@@ -413,6 +423,7 @@ def _parse_spec(raw: str, world: int) -> dict:
         part.split("=", 1)[0].strip().lower() in ("ep", "ep_size")
         for part in raw.replace(";", ",").split(",")
     )
+    raw = _normalize_spec(raw)
     try:
         spec = env.parse_parallel_spec(raw, source = "parallel_spec")
     except ValueError as exc:
@@ -511,8 +522,9 @@ def _core_check(
     }
     query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        # cp_backend "auto" resolves only at load, so the cell check is left to Unsloth then.
-        caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
+        # Core's rules only: its cell gate reads what the load knows (attention, compile, traits, router aux
+        # loss) and runs at load, where Studio rewords its refusal (plain_training_error).
+        caps.check(query, cells = False)
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
@@ -531,6 +543,34 @@ def _core_check(
             _plain_core_message(message),
             alternative,
         )
+
+
+# Core's cell gate (parallel_capabilities.check, at load): a layout it has no parity / engagement evidence for.
+_UNVERIFIED = "has no numeric parity / engagement / compile evidence"
+_AXIS_WORDS = (
+    ("ep", "expert parallel"),
+    ("tp", "tensor parallel"),
+    ("pp", "pipeline parallel"),
+    ("cp", "context parallel"),
+)
+
+
+def plain_training_error(text: str) -> str:
+    """A training error as the Train page shows it: Core's cell-gate refusal names test cells and internal tooling,
+    so it is reworded from its layout and model family."""
+    if not (isinstance(text, str) and _UNVERIFIED in text):
+        return text
+    family = re.search(r"family='([^']+)'", text) or re.search(
+        r"cell '(?:MoE )?([a-z0-9_.]+) x ", text
+    )
+    layout = re.search(r"\(layout ([^)]*)\)", text)
+    sizes = dict(re.findall(r"\b(ep|tp|pp|cp) (\d+)", layout.group(1) if layout else ""))
+    words = " with ".join(label for axis, label in _AXIS_WORDS if int(sizes.get(axis, 1)) > 1)
+    subject = (words or "this multi-GPU layout") + (f" for {family.group(1)}" if family else "")
+    return (
+        f"Unsloth has not verified {subject} with these settings yet, so it refuses to train it. "
+        "Use DDP or FSDP2."
+    )
 
 
 _REASON_BELOW = "(its reason follows the layout below)"
@@ -697,6 +737,16 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
             # Core keeps FSDP2 blocks gathered when the weights alone fit a card, ignoring optimizer state.
             env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
+        if multi and sizes and sizes.get("fsdp") and model.get("is_moe"):
+            warnings.append(
+                "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits "
+                "each GPU."
+            )
+        per_gpu = _estimate_row(model, n or 1)
+        if mode == LAYER_SPLIT and not n:
+            per_gpu["layer_split"] = (
+                None  # unpinned: the start-time selection picks the cards, so no count yet
+            )
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,
@@ -706,7 +756,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "launcher": "multi_process" if multi else "single_process",
             "distributed_backend": host.get("distributed_backend") if multi else None,
             "reason": reason,
-            "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
+            "estimate": {"required_gb": need, "per_gpu_gb": per_gpu},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
             "notes": notes,

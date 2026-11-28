@@ -16,6 +16,7 @@ from unsloth.kernels import fp8_lora as FL
 from unsloth.kernels import fast_lora as FLK
 from unsloth.models import float8_training as f8t
 from real_accelerator import has_real_cuda
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     not hasattr(torch, "float8_e4m3fn") or not hasattr(torch, "_scaled_mm"),
@@ -919,6 +920,7 @@ def test_enabling_an_offloaded_base_again_keeps_engagement(offload_on_cpu, monke
         state.device = torch.device("cuda:0")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (8, 9))
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
     assert f8t.enable_fp8_lora(model) == expected
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == len(expected)
@@ -1548,6 +1550,7 @@ def test_rowwise_failure_does_not_change_the_scaling_recipe(monkeypatch, error):
     monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {})
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set())
+    monkeypatch.setattr(FL, "_TENSORWISE_MISSING", set(), raising = False)
     calls = []
 
     def fail_once(*args):

@@ -150,3 +150,23 @@ def test_direct_loaded_modules_go_back_to_the_host_only_when_the_plan_moved_on(m
         pipe, _plan("group", stream_transformer = False, stream_text_encoders = True)
     )
     assert pipe.moved == [] and calls == []
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_the_device_read_waits_for_work_queued_on_the_current_stream(tmp_path):
+    """The reader allocates its targets on the current stream; a reused block with a queued write must not be filled
+    by the side stream before that write runs."""
+    want = torch.arange(1 << 20, dtype = torch.int32)
+    path = tmp_path / "one.safetensors"
+    safetensors_torch.save_file({"model.diffusion_model.w": want}, str(path))
+    torch.cuda.synchronize()
+    stale = torch.empty_like(want, device = "cuda")
+    torch.cuda._sleep(1 << 28)
+    stale.fill_(7)
+    ptr = stale.data_ptr()
+    del stale
+    got = video_ltx2.read_safetensors_to_device(path, "cuda", chunk_bytes = 1 << 20)
+    reused = got["model.diffusion_model.w"].data_ptr() == ptr
+    torch.cuda.synchronize()
+    assert reused, "the allocator did not reuse the block; the check would not exercise the hazard"
+    assert torch.equal(got["model.diffusion_model.w"].cpu(), want)

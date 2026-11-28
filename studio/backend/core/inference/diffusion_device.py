@@ -98,8 +98,7 @@ def _zero_buffer_causal_conv(
     x: Any,
     cache_x: Any = None,
 ) -> Any:
-    """``WanCausalConv3d.forward`` padding into a zero buffer: MPS F.pad leaks driver memory per call before torch
-    2.15 (pytorch#195368: 270 GiB over one Wan 2.2 decode)."""
+    """Pads into zero buffer: MPS F.pad leaks driver memory before torch 2.15 (pytorch#195368)."""
     import torch
 
     padding = list(module._padding)
@@ -169,6 +168,11 @@ def _cat_front_h3_conv(module: Any, hidden_states: Any) -> Any:
     padded = h3_causal_pad(
         hidden_states, int(module.spatial_padding or 0), module.spatial_padding_mode, front
     )
+    if getattr(module.__dict__.get("_conv_forward"), "_unsloth_mps_pertap", False) and tuple(
+        module.padding
+    ) == (0, 0, 0):
+        # video_vae_mps_pertap's wrap: the same F.conv3d (padding 0, zeros mode) or its per-tap form
+        return module._conv_forward(padded, module.weight, module.bias)
     return F.conv3d(
         padded,
         module.weight,
@@ -226,8 +230,7 @@ def install_frame_pad_fix(
 
 
 def mps_synchronize() -> None:
-    """A blocking read waits on the stream's serial queue; torch.mps.synchronize() (torch <= 2.13) commits
-    off it and aborts ("already committed command buffer") while another thread copies (pytorch#197836)."""
+    """torch.mps.synchronize() (torch <= 2.13) aborts with a concurrent copy (pytorch#197836)."""
     import torch
     torch.zeros(1, device = "mps").cpu()
 
@@ -238,9 +241,7 @@ def install_vae_sync(
     *,
     logger: Any = None,
 ) -> bool:
-    """Synchronise Metal after every VAE decoder or encoder call (one per tile or latent frame):
-    Metal cannot reuse a buffer until queued work holding it completes, and empty_cache cannot
-    return the intermediates."""
+    """Sync per VAE call: queued work pins Metal buffers, and empty_cache can't free them."""
     if target.device != "mps":
         return False
     vae = getattr(pipe, "vae", None)
@@ -357,8 +358,7 @@ def install_rocm_vae_bf16_decode(
     if mode == "weights" and not parts:
         mode = "autocast"  # no separable decode half: cast nothing
 
-    # The wrapped decode lives in a mutable slot (as the fp16 decode's does): a layer that must sit under this cast (a
-    # compiled decode guard under the OOM scope) can be found and rewrapped in place.
+    # Decode sits in a mutable slot so a compiled guard under this cast can be rewrapped.
     slot = types.SimpleNamespace(decode = decode)
     if mode == "weights":
         for part in parts:
@@ -430,7 +430,6 @@ def resolve_selected_cuda_ordinal(
 
 
 def _ranking_room_mib(free_mib: int, total_mib: Optional[int]) -> int:
-    """What a card offers a primary pick."""
     from .diffusion_memory import DeviceMemory, _safe_device_budget_mib, _user_budget_reserve_mib
 
     if _user_budget_reserve_mib(1 << 20) <= 0:
@@ -544,8 +543,7 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
             # MIG instance ordinals are not nvidia-smi rows; keep card 0 explicit.
             return 0
         if not hw._cuda_order_matches_smi():
-            # No ranking (rows are not ordinals), but on cards that are not provably identical keep the
-            # current card explicit, so a pooled thread left on another card cannot preflight against it.
+            # Rows are not ordinals: keep card 0 unless cards are provably identical.
             return None if hw._cuda_cards_identical() is True else 0
         if hw._integrated_cuda_rows(visible)[0]:
             return None
@@ -559,8 +557,7 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     # CUDA stops a mask at an entry naming no card ("0,99,1" is just 0), so later ids are not ordinals.
     if not {d.get("index") for d in devices} >= set(visible):
         return None
-    # Only cards at least as capable as the current one (ordinal 0): a freer older card can lack the
-    # installed torch's kernels or a precision the request needs, where the current card works today.
+    # Only cards at least as capable as ordinal 0; older ones may lack torch kernels/precision.
     floor = caps.get(visible[0])
     if floor is None:
         return None
@@ -594,16 +591,14 @@ def resolve_auto_cuda_ordinal() -> Optional[int]:
     best = max(free_by_ordinal.values())
     winner = min(o for o, free in free_by_ordinal.items() if best - free <= _AUTO_FREE_TIE_BYTES)
     if winner:
-        # Physical rows hide MIG slices: a MIG card's row is the whole card, and its CUDA
-        # ordinals are slices (or absent before R570), so a row-ranked winner is not a card
-        # CUDA hands out. Unknown MIG status or a MIG card in the set keeps card 0 explicit.
+        # Physical rows hide MIG slices (CUDA ordinals are slices or absent before R570), so a
+        # row-ranked winner is not a CUDA card; unknown MIG status or MIG in the set keeps card 0.
         mig = hw._nvidia_mig_gpu_indices_or_none()
         if mig is None or set(visible) & mig:
             return 0
         return winner
-    # Card 0 won. Identical cards (same capability and size) keep None, the unpinned path they always had,
-    # while no thread was ever pinned elsewhere. Mixed cards, or a process where a pooled thread may sit on
-    # another card, keep 0 explicit so preflight and load read the ranked card.
+    # Card 0 won: identical cards (same capability and size) return None, while mixed cards or a
+    # pooled thread elsewhere keep 0 explicit so preflight and load read the ranked card.
     if _PINNED_AWAY_FROM_ZERO:
         return 0
     totals = {d.get("vram_total_gb") for d in devices if d.get("index") in visible}
@@ -711,8 +706,7 @@ def auto_cuda_ranking_possible_cached() -> Optional[bool]:
 
         if hw.DEVICE is None:
             return None
-        # From memory only: get_device() waits on _DETECT_LOCK, which a detection pass in flight
-        # holds, and this runs on the event loop.
+        # Memory only: get_device() waits on _DETECT_LOCK in detection; runs on the event loop.
         if hw.IS_ROCM or hw.DEVICE != hw.DeviceType.CUDA:
             return False
         if not hw.DETECTION_COMPLETE.is_set():
@@ -818,8 +812,7 @@ def pin_cuda_ordinal(ordinal: Optional[int]) -> None:
 
 
 def placed_cuda_ordinal(target: DiffusionDeviceTarget) -> Optional[int]:
-    """Records the card the weights actually sit on, since a pooled worker's pin would otherwise go
-    stale."""
+    """Returns the card weights actually sit on; a pooled worker's pin would go stale."""
     if not target.is_cuda_torch_device:
         return None
     if target.ordinal is not None:
@@ -1071,8 +1064,7 @@ def _xpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def _mps_supports_bfloat16(torch: Any) -> bool:
-    """Runtime probe for usable MPS bfloat16 (only on macOS 14+; older macOS raises). Probes with
-    a tiny forced compute rather than guessing from the macOS / chip version."""
+    """bfloat16 probe (macOS 14+; older raises): tiny forced compute, not a macOS / chip guess."""
     try:
         x = torch.ones(2, dtype = torch.bfloat16, device = "mps")
         return bool(torch.isfinite((x + x).float()).all().item())
@@ -1091,10 +1083,8 @@ _MPS_CAP_OS_RESERVE_FRAC = 0.10
 def mps_high_watermark_ratio(
     recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
 ) -> Optional[float]:
-    """Ratio capping Metal allocations at RAM minus an OS reserve, never below the recommended
-    working set; None if a reading is missing. torch's 1.7x default exceeds RAM and swaps; 0.0
-    removes the limit; a finite cap raises an out-of-memory RuntimeError that batch backoff and
-    VAE tile retry handle."""
+    """Caps Metal at RAM minus OS reserve, not below the working set (None if unread); 0.0 lifts it
+    (torch's 1.7x default swaps); finite caps raise OOM that backoff and tile retry handle."""
     try:
         recommended = int(recommended_bytes or 0)
         total = int(total_ram_bytes or 0)
@@ -1171,9 +1161,8 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         # recommended_max_memory() reading). 0.0 here only lifts torch's 1.7x-of-working-set default, which sits above
         # physical RAM; apply_mps_memory_cap() then sets the finite cap. setdefault respects an override.
         os.environ.setdefault(MPS_HIGH_WATERMARK_ENV, "0.0")
-        # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
-        # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
-        # range; older macOS uses fp32.
+        # Prefer bfloat16 (macOS 14+, fp32's exponent range), else float32; never silent float16,
+        # DiT activations overflow it (Z-Image MLP peaks near 9e5 -> inf -> NaN).
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
         if not user_ratio:
             apply_mps_memory_cap(torch)

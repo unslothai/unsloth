@@ -4763,6 +4763,8 @@ export const tr = {
       unsupportedFileType: "Desteklenmeyen dosya türü",
       uploadOneFileType: "Bir {types} dosyası yükleyin.",
       datasetUploaded: "Veri kümesi yüklendi",
+      importPandasJson: ".json dosyasını pandas sütunları olarak içe aktar",
+      importSemicolonCsv: ".csv için ayırıcı olarak noktalı virgül kullan",
       evalDatasetUploaded: "Değerlendirme veri kümesi yüklendi",
       uploadOneFileAtATime: "Tek seferde bir dosya yükleyin",
       uploadSingleFileDescription:

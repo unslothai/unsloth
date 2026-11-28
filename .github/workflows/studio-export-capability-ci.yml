@@ -7,8 +7,7 @@ name: Unsloth export capability
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # Windows and macOS jobs skip drafts, so marking a PR ready must start the tested run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'studio/backend/core/export/export.py'
@@ -20,8 +19,7 @@ on:
       - '.github/actions/pip-cache-save/action.yml'
       - 'studio/backend/utils/hardware/**'
       - '.github/workflows/studio-export-capability-ci.yml'
-      # export.py imports these at module scope; a new top-level torch import is what this
-      # Windows lane catches.
+      # export.py imports these at module scope; Windows lane catches top-level torch imports.
       - 'studio/backend/tests/conftest.py'
       - 'tests/_shared/compile_cache_isolation.py'
       - 'studio/backend/loggers/**'
@@ -46,8 +44,7 @@ on:
       - '.github/actions/pip-cache-save/action.yml'
       - 'studio/backend/utils/hardware/**'
       - '.github/workflows/studio-export-capability-ci.yml'
-      # export.py imports these at module scope; a new top-level torch import is what this
-      # Windows lane catches.
+      # export.py imports these at module scope; Windows lane catches top-level torch imports.
       - 'studio/backend/tests/conftest.py'
       - 'tests/_shared/compile_cache_isolation.py'
       - 'studio/backend/loggers/**'

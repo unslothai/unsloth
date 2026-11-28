@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # Hybrid Mamba-2 archs storing head_count_kv (and on Bolt expert_used_count) per layer.
 _NEMOTRON_H_ARCHS = frozenset({"nemotron_h", "nemotron_h_moe"})
+# One uniform KV pair per attention block; Qwen 3.5 GDN blocks carry recurrent state instead.
+_UNIFORM_KV_ARCHS = frozenset({"llama", "qwen2", "qwen2moe", "qwen3", "qwen3moe"})
+_QWEN_HYBRID_ARCHS = frozenset({"qwen35", "qwen35moe"})
 _BLOCK_RE = re.compile(r"^blk\.(\d+)\.(.+)$")
 
 # Sparse experts incl. fused/chunked forms; NOT ffn_routed_*: kimi-k3 reads it every token
@@ -44,8 +47,7 @@ class ModelLayout:
     n_layers: int = 0
     n_attention_layers: int = 0
     blocks: tuple[BlockLayout, ...] = field(default_factory = tuple)
-    # Rides the layer list at index n_layer_all, so it is GPU-resident for any -ngl >= 1 and can only be moved with an
-    # explicit override.
+    # Layer index n_layer_all: GPU-resident for -ngl >= 1; moves only with explicit override.
     lm_head_bytes: int = 0
     # llama.cpp pins dev_input to CPU: never VRAM, but charged to host RAM
     token_embd_bytes: int = 0
@@ -71,6 +73,10 @@ class ModelLayout:
     has_swa: bool = False
     # False when a needed quantity could not be read. The planner abstains.
     complete: bool = False
+    # The loader partitions block_count + 1 slots even when it skips loading nextn weights.
+    n_nextn_layers: int = 0
+    attention_layers: Optional[tuple[bool, ...]] = None
+    has_unplaced_tensors: bool = False
     # Looped GGUFs: the layer row (physical layer, the -ngl unit) of each KV cache slot; empty = one slot per row.
     cache_slot_rows: tuple[int, ...] = ()
 
@@ -264,8 +270,7 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
 
     nemotron_h = arch in _NEMOTRON_H_ARCHS
     if nemotron_h and isinstance(n_kv_head, (list, tuple)):
-        # Per-layer head_count_kv: 0 marks a layer without an attention cache. The recurrent (Mamba) layers are the ones
-        # with neither attention nor an FFN; the rest are dense or MoE FFN blocks.
+        # head_count_kv 0: no attention cache; recurrent layers have neither attention nor FFN.
         heads = [int(h) for h in list(n_kv_head)[:n_layers]]
         ffn = _field(reader, f"{arch}.feed_forward_length")
         ffn = (
@@ -322,6 +327,9 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
     token_embd = 0
     per_layer_embd = 0
     other_resident = 0
+    attention_blocks = set()
+    recurrent_blocks = set()
+    has_unplaced_tensors = False
 
     for tensor in (t for r in readers for t in r.tensors):
         name = str(tensor.name)
@@ -330,6 +338,11 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         if match:
             index = int(match.group(1))
             tail = match.group(2)
+            if arch in _QWEN_HYBRID_ARCHS and index < n_layers:
+                if tail == "attn_q.weight":
+                    attention_blocks.add(index)
+                if tail == "ssm_a":
+                    recurrent_blocks.add(index)
             # Shared experts and routers run on every token, so they are not spillable.
             spillable = _MOE_EXPERT_RE.match(tail) or (not is_moe and _DENSE_FFN_RE.match(tail))
             if spillable:
@@ -337,6 +350,16 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
             else:
                 resident[index] = resident.get(index, 0) + nbytes
             continue
+        if name not in {
+            "token_embd.weight",
+            "output.weight",
+            "output_norm.weight",
+            "output.bias",
+            "output_norm.bias",
+            # llama.cpp keeps one copy per layer device (TENSOR_DUPLICATED); n_rot / 2 floats each, so counting it once is close enough.
+            "rope_freqs.weight",
+        }:
+            has_unplaced_tensors = True
         # Before the token_embd substring below, which would otherwise swallow the per-layer table.
         if is_per_layer_embedding(name):
             per_layer_embd += nbytes
@@ -348,6 +371,8 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         else:
             other_resident += nbytes
 
+    if not token_embd or (nextn and arch not in _QWEN_HYBRID_ARCHS):
+        has_unplaced_tensors = True
     if not spill and not resident:
         return ModelLayout()
 
@@ -371,6 +396,24 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         for i in block_indices
     )
 
+    attention_layers = None
+    if (
+        len(blocks) == n_layers
+        and not has_swa
+        and not _field(reader, f"{arch}.attention.shared_kv_layers")
+    ):
+        if arch in _UNIFORM_KV_ARCHS and n_attention == n_layers:
+            attention_layers = (True,) * n_layers
+        elif (
+            arch in _QWEN_HYBRID_ARCHS
+            and n_group > 0
+            and recurrent > 0
+            and len(attention_blocks) == n_attention
+            and len(recurrent_blocks) == n_recurrent
+            and attention_blocks.isdisjoint(recurrent_blocks)
+        ):
+            attention_layers = tuple(i in attention_blocks for i in range(n_layers))
+
     return ModelLayout(
         arch = arch,
         n_layers = n_layers,
@@ -390,6 +433,10 @@ def _layout_from_readers(readers, *, complete: bool = False) -> ModelLayout:
         n_expert_used = n_expert_used,
         has_excluded_blocks = has_excluded,
         excluded_block_bytes = excluded_bytes,
+        n_nextn_layers = nextn,
+        attention_layers = attention_layers,
+        has_unplaced_tensors = has_unplaced_tensors
+        or any(i >= blocks_total for i in all_block_indices),
         complete = True,
         cache_slot_rows = loop[1] if loop is not None else (),
     )

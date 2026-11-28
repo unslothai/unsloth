@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from real_accelerator import has_real_cuda
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -38,6 +39,8 @@ def test_gate(F, monkeypatch, capability, version, hip, expected):
     monkeypatch.setattr(F.torch.cuda, "get_device_capability", lambda device = None: capability)
     monkeypatch.setattr(F.triton, "__version__", version)
     monkeypatch.setattr(F.torch.version, "hip", hip)
+    if not hip:
+        drop_rocm_tag(monkeypatch, F.torch)
     F._fp8_gemv_miscompiles.cache_clear()
     try:
         assert F._fp8_gemv_miscompiles(0) is expected
@@ -79,6 +82,7 @@ def test_gate_traces_without_graph_break(F, monkeypatch, version):
     monkeypatch.setattr(F.torch.cuda, "get_device_capability", lambda device = None: (10, 0))
     monkeypatch.setattr(F.triton, "__version__", version)
     monkeypatch.setattr(F.torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, F.torch)
 
     def fn(x):
         return x + int(F._fp8_gemv_miscompiles(0))
@@ -115,6 +119,7 @@ def test_gate_boundary(F, monkeypatch, capability, version, N, K, expected):
     monkeypatch.setattr(F.torch.cuda, "get_device_capability", lambda device = None: capability)
     monkeypatch.setattr(F.triton, "__version__", version)
     monkeypatch.setattr(F.torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, F.torch)
     caches = (F._fp8_gemv_miscompiles, F._triton_builds_blackwell, F._fp8_device_lacks_kernel)
     for cache in caches:
         cache.cache_clear()

@@ -36,6 +36,8 @@ LIFTED = (
     "dpo_trainer_prepare_dataset",
     "dpo_trainer_vision_signature_columns",
     "dpo_trainer_concatenated_inputs",
+    "_unsloth_dpo_align_mm_token_type_ids",
+    "_dpo_trainer_align_mm_token_type_ids",
     "_dpo_trainer_extend_vision_model_kwargs",
     "dpo_trainer_concatenated_forward",
     "dpo_trainer_data_collator_vision_keys",
@@ -202,11 +204,18 @@ def test_grid_rows_reach_the_vision_tower_and_train(name, tmp_path):
             for key in ("chosen_input_ids", "rejected_input_ids"):
                 completion = torch.tensor([row[key]])
                 ids = torch.cat([enc["input_ids"], completion], 1)
+                extra = {}
+                if "mm_token_type_ids" in enc:
+                    # Transformers 5 processors label media tokens; the completion is text.
+                    extra["mm_token_type_ids"] = torch.cat(
+                        [enc["mm_token_type_ids"], torch.zeros_like(completion)], 1
+                    )
                 logits = model(
                     input_ids = ids,
                     attention_mask = torch.ones_like(ids),
                     pixel_values = enc["pixel_values"],
                     image_grid_thw = enc["image_grid_thw"],
+                    **extra,
                 ).logits
                 logps = torch.log_softmax(logits[0, :-1].float(), -1).gather(-1, ids[0, 1:, None])[
                     :, 0

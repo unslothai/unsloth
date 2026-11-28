@@ -49,10 +49,6 @@ export const AUTO_COMPACT_TOKENS_MIN = 1_000;
 // No widely used model has a window past 1M; the request schema itself allows more.
 export const AUTO_COMPACT_TOKENS_MAX = 1_200_000;
 
-// Server-side compaction limits, mirrored from external_provider.py so the meter marks the real trigger.
-const NATIVE_COMPACTION_DEFAULT_MAX = 200_000;
-const ANTHROPIC_COMPACTION_MIN = 50_000;
-
 export function normalizeAutoCompactTokens(value: unknown): number | undefined {
   if (
     typeof value !== "number" ||
@@ -198,33 +194,18 @@ function requestedCompactionThreshold(
   };
 }
 
-/**
- * Where a cloud chat compacts, in tokens, for the context meter. Anthropic and OpenAI compact
- * server-side: 200K at most unless the connection sets its own trigger, and never below
- * Anthropic's 50K floor.
- */
 export function cloudCompactionTrigger(options: {
-  providerType: string | null | undefined;
   contextLength: number | null | undefined;
   autoCompactTokens?: number | null;
   autoCompactPercent?: number | null;
 }): number | null {
-  const requested = requestedCompactionThreshold(
-    options.contextLength,
-    options.autoCompactTokens,
-    options.autoCompactPercent,
+  return (
+    requestedCompactionThreshold(
+      options.contextLength,
+      options.autoCompactTokens,
+      options.autoCompactPercent,
+    )?.threshold ?? null
   );
-  if (!requested) return null;
-  let trigger = requested.threshold;
-  const native =
-    options.providerType === "anthropic" || options.providerType === "openai";
-  if (native && !requested.uncapped) {
-    trigger = Math.min(trigger, NATIVE_COMPACTION_DEFAULT_MAX);
-  }
-  if (options.providerType === "anthropic") {
-    trigger = Math.max(trigger, ANTHROPIC_COMPACTION_MIN);
-  }
-  return trigger;
 }
 
 export function apiCompactionRequestFields(options: {

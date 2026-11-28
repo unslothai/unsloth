@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,9 +42,8 @@ FLUX3_COMPONENT_FOLDERS = {
 }
 
 
-# The prompt upsampler step Diffusers main puts first in both auto block graphs since huggingface/diffusers#15058
-# (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
-# on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
+# Diffusers main puts this step first in both auto block graphs (huggingface/diffusers#15058); needs
+# ~19 GB Qwen3.5-9B upsampler Studio never loads, and would run every call, so it's dropped.
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
 
 
@@ -81,6 +81,86 @@ def _text_step(mp: Any) -> tuple[Any, Any]:
     return step, helper
 
 
+class _Flux3RowsMismatch(Exception):
+    """Batched text step did not match the rows: run them one by one."""
+
+
+_ROW_TEXT = contextvars.ContextVar("unsloth_flux3_row_text", default = None)
+
+
+class _RowText:
+    """Rows of one batched call: text call 1 takes ``positive``, call 2 (unconditional branch) ``negative``."""
+
+    __slots__ = ("positive", "negative", "encoded", "args", "calls", "references", "processed")
+
+    def __init__(
+        self,
+        positive: list,
+        negative: Optional[list],
+        encoded: dict,
+        args: tuple,
+        references: Optional[list] = None,
+    ) -> None:
+        self.positive = positive
+        self.negative = negative
+        self.encoded = encoded
+        self.args = args
+        self.calls = 0
+        # None: references shared by every row
+        self.references = references
+        self.processed = 0
+
+
+def _row_text_embeds(owner: Any, rows: _RowText, a: dict) -> Any:
+    import torch
+
+    which = rows.calls
+    rows.calls += 1
+    if which == 0:
+        prompts = rows.positive
+        expected = prompts[0]
+    elif which == 1 and rows.negative is not None:
+        prompts = rows.negative
+        expected = prompts[0] or ""
+    else:
+        raise _Flux3RowsMismatch(f"text step call {which + 1} has no rows")
+    if a["prompt"] != expected:
+        raise _Flux3RowsMismatch("the text step encoded a prompt that is not the batch's first row")
+    args = (int(a["max_sequence_length"]), int(a["pad_multiple"]), tuple(a["hidden_states_layers"]))
+    cache = rows.encoded if args == rows.args else {}
+    distinct: dict = {}
+    for prompt in prompts:
+        key = prompt or ""
+        if key not in distinct:
+            embeds = cache.get(key)
+            if embeds is None:
+                embeds = owner.encode_prompt(
+                    prompt = key,
+                    max_sequence_length = args[0],
+                    device = a["device"],
+                    pad_multiple = args[1],
+                    hidden_states_layers = args[2],
+                )
+            distinct[key] = embeds
+    tensors = [distinct[prompt or ""] for prompt in prompts]
+    if any(t.ndim != 3 or t.shape[0] != 1 or t.shape[1:] != tensors[0].shape[1:] for t in tensors):
+        raise _Flux3RowsMismatch("rows encode to different text windows")
+    return torch.cat(tensors, dim = 0)
+
+
+def _text_defaults(step: Any, pad_multiple: Optional[int], hidden_states_layers: Any) -> tuple:
+    if pad_multiple is None:
+        pad_multiple = step.pad_multiple
+    if hidden_states_layers is None:
+        hidden_states_layers = next(
+            (p.default for p in step.inputs if getattr(p, "name", None) == _TEXT_LAYERS_INPUT),
+            None,
+        )
+        if hidden_states_layers is None:
+            raise RuntimeError("this diffusers build's FLUX.3 text step names no default layers")
+    return int(pad_multiple), tuple(hidden_states_layers)
+
+
 def _bridge_text_step(pipe: Any, mp: Any) -> bool:
     """Route the text step's per-prompt encode through ``pipe.encode_prompt`` (prompt cache, dead-tail probe).
     Only for this pipe's own encoder and tokenizer; a foreign encoder runs the step's helper unchanged."""
@@ -101,12 +181,17 @@ def _bridge_text_step(pipe: Any, mp: Any) -> bool:
         except TypeError:
             return helper(*args, **kwargs)
         a = bound.arguments
+        rows = _ROW_TEXT.get()
         if (
             owner is None
             or a["text_encoder"] is not getattr(owner, "text_encoder", None)
             or a["tokenizer"] is not getattr(owner, "tokenizer", None)
         ):
+            if rows is not None:
+                raise _Flux3RowsMismatch("a foreign text encoder cannot encode the batch's rows")
             return helper(*args, **kwargs)
+        if rows is not None:
+            return _row_text_embeds(owner, rows, a)
         return owner.encode_prompt(
             prompt = a["prompt"],
             max_sequence_length = a["max_sequence_length"],
@@ -115,7 +200,47 @@ def _bridge_text_step(pipe: Any, mp: Any) -> bool:
             hidden_states_layers = a["hidden_states_layers"],
         )
 
+    bridged._unsloth_row_bridge = True
     setattr(step, _TEXT_HELPER, bridged)
+    return True
+
+
+def _bridge_reference_preprocess(mp: Any) -> bool:
+    """In a batched call with per-row references, ``preprocess`` returns every row's reference, each alone, stacked."""
+    import weakref
+
+    processor = getattr(mp, "image_processor", None)
+    original = getattr(processor, "preprocess", None)
+    if processor is None or not callable(original):
+        return False
+    if getattr(original, "_unsloth_row_bridge", False):
+        return True
+    processor_ref = weakref.ref(processor)
+    own = type(processor).preprocess
+
+    def bridged(image: Any, *args: Any, **kwargs: Any) -> Any:
+        import torch
+
+        rows = _ROW_TEXT.get()
+        target = processor_ref()
+        if rows is None or rows.references is None or target is None:
+            return own(target, image, *args, **kwargs)
+        index = rows.processed
+        rows.processed += 1
+        if index >= len(rows.references[0]) or image is not rows.references[0][index]:
+            raise _Flux3RowsMismatch(
+                "the image step preprocessed a reference that is not the first row's"
+            )
+        outs = [own(target, refs[index], *args, **kwargs) for refs in rows.references]
+        tensors = [out[0] for out in outs]
+        if any(t.shape != tensors[0].shape for t in tensors) or any(
+            o[1] != outs[0][1] for o in outs
+        ):
+            raise _Flux3RowsMismatch("rows' references preprocess to different canvases")
+        return torch.cat(tensors, dim = 0), outs[0][1]
+
+    bridged._unsloth_row_bridge = True
+    processor.preprocess = bridged
     return True
 
 
@@ -243,9 +368,8 @@ def flux3_family_blocks_mismatch(
 
 
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
-    """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
-    embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
-    file or GGUF of one variant may sit on the other variant's base). Else the index names it."""
+    """The loaded denoiser decides first: flow-map DiT (has target_timestep_embedder) runs distilled
+    graph, CFG DiT the base, whatever repo gave companions; else the index names it."""
     flow_map = None
     if transformer is not None:
         if hasattr(transformer, "target_timestep_embedder"):
@@ -410,6 +534,7 @@ class _Flux3KleinPipelineMixin:
         if self._modular is None:
             self._modular = flux3_blocks(self.config.blocks_class_name).init_pipeline()
             _bridge_text_step(self, self._modular)
+            _bridge_reference_preprocess(self._modular)
         mp = self._modular
         updates = {}
         for name in ("transformer", "vae", "text_encoder", "tokenizer", "scheduler"):
@@ -434,20 +559,8 @@ class _Flux3KleinPipelineMixin:
         step, helper = _text_step(self.modular_pipeline())
         if step is None:
             raise RuntimeError("this diffusers build's FLUX.3 text step has no known prompt helper")
-        if pad_multiple is None:
-            pad_multiple = step.pad_multiple
-        if hidden_states_layers is None:
-            hidden_states_layers = next(
-                (p.default for p in step.inputs if getattr(p, "name", None) == _TEXT_LAYERS_INPUT),
-                None,
-            )
-            if hidden_states_layers is None:
-                raise RuntimeError(
-                    "this diffusers build's FLUX.3 text step names no default layers"
-                )
+        pad_multiple, layers = _text_defaults(step, pad_multiple, hidden_states_layers)
         from .diffusion_te_select import run_selected
-
-        layers = tuple(hidden_states_layers)
 
         def call() -> Any:
             return helper(
@@ -514,9 +627,15 @@ class _Flux3KleinPipelineMixin:
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs = ("latents",),
         guidance_stop: Optional[float] = None,
+        row_images: Optional[list] = None,
     ):
+        """``row_images``: per-image references, instead of shared ``image``."""
         self._interrupt = False
         mp = self.modular_pipeline()
+        if row_images is not None and image is not None:
+            raise ValueError(
+                "Pass either image (shared references) or row_images (per image), not both."
+            )
         if guidance_stop is not None and not 0.0 < float(guidance_stop) <= 1.0:
             raise ValueError("guidance_stop must be in (0, 1].")
         self._set_guidance(mp, guidance_scale, None if self.is_distilled else guidance_stop)
@@ -526,8 +645,6 @@ class _Flux3KleinPipelineMixin:
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
-        # distinct prompts, or one prompt with a generator per image, runs as one call per image.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -546,61 +663,234 @@ class _Flux3KleinPipelineMixin:
             ]
         else:
             calls = [(prompts[0], generator, int(num_images_per_prompt or 1))]
+        if row_images is not None and (
+            len(row_images) != len(calls) or any(per != 1 for _, _, per in calls)
+        ):
+            raise ValueError(
+                f"Got {len(row_images)} per-image references for {len(calls)} images; pass one entry per image."
+            )
+        row_refs = (
+            [
+                [
+                    resize_reference(ref)
+                    for ref in (refs if isinstance(refs, (list, tuple)) else [refs])
+                ]
+                for refs in row_images
+            ]
+            if row_images is not None
+            else None
+        )
+
+        def call_kwargs(call_index: int) -> dict:
+            one_prompt, one_generator, per_prompt = calls[call_index]
+            kwargs: dict[str, Any] = {
+                "prompt": one_prompt,
+                "num_inference_steps": int(num_inference_steps),
+                "num_images_per_prompt": per_prompt,
+                "max_sequence_length": int(max_sequence_length),
+                "output_type": output_type,
+            }
+            if one_generator is not None:
+                kwargs["generator"] = one_generator
+            if image is not None:
+                refs = list(image) if isinstance(image, (list, tuple)) else [image]
+                refs = [resize_reference(ref) for ref in refs]
+                kwargs["image"] = refs if len(refs) > 1 else refs[0]
+            elif row_refs is not None and row_refs[call_index]:
+                refs = row_refs[call_index]
+                kwargs["image"] = refs if len(refs) > 1 else refs[0]
+            if height is not None:
+                kwargs["height"] = int(height)
+            if width is not None:
+                kwargs["width"] = int(width)
+            if latents is not None:
+                kwargs["latents"] = latents
+            elif per_prompt == 1 and height is not None and width is not None:
+                seed = _generator_seed(one_generator)
+                if seed is not None:
+                    kwargs["latents"] = reference_noise(seed, int(height), int(width))
+            if negative_prompt is not None and not self.is_distilled:
+                # A per-image list pairs entry i with call i (the blocks take one prompt per call).
+                kwargs["negative_prompt"] = row_negative(call_index)
+            return kwargs
+
+        def row_negative(call_index: int) -> Any:
+            if negatives is None:
+                return negative_prompt
+            return negatives[call_index if len(negatives) > 1 else 0]
+
+        def run_modular(
+            kwargs: dict,
+            first: bool,
+            rows: Optional[_RowText] = None,
+        ) -> Any:
+            transformer = getattr(self, "transformer", None)
+            if not self.is_distilled:
+                cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
+            token = _ROW_TEXT.set(rows) if rows is not None else None
+            try:
+                _reset_guider_step(mp)
+                with self._step_hooks(
+                    mp,
+                    callback_on_step_end,
+                    num_inference_steps = int(num_inference_steps),
+                    first_call = first,
+                ):
+                    return mp(**kwargs, output = "images")
+            finally:
+                if token is not None:
+                    _ROW_TEXT.reset(token)
+                cond_blocks.end_render(transformer)
+
+        def run_rows(group: list, first: bool) -> list:
+            kwargs = call_kwargs(group[0])
+            kwargs["num_images_per_prompt"] = 1
+            row_generators = [calls[i][1] for i in group]
+            if any(g is not None for g in row_generators):
+                kwargs["generator"] = row_generators
+            if height is not None and width is not None:
+                kwargs["latents"] = torch.cat(
+                    [
+                        reference_noise(_generator_seed(calls[i][1]), int(height), int(width))
+                        for i in group
+                    ],
+                    dim = 0,
+                )
+            negative_rows = None
+            if not self.is_distilled:
+                negative_rows = [row_negative(i) for i in group]
+            rows = _RowText(
+                [calls[i][0] for i in group],
+                negative_rows,
+                encoded,
+                text_args,
+                [row_refs[i] for i in group] if row_refs is not None else None,
+            )
+            out = run_modular(kwargs, first, rows)
+            if isinstance(out, list):
+                if len(out) != len(group):
+                    raise RuntimeError(
+                        f"a batched FLUX.3 call returned {len(out)} images for {len(group)} rows"
+                    )
+                return out
+            if getattr(out, "shape", None) is None or int(out.shape[0]) != len(group):
+                raise RuntimeError("a batched FLUX.3 call returned an unexpected output")
+            return [out[i : i + 1] for i in range(len(group))]
+
+        import torch
+
+        groups, encoded, text_args = self._row_groups(
+            mp,
+            calls,
+            height = height,
+            width = width,
+            latents = latents,
+            max_sequence_length = int(max_sequence_length),
+            negative = (lambda i: row_negative(i) or "") if not self.is_distilled else None,
+            seeded_noise = generators is not None,
+            references = (
+                [tuple(ref.size for ref in refs) for refs in row_refs]
+                if row_refs is not None
+                else None
+            ),
+        )
+        from .diffusion_step_skip import rewind_static_step_skip
 
         images: list = []
+        trajectories = [0]
+
+        def next_trajectory() -> None:
+            # The engine resets the static skip schedule once per chunk; each modular call here is its own trajectory.
+            if trajectories[0]:
+                rewind_static_step_skip(self)
+            trajectories[0] += 1
+
         try:
-            for call_index, (one_prompt, one_generator, per_prompt) in enumerate(calls):
-                kwargs: dict[str, Any] = {
-                    "prompt": one_prompt,
-                    "num_inference_steps": int(num_inference_steps),
-                    "num_images_per_prompt": per_prompt,
-                    "max_sequence_length": int(max_sequence_length),
-                    "output_type": output_type,
-                }
-                if one_generator is not None:
-                    kwargs["generator"] = one_generator
-                if image is not None:
-                    refs = list(image) if isinstance(image, (list, tuple)) else [image]
-                    refs = [resize_reference(ref) for ref in refs]
-                    kwargs["image"] = refs if len(refs) > 1 else refs[0]
-                if height is not None:
-                    kwargs["height"] = int(height)
-                if width is not None:
-                    kwargs["width"] = int(width)
-                if latents is not None:
-                    kwargs["latents"] = latents
-                elif per_prompt == 1 and height is not None and width is not None:
-                    seed = _generator_seed(one_generator)
-                    if seed is not None:
-                        kwargs["latents"] = reference_noise(seed, int(height), int(width))
-                if negative_prompt is not None and not self.is_distilled:
-                    # A per-image list pairs entry i with call i (the blocks take one prompt per call).
-                    kwargs["negative_prompt"] = (
-                        negative_prompt
-                        if negatives is None
-                        else negatives[call_index if len(negatives) > 1 else 0]
-                    )
-                # The base model's text and reference streams run once per call, not once per step and branch.
-                transformer = getattr(self, "transformer", None)
-                if not self.is_distilled:
-                    cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
-                try:
-                    _reset_guider_step(mp)
-                    with self._step_hooks(
-                        mp,
-                        callback_on_step_end,
-                        num_inference_steps = int(num_inference_steps),
-                        first_call = call_index == 0,
-                    ):
-                        out = mp(**kwargs, output = "images")
-                finally:
-                    cond_blocks.end_render(transformer)
-                images.extend(out if isinstance(out, list) else [out])
+            by_row: dict = {}
+            for group_index, group in enumerate(groups):
+                first = group_index == 0
+                if len(group) > 1:
+                    try:
+                        next_trajectory()
+                        for i, img in zip(group, run_rows(group, first)):
+                            by_row[i] = [img]
+                        continue
+                    except _Flux3RowsMismatch as exc:
+                        logger.info("FLUX.3 rows render one by one: %s", exc)
+                for i in group:
+                    next_trajectory()
+                    out = run_modular(call_kwargs(i), first and i == group[0])
+                    by_row[i] = out if isinstance(out, list) else [out]
+            for i in range(len(calls)):
+                images.extend(by_row[i])
         except _Flux3Interrupted:
             images = []
         if not return_dict:
             return (images,)
         return Flux3PipelineOutput(images = images)
+
+    def _row_groups(
+        self,
+        mp: Any,
+        calls: list,
+        *,
+        height: Optional[int],
+        width: Optional[int],
+        latents: Any,
+        max_sequence_length: int,
+        negative: Optional[Callable[[int], str]],
+        seeded_noise: bool,
+        references: Optional[list] = None,
+    ) -> tuple:
+        """``(groups, encoded, text_args)``. Groups share text window (the transformer attends to padding),
+        negative and reference sizes; anything that could couple rows renders every call alone."""
+        alone = ([[i] for i in range(len(calls))], {}, None)
+        if len(calls) < 2 or latents is not None or batch_rows_disabled():
+            return alone
+        if references is not None and not row_refs_batch_enabled():
+            return alone
+        if any(per_prompt != 1 for _, _, per_prompt in calls):
+            return alone
+        if not seeded_noise or any(_generator_seed(g) is None for _, g, _ in calls):
+            return alone
+        step, _helper = _text_step(mp)
+        if step is None or not getattr(
+            step.__dict__.get(_TEXT_HELPER), "_unsloth_row_bridge", False
+        ):
+            return alone
+        if _per_call_scaled(getattr(self, "transformer", None)) is not None:
+            return alone
+        try:
+            pad, layers = _text_defaults(step, None, None)
+            device = mp._execution_device
+            text_args = (int(max_sequence_length), pad, layers)
+            encoded: dict = {}
+            texts = [prompt for prompt, _, _ in calls]
+            if negative is not None and getattr(mp, "requires_unconditional_embeds", False):
+                # negatives too, so a later group never reloads the encoder
+                texts += [negative(i) for i in range(len(calls))]
+            for prompt in texts:
+                if prompt not in encoded:
+                    encoded[prompt] = self.encode_prompt(
+                        prompt = prompt,
+                        max_sequence_length = int(max_sequence_length),
+                        device = device,
+                        pad_multiple = pad,
+                        hidden_states_layers = layers,
+                    )
+        except Exception as exc:  # noqa: BLE001 -- the per-row calls encode (and report) on their own
+            logger.info("FLUX.3 rows render one by one (encode: %s)", exc)
+            return alone
+        keyed: dict = {}
+        for i, (prompt, _, _) in enumerate(calls):
+            embeds = encoded[prompt]
+            key = (
+                tuple(embeds.shape[1:]),
+                None if negative is None else negative(i),
+                None if references is None else references[i],
+            )
+            keyed.setdefault(key, []).append(i)
+        return list(keyed.values()), encoded, text_args
 
     def _step_hooks(
         self, mp, callback: Optional[Callable], *, num_inference_steps: int, first_call: bool
@@ -667,6 +957,64 @@ class _Flux3KleinPipelineMixin:
                     handle.remove()
 
         return _hooks()
+
+
+BATCH_ROWS_ENV = "UNSLOTH_DIFFUSION_FLUX3_BATCH"
+
+
+def flux3_row_key(
+    pipe: Any,
+    prompt: str,
+    max_sequence_length: int = 8192,
+) -> Optional[tuple]:
+    """A row's batch key: its padded chat-templated text window, or None if unmeasurable."""
+    import math
+    try:
+        step, _helper = _text_step(pipe.modular_pipeline())
+        processor = getattr(pipe, "tokenizer", None)
+        if step is None or processor is None:
+            return None
+        pad = int(step.pad_multiple)
+        text = processor.apply_chat_template(
+            [{"role": "user", "content": prompt}], tokenize = False, add_generation_prompt = True
+        )
+        real = len(
+            processor.tokenizer(text, truncation = True, max_length = int(max_sequence_length))[
+                "input_ids"
+            ]
+        )
+        return ("flux3 window", min(math.ceil(real / pad) * pad, int(max_sequence_length)))
+    except Exception:  # noqa: BLE001 - unmeasurable: no key
+        return None
+
+
+def batch_rows_disabled() -> bool:
+    import os
+    return (os.environ.get(BATCH_ROWS_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+# Per-row references render one by one until GPU-proven neighbour-independent; ``=1`` batches them (to measure).
+ROW_REFS_BATCH_ENV = "UNSLOTH_DIFFUSION_FLUX3_ROW_REFS_BATCH"
+
+
+def row_refs_batch_enabled() -> bool:
+    import os
+    return (os.environ.get(ROW_REFS_BATCH_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def _per_call_scaled(module: Any) -> Optional[str]:
+    """The denoiser's first layer whose activation scale comes from the whole call (cached), or None."""
+    if module is None or not hasattr(module, "named_modules"):
+        return None
+    cached = module.__dict__.get("_unsloth_per_call_scaled")
+    if cached is None:
+        from .diffusion_cfg_batch import per_call_scaled
+        try:
+            cached = (per_call_scaled(module),)
+        except Exception:  # noqa: BLE001 - unreadable: rows render apart rather than batch blind
+            cached = ("unreadable layers",)
+        module.__dict__["_unsloth_per_call_scaled"] = cached
+    return cached[0]
 
 
 HALF_STORAGE_ENV = "UNSLOTH_DIFFUSION_FLUX3_HALF_STORAGE"

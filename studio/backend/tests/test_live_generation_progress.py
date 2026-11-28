@@ -450,3 +450,106 @@ def test_only_a_live_signal_is_a_compaction_reporter():
     assert llama_cpp._compaction_reporter(signal) == signal.compacting
     assert llama_cpp._compaction_reporter(lambda sample: None) is None
     assert llama_cpp._compaction_reporter(None) is None
+
+
+def test_the_command_asks_for_progress_only_for_a_single_reply():
+    from types import SimpleNamespace
+
+    from core.inference import orchestrator as orch
+
+    build = orch.InferenceOrchestrator._build_generate_cmd
+    me = SimpleNamespace(effective_parallel_slots = 1)
+    assert build(me, "r", None, generation_progress = True)["generation_progress"] is True
+    assert "generation_progress" not in build(me, "r", None)
+    assert "generation_progress" not in build(
+        me, "r", None, generation_progress = True, rows = [{}, {}]
+    )
+
+
+@pytest.mark.parametrize("tools", [False, True], ids = ["plain", "server-tools"])
+@pytest.mark.parametrize("ui_events", [True, False])
+def test_safetensors_stream_sends_the_backends_progress_as_frames(monkeypatch, ui_events, tools):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from utils.api_errors import install_api_error_handlers
+
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
+    seen = {}
+
+    def reply(perf_callback):
+        seen["perf_callback"] = perf_callback
+        if perf_callback is not None:
+            perf_callback({"prompt_progress": {"total": 5000, "processed": 3048, "cache": 1000}})
+            perf_callback({"prompt_progress": {"total": 5000, "processed": 5000, "cache": 1000}})
+        yield "hel"
+        if perf_callback is not None:
+            perf_callback({"predicted_n": 2, "predicted_per_second": 30.0})
+        yield "hello"
+
+    class _NoGGUF:
+        is_loaded = False
+        supports_tools = False
+
+    class _MLX:
+        active_model_name = "qwen"
+        models = {"qwen": {"chat_template_info": {"template": "x"}, "is_mlx": True}}
+
+        def generate_chat_response(
+            self,
+            perf_callback = None,
+            **_kwargs,
+        ):
+            yield from reply(perf_callback)
+
+        def generate_chat_completion_with_tools(
+            self,
+            perf_callback = None,
+            **_kwargs,
+        ):
+            for text in reply(perf_callback):
+                yield {"type": "content", "text": text}
+
+        def reset_generation_state(self, *_args):
+            return None
+
+    async def _tools(*_args, **_kwargs):
+        return [{"type": "function", "function": {"name": "web_search"}}]
+
+    monkeypatch.setattr(
+        route,
+        "_detect_safetensors_features",
+        lambda backend, chat_template, tools = None: {"supports_tools": tools is not None},
+    )
+    monkeypatch.setattr(route, "_select_request_tools", _tools)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: _NoGGUF())
+    monkeypatch.setattr(route, "get_inference_backend", lambda: _MLX())
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/v1")
+    install_api_error_handlers(app)
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    resp = TestClient(app).post(
+        "/v1/chat/completions",
+        json = {
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "enable_tools": tools,
+            "permission_mode": "off",
+        },
+        headers = {route.UI_STREAM_EVENTS_HEADER: "1"} if ui_events else {},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "perf_callback" in seen, "the request never reached the expected generation path"
+    lines = [line for line in resp.text.split("\n\n") if line.startswith("data: {")]
+    progress = [json.loads(line[6:]) for line in lines if '"generation_progress"' in line]
+    if not ui_events:
+        assert seen["perf_callback"] is None and progress == []
+        return
+    assert [(p["phase"], p.get("processed"), p.get("tokens")) for p in progress] == [
+        ("prefill", 5000, None),
+        ("decode", None, 2),
+    ]
+    assert progress[0]["cached"] == 1000 and progress[0]["total"] == 5000
+    first_content = next(i for i, line in enumerate(lines) if '"content":"hel"' in line)
+    assert '"phase":"prefill"' in lines[first_content - 1]

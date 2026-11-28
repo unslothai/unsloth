@@ -677,6 +677,21 @@ def prepare_for_training_mode(f):
     return wrapper
 pass
 
+def _unsloth_train_to_wrap(self):
+    # The train() prepare_for_training_mode wraps. An instance-level train is kept: the context parallel
+    # wrapper (bound with MethodType) or a closure an __init__ hook set over it (optimizers/auto_fit.py),
+    # which still calls the context parallel one. Falling back to the class method would drop both.
+    train = self.__dict__.get('train')
+    if train is None:
+        return self.__class__.train
+    if getattr(train, '__self__', None) is self and hasattr(train, '__func__'):
+        return train.__func__
+    @functools.wraps(train)
+    def instance_train(self, *args, **kwargs):
+        return train(*args, **kwargs)
+    return instance_train
+pass
+
 torch_compile_options = {{
     "epilogue_fusion"   : True,
     "max_autotune"      : False,
@@ -3661,7 +3676,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         training_check = (
             "if hasattr(self, 'train'):\n"
             # A context parallel trainer binds its train wrapper on the instance (context_parallel.py).
-            "    self.train = MethodType(prepare_for_training_mode(getattr(self.__dict__.get('train'), '__func__', None) or self.__class__.train), self)\n"
+            "    self.train = MethodType(prepare_for_training_mode(_unsloth_train_to_wrap(self)), self)\n"
             "pass\n"
         )
         RLTrainer_post += training_check
@@ -3958,6 +3973,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         default = 'base',
         metadata = {'help': "Teacher for unsloth_distillation_coef: 'base' is the LoRA student's base model with the adapter disabled. Pass any other teacher as GRPOTrainer(teacher_model = model)."},
     )
+    unsloth_distillation_terminal_tokens : Optional[str] = field(
+        default = None,
+        metadata = {'help': "Opt-in for unsloth_distillation_coef: comma separated stop tokens (e.g. '<|im_end|>,<|endoftext|>') scored as one stop action, their summed probability, for both student and teacher. None scores every token as itself."},
+    )
     unsloth_sampler_kl_coef : Optional[float] = field(
         default = 0.0,
         metadata = {'help': 'StableReinforce: adds coef * KL(sampler || policy) per sampled token (Tinker uses 0.01). 0 disables it.'},
@@ -3969,12 +3988,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         max_seq_length_call += (
             "unsloth_distillation_coef = 0.0,"
             "unsloth_distillation_teacher = 'base',"
+            "unsloth_distillation_terminal_tokens = None,"
             "unsloth_sampler_kl_coef = 0.0,"
             "unsloth_sampler_kl_estimator = 'k1',"
         )
         max_seq_length_post += (
             "\n        self.unsloth_distillation_coef = unsloth_distillation_coef"
             "\n        self.unsloth_distillation_teacher = unsloth_distillation_teacher"
+            "\n        self.unsloth_distillation_terminal_tokens = unsloth_distillation_terminal_tokens"
             "\n        self.unsloth_sampler_kl_coef = unsloth_sampler_kl_coef"
             "\n        self.unsloth_sampler_kl_estimator = unsloth_sampler_kl_estimator"
         )

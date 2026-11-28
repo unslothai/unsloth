@@ -8,15 +8,13 @@ import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAuiState } from "@assistant-ui/react";
 import { type FC, useState } from "react";
 
-/** Opt-in reply time. Gated here so that, while off, a reply mounts no assistant-ui selector:
- *  every mounted one runs on each composer keystroke (composer-keystroke-subscription-budget). */
+/** Gated so an off reply mounts no assistant-ui selector; each runs per composer keystroke. */
 export const AssistantMessageTime: FC = () => {
   const showReplyTimes = useChatPreferencesStore((state) => state.showReplyTimes);
   return showReplyTimes ? <ReplyTime /> : null;
 };
 
-/** Absolute, not "Today": nothing re-renders an old reply past midnight. A native title, not a
- *  Tooltip: one per reply would subscribe to the modal-layer store. */
+/** Absolute, not Today: no re-render past midnight. Native title, not per-reply Tooltip store. */
 const ReplyTime: FC = () => {
   const locale = useLocale();
   useTimeFormat();

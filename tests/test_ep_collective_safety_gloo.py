@@ -242,7 +242,10 @@ def _case_budget_replicas(rank, world, tmp, ep):
         out = {}
         for k, p in model.named_parameters():
             if p.grad is not None:
-                g = epn._gather_expert(p, group, p.grad) if getattr(p, epn._EP, None) else p.grad
+                layout = getattr(p, epn._EP, None)
+                # A per-expert module (transformers 4.x ModuleList experts) is whole on its rank: nothing to gather.
+                stacked = layout is not None and layout[0] not in ("4bit", "list")
+                g = epn._gather_expert(p, group, p.grad) if stacked else p.grad
                 out[k] = g.detach().clone()
         model.zero_grad(set_to_none = True)
         return out

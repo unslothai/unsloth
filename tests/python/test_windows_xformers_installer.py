@@ -116,7 +116,7 @@ def test_selector_refuses_a_missing_or_blank_input():
 
 def test_installer_installs_xformers_from_the_torch_index():
     source = _source()
-    block = _extract(r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", source)
+    block = _extract(r"    # -- Pin xFormers to the wheel built for the torch.*?^    \}\n", source)
     assert "--no-deps" in block, (
         "the xFormers wheel declares torch==<exact release>; without --no-deps uv can pull "
         "a PyPI (CUDA 12.8) torch over the CUDA build just installed"
@@ -143,7 +143,7 @@ def test_installer_installs_xformers_from_the_torch_index():
 def test_a_family_pin_still_gets_the_direct_wheel_url():
     """A family pin keeps the direct wheel URL, since --index is additive and can resolve the wrong CUDA."""
     block = _extract(
-        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+        r"    # -- Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
     condition = re.search(r"if \(\$TorchIndexUrl[^\n]*\) \{", block)
     assert condition is not None, "the index branch must be gated on the full-URL override"
@@ -155,7 +155,7 @@ def test_a_family_pin_still_gets_the_direct_wheel_url():
 def test_a_full_url_override_naming_a_cuda_leaf_gets_a_direct_url():
     """Every CUDA family publishes the same xFormers version, so an index resolve can pick the wrong one."""
     block = _extract(
-        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+        r"    # -- Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
     assert "$_xfOverrideLeaf = Get-TorchIndexLeafName $TorchIndexUrl" in block
     assert "'^cu\\d+$'" in block
@@ -166,7 +166,7 @@ def test_the_index_fallback_hides_the_machine_level_indexes():
     """Only a mirror root whose leaf is not a CUDA family still resolves; UV_INDEX and
     UV_EXTRA_INDEX_URL are cleared so the chosen index is the only one, then restored."""
     block = _extract(
-        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+        r"    # -- Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
     assert "$env:UV_INDEX = $null" in block
     assert "$env:UV_EXTRA_INDEX_URL = $null" in block
@@ -223,7 +223,7 @@ def test_xformers_step_runs_after_the_torch_flavor_repair():
 
 def test_xformers_step_is_skipped_for_no_torch_installs():
     block = _extract(
-        r"    # ── Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
+        r"    # -- Pin xFormers to the wheel built for the torch.*?^    \}\n", _source()
     )
     assert "if (-not $SkipTorch" in block
     # cpu / rocm / xpu torch has no xFormers wheel on any index.

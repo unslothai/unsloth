@@ -201,8 +201,7 @@ class SdCppServer:
 
     @property
     def lora_dir(self) -> Optional[str]:
-        """Server rescans this dir per request; reference staged files via the lora field, not
-        prompt tags."""
+        """Server rescans this dir per request; refer staged files via lora, not prompt tags."""
         return self._scratch_dir
 
     def vid_gen_accepts(self, features: tuple[str, ...]) -> bool:
@@ -269,6 +268,7 @@ class SdCppServer:
         startup_timeout: float = 600.0,
         extra_args: Optional[list[str]] = None,
         rng: Optional[str] = None,
+        metal_vae_conv_direct: bool = False,
     ) -> None:
         """Spawns the server and blocks until ready under the lifecycle lock; extra_args go last so they win, which pins the CPU-backend restart off the GPU."""
         with self._lifecycle_lock:
@@ -293,6 +293,7 @@ class SdCppServer:
                 extra_args = list(extra_args or []),
                 accelerator = binary_accelerator(self.binary),
                 rng = rng,
+                metal_vae_conv_direct = metal_vae_conv_direct,
             )
             run_env = runtime_env(self.binary, child_env_without_native_path_secret())
             if files.clip_l:
@@ -562,8 +563,7 @@ class SdCppServer:
             self._dispose()
 
     def _dispose(self) -> None:
-        """Closes the httpx client and drops the atexit handler, which would pin each reloaded
-        instance; the backend never reuses a disposed server."""
+        """Closes httpx client; drops atexit hook (would pin reloaded instances); never reused."""
         try:
             atexit.unregister(self.stop)
         except Exception:  # noqa: BLE001

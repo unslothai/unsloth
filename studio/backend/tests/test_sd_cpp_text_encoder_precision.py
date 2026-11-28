@@ -63,8 +63,7 @@ def test_env_trades_the_llm_encoder_down(monkeypatch, value, tag):
 
 
 def test_env_leaves_other_encoders_alone(monkeypatch):
-    """Only the unsloth LLM GGUFs that ship every precision are rewritten: the FLUX.1 CLIP / T5 and the Qwen-Image
-    VL encoder with its projector keep their table entries."""
+    """Only unsloth LLM GGUFs with all precisions are rewritten; other encoders are left alone."""
     monkeypatch.setenv("UNSLOTH_SD_CPP_TEXT_ENCODER_QUANT", "q4_k_m")
     for fam in df._FAMILIES:
         if fam.name in ("flux.2-klein", "flux.2-dev", "z-image"):

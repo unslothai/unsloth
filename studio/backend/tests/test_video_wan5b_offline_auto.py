@@ -40,8 +40,7 @@ _REAL_VIDEO_FETCH_REPO = __import__(
 
 @pytest.fixture(autouse = True)
 def _hermetic(monkeypatch):
-    """No network, no Hub, no hang: every reachability / mirror / Hub lookup is pinned, sockets refuse to connect,
-    and a stuck test dumps its stacks after 60 s instead of eating the CI job."""
+    """Hermetic: Hub lookups are pinned, sockets refuse, and a hang dumps stacks after 60 s."""
     import huggingface_hub
     from huggingface_hub import constants
 
@@ -201,7 +200,6 @@ def test_online_no_cache_auto_plans_bf16(monkeypatch):
 
 @pytest.mark.usefixtures("fake_runtime")
 def test_online_int8_cached_auto_still_plans_bf16(monkeypatch):
-    # A cached hosted int8 does not pull an ONLINE auto load off the bf16 rule.
     from core.inference import video as V
     from core.inference.video_families import detect_video_family
 
@@ -213,6 +211,42 @@ def test_online_int8_cached_auto_still_plans_bf16(monkeypatch):
     assert (
         VideoBackend()._video_planned_auto_denoiser_scheme(
             fam, base = REPO, kind = "pipeline", transformer_quant = "auto", speed_mode = None
+        )
+        is None
+    )
+
+
+A14B = "Wan-AI/Wan2.2-T2V-A14B-Diffusers"
+
+
+@pytest.mark.parametrize("dense", [False, True])
+@pytest.mark.usefixtures("fake_runtime")
+def test_a14b_offline_auto_at_80_keeps_a_cached_int8_pair_only_without_dense(monkeypatch, dense):
+    # Wan2.2 T2V-A14B on 80 GiB: Auto is bf16 where the pair stays resident, but an offline install whose cache
+    # holds only the hosted INT8 pair (staged by the older Auto) keeps loading it instead of failing.
+    spy = _spoof(monkeypatch, tier_gib = 80)
+    _cache(monkeypatch, int8 = True, dense = dense)
+    _assemble(monkeypatch, dense = dense, offline = True)
+    result = VideoBackend().load_pipeline(A14B, local_files_only = True, transformer_quant = "auto")
+    assert result["loaded"]
+    if dense:
+        assert spy.seeded == [] and result["transformer_quant"] != "int8"
+    else:
+        assert spy.seeded == ["int8"] and result["transformer_quant"] == "int8"
+
+
+@pytest.mark.usefixtures("fake_runtime")
+def test_a14b_online_auto_at_80_plans_bf16(monkeypatch):
+    from core.inference import video as V
+    from core.inference.video_families import detect_video_family
+
+    monkeypatch.setattr(V, "_can_download", lambda: True)
+    _spoof(monkeypatch, tier_gib = 80)
+    _cache(monkeypatch, int8 = True, dense = False)
+    fam = detect_video_family(A14B)
+    assert (
+        VideoBackend()._video_planned_auto_denoiser_scheme(
+            fam, base = A14B, kind = "pipeline", transformer_quant = "auto", speed_mode = None
         )
         is None
     )

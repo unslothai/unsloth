@@ -1,4 +1,5 @@
-# Under Stop, bare node -v on absent node throws past 2>$null; real probes must not end setup.
+# Under "Stop", a bare `node -v` for an absent node throws past `2>$null`; this runs the
+# real guarded probe lines and asserts setup would not terminate.
 $ErrorActionPreference = "Stop"
 $script:failures = 0
 function Check($name, $cond) {

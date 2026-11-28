@@ -379,7 +379,8 @@ def test_f_mixed_sizes_layer_split_cuts_in_proportion(monkeypatch, _env):
 def test_f_older_second_card_takes_no_component(monkeypatch):
     host = Host([Card(0, 24576, 400, cap = (8, 9)), Card(1, 24576, 400, cap = (7, 5))])
     d = decide(monkeypatch, host, _sizes(dit = 15000, te = 9000))
-    assert d.selection is None
+    # the T4 stays in the selection; the planner keeps the (bf16, sm 8.0) text encoder off it
+    assert d.selection is not None and d.selection.secondaries == (1,)
     assert d.plan.secondary_ordinal is None and d.plan.offload_policy != dm.OFFLOAD_NONE
 
 

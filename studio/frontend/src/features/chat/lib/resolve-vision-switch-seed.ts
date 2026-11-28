@@ -7,8 +7,7 @@ export interface VisionSwitchSeedState {
   loadedVisionDisabledByUser: boolean | null;
 }
 
-/** Seed when never seeded, the model changed, or the running value moved while idle.
- *  A pending edit is detected against the OLD baseline. */
+/** Seed when unseeded, model changed, or idle value moved; pending edits use the OLD baseline. */
 export function shouldSeedVisionSwitch(args: {
   incoming: boolean;
   previous: VisionSwitchSeedState;

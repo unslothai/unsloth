@@ -108,8 +108,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   },
 }));
 
-// Never let a non-forced response overwrite an authoritative platform: the early unauthed fetch
-// in main.tsx can resolve late. Forced refreshes still write.
+// Non-forced reads keep an authoritative platform; an early unauthed fetch may resolve late.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
@@ -163,8 +162,7 @@ export function refreshDeviceTypeAfterSystemInfo(
   void entry.promise.then(release, release);
 }
 
-// main.tsx and __root.tsx's beforeLoad both read at startup: an unforced call joins an unforced
-// read in flight for the same token, URL and backend generation. Forced refreshes never share.
+// Unforced reads share in-flight reads per token, URL and backend generation; forced never.
 let sharedHealthRead: {
   token: string | null;
   url: string;
@@ -233,8 +231,7 @@ async function readHealth(
   const generation = backendGeneration;
   try {
     const token = knownToken === undefined ? readAuthToken() : knownToken;
-    // Re-read while the backend is still detecting: chat_only is its pre-detection default and
-    // __root.tsx's beforeLoad acts on it.
+    // Re-read while detecting: chat_only is a pre-detection default that beforeLoad acts on.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     // Wait only when authed (else beforeLoad stalls /login), and only once. Claim the latch after.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
@@ -347,8 +344,7 @@ async function readHealth(
           ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
           : previous,
       );
-      // Cache only server-reported platforms: browser fallbacks differ from the host, so retry
-      // until authed.
+      // Cache only server-reported platforms: browser fallbacks may differ; retry till authed.
       usePlatformStore.setState({
         deviceType,
         appleSilicon,

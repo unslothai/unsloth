@@ -12,10 +12,11 @@ and strides, ambient autocast + cache flag, compiled regions as eager runs them)
 these and another compiled variant rounds differently. Plain generate() runs inside generate_scope(), so
 graphs are on by default there (plan() decides per call: short calls, low free memory and unsupported
 calls decode eagerly; an out-of-memory graphed call is redone once eagerly). After an inference-mode call
-the graph and its StaticCache are kept for the next call of the same batch (keep()); training, a returned
-or caller-owned cache, and parameter / adapter / quant changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
+the graph and its StaticCache are kept for the next call of the same batch (keep()); training (unless
+UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING=1), a returned or caller-owned cache, and parameter / adapter / quant
+changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
 disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
-(16) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
+(64) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
 
 import collections
 import collections.abc
@@ -55,15 +56,13 @@ _COUNTERS = ("cumulative_length", "cumulative_length_int")
 _MAX_ARG_BYTES = 16 * 1024 * 1024
 _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 _MAX_KEYS = 4096
-# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1, 2.7-4.7x at 16).
-MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
-# Free memory a graphed call needs beyond the eager one: the graph pool (8-16 MiB measured on 1B models),
-# static input buffers and the side stream's workspace. Below it the call decodes eagerly.
+# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1); 64 covers RL rollouts (8-64 rows).
+MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "64"))
+# Graph pool and static buffers need free memory; below that the call decodes eagerly.
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
 # A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
 _KEEP_MAX_RATIO = 2
-# Captures in a row without a replay: the key changes every step, so the rest of the call decodes eagerly.
-# A healthy call captures at most twice in a row (window filling, then full).
+# Back-to-back captures without replay (key changes each step) go eager; healthy is at most 2.
 _MAX_UNREPLAYED_CAPTURES = 4
 PLANS = collections.Counter()
 EAGER_REDOS = 0
@@ -277,8 +276,7 @@ class _SegmentRecorder:
         self.pending = None
         self.moved = {}
         self.original = None
-        # Cards a capture was begun on (attempted included): a failed recording resets the RNG capture
-        # flag on these only, not on cards the step never reached.
+        # Cards begun (attempted too): a failed recording resets the RNG flag only on them.
         self.begun = []
 
     def begin(self, card):
@@ -307,7 +305,6 @@ class _SegmentRecorder:
             hit = self.moved.get(key)
             if hit is not None:
                 return hit[1]
-            # First crossing of this tensor to `card`: the segment ends here, the copy runs eagerly.
             self.end()
             dst = value.to(target)
             self.moved[key] = (value, dst)
@@ -360,8 +357,7 @@ class _SegmentRecorder:
         return self._move(tensor, card, self.backend.card_device(card), skip_keys)
 
     def run(self, fn):
-        # accelerate's hooks are process-global: two overlapping recordings (threads) would restore each
-        # other's replacements, leaving a finished recorder installed.
+        # accelerate hooks are process-global; overlapping recordings clobber each other.
         with _RECORDING:
             return self._run(fn)
 
@@ -521,8 +517,7 @@ def _decoder_prompt(kwargs):
 
 
 def _plan_len(model, args, kwargs):
-    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan.
-    Encoder-decoder: the decoder prompt only, not the encoder input (Whisper mel frames)."""
+    """Prompt + new tokens this call can reach (0 if unknown); encoder input is not counted."""
     try:
         from .llama import _generation_plan_len
         if _encoder_decoder(model):
@@ -535,11 +530,10 @@ def _plan_len(model, args, kwargs):
 
 
 def plan(model, args, kwargs, input_ids):
-    """ "graph" or "eager" for this generate() call, decided once before it decodes (inside
-    generate_scope(), so graphs are on by default). Eager: graphs not wanted (wanted()), batch over
-    MAX_BSZ, too few decode steps to win back a capture (unless a kept graph of this batch replays from
-    the first step), or too little free memory for the graph pool. A kept graph / cache that this call
-    cannot reuse is dropped here."""
+    """Picks graph or eager once per generate() call, on by default; eager when graphs are unwanted
+    (wanted()), batch is over MAX_BSZ, too few steps to repay a capture (unless a kept graph
+    replays), or too little free memory for the graph pool; a kept graph or cache this call
+    cannot reuse is dropped."""
     state = model.__dict__.get(_ATTR)
     if not wanted(model):
         if state is not None:
@@ -702,8 +696,7 @@ def _plain_bound(model, forward):
 
 
 def _single_device_hook(model):
-    """accelerate AlignDevicesHook(s) that only move tensors to the model's own (single) device: no
-    offload, no weights map. Another hook type, or an execution device elsewhere, is not ours to graph."""
+    """AlignDevicesHook(s) moving tensors to the model's device; no offload or weights map."""
     try:
         from accelerate.hooks import AlignDevicesHook, SequentialHook
     except Exception:
@@ -720,8 +713,7 @@ def _single_device_hook(model):
         if target is None:
             continue
         try:
-            # accelerate names a GPU by its index; torch.device(int) asks for the current accelerator, which
-            # a CPU-only torch build does not have (it raises).
+            # accelerate names GPUs by index; torch.device(int) raises on a CPU-only torch.
             if type(target) is int:
                 target = torch.device(_BACKEND.device_type, target)
             target = torch.device(target)
@@ -738,8 +730,7 @@ def _single_device_hook(model):
 
 
 def _split_entry_card(model, target):
-    """Inputs go to the first block's card, not necessarily model.device; every parameter card is
-    its own."""
+    """Inputs go to the first block's card, not necessarily model.device; each card is its own."""
     if not _multidevice_enabled():
         return False
     devices = _param_devices(model)
@@ -861,8 +852,7 @@ def begin(model):
 
 
 def end(model, keep = False):
-    """End of a generate() call. Its graphs read this call's cache: freed, unless `keep` (keepable()), when
-    the graphs and that cache stay for the next call of the same batch (released by training)."""
+    """Frees graphs and cache unless keep; kept for the same batch's next call until training."""
     state = model.__dict__.get(_ATTR)
     if state is None:
         return
@@ -960,8 +950,7 @@ def release(model):
 
 
 def _bucket_budget(need, limit):
-    # 2x the call's need, but never below the smallest bucket a fresh cache would get: else repeated short calls
-    # after a long one would drop and re-capture an equal bucket every call.
+    # 2x the need, never below the smallest fresh-cache bucket, else short calls re-capture.
     return max(_KEEP_MAX_RATIO * max(need, 1), KV.bucket(max(need, 1), max(limit, need, 1)))
 
 
@@ -1002,8 +991,7 @@ def _reserve_step(
     bound,
     call = None,
 ):
-    """Grows a growable cache to hold this generate step. `call` tracks tokens in the cache but not in input_ids
-    (inputs_embeds prompt, or a returned cache continued with only new tokens)."""
+    """Grows a growable cache to fit this step; call counts cache tokens not in input_ids."""
     call = {} if call is None else call
     # Dim 1 is the sequence: CSM's input_ids are (batch, frames, codebooks), shape[-1] the 33 codebooks.
     total = (
@@ -1388,8 +1376,7 @@ def _window_reason(cache, q_len):
 
 
 def _window_fills(cache, q_len):
-    """Whether this step fills a sliding window (count + q_len reaches it). Its key is the filling one, but a
-    capture records after the warm-up advanced the counters, i.e. the rolling branch: never capture it."""
+    """Fills a sliding window: never capture it, it records the rolling branch after warm-up."""
     for layer in cache.layers:
         if type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
@@ -1518,8 +1505,7 @@ def _host_state_reason(before, after, q_len):
 
 
 def _snapshot(cache, rows = True):
-    """Host and device length counters a step advances, plus undo for full sliding-window rolls (not
-    idempotent); rows=False keeps counters only"""
+    """Length counters, sliding-window roll undo (not idempotent); rows=False: counters only."""
     host, device = [], []
     rolling = None
     for layer in cache.layers:
@@ -1680,8 +1666,7 @@ def _build(value, buffers, cache):
 
 
 def _block_mask_moved(value, move):
-    """Returns a graph BlockMask with its fields and mask_mod closure tensors moved to the target
-    card; returns value itself when nothing moved, keeping the per-device move"""
+    """Returns a BlockMask with tensors on the target card, or value itself if nothing moved."""
     fields = [
         (name, field, move(field))
         for name, field in _block_mask_fields(value)
@@ -1871,8 +1856,7 @@ def _step_type_ids(kwargs, q_len):
 
 
 def _mrope_positions(model, kwargs):
-    """kwargs with the decode position_ids the model's forward would derive, computed outside the
-    graph (same ops, so the same values); unchanged when they do not apply."""
+    """Decode position_ids the forward would derive, computed outside the graph; else as is."""
     if kwargs.get("position_ids") is not None:
         return kwargs
     if getattr(getattr(model, "config", None), "model_type", None) not in _MROPE_MODEL_TYPES:
@@ -1906,8 +1890,7 @@ _PLACEHOLDER_EMBED_MODEL_TYPES = {
 
 
 def _placeholder_embeds(model, kwargs):
-    """kwargs with input_ids replaced by the inputs_embeds the model's forward would compute from them (a
-    one-token text decode step: no media); unchanged when this does not apply."""
+    """input_ids replaced by inputs_embeds for a one-token text decode step; else unchanged."""
     config = getattr(model, "config", None)
     names = _PLACEHOLDER_EMBED_MODEL_TYPES.get(getattr(config, "model_type", None))
     ids = kwargs.get("input_ids")
@@ -2191,8 +2174,7 @@ def _buffer_like(leaf):
 
 
 def _capture_cards(error):
-    """The cards a failed capture began on: a split model's recorder names them (cards the step never
-    reached are left out); a single-card capture began on this one."""
+    """Cards a failed capture began on: split recorder's names minus unreached; else this one."""
     try:
         cards = getattr(error, "_unsloth_capture_cards", None)
         return tuple(cards) if cards is not None else (_BACKEND.current_device(),)
@@ -2292,8 +2274,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         if graph is None:
             raise
         if isinstance(error, torch.cuda.OutOfMemoryError):
-            # Out of memory while recording: free every graph of this call and decode the rest of it eagerly.
-            # Not refused for the process (the next call may have the room).
+            # OOM: free the call's graphs, decode eagerly; not refused (the next call may fit).
             reason = "capture failed: out of memory"
             if len(state.capture_errors) < 4:
                 state.capture_errors.append((reason, _where(error)))
@@ -2331,8 +2312,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
 
 
 def _validate(state, key, entry, forward, kwargs, cache):
-    """First replay of a key must match the eager step bitwise, else the key is refused. Eager runs
-    last, so generation continues from its result and cache rows."""
+    """First replay of a key must match eager bitwise or the key is refused; eager runs last."""
     state.validations += 1
     start = _snapshot(_self_attention_cache(cache))
     _replay(state, entry)

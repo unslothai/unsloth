@@ -16,6 +16,7 @@ name-aware (install_portable_resume). A 1-GPU checkpoint (int-keyed optimizer.pt
 
 from __future__ import annotations
 
+import functools
 import os
 
 import torch
@@ -697,6 +698,26 @@ def _bnb_import(inner, state_dict):
     return None
 
 
+def _host_dtensor(value, p, local):
+    """Wrap host `value` as `p`-shaped DTensor without copying it to the device (from_local would).
+    Cast here: a cast in the optimizer load would rewrap it on the host device."""
+    from .tp_native import _dtensor_api
+
+    if local.is_floating_point() and value.is_floating_point():
+        value = value.to(dtype = local.dtype)
+    stub = torch.empty((), dtype = value.dtype, device = local.device).expand(value.shape)
+    out = _dtensor_api()[0].from_local(
+        stub,
+        p.device_mesh,
+        p.placements,
+        run_check = False,
+        shape = p.shape,
+        stride = p.stride(),
+    )
+    out._local_tensor = value.contiguous()
+    return out
+
+
 def _load_named(
     model,
     inner,
@@ -725,6 +746,12 @@ def _load_named(
             f"Unsloth: this checkpoint's optimizer has no entry for {unknown[0]} ({len(unknown)} parameters), so "
             "it was not saved from this model's optimizer."
         )
+    # UNSLOTH_OFFLOAD_OPTIMIZER_STATE: loaded as its own load_state_dict override loads (optimizers/state_offload.py).
+    on_host = getattr(getattr(inner, "_unsloth_state_offloader", None), "load_on_host", None)
+    # Each moment stays on the host until loaded: a bitsandbytes import quantizes it onto the device chunk by
+    # chunk, and an offloaded optimizer keeps it on the host. Moving every moment first would hold all of them
+    # (8 bytes per parameter) on the device at once.
+    host = bnb or callable(on_host)
     state, groups, index = {}, [], 0
     saved_index = {id(g): i for i, g in enumerate(named["param_groups"])}
     empty = [i for i, g in enumerate(named["param_groups"]) if not g["params"]]
@@ -756,8 +783,13 @@ def _load_named(
                 out = {}
                 for key, value in entry.items():
                     if torch.is_tensor(value) and value.ndim > 0:
-                        value = _to_local(f"{n} ({key})", value, smap, local).to(local.device)
-                        if _is_dtensor(p) and not bnb:
+                        value = _to_local(f"{n} ({key})", value, smap, local)
+                        wrap = _is_dtensor(p) and not bnb
+                        if wrap and host:
+                            value = _host_dtensor(value, p, local)
+                        elif not host:
+                            value = value.to(local.device)
+                        if wrap and not host:
                             value = _dtensor_api()[0].from_local(
                                 value,
                                 p.device_mesh,
@@ -775,15 +807,16 @@ def _load_named(
     # A scheduler saved over the checkpoint's groups is read through the same map (remap_scheduler_state).
     inner.__dict__["_unsloth_portable_groups"] = (origin, len(named["param_groups"]))
     if bnb:
-        return _bnb_import(inner, loaded)
-    # The class method: a Trainer load in progress may have routed the instance's load_state_dict here.
-    result = type(inner).load_state_dict(inner, loaded)
-    # That skips the instance override UNSLOTH_OFFLOAD_OPTIMIZER_STATE installs: put the state back on the host
-    # now, as that override does, instead of holding all of it on the device until the first step.
-    offloader = getattr(inner, "_unsloth_state_offloader", None)
-    if offloader is not None:
-        offloader.finish(offloader.offload())
-    return result
+        load = functools.partial(_bnb_import, inner)
+    else:
+        # The class method: a Trainer load in progress may have routed the instance's load_state_dict here.
+        load = functools.partial(type(inner).load_state_dict, inner)
+    if callable(on_host):
+        # That skips the instance override UNSLOTH_OFFLOAD_OPTIMIZER_STATE installs: load as it does, keeping the
+        # state on the host and offloading it after (the bitsandbytes import too), instead of holding all of it
+        # on the device until the first step.
+        return on_host(load, loaded)
+    return load(loaded)
 
 
 def remap_scheduler_state(optimizer, state):

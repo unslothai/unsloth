@@ -76,8 +76,7 @@ def _not_apple(monkeypatch):
 def test_growth_is_the_configured_cache_cap_plus_the_server():
     server = lc._LLAMA_SERVER_HOST_MIB * MIB
     grow = LlamaCppBackend._llama_server_growth_bytes
-    # The cache keeps earlier prompts until its size cap is full: the cap is the price, however
-    # small one saved state is.
+    # Earlier prompts stay cached until the cap fills: growth is the cap, not the state size.
     assert grow(8192 * MIB, 1 * GIB) == 8192 * MIB + server
     assert grow(1804 * MIB, 4 * GIB) == 1804 * MIB + server
     assert grow(0, 4 * GIB) == server

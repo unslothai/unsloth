@@ -133,6 +133,54 @@ export function cornerInsetScope(
   };
 }
 
+/** Whether the rail's cards need more height than it has. scrollHeight alone misses it while the rail is
+ * overflow: visible: cards that run into its bottom padding, but not past its border, are no overflow there, and
+ * the bottom card then sits on the corner instead of the gutter above it. Out-of-flow (dragged) cards do not count. */
+export function railOverflows(element: HTMLElement): boolean {
+  if (element.scrollHeight > element.clientHeight + 1) return true;
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const card of element.children) {
+    const position = getComputedStyle(card).position;
+    if (position === "absolute" || position === "fixed") continue;
+    const rect = card.getBoundingClientRect();
+    top = Math.min(top, rect.top);
+    bottom = Math.max(bottom, rect.bottom);
+  }
+  if (bottom < top) return false;
+  const style = getComputedStyle(element);
+  const padding = (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.paddingBottom) || 0);
+  return bottom - top + padding > element.clientHeight + 1;
+}
+
+/** cornerInsetScope for the corner rail, which also scrolls only while its cards outgrow it (data-rail-scrolls):
+ * WebKit blurs a card inside a scroll container against that container's empty layer, so glass cards there turn grey. */
+export function overlayRailScope(
+  element: HTMLElement | null,
+): (() => void) | undefined {
+  const release = cornerInsetScope(element);
+  if (!element || typeof ResizeObserver === "undefined") return release;
+  const sync = () => element.toggleAttribute("data-rail-scrolls", railOverflows(element));
+  const resize = new ResizeObserver(sync);
+  const observeCards = () => {
+    resize.disconnect();
+    resize.observe(element);
+    for (const card of element.children) resize.observe(card);
+  };
+  const cards = new MutationObserver(() => {
+    observeCards();
+    sync();
+  });
+  cards.observe(element, { childList: true });
+  observeCards();
+  sync();
+  return () => {
+    cards.disconnect();
+    resize.disconnect();
+    release?.();
+  };
+}
+
 export const COMPOSER_CLEARANCE_VAR = "--studio-composer-clearance";
 // The collapsed download button's column: 16px inset, 44px button, 16px of air.
 const CORNER_RAIL_COLUMN = 76;

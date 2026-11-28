@@ -61,9 +61,8 @@ SSM_MODEL_SUBSTRINGS = REQUIRED_SSM_MODEL_SUBSTRINGS + (
     "zamba",
     "bamba",
 )
-# config.json model types whose modeling files run mamba_ssm (and so causal_conv1d), matched on the
-# resolved config so renamed ids still count; Mamba-1 and other hybrids have a torch path, so
-# mamba_ssm only accelerates them.
+# Types whose modeling files run mamba_ssm (and so causal_conv1d), matched on resolved config so
+# renamed ids count; Mamba-1 and other hybrids have a torch path; mamba_ssm only accelerates.
 REQUIRED_SSM_MODEL_TYPES = frozenset({"nemotron_h", "falcon_h1", "granitemoehybrid"})
 SSM_MODEL_TYPES = REQUIRED_SSM_MODEL_TYPES | frozenset(
     {"bamba", "jamba", "zamba", "zamba2", "mamba", "mamba2", "falcon_mamba"}
@@ -232,8 +231,7 @@ def _normalized_model_identifier(value: str) -> str:
 
 
 def _transformers_models_dir() -> Path | None:
-    """The active transformers' ``models`` folder, found without importing transformers: the
-    inference worker asks before its transformers import, which snapshots the kernel gates."""
+    """Active transformers models folder, found without the import that snapshots kernel gates."""
     try:
         spec = importlib.util.find_spec("transformers")
     except (ImportError, ValueError):
@@ -394,8 +392,7 @@ _REMOTE_SOURCES: dict[tuple[str, str, str | None], str | None] = {}
 
 
 def _remote_source_text(repo: str, filename: str, hf_token: str | None) -> str | None:
-    """The text of *filename* in a local checkpoint or a Hub repo (the local HF cache first, then
-    the Hub unless offline), or None when it cannot be read."""
+    """Text of the file from local checkpoint, HF cache, then Hub unless offline; else None."""
     key = (repo, filename, hf_token)
     if key in _REMOTE_SOURCES:
         return _REMOTE_SOURCES[key]
@@ -562,8 +559,7 @@ def _local_adapter_base(model_load_target: str) -> str | None:
 
 
 def _dependency_target(model_load_target: str, adapter_base: str | None) -> str:
-    """What decides the kernels: an adapter's (pinned, else recorded) base, else the target itself.
-    The adapter stays the load target; only the dependency decision moves to its base."""
+    """Adapter's pinned or recorded base (else target) decides kernels; adapter still loads."""
     if adapter_base:
         return adapter_base
     return _local_adapter_base(model_load_target) or model_load_target
@@ -598,8 +594,7 @@ def resolve_ssm_kernels(
     model_config: dict | None = None,
     trust_remote_code: bool | None = None,
 ) -> SsmKernels:
-    """Kernels the model at model_load_target needs, from its config (an adapter's base config if an
-    adapter); name lists only without one; pass model_config if already read."""
+    """Kernels from config (adapter's base if any); name lists without one; pass model_config."""
     target = _dependency_target(model_load_target, adapter_base)
     probe = target if target != model_load_target else model_name
     if model_config is None:
@@ -684,8 +679,7 @@ def resolved_model_is_ssm(
     *,
     adapter_base: str | None = None,
 ) -> bool:
-    """Whether the model at *model_load_target* runs ``mamba_ssm``, from its (adapter's base) config;
-    the name list only when there is no config to read."""
+    """Whether the model runs mamba_ssm, from its config (adapter's base); name list if none."""
     return resolve_ssm_kernels(
         model_name, model_load_target, hf_token, adapter_base = adapter_base
     ).mamba_ssm
@@ -873,8 +867,7 @@ def _run_with_heartbeat(run, cmd, status_cb, display_name, **kwargs):
 
 # The torch build this process installs kernels for, read once (the loaded torch, else one torch import in a child).
 _TORCH_ENV: dict = {}
-# Kernels whose install already failed in this process, keyed by kernel, torch and toolchain, so a
-# later load stage (or the next load in the same worker) does not download or compile them again.
+# Installs failed in this process, keyed by kernel, torch and toolchain; not retried later.
 _FAILED_INSTALLS: set = set()
 
 
@@ -888,8 +881,7 @@ def _torch_env() -> dict[str, str] | None:
 
 
 def _kernel_backend(env: dict[str, str] | None) -> str | None:
-    """ "cuda" or "hip" for a torch these kernels build / ship for; None for CPU-only, XPU, MPS,
-    or a torch the probe could not read, which take the model's torch path instead."""
+    """cuda or hip for torch builds; None (CPU, XPU, MPS, unreadable) takes the torch path."""
     if not env:
         return None
     if env.get("hip_version"):
@@ -949,8 +941,7 @@ def mamba2_runs_on_triton(kernels: "SsmKernels") -> bool:
     ssm_types = {t for t in kernels.model_types if t in SSM_MODEL_TYPES}
     if not ssm_types or not ssm_types <= MAMBA2_TRITON_MODEL_TYPES:
         return False
-    # The zoo drop-ins cover only these families' causal conv: any other consumer in the config
-    # (an LFM2 or other conv sub-model in a composite) still needs causal-conv1d.
+    # Zoo covers only these families' causal conv; other conv consumers need causal-conv1d.
     if any(
         _model_type_uses_causal_conv1d(t) for t in kernels.model_types - MAMBA2_TRITON_MODEL_TYPES
     ):
@@ -991,8 +982,7 @@ def block_import(import_name: str, extension: str | None = None) -> None:
 
 
 def _hide_if_still_extension_free(import_name: str, extension: str) -> None:
-    """After an uninstall attempt: if the extension-free copy is still installed (read-only env,
-    locked files), hide it from this process so transformers does not pick selective_scan_fn."""
+    """Failed uninstall: hide the extension-free copy, or transformers picks selective_scan_fn."""
     if _is_importable(import_name) and not _is_importable(extension):
         logger.info(
             "Could not uninstall the extension-free %s; hiding it from this load", import_name
@@ -1016,8 +1006,7 @@ def forget_imported_modules(import_name: str, extension: str | None = None) -> N
 
 
 def _failure_key(import_name: str, wheel_url_builder: Callable[..., Any] | None = None) -> tuple:
-    """The key a failed install is remembered by; a non-default wheel source (the extension-free
-    mamba_ssm wheel) is its own attempt, so it does not block the CUDA-wheel fallback."""
+    """Failed-install key; a non-default wheel is its own attempt, not blocking CUDA fallback."""
     try:
         import importlib.metadata as metadata
         torch_version = metadata.version("torch")
@@ -1045,8 +1034,7 @@ def _installed_distribution(pypi_name: str) -> bool:
 
 
 def _remove_broken(pypi_name: str, display_name: str, run: Callable[..., Any]) -> None:
-    """Uninstall a distribution whose extension does not import, as the training worker does: a
-    later availability check would otherwise find it and fail instead of taking the torch path."""
+    """Uninstall a broken distribution, else later checks find it and fail, not the torch path."""
     if not _installed_distribution(pypi_name):
         return
     try:
@@ -1109,8 +1097,7 @@ def _install_kernel(
     if failure_key in _FAILED_INSTALLS:
         logger.info("%s already failed to install in this process; not retrying", display_name)
         if extension is not None and _is_importable(import_name):
-            # A later load reinstalled the extension-free copy after this route failed: drop it, or
-            # this load takes mamba_ssm's fast path and fails in selective_scan_fn.
+            # Drop the copy, or mamba_ssm's fast path fails in selective_scan_fn.
             if _drop_extension_free_copy(import_name, display_name, pypi_name, extension, run):
                 _note_removed(newly_installed, import_name)
         return False
@@ -1144,8 +1131,7 @@ def _install_kernel(
                 block_import(import_name, extension)
                 _note_removed(newly_installed, import_name)
             return False
-        # Another process may have installed it while this one waited: new to this worker all the
-        # same, so its already-imported modeling modules are refreshed or restarted.
+        # Peer-installed while waiting is still new here, so imported modules are refreshed.
         if kernel_usable(import_name, extension):
             logger.info("%s installed by another process", display_name)
             if extension is not None:
@@ -1181,8 +1167,7 @@ def _install_kernel(
             installed = False
         finally:
             if installed is False:
-                # A failed replacement removes the extension-free copy too: left in place, a Mamba-1
-                # load would take mamba_ssm's fast path and fail in selective_scan_fn.
+                # Failed replacements remove the copy; else Mamba-1 fails in selective_scan_fn.
                 _remove_broken(pypi_name, display_name, run)
                 if replacing:
                     forget_imported_modules(import_name, extension)
@@ -1197,8 +1182,7 @@ def _install_kernel(
         return bool(installed)
 
 
-# Removals are listed with the newly installed kernels under the removed prefix; they change what
-# transformers' cached gates and imported modules saw, so callers refresh as for an install.
+# Removals under the removed prefix change transformers' cached gates, so callers refresh.
 REMOVED_PREFIX = "removed "
 
 
@@ -1328,8 +1312,7 @@ def _install_kernel_locked(
         )
         return False
     if not pinned_source_build_supported(env):
-        # The pinned sources build at C++17 and torch 2.13+ needs C++20: a certain failure after
-        # minutes of compiling, so only the prebuilt wheel serves this torch.
+        # C++17 sources fail on torch 2.13+ (needs C++20) after minutes; use prebuilt wheel.
         _emit(
             status_cb,
             f"No prebuilt {display_name} for torch {env.get('torch_mm')} on this machine, and it "
@@ -1404,7 +1387,6 @@ def ensure_ssm_runtime(
     mamba_ssm_fatal = bool(mamba_ssm_required and mamba_ssm_fatal)
     if wants_causal_conv1d is None:
         wants_causal_conv1d = model_wants_causal_conv1d(model_name)
-    # Every mamba-ssm model also runs causal-conv1d.
     wants_causal_conv1d = wants_causal_conv1d or is_ssm
     installed: list[str] = []
     if not (wants_causal_conv1d or is_ssm):
@@ -1473,8 +1455,7 @@ def ensure_ssm_runtime(
         MAMBA_SSM, allow_source_build = mamba_ssm_required, extension = MAMBA_SSM_EXTENSION
     ):
         if mamba_ssm_fatal:
-            # The model cannot load without mamba-ssm and has no torch path, so on a CPU or XPU
-            # torch no install could help; say what is missing, not point at the network.
+            # No torch path: no install helps on CPU/XPU; name what's missing, not the network.
             if _kernel_backend(_torch_env()) is None:
                 raise RuntimeError(
                     "This Mamba model requires mamba-ssm, which needs a CUDA or ROCm torch build."
@@ -1531,8 +1512,7 @@ def provision_ssm_kernels(
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> tuple[SsmKernels, list[str]]:
-    """Resolve and install the kernels a load needs; returns resolved kernels and what this call
-    newly installed. Raises RuntimeError only for a model that cannot load without mamba_ssm."""
+    """Returns kernels and newly installed names; RuntimeError only if mamba_ssm is required."""
     kernels = resolve_ssm_kernels(
         model_name,
         model_load_target,

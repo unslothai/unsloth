@@ -51,7 +51,7 @@ import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
-  findLatestUserAudioBase64,
+  hasUncountableChatAudio,
   findLatestUserVideoBase64,
   messagesContainImage,
   resolveProjectId,
@@ -189,6 +189,7 @@ import {
   generationRecoveryMetadata,
   shouldPreserveGenerationMetadata,
   subscribeGenerationRecoveryTriggers,
+  appendRecoveredDelta,
 } from "./utils/chat-generation-recovery";
 import {
   beginSavedHistoryReconciliation,
@@ -211,8 +212,6 @@ import {
   notifyReplyFinished,
 } from "./utils/reply-finished-notification";
 import {
-  extractDeltaText,
-  markLiteralThinkTags,
   markPendingThinkTag,
   parseAssistantContent,
 } from "./utils/parse-assistant-content";
@@ -1800,12 +1799,7 @@ function scheduleGenerationRecovery(
                   cache_read_input_tokens?: unknown;
                 };
                 timings?: Record<string, unknown>;
-                choices?: Array<{
-                  delta?: {
-                    content?: unknown;
-                    reasoning_content?: unknown;
-                  };
-                }>;
+                choices?: Array<{ delta?: unknown }>;
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
@@ -1905,35 +1899,18 @@ function scheduleGenerationRecovery(
               if (typeof chunk.usage?.completion_tokens === "number") {
                 completionTokens = chunk.usage.completion_tokens;
               }
-              const deltaRecord = chunk.choices?.[0]?.delta;
-              const reasoning =
-                typeof deltaRecord?.reasoning_content === "string"
-                  ? deltaRecord.reasoning_content
-                  : "";
-              const { text: delta, hasStructuredReasoning } = extractDeltaText(
-                deltaRecord?.content,
-              );
-              if (!parseThink && (reasoning || hasStructuredReasoning)) {
-                parseThink = true;
+              const wasParsing = parseThink;
+              const wasSplit = splitReasoningSeen;
+              ({ raw, reasoningOpen, parseThink, splitReasoningSeen } =
+                appendRecoveredDelta(
+                  { raw, reasoningOpen, parseThink, splitReasoningSeen },
+                  chunk.choices?.[0]?.delta,
+                ));
+              if (parseThink && !wasParsing) {
                 currentMetadata = { ...currentMetadata, parseThinkTags: true };
               }
-              // Marked as the live stream marks them, so a recovered reply parses the same way.
-              if (reasoning) {
-                if (!reasoningOpen) raw += "<think>";
-                raw += markLiteralThinkTags(reasoning);
-                reasoningOpen = true;
-                if (!splitReasoningSeen) {
-                  splitReasoningSeen = true;
-                  currentMetadata = { ...currentMetadata, splitReasoningSeen: true };
-                }
-              }
-              if (delta) {
-                if (reasoningOpen) raw += "</think>";
-                raw +=
-                  splitReasoningSeen && typeof deltaRecord?.content === "string"
-                    ? markLiteralThinkTags(delta)
-                    : delta;
-                reasoningOpen = false;
+              if (splitReasoningSeen && !wasSplit) {
+                currentMetadata = { ...currentMetadata, splitReasoningSeen: true };
               }
             }
           }
@@ -4048,7 +4025,7 @@ function ThreadContextUsageRecount({
         loadedContextLength == null ||
         (!store.loadedIsGguf && !store.loadedIsMlx) ||
         messagesContainImage(messages) ||
-        findLatestUserAudioBase64(messages) ||
+        hasUncountableChatAudio(messages) ||
         findLatestUserVideoBase64(messages) ||
         (!store.loadedIsGguf && messages.some((message) => message.metadata?.custom?.contextTruncation))
       ) return;
@@ -4103,7 +4080,7 @@ function ThreadContextUsageRecount({
     if (
       localWindow != null &&
       !messagesContainImage(messages) &&
-      !findLatestUserAudioBase64(messages) &&
+      !hasUncountableChatAudio(messages) &&
       !findLatestUserVideoBase64(messages)
     ) {
       return;
@@ -4193,7 +4170,7 @@ function ThreadContextUsageRecount({
       !exact &&
       localWindow != null &&
       !messagesContainImage(messages) &&
-      !findLatestUserAudioBase64(messages) &&
+      !hasUncountableChatAudio(messages) &&
       !findLatestUserVideoBase64(messages);
     if (recount && (runActive || queuedPromptPending)) {
       store.setThreadContextUsage(activeThreadId, null);

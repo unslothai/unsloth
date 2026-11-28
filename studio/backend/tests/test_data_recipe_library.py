@@ -142,6 +142,36 @@ def test_stale_save_is_a_conflict_and_a_current_one_wins():
     assert client.put("/recipes/r1", json = current).json()["name"] == "Reloaded"
 
 
+def test_a_save_may_name_further_bases_and_lands_on_any_of_them():
+    client = _client()
+    client.put("/recipes/r1", json = _recipe(updated_at = 2000))
+    # The 3000 write never happened; 2000 is still stored, so the listed fallback admits it.
+    recovered = {
+        **_recipe(name = "Recovered", updated_at = 4000),
+        "baseUpdatedAt": 3000,
+        "alsoBaseUpdatedAt": [2000],
+    }
+    assert client.put("/recipes/r1", json = recovered).json()["name"] == "Recovered"
+
+    neither = {
+        **_recipe(name = "Neither", updated_at = 5000),
+        "baseUpdatedAt": 3000,
+        "alsoBaseUpdatedAt": [2000],
+    }
+    assert client.put("/recipes/r1", json = neither).status_code == 409
+    assert client.get("/recipes/r1").json()["name"] == "Recovered"
+
+
+def test_the_largest_accepted_base_list_still_binds():
+    client = _client()
+    client.put("/recipes/r1", json = _recipe(updated_at = 2000))
+    many = [3000 + i for i in range(499)] + [2000]
+    body = {**_recipe(name = "Many", updated_at = 9000), "baseUpdatedAt": 1, "alsoBaseUpdatedAt": many}
+    assert client.put("/recipes/r1", json = body).json()["name"] == "Many"
+    too_many = {**body, "alsoBaseUpdatedAt": many + [1]}
+    assert client.put("/recipes/r1", json = too_many).status_code == 422
+
+
 def test_older_run_snapshot_from_another_tab_does_not_replace_a_newer_one():
     client = _client()
     client.put("/recipes/r1", json = _recipe())

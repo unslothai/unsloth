@@ -3150,7 +3150,7 @@
     "zero_row": []
    },
    "page": "video",
-   "preview_key": null,
+   "preview_key": "minimax_h3",
    "te_int8_effective": "fp8"
   },
   "minimax-h3-image": {
@@ -4977,6 +4977,7 @@
    "hunyuanvideo-1.5-720p": "hv15",
    "ltx-2": "ltx2",
    "ltx-2.5": "ltx2",
+   "minimax-h3": "minimax_h3",
    "moss-image": "flux2",
    "qwen-image": "qwen_image",
    "qwen-image-2.1": "qwen_image_21",

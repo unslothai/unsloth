@@ -82,6 +82,11 @@ def _writer(
         "_apply_token_to_child_env": lambda env, token, explicit = False: None,
         "is_inkling2_config": lambda config: False,
         "inkling2_lora_gguf_adapter": None,
+        "_lora_gguf_converter_input": lambda model,
+        tokenizer,
+        lora_dir,
+        scratch_dir,
+        **kwargs: lora_dir,
         "collections": collections,
         "os": os,
         "re": re,
@@ -89,6 +94,9 @@ def _writer(
         "subprocess": subprocess,
         "sys": sys,
         "tempfile": tempfile,
+        "Path": pathlib.Path,
+        "IS_WINDOWS": False,
+        "_WINDOWS_MAX_PATH_CHARS": 259,
     }
     names = {
         "_unsloth_save_lora_gguf",
@@ -96,6 +104,8 @@ def _writer(
         "_converter_error_line",
         "_lora_gguf_conversion_error",
         "_local_base_config_dir",
+        "_place_gguf_output",
+        "_partial_gguf_path",
     }
     exec(compile(ast.Module(_load(names), []), str(_SAVE), "exec"), namespace)
     loader = _SAVE.parent / "models" / "loader_utils.py"
@@ -179,6 +189,30 @@ def test_expert_adapter_exports_once_the_converter_can_map_it(tmp_path):
     save = _writer(tmp_path, _CONVERTER_FUTURE)
     gguf = save(_Peft(_EXPERTS), None, str(out_dir), outtype = "q8_0")
     assert pathlib.Path(gguf).read_bytes() == b"GGUF"
+    assert sorted(p.name for p in out_dir.iterdir()) == [
+        "Inkling-2-Mini-lora-q8_0.gguf",
+        "adapter_config.json",
+        "adapter_model.safetensors",
+    ]
+
+
+_CONVERTER_KILLED_MIDWAY = """
+import sys
+out = sys.argv[sys.argv.index("--outfile") + 1]
+open(out, "wb").write(b"GG")
+sys.exit(-9)
+"""
+
+
+def test_a_failed_reexport_keeps_the_prior_lora_gguf(tmp_path):
+    out_dir = tmp_path / "export"
+    out_dir.mkdir()
+    prior = out_dir / "Inkling-2-Mini-lora-q8_0.gguf"
+    prior.write_bytes(b"GGUF prior export")
+    save = _writer(tmp_path, _CONVERTER_KILLED_MIDWAY)
+    with pytest.raises(RuntimeError):
+        save(_Peft(), None, str(out_dir), outtype = "q8_0")
+    assert prior.read_bytes() == b"GGUF prior export"
     assert sorted(p.name for p in out_dir.iterdir()) == [
         "Inkling-2-Mini-lora-q8_0.gguf",
         "adapter_config.json",

@@ -106,6 +106,8 @@ def build_memory_estimate(
             if isinstance(gpu_bytes, _Unset)
             else (None if gpu_bytes is None else int(gpu_bytes))
         ),
+        per_gpu = getattr(breakdown, "per_gpu", None),
+        per_gpu_basis = getattr(breakdown, "per_gpu_basis", None),
         gpu_floor_bytes = None if gpu_floor_bytes is None else int(gpu_floor_bytes),
         floor_can_offload = bool(floor_can_offload),
         kv_estimable = bool(getattr(breakdown, "kv_estimable", True)),
@@ -144,7 +146,6 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
     return {
         "available": estimate.available,
         "reason": estimate.reason,
-        # The aggregate meaning. See the module docstring.
         "weights_bytes": estimate.resident_files_bytes,
         "kv_bytes": estimate.kv_bytes,
         "kv_checkpoint_bytes": estimate.kv_checkpoint_bytes,
@@ -156,6 +157,8 @@ def project_estimate_memory_response(estimate: MemoryEstimate) -> dict:
         "adapters_unsized": estimate.adapters_unsized,
         "total_bytes": estimate.total_bytes,
         "gpu_bytes": estimate.gpu_bytes or 0,
+        "per_gpu": estimate.per_gpu,
+        "per_gpu_basis": estimate.per_gpu_basis,
         "kv_estimable": estimate.kv_estimable,
         "kv_on_gpu": estimate.kv_on_gpu,
         "n_ctx": estimate.n_ctx,
@@ -185,7 +188,6 @@ def project_kv_cache_estimate(
 ) -> dict:
     """weights_bytes is the quant file alone, and None (not 0) means no such term for this route."""
     return {
-        # The quant-file meaning. See the module docstring.
         "weights_bytes": estimate.quant_file_bytes or None,
         # Off the GPU and inside weights_bytes, so the bar can take it off the VRAM segment.
         "lookup_table_bytes": estimate.lookup_table_bytes or None,

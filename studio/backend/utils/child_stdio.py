@@ -10,7 +10,6 @@ from typing import Mapping, Optional
 
 
 def utf8_child_env(env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
-    """Copy *env* (or the current environment) with UTF-8 stdio forced."""
     child = dict(os.environ if env is None else env)
     child["PYTHONIOENCODING"] = "utf-8"
     if env is None and child.get("UNSLOTH_ZOO_DISABLE_GPU_INIT") == "1":
