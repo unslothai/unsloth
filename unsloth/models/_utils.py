@@ -6382,6 +6382,22 @@ def _unsloth_pre_compute_loss(self, model, inputs, *args, **kwargs):
                 inputs["mm_token_type_ids"] = torch.zeros_like(inputs["input_ids"])
 
     _unsloth_attach_accelerator_scaler(self, model)
+    # QAT distillation: CE mixed with KD from the adapter-off, fake-quantizer-off base (models/_qat_distill.py).
+    _qad = getattr(model, "_unsloth_qat_distill", None) or getattr(
+        getattr(model, "module", None), "_unsloth_qat_distill", None
+    )
+    if (
+        _qad is not None
+        and _qad["coef"] > 0
+        and getattr(model, "training", False)
+        and torch.is_grad_enabled()
+        and "labels" in inputs
+    ):
+        from ._qat_distill import qat_distill_compute_loss
+        return_outputs = kwargs.get("return_outputs", args[0] if args else False)
+        return qat_distill_compute_loss(
+            self, model, inputs, num_items_in_batch, return_outputs = return_outputs, config = _qad
+        )
     outputs = self._old_compute_loss(model, inputs, *args, **kwargs)
     return outputs
 
@@ -10856,6 +10872,9 @@ def _mx_autocast_forward(self, x):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
 
+    if getattr(self, "_unsloth_qat_teacher", False):  # QAT distillation teacher: the 16-bit weight
+        return torch.nn.functional.linear(x, self.weight, self.bias)
+
     if x.dtype != torch.bfloat16 and torch.is_autocast_enabled(x.device.type):
         x = x.to(torch.bfloat16)
     # torchao flattens the input with .view, which raises on a strided (e.g. transposed) activation.
@@ -11162,6 +11181,8 @@ def _nvfp4_qat_linear(self, x):
 def _nvfp4_any_rank_forward(self, x):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
     # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
+    if getattr(self, "_unsloth_qat_teacher", False):  # QAT distillation teacher: the 16-bit weight
+        return torch.nn.functional.linear(x, self.weight, self.bias)
     out_dtype = None
     # float16 autocast hands over float16 activations (an earlier Linear / SDPA); prepare only
     # admits bfloat16 / float32 weights, so quantize from the weight dtype and return what an
@@ -11472,7 +11493,9 @@ def _prepare_model_for_qat(
     _record_qat_engagement(model, torchao_config)
     from ._qat_round import round_frozen_qat_weights
 
-    round_frozen_qat_weights(model)
+    # A distilling model's teacher is its 16-bit base: keep the base weights off the QAT grid.
+    if getattr(model, "_unsloth_qat_distill", None) is None:
+        round_frozen_qat_weights(model)
 
     return model
 

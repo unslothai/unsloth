@@ -374,6 +374,9 @@ def _memo_forward(quantizer, w, forward):
         if _STATE["live"]:
             _drop_all()  # switched off mid-run: give the cached copies back
         return forward(quantizer, w)
+    if not getattr(quantizer, "enabled", True):
+        # Switched off for a moment (QAT distillation teacher): pass through and keep the cached copy.
+        return forward(quantizer, w)
     if _STATE["disabled"] or not quantizer.training:
         # After out of memory or in eval mode, free every cached weight and pass through.
         if _STATE["live"]:
