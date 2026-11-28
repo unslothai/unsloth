@@ -5296,6 +5296,13 @@ export function createOpenAIStreamAdapter(
               );
       runtime = withChatFullAccess(runtime, liveRuntime.chatFullAccessGrants, resolvedThreadId);
       const { params } = runtime;
+      if (
+        options.pairId &&
+        (options.modelType === "base" || options.modelType === "lora") &&
+        params.checkpoint !== runtimeAtSend.params.checkpoint
+      ) {
+        throw new Error("The loaded LoRA changed. Reload the adapter saved with this comparison.");
+      }
       const sandboxSessionId = await resolveSandboxSessionId(
         resolvedThreadId,
         readThreadRecord,
