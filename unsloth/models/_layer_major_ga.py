@@ -1164,6 +1164,12 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
             return None  # transient: another trainer in this process holds the window
         if compile_epoch is not None and why.startswith(COMPILED_IN_WINDOW):
             # Not a protocol break: this step's standard retry compiles in standard order, later steps can window.
+            _say_once(
+                trainer,
+                "compile-abort",
+                f"Unsloth: offload_layers ran this step's micro-batches one after another: {why}. Layer-major "
+                "windows resume once torch.compile has the graphs.",
+            )
             trainer.__dict__.setdefault(
                 "_unsloth_layer_major_compile", {"epoch": None, "settled": None, "steps": 0}
             )["settled"] = False
