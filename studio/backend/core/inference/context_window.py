@@ -702,8 +702,10 @@ def _reply_may_have_failed(reply: object) -> bool:
     if not isinstance(reply, str):
         return True
     head = reply[:200].strip().lower()
+    # Tools prefix a nonzero exit but append a timeout after the partial output.
+    ends = head + "\n" + reply[-200:].lower()
     return head.startswith("exit code") or any(
-        marker in head
+        marker in ends
         for marker in (*_FAILED_REPLY_MARKERS, "timed out", "timeout", "cancelled", "canceled")
     )
 
