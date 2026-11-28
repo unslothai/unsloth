@@ -1691,10 +1691,13 @@ def _repeatable(trainer, model):
 
 
 def _fresh_views(obj):
-    """The same inputs as new tensor objects (views): torch.compile marks dynamic dimensions on the tensors a pass
-    sees, and the real pass must see its inputs as they were, or every compiled graph recompiles once."""
+    """The same inputs as new tensor objects sharing their storage: torch.compile marks dynamic dimensions on the
+    tensors a pass sees, and the real pass must see its inputs as they were, or every compiled graph recompiles once.
+    detach(), not view(): a view keeps `_base`, and a dynamic-shape graph compiled on it guards on
+    `L['x']._base.size()`, which fails on the real pass's base tensors and recompiles every graph once."""
     if isinstance(obj, torch.Tensor):
-        return obj.view(obj.shape)
+        # An input that requires grad keeps its autograd link (a view): detaching it would change the backward.
+        return obj.view(obj.shape) if obj.requires_grad else obj.detach()
     if isinstance(obj, (list, tuple)) and type(obj) in (list, tuple):
         return type(obj)(_fresh_views(o) for o in obj)
     if isinstance(obj, Mapping):

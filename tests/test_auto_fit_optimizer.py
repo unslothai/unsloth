@@ -1259,3 +1259,69 @@ def test_planner_budgets_the_batch_workspace(af, monkeypatch):
     foreach = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
     assert foreach["in_backward"] - one_pass["in_backward"] == largest
     assert one_pass["in_backward"] - one_pass["states"] - (256 << 20) == 2 * largest
+
+
+class _CompiledNet(torch.nn.Module):
+    """A forward through a dynamic-shape torch.compile'd function (as Unsloth's compiled blocks are)."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(6, 8)
+        self.b = torch.nn.Linear(8, 1)
+        self.body = torch.compile(self._body, backend = "eager", dynamic = True)
+
+    def _body(self, x, labels):
+        return (self.b(torch.relu(self.a(x))).squeeze(-1) - labels).square().mean()
+
+    def forward(self, x, labels):
+        return {"loss": self.body(x, labels)}
+
+
+def test_measuring_pass_does_not_recompile_the_real_pass(af, sr, monkeypatch, tmp_path):
+    """The measuring pass and the stepping pass hit the same compiled graphs: the measuring pass's inputs are new
+    tensor objects that are not views (a graph compiled on a view guards on its `_base`, which the real pass's
+    tensors do not have, so every graph recompiled once at the first step)."""
+    import sys
+
+    from datasets import Dataset
+    from torch._dynamo.utils import counters
+    from transformers import Trainer, TrainingArguments
+
+    monkeypatch.setitem(sys.modules, af.__name__, af)  # dynamo imports the module of code it traces
+    g = torch.Generator().manual_seed(2)
+    rows = [{"x": torch.randn(6, generator = g).tolist(), "labels": float(i % 3)} for i in range(16)]
+    graphs = {}
+    for mode, clip in (("0", "estimate"), ("in_backward", "estimate"), ("in_backward", "exact")):
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_OPTIMIZER", mode)
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_CLIP", clip)
+        torch._dynamo.reset()
+        counters.clear()
+        args = TrainingArguments(
+            output_dir = str(tmp_path),
+            per_device_train_batch_size = 4,
+            max_steps = 3,
+            learning_rate = 1e-2,
+            max_grad_norm = 0.5,
+            report_to = [],
+            use_cpu = True,
+            save_strategy = "no",
+            seed = 0,
+            dataloader_num_workers = 0,
+            disable_tqdm = True,
+        )
+        trainer = Trainer(model = _CompiledNet(), args = args, train_dataset = Dataset.from_list(rows))
+        af.install_auto_fit_optimizer(trainer)
+        trainer.train()
+        if mode != "0":
+            assert trainer._unsloth_in_backward_optimizer.measured_steps == (
+                3 if clip == "exact" else 1
+            )
+        graphs[mode, clip] = counters["stats"]["unique_graphs"]
+    torch._dynamo.reset()
+    assert graphs["0", "estimate"] >= 1
+    assert (
+        graphs["in_backward", "estimate"]
+        == graphs["in_backward", "exact"]
+        == graphs["0", "estimate"]
+    ), graphs
