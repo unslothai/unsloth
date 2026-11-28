@@ -3493,6 +3493,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 self._denoise_setup(job, transformer)
             if cap > 1:
                 batches = h3_batch.batch_groups(jobs, cap)
+                if h3_batch.batched_mode() == h3_batch.MODE_AUTO and len(batches) != 1:
+                    # Auto's verdict covers one call of every image; layout groups are sizes nobody raced
+                    batches = [[j] for j in range(len(jobs))]
             statics = None
             for i, t in enumerate(jobs[0]["timesteps"]):
                 if self.interrupt:

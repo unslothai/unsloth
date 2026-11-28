@@ -178,6 +178,23 @@ def test_auto_keeps_one_after_another_without_a_serving_verdict_for_this_call(
     assert max(resident._unsloth_h3_last_stats.get("batched") or [1]) == 1
 
 
+def test_auto_never_serves_smaller_layout_groups_than_the_raced_call(h3i, resident, store):
+    import torch
+
+    store[(SIZE, SIZE, _steps(h3i), 4)] = _serving(4)
+    prompts = ["a cat", "a red fox in deep fresh snow at dawn"] * 2
+    resident(
+        prompt = prompts,
+        height = SIZE,
+        width = SIZE,
+        generator = [torch.Generator().manual_seed(s) for s in (1, 2, 3, 4)],
+        min_generation_area = 1024,
+        output_type = "latent",
+    )
+    # two layouts would split into two batches of 2, a size the verdict for 4 never measured
+    assert max(resident._unsloth_h3_last_stats.get("batched") or [1]) == 1
+
+
 def test_the_env_overrides_every_verdict(h3i, resident, store, monkeypatch):
     store[(SIZE, SIZE, _steps(h3i), 2)] = _serving(2)
     monkeypatch.setenv("UNSLOTH_H3_IMAGE_BATCHED", "0")
