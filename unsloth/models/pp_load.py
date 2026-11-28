@@ -344,6 +344,10 @@ def _pipeline_loading(
         "label": "pipeline parallel",
         "quantized_hint": _QUANTIZED_HINT,
         "prequantized_hint": _QUANTIZED_HINT,
+        "gguf_hint": (
+            "Drop pipeline_sharded_loading: apply_pipeline_parallel (or UNSLOTH_PP_SIZE) then splits the fully "
+            "loaded model, gguf_packed = True included."
+        ),
         "mesh_hint": "Unsloth: pipeline_sharded_loading takes a 1-D pp mesh (pass mesh['pp']).",
         "auto": auto,
         # Pre-quantized bnb 4-bit (Inkling 2) converted on load; per-stage as quantize-on-load.
