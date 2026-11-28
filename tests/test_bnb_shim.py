@@ -262,71 +262,159 @@ def test_linear4bit_quantizes_on_move_and_saves_bnb_keys():
     assert out["rebuilt_same"]
 
 
-def test_optimizers_fall_back_and_int8_refuses():
+def test_optimizers_keep_8bit_state_and_int8_refuses():
     out = run(
         """
         shim.install()
         import contextlib, io, pickle
         import torch
         import bitsandbytes as bnb
-        p = torch.nn.Parameter(torch.ones(4))
+        from bitsandbytes.optim.optimizer import Optimizer2State, Optimizer8bit
+        torch.manual_seed(0)
+        p = torch.nn.Parameter(torch.randn(5000))
+        small = torch.nn.Parameter(torch.randn(10))
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
-            opt = bnb.optim.AdamW([p], lr = 0.1, betas = (0.9, 0.999), eps = 1e-8, weight_decay = 0.0,
-                                  optim_bits = 8, is_paged = True)
-            bnb.optim.AdamW([p], lr = 0.1, optim_bits = 8)
-        p.grad = torch.ones(4)
+            # transformers' optim="paged_adamw_8bit": AdamW(optim_bits=8, is_paged=True)
+            opt = bnb.optim.AdamW([p, small], lr = 0.1, betas = (0.9, 0.999), eps = 1e-8,
+                                  weight_decay = 0.0, optim_bits = 8, is_paged = True)
+            bnb.optim.AdamW8bit([p], lr = 0.1)
+            bnb.optim.SGD8bit([p], lr = 0.1)
+        before = p.detach().clone()
+        p.grad = torch.ones(5000)
+        small.grad = torch.ones(10)
         opt.step()
-        pickle.loads(pickle.dumps(opt.state_dict()))
+        st, st_small = opt.state[p], opt.state[small]
+        sd = opt.state_dict()
+        pickle.loads(pickle.dumps(sd))
+        wrapped = sd["state"][0]["__bnb_optimizer_quant_state__"]
         # Param groups given as generators (Trainer builds lists, others may not) keep their params.
         q = torch.nn.Parameter(torch.ones(3))
         grouped = bnb.optim.AdamW8bit(({"params": (t for t in [q]), "lr": 0.1},))
         group_sizes = [len(g["params"]) for g in grouped.param_groups]
         pickle.loads(pickle.dumps(bnb.optim.PagedAdamW8bit))
+        h = torch.nn.Parameter(torch.ones(4096, dtype = torch.float16))
+        h.grad = torch.full_like(h, 0.5)
+        bnb.optim.AdamW8bit([h], lr = 1e-2).step()
+        # a bitsandbytes checkpoint resumes, and lands on the same state
+        twin = torch.nn.Parameter(before.clone())
+        resumed = bnb.optim.AdamW([twin, torch.nn.Parameter(small.detach().clone())], lr = 0.1,
+                                  weight_decay = 0.0, optim_bits = 8)
+        resumed.load_state_dict(sd)
+        rs = resumed.state[twin]
+        same = all(torch.equal(rs[k], st[k]) for k in ("state1", "state2", "absmax1", "absmax2"))
+        # a GlobalOptimManager override pins one weight to 32-bit state
+        e = torch.nn.Parameter(torch.randn(8192))
+        mng = bnb.optim.GlobalOptimManager.get_instance()
+        mng.override_config(e, "optim_bits", 32)
+        o2 = bnb.optim.Adam8bit([e])
+        e.grad = torch.ones_like(e)
+        o2.step()
+        errors = {}
+        for label, make in (
+            ("amsgrad", lambda: bnb.optim.AdamW8bit([p], amsgrad = True)),
+            ("clipping", lambda: bnb.optim.AdamW([p], percentile_clipping = 50)),
+            ("lion", lambda: bnb.optim.Lion([p])),
+            ("int8", lambda: bnb.nn.Linear8bitLt(4, 4)),
+        ):
+            try:
+                make()
+                errors[label] = "built"
+            except (RuntimeError, ValueError) as err:
+                errors[label] = str(err)
+        bnb.optim.AdamW([p], percentile_clipping = 100, block_wise = True)  # older defaults accepted
+        # a transposed (non-contiguous) weight steps with contiguous 8-bit state
+        tp = torch.nn.Parameter(torch.randn(64, 64).t())
+        tp.grad = torch.randn(64, 64).t()
+        o3 = bnb.optim.AdamW8bit([tp])
+        o3.step()
+        transposed = [str(o3.state[tp]["state1"].dtype), o3.state[tp]["state1"].is_contiguous()]
+        # a checkpoint of the previous stand-in (torch AdamW moments) resumes as 32-bit state
+        w = torch.nn.Parameter(torch.randn(5000))
+        w.grad = torch.randn(5000)
+        old = torch.optim.AdamW([w], lr = 1e-3)
+        old.step()
+        new = bnb.optim.AdamW8bit([w], lr = 1e-3)
+        new.load_state_dict(old.state_dict())
+        new.step()
+        migrated = [str(new.state[w]["state1"].dtype), new.state[w]["step"], "exp_avg" in new.state[w]]
+        sgd = bnb.optim.SGD8bit([torch.nn.Parameter(torch.ones(4))], lr = 0.1)
         try:
-            bnb.optim.AdamW8bit([torch.nn.Parameter(torch.ones(4, dtype = torch.float16))])
-            fp16 = "built"
-        except RuntimeError as e:
-            fp16 = str(e)
-        fresh = bnb.optim.AdamW8bit([torch.nn.Parameter(torch.ones(4))])
-        native = {"state": {0: {"step": torch.tensor(1.0), "state1": torch.zeros(4, dtype = torch.uint8)}},
-                  "param_groups": fresh.state_dict()["param_groups"]}
-        try:
-            fresh.load_state_dict(native)
-            resume = "loaded"
-        except RuntimeError as e:
-            resume = str(e)
-        try:
-            bnb.nn.Linear8bitLt(4, 4)
-            int8 = "built"
-        except RuntimeError as e:
-            int8 = str(e)
-        try:
-            bnb.optim.Lion([p])
-            lion = "built"
-        except RuntimeError as e:
-            lion = str(e)
+            sgd.load_state_dict({"state": {0: {"state1": torch.zeros(4, dtype = torch.uint8)}},
+                                 "param_groups": sgd.state_dict()["param_groups"]})
+            sgd_resume = "loaded"
+        except RuntimeError as err:
+            sgd_resume = str(err)
         print("OUT " + json.dumps({
-            "exact_torch": type(opt) is torch.optim.AdamW, "factory_module": bnb.optim.AdamW.__module__,
+            "bnb_class": isinstance(opt, Optimizer2State) and isinstance(opt, Optimizer8bit),
+            "module": type(opt).__module__, "name": type(opt).__name__, "factory_module": bnb.optim.AdamW.__module__,
             # transformers >= 5 treats anything that is not a torch.optim.Optimizer subclass as a factory.
             "optimizer_subclass": all(
                 isinstance(c, type) and issubclass(c, torch.optim.Optimizer)
                 for c in (bnb.optim.AdamW, bnb.optim.AdamW8bit, bnb.optim.PagedAdamW8bit, bnb.optim.Adam8bit)
             ),
-            "stepped": float(p[0]), "notices": printed.getvalue().count("runs torch.optim.AdamW"),
-            "fp16": fp16, "resume": resume, "int8": int8, "lion": lion, "group_sizes": group_sizes,
+            "kinds": [str(st["state1"].dtype), str(st_small["state1"].dtype), str(o2.state[e]["state1"].dtype)],
+            "keys": sorted(k for k in st), "wrapped": sorted(wrapped), "step": sd["state"][0]["step"],
+            "absmax_blocks": st["absmax1"].numel(), "paged": opt.is_paged,
+            "moved": float((p.detach() - before).abs().max()),
+            "notices": printed.getvalue().count("runs torch.optim"), "sgd_notice": printed.getvalue().count("SGD8bit"),
+            "fp16_moved": float((h.detach().float() - 1).abs().max()), "resumed_same": same,
+            "errors": errors, "group_sizes": group_sizes, "sgd_resume": sgd_resume,
+            "transposed": transposed, "migrated": migrated,
             "manager": type(bnb.optim.GlobalOptimManager.get_instance()).__name__,
         }))
         """
     )
-    # A real torch optimizer: Unsloth's torch-optimizer paths (checkpoints, FSDP2, rounding) apply.
-    assert out["exact_torch"] and out["factory_module"] == "bitsandbytes.optim"
-    assert out["optimizer_subclass"]
-    assert out["stepped"] < 1.0 and out["notices"] == 1
-    assert "float16" in out["fp16"] and "8-bit state" in out["resume"]
-    assert out["group_sizes"] == [1]
-    assert "load_in_8bit" in out["int8"] and "bitsandbytes" in out["lion"]
+    assert (
+        out["bnb_class"] and out["module"] == "bitsandbytes.optim.adamw" and out["name"] == "AdamW"
+    )
+    assert out["factory_module"] == "bitsandbytes.optim.adamw" and out["optimizer_subclass"]
+    # >= min_8bit_size elements: 8-bit codes; under it, or overridden to 32 bits: float32 state.
+    assert out["kinds"] == ["torch.uint8", "torch.float32", "torch.float32"]
+    assert out["keys"] == ["absmax1", "absmax2", "qmap1", "qmap2", "state1", "state2", "step"]
+    assert out["wrapped"] == ["absmax1", "absmax2", "qmap1", "qmap2", "state1", "state2"]
+    assert out["step"] == 1 and out["absmax_blocks"] == 20 and out["paged"] is True
+    # Adam's first step moves every weight by lr (sign of the gradient); no fallback notice for Adam.
+    assert abs(out["moved"] - 0.1) < 1e-3 and out["fp16_moved"] > 0
+    assert out["notices"] == 1 and out["sgd_notice"] == 1
+    assert out["resumed_same"] and out["group_sizes"] == [1]
+    assert "amsgrad" in out["errors"]["amsgrad"] and "bitsandbytes" in out["errors"]["clipping"]
+    assert "load_in_8bit" in out["errors"]["int8"] and "bitsandbytes" in out["errors"]["lion"]
+    assert "8-bit state" in out["sgd_resume"]
+    assert out["transposed"] == ["torch.uint8", True]
+    assert out["migrated"] == ["torch.float32", 2, False]
     assert out["manager"] == "GlobalOptimManager"
+
+
+def test_torch_adam_path_matches_float64_oracle():
+    # CPU tensors take the plain torch update: float32 rounding away from the float64 oracle.
+    out = run(
+        """
+        shim.install()
+        import torch
+        import bitsandbytes as bnb
+        from bitsandbytes.optim._adam_torch import adam_8bit_blockwise_torch
+        torch.manual_seed(0)
+        code1 = bnb.functional.create_dynamic_map(signed = True)
+        code2 = bnb.functional.create_dynamic_map(signed = False)
+        worst = 0.0
+        for n in (257, 5000):
+            p = torch.randn(n)
+            st = [torch.zeros(n, dtype = torch.uint8), torch.zeros(n, dtype = torch.uint8),
+                  torch.zeros(-(n // -256)), torch.zeros(-(n // -256))]
+            for t in range(1, 6):
+                g = torch.randn(n)
+                ref = [x.clone() for x in [p] + st]
+                adam_8bit_blockwise_torch(p, g, *st[:2], code1, code2, *st[2:], t, 1e-2, 0.9, 0.999, 1e-8, 0.01)
+                adam_8bit_blockwise_torch(ref[0], g, ref[1], ref[2], code1, code2, ref[3], ref[4], t, 1e-2,
+                                          0.9, 0.999, 1e-8, 0.01, compute_dtype = torch.float64)
+                # relative to the weight, or to the step (lr) for weights near zero
+                rel = ((p - ref[0]).abs() / ref[0].abs().clamp_min(1e-2)).max().item()
+                worst = max(worst, rel)
+        print("OUT " + json.dumps({"worst_rel": worst}))
+        """
+    )
+    assert out["worst_rel"] < 1e-5, out
 
 
 def test_auto_without_gpu_does_nothing():

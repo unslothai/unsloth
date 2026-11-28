@@ -1,12 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes.optim names for Unsloth's bitsandbytes stand-in. Each runs the torch optimizer with
-the same update rule and full precision state (see optimizer.py); Lion has no torch counterpart and
-refuses with a clear error."""
+"""bitsandbytes.optim names for Unsloth's bitsandbytes stand-in. Adam / AdamW in every variant
+(8-bit, 32-bit, paged) are bitsandbytes-compatible Optimizer2State optimizers with real blockwise
+8-bit state on Unsloth's Triton kernels (see optimizer.py); SGD / RMSprop / Adagrad run the torch
+optimizer with full precision state after a one time notice; Lion, AdEMAMix, LAMB and LARS have
+no counterpart here and refuse with a clear error."""
 
 import torch
 
+from .adam import Adam, Adam8bit, Adam32bit, PagedAdam, PagedAdam8bit, PagedAdam32bit
+from .adamw import AdamW, AdamW8bit, AdamW32bit, PagedAdamW, PagedAdamW8bit, PagedAdamW32bit
 from .optimizer import (
     GlobalOptimManager,
     Optimizer1State,
@@ -15,16 +19,10 @@ from .optimizer import (
     torch_optimizer_fallback,
 )
 
-_ADAM = ("Adam", "Adam8bit", "Adam32bit", "PagedAdam", "PagedAdam8bit", "PagedAdam32bit")
-_ADAMW = ("AdamW", "AdamW8bit", "AdamW32bit", "PagedAdamW", "PagedAdamW8bit", "PagedAdamW32bit")
 _SGD = ("SGD", "SGD8bit", "SGD32bit")
 _RMSPROP = ("RMSprop", "RMSprop8bit", "RMSprop32bit")
 _ADAGRAD = ("Adagrad", "Adagrad8bit", "Adagrad32bit")
 
-for _name in _ADAM:
-    globals()[_name] = torch_optimizer_fallback(_name, torch.optim.Adam)
-for _name in _ADAMW:
-    globals()[_name] = torch_optimizer_fallback(_name, torch.optim.AdamW)
 for _name in _SGD:
     globals()[_name] = torch_optimizer_fallback(_name, torch.optim.SGD)
 for _name in _RMSPROP:
