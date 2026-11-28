@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import types
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -106,7 +107,8 @@ def _cache_repo(hub, repo_id, files):
     for index, (name, data) in enumerate(files.items()):
         blob = repo / "blobs" / f"blob{index}"
         blob.write_bytes(data)
-        (snapshot / name).symlink_to(f"../../blobs/blob{index}")
+        # Native separators: a "/"-joined relative target does not resolve on Windows.
+        (snapshot / name).symlink_to(Path("..", "..", "blobs", f"blob{index}"))
     return snapshot
 
 
