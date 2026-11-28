@@ -3948,6 +3948,9 @@ export const th = {
         backendNone: "ไม่พร้อมใช้งาน",
         mediaImages: "อ่านข้อความและรูปภาพ",
         mediaText: "อ่านเฉพาะข้อความ",
+        connectionImages: "ส่งรูปภาพ",
+        connectionImagesDescription:
+          "ส่งต่อรูปภาพไปยังการเชื่อมต่อนี้ เฉพาะเมื่อโมเดลระยะไกลอ่านรูปภาพได้ เซิร์ฟเวอร์ที่รับเฉพาะข้อความจะปฏิเสธคำขอ",
         checking: "กำลังตรวจสอบ…",
         notDownloaded: "ยังไม่ได้ดาวน์โหลด · {size}",
         downloading: "กำลังดาวน์โหลด…",

@@ -3888,6 +3888,9 @@ export const ko = {
         backendNone: "사용할 수 없음",
         mediaImages: "텍스트와 이미지를 읽습니다.",
         mediaText: "텍스트만 읽습니다.",
+        connectionImages: "이미지 전송",
+        connectionImagesDescription:
+          "이 연결로 이미지를 전달합니다. 원격 모델이 이미지를 읽을 때만 켜세요. 텍스트 전용 서버는 요청을 거부합니다.",
         checking: "확인 중…",
         notDownloaded: "다운로드 안 됨 · {size}",
         downloading: "다운로드 중…",

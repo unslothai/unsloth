@@ -4108,6 +4108,9 @@ export const tr = {
         backendNone: "kullanılamıyor",
         mediaImages: "Metin ve görüntü okur.",
         mediaText: "Yalnızca metin okur.",
+        connectionImages: "Görselleri gönder",
+        connectionImagesDescription:
+          "Görselleri bu bağlantıya ilet. Yalnızca uzak model onları okuyorsa: yalnızca metin okuyan bir sunucu isteği reddeder.",
         checking: "Denetleniyor…",
         notDownloaded: "İndirilmedi · {size}",
         downloading: "İndiriliyor…",

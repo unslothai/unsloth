@@ -4168,6 +4168,9 @@ export const es419 = {
         backendNone: "no disponible",
         mediaImages: "Lee texto e imágenes.",
         mediaText: "Solo lee texto.",
+        connectionImages: "Enviar imágenes",
+        connectionImagesDescription:
+          "Reenvía imágenes a esta conexión. Solo si el modelo remoto las lee: un servidor de solo texto rechaza la solicitud.",
         checking: "Verificando…",
         notDownloaded: "No descargado · {size}",
         downloading: "Descargando…",

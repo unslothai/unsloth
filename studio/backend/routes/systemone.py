@@ -351,9 +351,14 @@ async def _decide(
         _refuse_state_playlists(state)
     if images:
         _validate_images(images)
-        if isinstance(checkpoint, catalog.Connection):
+        if isinstance(checkpoint, catalog.Connection) and "image" not in (
+            await asyncio.to_thread(laya_runtime.input_modalities, checkpoint)
+        ):
             raise _error(
-                400, "api_usage_error", "Images are not forwarded to Decision API connections"
+                400,
+                "api_usage_error",
+                "This Decision API connection is not declared to read images. "
+                "Turn on Send images for it in Settings > API if the remote model reads them.",
             )
     if audio:
         _validate_audio(audio)
@@ -367,6 +372,7 @@ async def _decide(
             checkpoint,
             state,
             {name: q.model_dump(exclude_unset = True) for name, q in questions.items()},
+            images or None,
         )
     try:
         result = await run_in_threadpool(
@@ -390,7 +396,10 @@ async def _decide(
 
 
 async def _connection_decide(
-    connection: catalog.Connection, state: JSONContent, questions: dict[str, dict[str, Any]]
+    connection: catalog.Connection,
+    state: JSONContent,
+    questions: dict[str, dict[str, Any]],
+    images: list[str] | None = None,
 ) -> dict:
     # Connection and key are the owner's; the URL check and request run as the caller (egress policy).
     provider_id = connection.provider_id
@@ -426,7 +435,7 @@ async def _connection_decide(
         **({"extra_headers": headers} if headers else {}),
     )
     try:
-        result = await client.create_decision(connection.model, state, questions)
+        result = await client.create_decision(connection.model, state, questions, images)
     except httpx.HTTPStatusError as exc:
         raise _upstream_error(config["display_name"], exc.response) from None
     except (httpx.HTTPError, ValueError) as exc:

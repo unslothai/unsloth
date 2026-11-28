@@ -3912,6 +3912,9 @@ export const ru = {
         backendNone: "недоступна",
         mediaImages: "Читает текст и изображения.",
         mediaText: "Читает только текст.",
+        connectionImages: "Отправлять изображения",
+        connectionImagesDescription:
+          "Передавать изображения в это подключение. Только если удалённая модель их читает: текстовый сервер отклонит запрос.",
         checking: "Проверка…",
         notDownloaded: "Не скачана · {size}",
         downloading: "Скачивание…",

@@ -3914,6 +3914,9 @@ export const ptBR = {
         backendNone: "indisponível",
         mediaImages: "Lê texto e imagens.",
         mediaText: "Lê apenas texto.",
+        connectionImages: "Enviar imagens",
+        connectionImagesDescription:
+          "Encaminha imagens para esta conexão. Só se o modelo remoto as lê: um servidor somente de texto recusa a requisição.",
         checking: "Verificando…",
         notDownloaded: "Não baixado · {size}",
         downloading: "Baixando…",

@@ -4086,6 +4086,9 @@ export const sv = {
         backendNone: "inte tillgänglig",
         mediaImages: "Läser text och bilder.",
         mediaText: "Läser bara text.",
+        connectionImages: "Skicka bilder",
+        connectionImagesDescription:
+          "Vidarebefordra bilder till den här anslutningen. Bara om fjärrmodellen läser dem: en server som bara hanterar text avvisar förfrågan.",
         checking: "Kontrollerar …",
         notDownloaded: "Inte hämtad · {size}",
         downloading: "Hämtar …",

@@ -4155,6 +4155,9 @@ export const nl = {
         backendNone: "niet beschikbaar",
         mediaImages: "Leest tekst en afbeeldingen.",
         mediaText: "Leest alleen tekst.",
+        connectionImages: "Afbeeldingen versturen",
+        connectionImagesDescription:
+          "Stuur afbeeldingen door naar deze verbinding. Alleen als het externe model ze leest: een server die alleen tekst leest, weigert het verzoek.",
         checking: "Controleren…",
         notDownloaded: "Niet gedownload · {size}",
         downloading: "Downloaden…",

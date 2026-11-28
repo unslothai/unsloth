@@ -3871,6 +3871,9 @@ export const ja = {
         backendNone: "利用不可",
         mediaImages: "テキストと画像を読み取ります。",
         mediaText: "テキストのみ読み取ります。",
+        connectionImages: "画像を送信",
+        connectionImagesDescription:
+          "この接続に画像を転送します。リモートのモデルが画像を読む場合だけです。テキストのみのサーバーはリクエストを拒否します。",
         checking: "確認中…",
         notDownloaded: "未ダウンロード · {size}",
         downloading: "ダウンロード中…",

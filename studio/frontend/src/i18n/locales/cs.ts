@@ -4127,6 +4127,9 @@ export const cs = {
         backendNone: "nedostupné",
         mediaImages: "Čte text a obrázky.",
         mediaText: "Čte pouze text.",
+        connectionImages: "Odesílat obrázky",
+        connectionImagesDescription:
+          "Přeposílat obrázky tomuto připojení. Jen pokud je vzdálený model čte: server jen pro text požadavek odmítne.",
         checking: "Kontrola…",
         notDownloaded: "Nestaženo · {size}",
         downloading: "Stahování…",

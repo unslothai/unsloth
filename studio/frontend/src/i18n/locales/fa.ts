@@ -4097,6 +4097,9 @@ export const fa = {
         backendNone: "در دسترس نیست",
         mediaImages: "متن و تصویر را می‌خواند.",
         mediaText: "فقط متن را می‌خواند.",
+        connectionImages: "ارسال تصاویر",
+        connectionImagesDescription:
+          "تصاویر را به این اتصال بفرست. فقط اگر مدل راه\u200cدور آن\u200cها را می\u200cخواند: سرور فقط\u200cمتنی درخواست را رد می\u200cکند.",
         checking: "در حال بررسی…",
         notDownloaded: "دانلود نشده · {size}",
         downloading: "در حال دانلود…",

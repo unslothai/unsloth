@@ -3909,6 +3909,9 @@ export const hi = {
         backendNone: "उपलब्ध नहीं",
         mediaImages: "टेक्स्ट और इमेज पढ़ता है।",
         mediaText: "सिर्फ़ टेक्स्ट पढ़ता है।",
+        connectionImages: "छवियाँ भेजें",
+        connectionImagesDescription:
+          "इस कनेक्शन को छवियाँ भेजें। केवल तभी जब दूरस्थ मॉडल उन्हें पढ़ता हो: केवल-टेक्स्ट सर्वर अनुरोध अस्वीकार कर देगा।",
         checking: "जाँच हो रही है…",
         notDownloaded: "डाउनलोड नहीं हुआ · {size}",
         downloading: "डाउनलोड हो रहा है…",

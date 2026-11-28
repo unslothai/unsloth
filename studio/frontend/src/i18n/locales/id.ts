@@ -4110,6 +4110,9 @@ export const id = {
         backendNone: "tidak tersedia",
         mediaImages: "Membaca teks dan gambar.",
         mediaText: "Hanya membaca teks.",
+        connectionImages: "Kirim gambar",
+        connectionImagesDescription:
+          "Teruskan gambar ke koneksi ini. Hanya jika model jarak jauh membacanya: server khusus teks akan menolak permintaan.",
         checking: "Memeriksa…",
         notDownloaded: "Belum diunduh · {size}",
         downloading: "Mengunduh…",

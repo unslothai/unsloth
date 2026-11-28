@@ -3947,6 +3947,9 @@ export const de = {
         backendNone: "nicht verfügbar",
         mediaImages: "Liest Text und Bilder.",
         mediaText: "Liest nur Text.",
+        connectionImages: "Bilder senden",
+        connectionImagesDescription:
+          "Bilder an diese Verbindung weiterleiten. Nur wenn das entfernte Modell sie liest: ein reiner Textserver lehnt die Anfrage ab.",
         checking: "Wird geprüft…",
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",

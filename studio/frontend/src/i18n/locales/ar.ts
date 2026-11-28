@@ -3900,6 +3900,9 @@ export const ar = {
         backendNone: "غير متاحة",
         mediaImages: "يقرأ النصوص والصور.",
         mediaText: "يقرأ النصوص فقط.",
+        connectionImages: "إرسال الصور",
+        connectionImagesDescription:
+          "أرسِل الصور إلى هذا الاتصال. فقط إذا كان النموذج البعيد يقرأها: خادمٌ نصي فقط سيرفض الطلب.",
         checking: "جارٍ التحقق…",
         notDownloaded: "غير مُنزَّل · {size}",
         downloading: "جارٍ التنزيل…",

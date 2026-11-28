@@ -4141,6 +4141,9 @@ export const uk = {
         backendNone: "недоступне",
         mediaImages: "Читає текст і зображення.",
         mediaText: "Читає лише текст.",
+        connectionImages: "Надсилати зображення",
+        connectionImagesDescription:
+          "Пересилати зображення до цього з'єднання. Лише якщо віддалена модель їх читає: сервер лише для тексту відхилить запит.",
         checking: "Перевірка…",
         notDownloaded: "Не завантажено · {size}",
         downloading: "Завантаження…",

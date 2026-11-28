@@ -3924,6 +3924,9 @@ export const zhTW = {
         backendNone: "無法使用",
         mediaImages: "可讀取文字和圖片。",
         mediaText: "僅能讀取文字。",
+        connectionImages: "傳送圖片",
+        connectionImagesDescription:
+          "將圖片轉發至此連線。僅在遠端模型能讀取圖片時開啟：純文字伺服器會拒絕請求。",
         checking: "正在檢查…",
         notDownloaded: "尚未下載 · {size}",
         downloading: "正在下載…",

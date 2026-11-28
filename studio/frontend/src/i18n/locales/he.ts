@@ -3987,6 +3987,9 @@ export const he = {
         backendNone: "לא זמין",
         mediaImages: "קורא טקסט ותמונות.",
         mediaText: "קורא טקסט בלבד.",
+        connectionImages: "שליחת תמונות",
+        connectionImagesDescription:
+          "העברת תמונות לחיבור הזה. רק אם המודל המרוחק קורא אותן: שרת טקסט בלבד ידחה את הבקשה.",
         checking: "בודק…",
         notDownloaded: "לא הורד · {size}",
         downloading: "מוריד…",

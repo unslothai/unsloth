@@ -3844,6 +3844,9 @@ export const zhCN = {
         backendNone: "不可用",
         mediaImages: "可读取文本和图片。",
         mediaText: "仅读取文本。",
+        connectionImages: "发送图片",
+        connectionImagesDescription:
+          "将图片转发到此连接。仅在远程模型能读取图片时开启。纯文本服务器会拒绝该请求。",
         checking: "正在检查…",
         notDownloaded: "未下载 · {size}",
         downloading: "正在下载…",

@@ -4110,6 +4110,9 @@ export const vi = {
         backendNone: "không khả dụng",
         mediaImages: "Đọc văn bản và hình ảnh.",
         mediaText: "Chỉ đọc văn bản.",
+        connectionImages: "Gửi hình ảnh",
+        connectionImagesDescription:
+          "Chuyển tiếp hình ảnh tới kết nối này. Chỉ khi mô hình từ xa đọc được: máy chủ chỉ đọc văn bản sẽ từ chối yêu cầu.",
         checking: "Đang kiểm tra…",
         notDownloaded: "Chưa tải xuống · {size}",
         downloading: "Đang tải xuống…",

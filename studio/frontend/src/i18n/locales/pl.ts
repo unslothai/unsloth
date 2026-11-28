@@ -4156,6 +4156,9 @@ export const pl = {
         backendNone: "niedostępne",
         mediaImages: "Odczytuje tekst i obrazy.",
         mediaText: "Odczytuje tylko tekst.",
+        connectionImages: "Wysyłaj obrazy",
+        connectionImagesDescription:
+          "Przekazuj obrazy do tego połączenia. Tylko jeśli zdalny model je czyta: serwer obsługujący tylko tekst odrzuci żądanie.",
         checking: "Sprawdzanie…",
         notDownloaded: "Niepobrany · {size}",
         downloading: "Pobieranie…",

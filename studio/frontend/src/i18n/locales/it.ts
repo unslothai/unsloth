@@ -3814,6 +3814,9 @@ export const it = {
         backendNone: "non disponibile",
         mediaImages: "Legge testo e immagini.",
         mediaText: "Legge solo testo.",
+        connectionImages: "Invia immagini",
+        connectionImagesDescription:
+          "Inoltra le immagini a questa connessione. Solo se il modello remoto le legge: un server solo testo rifiuta la richiesta.",
         checking: "Verifica in corso…",
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",

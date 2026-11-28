@@ -3840,6 +3840,9 @@ export const en = {
         backendNone: "unavailable",
         mediaImages: "Reads text and images.",
         mediaText: "Reads text only.",
+        connectionImages: "Send images",
+        connectionImagesDescription:
+          "Forward images to this connection. Only when the remote model reads them: a text-only server refuses the request.",
         checking: "Checking…",
         notDownloaded: "Not downloaded · {size}",
         downloading: "Downloading…",

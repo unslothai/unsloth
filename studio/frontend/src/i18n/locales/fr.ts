@@ -3947,6 +3947,9 @@ export const fr = {
         backendNone: "indisponible",
         mediaImages: "Lit le texte et les images.",
         mediaText: "Lit uniquement le texte.",
+        connectionImages: "Envoyer les images",
+        connectionImagesDescription:
+          "Transmet les images à cette connexion. Seulement si le modèle distant les lit : un serveur texte seul refuse la requête.",
         checking: "Vérification…",
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
