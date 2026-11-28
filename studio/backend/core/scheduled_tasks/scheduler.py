@@ -313,8 +313,6 @@ def _chat_history(task: dict) -> tuple[list[dict], Optional[str]]:
     kept.reverse()
     while kept and kept[0]["role"] != "user":
         kept.pop(0)
-    if kept and kept[-1]["role"] == "user":
-        kept.pop()
     return kept, (branch[-1]["id"] if branch else None)
 
 
@@ -810,6 +808,14 @@ async def generate_answer(
                 raise RunFailed("timeout") from None
             mcp_server_ids = frozenset(task.get("mcpServerIds", ()))
             tool_fields = _tool_fields(bool(task.get("webSearch")), bool(mcp_server_ids))
+            if history and history[-1]["role"] == "user":
+                # Keep the pending turn evictable and alternate roles for strict chat templates.
+                history.append(
+                    {
+                        "role": "assistant",
+                        "content": "[No assistant reply was recorded for the preceding message.]",
+                    }
+                )
             payload = ChatCompletionRequest.model_validate(
                 {
                     "messages": [
