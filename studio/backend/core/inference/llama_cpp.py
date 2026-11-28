@@ -5374,6 +5374,9 @@ _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E
 # loader string with the banded reserve, so the build number gates it too.
 _INKLING2_MULTI_SEQ_DENSE_RE = re.compile(rb"inkling2_loop: %zu cache slots exceed")
 _INKLING2_MULTI_SEQ_DENSE_BUILD = 12649
+# Auto picks DSpark on CUDA/HIP/Vulkan only from this build: b12776 and older lack the DSpark speed
+# fixes and run DSpark at 0.56-0.94x of plain decoding. Move it to the first prebuilt carrying the fixes.
+_DSPARK_AUTO_MIN_BUILD = 12777
 # 386 fix drops dense reserve; attn_inp_k_pos*/attn_inp_rel_shift* survive strip only from it.
 _INKLING2_BANDED_POS_RES = (
     re.compile(rb"attn_inp_k_pos_swa\x00"),
@@ -22974,6 +22977,31 @@ class LlamaCppBackend:
             logger.debug("Could not size the DFlash candidates for %s: %s", hf_repo, exc)
             return {}
 
+    @classmethod
+    def _dspark_auto_build_allowed(cls, binary: Optional[str] = None) -> bool:
+        """Auto's DSpark build gate: Metal wins on the base build and a CPU-only bundle is left as is;
+        any other build (any GPU library, static, or a GGML_BACKEND_PATH plugin) needs
+        _DSPARK_AUTO_MIN_BUILD, since earlier GPU builds run DSpark slower than plain decoding."""
+        try:
+            if cls._build_has_metal(binary):
+                return True
+            # Recognises OpenCL, CANN, MUSA and virtgpu too; static, unreadable or plugin layouts fail it.
+            if cls._binary_ships_no_gpu_backend(binary):
+                return True
+            build = cls.probe_build_number(binary)
+        except Exception as exc:
+            logger.debug("DSpark build gate failed during Auto: %s", exc)
+            return False
+        if build is not None and build >= _DSPARK_AUTO_MIN_BUILD:
+            return True
+        logger.info(
+            "Auto: llama.cpp build %s predates the DSpark speed fixes (b%d); skipping DSpark. "
+            "Choose DSpark in the Speculative Decoding dropdown to force it.",
+            build,
+            _DSPARK_AUTO_MIN_BUILD,
+        )
+        return False
+
     def _dspark_wins_auto(
         self,
         *,
@@ -22991,7 +23019,9 @@ class LlamaCppBackend:
         try:
             # Through the caller's getter so an inconclusive probe still latches for this launch.
             probe = caps or self.probe_server_capabilities
-            return bool(probe(binary).get("supports_dspark"))
+            return bool(probe(binary).get("supports_dspark")) and self._dspark_auto_build_allowed(
+                binary
+            )
         except Exception as exc:
             logger.debug("DSpark capability probe failed during Auto: %s", exc)
             return False
@@ -26335,6 +26365,8 @@ class LlamaCppBackend:
                             not dspark_draft_path
                             and _spec_canon in ("auto", "dspark")
                             and not _extra_args_set_spec_type(extra_args)
+                            # Auto would not launch a sidecar its build gate rejects, so skip the fetch.
+                            and (_spec_canon == "dspark" or self._dspark_auto_build_allowed(binary))
                         ):
                             dspark_draft_path = self._download_dspark(
                                 hf_repo = hf_repo,

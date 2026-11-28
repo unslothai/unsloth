@@ -4487,9 +4487,11 @@ async def get_kv_cache_estimate(
                         _root = repo_id if is_local else None
                         _has_dspark = bool(detect_dspark_file(path, search_root = _root))
                         _has_dflash = bool(detect_dflash_file(path, search_root = _root))
-                    if (_caps.get("supports_dspark") and _has_dspark) or (
-                        _caps.get("supports_dflash") and _has_dflash
-                    ):
+                    if (
+                        _caps.get("supports_dspark")
+                        and _has_dspark
+                        and be._dspark_auto_build_allowed()
+                    ) or (_caps.get("supports_dflash") and _has_dflash):
                         spec_unpriced = True
                 except Exception as e:
                     logger.debug(f"auto sidecar probe failed for '{repo_id}' {quant}: {e}")

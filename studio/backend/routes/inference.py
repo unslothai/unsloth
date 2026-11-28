@@ -14879,6 +14879,9 @@ def _estimate_gguf_required_gb(
                 )
             except Exception:
                 pass
+        # Auto alone also needs the loader's build gate, or the guard charges a sidecar it skips.
+        if _auto_dspark and not _forced_dspark and _dspark_capable:
+            _dspark_capable = LlamaCppBackend._dspark_auto_build_allowed()
         dspark_requested = bool(
             _dspark_capable
             and (_forced_dspark or (_auto_dspark and getattr(config, "gguf_dspark_file", None)))

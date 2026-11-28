@@ -238,6 +238,8 @@ def _repo_load(monkeypatch, backend, order):
     monkeypatch.setattr(backend, "_find_llama_server_binary", lambda **_kwargs: "/bin/llama")
     monkeypatch.setattr(backend, "_is_vulkan_backend", lambda _binary = None: False)
     monkeypatch.setattr(backend, "_backend_lacks_gpu_lib", lambda _binary = None: False)
+    # A build past the DSpark Auto gate, so Auto still fetches the DSpark sidecar.
+    monkeypatch.setattr(backend, "_dspark_auto_build_allowed", lambda _binary = None: True)
     monkeypatch.setattr(backend, "_kill_process", lambda: order.append("kill"))
     monkeypatch.setattr(llama_cpp_module, "_resolve_repo_id_casing", lambda repo: repo)
     monkeypatch.setattr(

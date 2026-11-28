@@ -2869,6 +2869,10 @@ def _dflash_fetch_during_auto_load(
 
     from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
 
+    # A build past the DSpark Auto gate: these cases pin the sidecar ordering, not the build.
+    monkeypatch.setattr(
+        LlamaCppBackend, "_dspark_auto_build_allowed", classmethod(lambda cls, binary = None: True)
+    )
     monkeypatch.setattr(
         LlamaCppBackend,
         "probe_server_capabilities",
