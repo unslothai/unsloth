@@ -65,6 +65,7 @@ _DROPOUT_KEYS = (
     "attn_pdrop",
     "embd_pdrop",
 )
+# Expert counts: a mixture-of-experts window also holds every layer's recorded router logits (float32 at most).
 _MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 # auto engages only for these decoder layers (class name: the model_type it must come with), each covered by a
 # bitwise test against standard accumulation (CPU and B200 BlockSwap RAM / disk, and the Unsloth end-to-end run).
@@ -508,10 +509,6 @@ def layer_major_ineligible(
     if not _trainer_ok(trainer):
         return f"{type(trainer).__name__} overrides training_step or compute_loss"
     config = _text_config(model)
-    for key in _MOE_KEYS:
-        value = getattr(config, key, 0)
-        if isinstance(value, int) and value > 0:
-            return "a mixture-of-experts model (router losses)"
     for key in _DROPOUT_KEYS:
         value = getattr(config, key, 0)
         if isinstance(value, (int, float)) and value > 0:
@@ -583,6 +580,12 @@ def _fits(
         torch.empty((), dtype = weight.dtype).element_size() if weight.dtype.is_floating_point else 2
     )
     need = boundary_bytes(tokens, hidden, len(layers), element)
+    if getattr(config, "output_router_logits", False):
+        # The router logits of every layer and micro-batch, kept as leaves for the load-balancing loss's gradient.
+        experts = max(
+            [v for v in (getattr(config, k, 0) for k in _MOE_KEYS) if isinstance(v, int)] + [0]
+        )
+        need += sum(tokens) * experts * len(layers) * 4
     if not torch.cuda.is_available():
         return True, need
     devices = {p.device for p in layers.parameters() if p.is_cuda}

@@ -80,8 +80,36 @@ class _Swap:
             self._tot["compute_ms"] += 100.0
 
 
-def _model(dropout = 0.0, arch = "Llama"):
+# Mixture-of-experts families: the router load-balancing loss on (TRL's SFTTrainer default), the router trained.
+_MOE = {
+    "Qwen3Moe": dict(
+        moe_intermediate_size = 32,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        decoder_sparse_step = 1,
+        mlp_only_layers = [],
+        head_dim = 16,
+    ),
+    "Mixtral": dict(num_local_experts = 4, num_experts_per_tok = 2),
+    "GptOss": dict(
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        head_dim = 16,
+        sliding_window = 8,
+        layer_types = ["sliding_attention", "full_attention"] * 2,
+    ),
+}
+
+
+def _model(
+    dropout = 0.0,
+    arch = "Llama",
+    reentrant = True,
+):
     torch.manual_seed(0)
+    if not hasattr(transformers, f"{arch}ForCausalLM"):
+        pytest.skip(f"transformers {transformers.__version__} has no {arch}ForCausalLM")
+    moe = _MOE.get(arch)
     cfg = getattr(transformers, f"{arch}Config")(
         hidden_size = 64,
         intermediate_size = 128,
@@ -90,11 +118,12 @@ def _model(dropout = 0.0, arch = "Llama"):
         num_key_value_heads = 2,
         vocab_size = 256,
         max_position_embeddings = 256,
+        **(dict(moe, output_router_logits = True, router_aux_loss_coef = 0.5) if moe else {}),
     )
     cfg._attn_implementation = "eager"
     model = getattr(transformers, f"{arch}ForCausalLM")(cfg)
     model.config.use_cache = False
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": reentrant})
     model = peft.get_peft_model(
         model,
         peft.LoraConfig(
@@ -107,13 +136,15 @@ def _model(dropout = 0.0, arch = "Llama"):
                 "k_proj",
                 "v_proj",
                 "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
+            ]
+            + ([] if moe else ["gate_proj", "up_proj", "down_proj"]),
         ),
     )
     model.enable_input_require_grads()
+    if moe:
+        for name, p in model.named_parameters():
+            if name.endswith((".gate.weight", ".router.weight", ".router.bias")):
+                p.requires_grad_(True)
     return model
 
 
@@ -156,6 +187,7 @@ def _train(
     arch = "Llama",
     collate = None,
     model_hook = None,
+    reentrant = True,
     **extra_args,
 ):
     if mode is None:
@@ -164,7 +196,7 @@ def _train(
         monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
     base = trainer_base or transformers.Trainer
     T = type("T", (base,), {})
-    model = _model(dropout, arch)
+    model = _model(dropout, arch, reentrant)
     if model_hook is not None:
         model = model_hook(model) or model
     sw = _Swap(stall)
@@ -375,6 +407,8 @@ def _sft(
     mode,
     trainer_cls = None,
     abort_once = False,
+    arch = "Llama",
+    reentrant = True,
 ):
     trl = pytest.importorskip("trl")
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
@@ -382,7 +416,7 @@ def _sft(
     T = (
         trainer_cls or trl.SFTTrainer
     )  # the real SFTTrainer chain over the patched transformers.Trainer
-    model = _model()
+    model = _model(arch = arch, reentrant = reentrant)
     model.get_base_model().model.layers._unsloth_block_swap = _Swap()
     data = _Data()
     try:
@@ -440,7 +474,7 @@ def _sft(
         {
             k: v
             for k, v in h.items()
-            if k in ("loss", "entropy", "mean_token_accuracy", "num_tokens")
+            if k in ("loss", "entropy", "mean_token_accuracy", "num_tokens", "aux_loss")
         }
         for h in trainer.state.log_history
         if "loss" in h
@@ -1295,3 +1329,39 @@ def test_instance_training_step_overrides_keep_no_prefetched_batch(ga, tmp_path,
     assert refs and len(alive) == 2 and alive[1] == alive[0], alive
     assert "_unsloth_layer_major_batch" not in _LAST[0].__dict__
     _LAST.clear()
+
+
+@pytest.mark.parametrize("reentrant", [True, False])
+@pytest.mark.parametrize("arch", sorted(_MOE))
+def test_moe_trainer_matches_standard_accumulation_bitwise(
+    ga, tmp_path, monkeypatch, arch, reentrant
+):
+    """Mixture-of-experts decoders with the router load-balancing loss: windows run, the logged losses and the LoRA
+    and router weights are bitwise those of standard accumulation (non-reentrant checkpointing differentiates the
+    recorded router logits, reentrant does not, in both)."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", arch = arch, reentrant = reentrant)
+    assert _windows(engine) == 0
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", arch = arch, reentrant = reentrant)
+    assert _windows(engine) == 2 and engine.layer_major_stats()["aborts"] == 0
+    assert l0 == l1 and len(l0) == 2
+    assert w0.keys() == w1.keys() and any(
+        k.endswith((".gate.weight", ".router.weight")) for k in w0
+    )
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+@pytest.mark.parametrize("arch", ["Qwen3Moe", "Mixtral"])
+def test_moe_trl_sft_trainer_matches_standard_accumulation_bitwise(ga, tmp_path, monkeypatch, arch):
+    """TRL's SFTTrainer on a mixture-of-experts decoder (its aux_loss metric included), non-reentrant checkpointing."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0 = _sft(mod, tmp_path, monkeypatch, "0", arch = arch, reentrant = False)
+    assert _windows(engine) == 0
+    w1, l1 = _sft(mod, tmp_path, monkeypatch, "1", arch = arch, reentrant = False)
+    assert _windows(engine) == 2
+    assert l0 == l1 and len(l0) == 2
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
