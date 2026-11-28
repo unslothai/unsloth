@@ -1245,6 +1245,7 @@ class ModelOverridePayload(BaseModel):
     mlx_int8_prefill: bool = False
     mlx_ane_prefill: bool = False
     mlx_fast_verify: bool = False
+    mlx_preserve_dtype: bool = False
     npu_power_mode: Optional[
         Literal["default", "powersaver", "balanced", "performance", "turbo"]
     ] = None
@@ -3035,6 +3036,7 @@ def update_openai_auto_switch_override(
                 and not payload.mlx_int8_prefill
                 and not payload.mlx_ane_prefill
                 and not payload.mlx_fast_verify
+                and not payload.mlx_preserve_dtype
                 and payload.load_in_4bit
                 # null clears just that knob, so naming one is not a forget.
                 and not {
@@ -3055,6 +3057,7 @@ def update_openai_auto_switch_override(
                         "mlx_int8_prefill",
                         "mlx_ane_prefill",
                         "mlx_fast_verify",
+                        "mlx_preserve_dtype",
                         "load_in_4bit",
                     )
                 }
@@ -3291,6 +3294,7 @@ def update_openai_auto_switch_override(
                 mlx_int8_prefill = payload.mlx_int8_prefill,
                 mlx_ane_prefill = payload.mlx_ane_prefill,
                 mlx_fast_verify = payload.mlx_fast_verify,
+                mlx_preserve_dtype = payload.mlx_preserve_dtype,
                 load_in_4bit = payload.load_in_4bit,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

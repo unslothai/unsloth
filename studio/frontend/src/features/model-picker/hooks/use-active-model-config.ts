@@ -45,6 +45,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const mlxAnePrefill = useChatRuntimeStore((s) => s.mlxAnePrefill);
   const mlxFastVerify = useChatRuntimeStore((s) => s.mlxFastVerify);
+  const mlxPreserveDtype = useChatRuntimeStore((s) => s.mlxPreserveDtype);
   const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
   const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
   const npuPowerMode = useChatRuntimeStore((s) => s.npuPowerMode);
@@ -132,6 +133,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       mlxInt8Prefill: effectiveMlxInt8Prefill,
       mlxAnePrefill: effectiveMlxAnePrefill,
       mlxFastVerify: effectiveMlxFastVerify,
+      mlxPreserveDtype: isMlx && mlxPreserveDtype === true,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
       // The store keeps the last NPU load's values after a GPU model loads.
@@ -202,6 +204,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     effectiveMlxInt8Prefill,
     effectiveMlxAnePrefill,
     effectiveMlxFastVerify,
+    mlxPreserveDtype,
     effectiveMlxPleOffload,
     effectiveMlxExpertOffload,
     npuPowerMode,

@@ -7284,19 +7284,16 @@ class MLXInferenceBackend:
             from hub.utils.mlx_variants import download_precision_folder
             load_source = download_precision_folder(model_name, precision_folder, hf_token)
 
-        if (
+        preserve_dtype = (
             preserve_dtype
             and dtype is None
             and not (load_in_4bit or is_lora)
             and getattr(config, "is_local", False)
-        ):
+        )
+        if preserve_dtype:
             from core.inference.mlx_memory import mlx_saved_16bit_dtype
             load_kwargs["dtype"] = mlx_saved_16bit_dtype(load_source, vision = use_vlm)
-        self._resume_load_args = (
-            bool(load_in_4bit),
-            repr(load_kwargs["dtype"]),
-            repr(tuple(offload or ())),
-        )
+        requested_offload = repr(tuple(offload or ()))
 
         knobs = offload
 
@@ -7392,12 +7389,20 @@ class MLXInferenceBackend:
             _drain_generation_streams(mx)
             mx.clear_cache()
             load_kwargs["text_only"] = True
+            if preserve_dtype:
+                load_kwargs["dtype"] = mlx_saved_16bit_dtype(load_source, vision = False)
             # Auto planned on the mlx-vlm route, and decide() consumed its knobs: plan this route afresh.
             offload = offload_request()
             load_kwargs.update(offload["kwargs"])
             model, tokenizer_or_processor = _load_offloading(
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
+
+        self._resume_load_args = (
+            bool(load_in_4bit),
+            repr(load_kwargs["dtype"]),
+            requested_offload,
+        )
 
         # Zoo can build a text-only checkpoint with mlx-vlm and return just its tokenizer.
         if not use_vlm and getattr(model, "_is_vlm_model", None) is True:

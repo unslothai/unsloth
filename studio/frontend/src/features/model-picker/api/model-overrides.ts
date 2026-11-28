@@ -46,6 +46,7 @@ export interface ApiModelOverride {
   mlx_int8_prefill?: boolean;
   mlx_ane_prefill?: boolean;
   mlx_fast_verify?: boolean;
+  mlx_preserve_dtype?: boolean;
   // biome-ignore lint/style/useNamingConvention: API schema
   mlx_ple_offload?: "off" | number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -372,6 +373,7 @@ export function fromApiOverride(
     mlxInt8Prefill: override.mlx_int8_prefill ?? local.mlxInt8Prefill,
     mlxAnePrefill: override.mlx_ane_prefill ?? local.mlxAnePrefill,
     mlxFastVerify: override.mlx_fast_verify ?? local.mlxFastVerify,
+    mlxPreserveDtype: override.mlx_preserve_dtype ?? local.mlxPreserveDtype,
     mlxPleOffload: override.mlx_ple_offload ?? local.mlxPleOffload,
     mlxExpertOffload: override.mlx_expert_offload ?? local.mlxExpertOffload,
     npuPowerMode: override.npu_power_mode ?? local.npuPowerMode,
@@ -486,6 +488,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.mlxFastVerify) {
     payload.mlx_fast_verify = true;
+  }
+  if (config.mlxPreserveDtype) {
+    payload.mlx_preserve_dtype = true;
   }
   if (config.loadIn4bit === false) {
     payload.load_in_4bit = false;

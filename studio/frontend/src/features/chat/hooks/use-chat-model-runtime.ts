@@ -2261,6 +2261,10 @@ export function useChatModelRuntime() {
               stateBeforeUnload.engramPrecision,
           };
           const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
+          const loadMlxPreserveDtype = pendingLoadConfig
+            ? pendingLoadConfig.mlxPreserveDtype === true
+            : !switchesModel && Boolean(liveBeforeLoad.params.checkpoint) &&
+              stateBeforeUnload.mlxPreserveDtype;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
@@ -2398,6 +2402,7 @@ export function useChatModelRuntime() {
               mlx_int8_prefill: loadMlxInt8Prefill,
               mlx_ane_prefill: loadMlxAnePrefill,
               mlx_fast_verify: loadMlxFastVerify,
+              mlx_preserve_dtype: loadMlxPreserveDtype,
               mlx_ple_offload: loadMlxPleOffload,
               mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
@@ -3002,6 +3007,7 @@ export function useChatModelRuntime() {
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
                   mlx_ane_prefill: rollbackState.loadedMlxAnePrefillRequested,
                   mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
+                  mlx_preserve_dtype: rollbackState.loadedMlxPreserveDtype,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   ...npuLoadFields(rollbackState),

@@ -19,6 +19,7 @@ type MlxRuntimeResponse = Pick<
   | "mlx_int8_prefill_requested"
   | "mlx_ane_prefill_requested"
   | "mlx_fast_verify_requested"
+  | "mlx_preserve_dtype"
   | "mlx_offload"
 >;
 
@@ -62,6 +63,8 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxInt8Prefill?: boolean;
   mlxAnePrefill?: boolean;
   mlxFastVerify?: boolean;
+  mlxPreserveDtype?: boolean;
+  loadedMlxPreserveDtype: boolean;
   loadedMlxInt8PrefillRequested: boolean;
   loadedMlxAnePrefillRequested: boolean;
   loadedMlxFastVerifyRequested: boolean;
@@ -78,6 +81,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
       loadedMlxInt8PrefillRequested: false,
       loadedMlxAnePrefillRequested: false,
       loadedMlxFastVerifyRequested: false,
+      loadedMlxPreserveDtype: false,
       ...offload,
     };
   }
@@ -93,6 +97,8 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
     mlxAnePrefill: resp.mlx_ane_prefill_requested === true,
     loadedMlxAnePrefillRequested: resp.mlx_ane_prefill_requested === true,
     mlxFastVerify: resp.mlx_fast_verify_requested === true,
+    mlxPreserveDtype: resp.mlx_preserve_dtype === true,
+    loadedMlxPreserveDtype: resp.mlx_preserve_dtype === true,
     loadedMlxFastVerifyRequested: resp.mlx_fast_verify_requested === true,
     mlxPleOffload: offload.loadedMlxPleOffloadRequested,
     mlxExpertOffload: offload.loadedMlxExpertOffloadRequested,

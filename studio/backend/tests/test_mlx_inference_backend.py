@@ -1185,6 +1185,38 @@ def test_mlx_inference_text_load_forwards_studio_settings(monkeypatch):
     assert backend.models["fake/text"]["base_model"] is None
 
 
+def test_the_mlx_lm_retry_resolves_saved_dtype_from_its_own_shards(monkeypatch, tmp_path):
+    import json
+    from core.inference import mlx_inference as mi
+
+    (tmp_path / "config.json").write_text("{}")
+    for name, dtype in (("model.safetensors", "F16"), ("aux.safetensors", "BF16")):
+        header = json.dumps({"layer.weight": {"dtype": dtype}}).encode()
+        (tmp_path / name).write_bytes(len(header).to_bytes(8, "little") + header)
+
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    attempts = []
+
+    def load_with_zoo(model_name, *, text_only, dtype, **kwargs):
+        attempts.append((text_only, dtype))
+        if not text_only:
+            raise ValueError("unexpected auxiliary tensor")
+        return _DummyModel(), _DummyTokenizer()
+
+    loader = sys.modules["unsloth_zoo.mlx.loader"].FastMLXModel
+    monkeypatch.setattr(loader, "from_pretrained", staticmethod(load_with_zoo))
+    monkeypatch.setattr(mi, "_mlx_unsupported_model_type", lambda *a: None)
+    monkeypatch.setattr(mi, "_row_quantized_cache_gap", lambda: None)
+    config = SimpleNamespace(
+        identifier = str(tmp_path), is_local = True, is_vision = False, is_lora = False
+    )
+    backend = mi.MLXInferenceBackend()
+    assert backend.load_model(config, load_in_4bit = False, preserve_dtype = True, kv_quant = 4)
+    assert attempts == [(False, None), (True, "float16")]
+    assert backend._resume_load_args[1] == repr("float16")
+
+
 def test_mlx_load_offloads_what_unsloth_zoo_applies_and_says_why_not(monkeypatch):
     from core.inference import mlx_inference, mlx_memory
     from core.inference.mlx_inference import MLXInferenceBackend

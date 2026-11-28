@@ -189,8 +189,8 @@ const ROWS: Row[] = [
       "and reads normally.",
   },
   {
-    name: "version 17 (genuinely future)",
-    raw: { version: 17, customContextLength: 32768 },
+    name: "version 18 (genuinely future)",
+    raw: { version: 18, customContextLength: 32768 },
     normalizedPin: null,
     rawPin: 32768,
     isDefault: true,
@@ -345,9 +345,15 @@ test("both pin shapes are stamped version 1, so neither is distinguishable by ve
     stage({ version: 16, customContextLength: 32768 }).remembered,
     true,
   );
-  assert.equal(stage({ version: 17, customContextLength: 32768 }).remembered, false);
+  assert.equal(stage({ version: 17, customContextLength: 32768 }).remembered, true);
+  assert.equal(stage({ version: 18, customContextLength: 32768 }).remembered, false);
 });
 
+
+test("saved precision is versioned independently of the 4-bit choice", () => {
+  assert.equal(stampedVersion({ mlxPreserveDtype: true }), 17);
+  assert.equal(stampedVersion({ loadIn4bit: false }), 1);
+});
 
 test("a stored mlxKvQuant stamps a version older builds refuse", () => {
   assert.equal(stampedVersion({ mlxKvQuant: "tq-4" }), 7);

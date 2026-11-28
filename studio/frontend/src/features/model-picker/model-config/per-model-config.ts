@@ -38,6 +38,7 @@ export interface PerModelConfig {
   mlxInt8Prefill?: boolean;
   mlxAnePrefill?: boolean;
   mlxFastVerify?: boolean;
+  mlxPreserveDtype?: boolean;
   /** MLX only: share of the PLE tables / routed experts read from disk, "off", or null for Auto. */
   mlxPleOffload?: MlxOffload;
   mlxExpertOffload?: MlxOffload;
@@ -95,6 +96,7 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   mlxInt8Prefill: false,
   mlxAnePrefill: false,
   mlxFastVerify: false,
+  mlxPreserveDtype: false,
   mlxPleOffload: null,
   mlxExpertOffload: null,
   npuPowerMode: null,
@@ -497,7 +499,8 @@ const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
 // (loadMode / specDraftCacheDtype / ctxCheckpoints / cacheRam), v6 the reasoning budget pair,
 // v7 mlxKvQuant, v9 mlxInt8Prefill, v10 the per-GPU split, v11 the MLX drafter, v12 the MLX offload pair, v13 mlxAnePrefill, v14 mlxFastVerify, v15 engramPrecision, v16 the NPU trio. v8 is skipped: nightly builds stamped it for the reverted custom
 // llama.cpp config (#12725), so a v8 client must not claim to understand an int8 prefill record.
-const STORAGE_SCHEMA_VERSION = 16;
+const STORAGE_SCHEMA_VERSION = 17; // MLX saved precision
+const PRE_MLX_PRESERVE_DTYPE_SCHEMA_VERSION = 16;
 const PRE_NPU_FLM_SCHEMA_VERSION = 15;
 const PRE_ENGRAM_SCHEMA_VERSION = 14;
 const PRE_MLX_FAST_VERIFY_SCHEMA_VERSION = 13;
@@ -551,6 +554,7 @@ const STORED_CONFIG_FIELDS = new Set([
   "mlxInt8Prefill",
   "mlxAnePrefill",
   "mlxFastVerify",
+  "mlxPreserveDtype",
   "mlxPleOffload",
   "mlxExpertOffload",
   "npuPowerMode",
@@ -1193,6 +1197,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     mlxInt8Prefill: partial.mlxInt8Prefill === true,
     mlxAnePrefill: partial.mlxAnePrefill === true,
     mlxFastVerify: partial.mlxFastVerify === true,
+    mlxPreserveDtype: partial.mlxPreserveDtype === true,
     mlxPleOffload: normalizeMlxOffload(partial.mlxPleOffload),
     mlxExpertOffload: normalizeMlxOffload(partial.mlxExpertOffload),
     npuPowerMode: normalizeNpuPowerMode(partial.npuPowerMode),
@@ -1283,12 +1288,15 @@ function storedSchemaVersion(normalized: PerModelConfig): number {
   const mode = normalized.speculativeType;
   // A kept Auto and the MLX-only modes are values an older client folds back to unset.
   const mlxMode = mode === "auto" || (MLX_ONLY_SPEC_TYPES as readonly string[]).includes(mode ?? "");
+  if (normalized.mlxPreserveDtype) {
+    return STORAGE_SCHEMA_VERSION;
+  }
   if (
     normalized.npuPowerMode != null ||
     normalized.npuPrefillChunkLen != null ||
     normalized.npuImgPreResize != null
   ) {
-    return STORAGE_SCHEMA_VERSION;
+    return PRE_MLX_PRESERVE_DTYPE_SCHEMA_VERSION;
   }
   if (normalized.engramPrecision != null) {
     return PRE_NPU_FLM_SCHEMA_VERSION;
@@ -1495,6 +1503,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     !config.mlxInt8Prefill &&
     !config.mlxAnePrefill &&
     !config.mlxFastVerify &&
+    !config.mlxPreserveDtype &&
     config.mlxPleOffload == null &&
     config.mlxExpertOffload == null &&
     config.npuPowerMode == null &&

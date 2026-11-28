@@ -3627,7 +3627,7 @@ export function ModelConfigPage({
       ? {
           modelPath: target.id,
           loadIn4bit: localMlxCheckpoint
-            ? runtimeConfig.loadIn4bit !== false
+            ? !runtimeConfig.mlxPreserveDtype && runtimeConfig.loadIn4bit !== false
             : undefined,
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
@@ -3732,7 +3732,9 @@ export function ModelConfigPage({
     residentContext,
     targetIsMlx && !residentModelLoading
       ? {
-          loadIn4bit: localMlxCheckpoint ? loadedConfig?.loadIn4bit : undefined,
+          loadIn4bit: localMlxCheckpoint
+            ? loadedConfig?.mlxPreserveDtype ? false : loadedConfig?.loadIn4bit
+            : undefined,
           kvQuant: loadedMlxKvQuantRequested ?? null,
           pleOffload: loadedMlxPleOffload,
           expertOffload: loadedMlxExpertOffload,
@@ -4543,8 +4545,10 @@ export function ModelConfigPage({
             <Switch
               className="shrink-0"
               aria-label={weightPrecisionLabel}
-              checked={localMlxCheckpoint ? config.loadIn4bit === false : config.loadIn4bit !== false}
-              onCheckedChange={(checked) => update({ loadIn4bit: localMlxCheckpoint ? !checked : checked })}
+              checked={localMlxCheckpoint ? config.mlxPreserveDtype === true : config.loadIn4bit !== false}
+              onCheckedChange={(checked) =>
+                update(localMlxCheckpoint ? { mlxPreserveDtype: checked } : { loadIn4bit: checked })
+              }
             />
           </div>
         )}

@@ -13973,6 +13973,20 @@ async def load_model_for_preview(
             _auto_switch_process_lock.release()
 
 
+async def _preserves_local_mlx_dtype(config: ModelConfig, request) -> bool:
+    if (
+        not getattr(request, "mlx_preserve_dtype", False)
+        or not getattr(config, "is_local", False)
+        or getattr(config, "is_gguf", False)
+        or getattr(config, "is_lora", False)
+        or getattr(config, "audio_type", None)
+        or getattr(request, "engine", "auto") != "auto"
+    ):
+        return False
+    from utils.hardware import DeviceType, get_device
+    return await asyncio.to_thread(get_device) == DeviceType.MLX
+
+
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
     """Effective quantization the loader will use: a LoRA adapter can flip 4-bit to
     16-bit via adapter_config.json, so the guard sizes this, not the raw request."""
@@ -19089,14 +19103,17 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
 
 
 def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> None:
-    """An omitted load_in_4bit keeps the resident precision, not the 4-bit default."""
-    if "load_in_4bit" in (getattr(request, "model_fields_set", set()) or set()):
+    """An omitted precision choice keeps the resident precision."""
+    fields_set = getattr(request, "model_fields_set", set()) or set()
+    if "load_in_4bit" in fields_set:
         return
     if not _same_loaded_identifier(backend.active_model_name, model_identifier):
         return
     entry = backend.models.get(backend.active_model_name, {}) or {}
     if entry.get("engine", "auto") != getattr(request, "engine", "auto"):
         return
+    if "mlx_preserve_dtype" not in fields_set and entry.get("mlx_preserve_dtype"):
+        request.mlx_preserve_dtype = True
     resident = entry.get("load_in_4bit_requested")
     if resident is not None:
         request.load_in_4bit = bool(resident)
@@ -19141,6 +19158,15 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
         resident = entry.get("max_seq_length_requested")
         if resident is not None and int(resident) != int(request.max_seq_length):
+            return False
+    if (
+        entry.get("is_mlx")
+        and not (entry.get("is_lora") or entry.get("audio_type"))
+        and bool(entry.get("mlx_preserve_dtype"))
+        != bool(getattr(request, "mlx_preserve_dtype", False))
+    ):
+        from utils.paths import is_local_path
+        if is_local_path(backend.active_model_name):
             return False
     if "load_in_4bit" in fields_set:
         # As REQUESTED, not resolved: _effective_load_in_4bit rewrites it (LoRA, latest tier), so comparing resolved values would never match.
@@ -21074,6 +21100,7 @@ async def _load_model_impl(
                     mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
                     mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
                     mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
+                    mlx_preserve_dtype = _model_info.get("mlx_preserve_dtype"),
                     mlx_fast_verify = _model_info.get("mlx_fast_verify"),
                     mlx_fast_verify_requested = _model_info.get("mlx_fast_verify_requested"),
                     mlx_fast_verify_reason = _model_info.get("mlx_fast_verify_reason"),
@@ -21257,8 +21284,11 @@ async def _load_model_impl(
             )
 
         # Effective quantization (LoRA can flip 4-bit -> 16-bit); guard + load reuse it.
-        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
-        if effective_load_in_4bit != request.load_in_4bit:
+        preserve_mlx_dtype = await _preserves_local_mlx_dtype(config, request)
+        effective_load_in_4bit = _effective_load_in_4bit(
+            config, request.load_in_4bit and not preserve_mlx_dtype
+        )
+        if not preserve_mlx_dtype and effective_load_in_4bit != request.load_in_4bit:
             logger.info(
                 f"Resolved load_in_4bit={effective_load_in_4bit} for '{model_log_label}' "
                 f"from adapter_config.json / base model (requested {request.load_in_4bit})"
@@ -21741,13 +21771,7 @@ async def _load_model_impl(
         speech_codec_kw = (
             {"audio_codec_path": speech_codec_path} if speech_codec_path is not None else {}
         )
-        # An explicit off opts local MLX checkpoints into saved precision. Other policies can
-        # force 4-bit off without changing which dtype the loader normally chooses.
-        mlx_dtype_kw = (
-            {"preserve_mlx_dtype": True}
-            if not request.load_in_4bit and getattr(config, "is_local", False)
-            else {}
-        )
+        mlx_dtype_kw = {"preserve_mlx_dtype": True} if preserve_mlx_dtype else {}
         # The inference worker is not bound to the account, so refuse here.
         if request.trust_remote_code and managed_remote_code_refused():
             raise HTTPException(status_code = 403, detail = MANAGED_REMOTE_CODE_REFUSAL)
@@ -21849,6 +21873,8 @@ async def _load_model_impl(
         if isinstance(_resident_entry, dict):
             _resident_entry["max_seq_length_requested"] = int(request.max_seq_length or 0)
             _resident_entry["load_in_4bit_requested"] = bool(request.load_in_4bit)
+            if _resident_entry.get("is_mlx"):
+                _resident_entry["mlx_preserve_dtype"] = preserve_mlx_dtype
             # Persist placement so a reload doesn't land on a different GPU.
             _resident_entry["gpu_ids_requested"] = (
                 list(request.gpu_ids) if request.gpu_ids else None
@@ -21983,6 +22009,7 @@ async def _load_model_impl(
             mlx_ane_prefill = _model_info.get("mlx_ane_prefill"),
             mlx_ane_prefill_requested = _model_info.get("mlx_ane_prefill_requested"),
             mlx_ane_prefill_reason = _model_info.get("mlx_ane_prefill_reason"),
+            mlx_preserve_dtype = _model_info.get("mlx_preserve_dtype"),
             mlx_fast_verify = _model_info.get("mlx_fast_verify"),
             mlx_fast_verify_requested = _model_info.get("mlx_fast_verify_requested"),
             mlx_fast_verify_reason = _model_info.get("mlx_fast_verify_reason"),
@@ -22439,7 +22466,10 @@ async def validate_model(
                     diffusion_kind = placement.diffusion_kind,
                 ):
                     raise HTTPException(status_code = 400, detail = str(exc)) from exc
-        effective_load_in_4bit = _effective_load_in_4bit(config, request.load_in_4bit)
+        preserve_mlx_dtype = await _preserves_local_mlx_dtype(config, request)
+        effective_load_in_4bit = _effective_load_in_4bit(
+            config, request.load_in_4bit and not preserve_mlx_dtype
+        )
         placement = await _preflight_native_audio_placement(config, request, placement)
 
         # Cover [adapter, base]: either repo can ship auto_map code or a poisoned pickle.
@@ -24737,6 +24767,7 @@ async def _slot_status(current_subject: str):
             mlx_ane_prefill = model_info.get("mlx_ane_prefill"),
             mlx_ane_prefill_requested = model_info.get("mlx_ane_prefill_requested"),
             mlx_ane_prefill_reason = model_info.get("mlx_ane_prefill_reason"),
+            mlx_preserve_dtype = model_info.get("mlx_preserve_dtype"),
             mlx_fast_verify = model_info.get("mlx_fast_verify"),
             mlx_fast_verify_requested = model_info.get("mlx_fast_verify_requested"),
             mlx_fast_verify_reason = model_info.get("mlx_fast_verify_reason"),

@@ -254,6 +254,7 @@ export function applyActiveModelStatusToStore(
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;
   const incomingMlxAnePrefill = status.mlx_ane_prefill_requested === true;
   const incomingMlxFastVerify = status.mlx_fast_verify_requested === true;
+  const incomingMlxPreserveDtype = status.mlx_preserve_dtype === true;
   const incomingMlxOffload = mlxOffloadStateFrom(status);
   const prevState = useChatRuntimeStore.getState();
   // A pin is one model's; clamp the chat's own level once the model is actually resident.
@@ -584,6 +585,7 @@ export function applyActiveModelStatusToStore(
             loadedMlxInt8PrefillRequested: incomingMlxInt8Prefill,
             loadedMlxAnePrefillRequested: incomingMlxAnePrefill,
             loadedMlxFastVerifyRequested: incomingMlxFastVerify,
+            loadedMlxPreserveDtype: incomingMlxPreserveDtype,
             ...incomingMlxOffload,
             ...((hydratingExistingModel ||
               (prevState.mlxPleOffload ?? null) ===
@@ -615,6 +617,10 @@ export function applyActiveModelStatusToStore(
                 prevState.loadedMlxFastVerifyRequested) && {
               mlxFastVerify: incomingMlxFastVerify,
             }),
+            ...((hydratingExistingModel ||
+              prevState.mlxPreserveDtype === prevState.loadedMlxPreserveDtype) && {
+              mlxPreserveDtype: incomingMlxPreserveDtype,
+            }),
           }
         : {
             loadedMlxKvQuantRequested: null,
@@ -624,6 +630,7 @@ export function applyActiveModelStatusToStore(
             loadedMlxInt8PrefillRequested: false,
             loadedMlxAnePrefillRequested: false,
             loadedMlxFastVerifyRequested: false,
+            loadedMlxPreserveDtype: false,
             ...incomingMlxOffload,
           })),
     ...(seedLoadParams && {
