@@ -592,23 +592,33 @@ class _TemplateClient(_FakeClient):
     templates: dict = {}
     probed: list = []
 
-    async def llama_server_chat_template(self, model_id):
+    async def llama_server_props(self, model_id):
         type(self).probed.append(model_id)
-        return type(self).templates.get(model_id)
+        template = type(self).templates.get(model_id)
+        if template is None:
+            return None
+        return {"chat_template": template, "model_alias": type(self).alias.get(model_id, model_id)}
+
+    alias: dict = {}
 
 
 @pytest.mark.parametrize(
-    "template, expected",
+    "template, alias, expected",
     [
-        (_HARMONY_TEMPLATE, ["low", "medium", "high"]),
-        ("{% if enable_thinking %}<think>{% endif %}", None),
-        (None, None),
+        (_HARMONY_TEMPLATE, "gpt-oss-20b", ["low", "medium", "high"]),
+        ("{% if enable_thinking %}<think>{% endif %}", "gpt-oss-20b", None),
+        (None, "gpt-oss-20b", None),
+        # The server ignored ?model= and described its resident model instead.
+        (_HARMONY_TEMPLATE, "resident-model", None),
     ],
 )
-def test_custom_route_reads_efforts_from_the_served_template(monkeypatch, template, expected):
+def test_custom_route_reads_efforts_from_the_served_template(
+    monkeypatch, template, alias, expected
+):
     providers_route._model_capability_cache.clear()
     _TemplateClient.raw = [_RAW_GPT, {"id": "gpt-oss-20b"}]
     _TemplateClient.templates = {"gpt-oss-20b": template}
+    _TemplateClient.alias = {"gpt-oss-20b": alias}
     _TemplateClient.probed = []
     _TemplateClient.fail = False
     monkeypatch.setattr(providers_route, "ExternalProviderClient", _TemplateClient)
@@ -637,8 +647,8 @@ def test_custom_route_reads_efforts_from_the_served_template(monkeypatch, templa
 @pytest.mark.parametrize(
     "status, body, expected",
     [
-        (200, {"chat_template": "tpl"}, "tpl"),
-        (200, {"chat_template": ""}, None),
+        (200, {"chat_template": "tpl"}, {"chat_template": "tpl"}),
+        (200, ["not", "a", "dict"], None),
         (404, {"error": "not found"}, None),
     ],
 )
@@ -660,7 +670,7 @@ def test_llama_server_template_is_read_from_props_beside_v1(status, body, expect
     ep_mod._http_client = mock_client
     loop = asyncio.new_event_loop()
     try:
-        got = loop.run_until_complete(client.llama_server_chat_template("my model"))
+        got = loop.run_until_complete(client.llama_server_props("my model"))
         loop.run_until_complete(mock_client.aclose())
     finally:
         ep_mod._http_client = previous
@@ -672,6 +682,8 @@ def test_llama_server_template_is_read_from_props_beside_v1(status, body, expect
 def test_custom_capabilities_are_reread_on_every_detection(monkeypatch):
     providers_route._model_capability_cache.clear()
     _TemplateClient.raw = [{"id": "served"}]
+    # One listed model: its /props answer is its own even without a matching name.
+    _TemplateClient.alias = {"served": "/models/anything.gguf"}
     _TemplateClient.templates = {"served": _HARMONY_TEMPLATE}
     _TemplateClient.probed = []
     _TemplateClient.calls = 0
@@ -697,3 +709,11 @@ def test_custom_capabilities_are_reread_on_every_detection(monkeypatch):
     assert detect() == []
     assert _TemplateClient.calls == 2
     providers_route._model_capability_cache.clear()
+
+
+def test_props_names_cover_alias_path_and_file_name():
+    names = providers_route._props_model_names(
+        {"model_alias": "a", "model_path": "C:\\models\\Qwen3-8B-Q4_K_M.gguf"}
+    )
+    assert {"a", "Qwen3-8B-Q4_K_M.gguf", "Qwen3-8B-Q4_K_M"} <= names
+    assert providers_route._props_model_names({}) == set()

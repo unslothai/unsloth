@@ -1456,6 +1456,15 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
 _TEMPLATE_PROBE_MAX_MODELS = 8
 
 
+def _props_model_names(props: dict) -> set[str]:
+    names = {props.get("model_alias"), props.get("model_path"), props.get("model")}
+    path = props.get("model_path")
+    if isinstance(path, str) and path:
+        base = path.replace("\\", "/").rsplit("/", 1)[-1]
+        names |= {base, base.removesuffix(".gguf")}
+    return {name for name in names if isinstance(name, str) and name}
+
+
 async def _custom_template_capabilities(client, models: list, known: list) -> list[dict]:
     from core.inference.llama_cpp import detect_reasoning_flags
 
@@ -1467,9 +1476,18 @@ async def _custom_template_capabilities(client, models: list, known: list) -> li
         and model["id"].strip()
         and model["id"].strip() not in reported
     ][:_TEMPLATE_PROBE_MAX_MODELS]
-    templates = await asyncio.gather(*(client.llama_server_chat_template(i) for i in ids))
+    answers = await asyncio.gather(*(client.llama_server_props(i) for i in ids))
     found = []
-    for model_id, template in zip(ids, templates):
+    for model_id, props in zip(ids, answers):
+        template = (props or {}).get("chat_template")
+        # A server that ignores ?model= describes only its resident model, so with several listed the
+        # answer must name this one.
+        if (
+            not isinstance(template, str)
+            or not template
+            or (len(models) > 1 and model_id not in _props_model_names(props))
+        ):
+            continue
         flags = detect_reasoning_flags(template, model_id, log_level = "debug")
         # "none" is the Off row, never a rung.
         levels = [level for level in flags["reasoning_effort_levels"] if level != "none"]
