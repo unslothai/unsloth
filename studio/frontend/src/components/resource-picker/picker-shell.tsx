@@ -159,6 +159,7 @@ export function PickerShell({
   open,
   placeholder,
   scrollRef,
+  searchTrailing,
   showUseThis,
   tab,
   tabListAriaLabel,
@@ -183,6 +184,7 @@ export function PickerShell({
   open: boolean;
   placeholder: { hub: string; device: string };
   scrollRef: RefObject<HTMLDivElement | null>;
+  searchTrailing?: ReactNode;
   showUseThis: boolean;
   tab: PickerTab;
   tabListAriaLabel: string;
@@ -355,11 +357,18 @@ export function PickerShell({
                 tab === PICKER_TAB.hub ? placeholder.hub : placeholder.device
               }
               aria-label={t("picker.searchAriaLabel", { noun })}
-              className="field-soft h-9 rounded-full border-0 pl-9 text-ui-12p5 focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+              className={cn(
+                "field-soft h-9 rounded-full border-0 pl-9 text-ui-12p5 focus-visible:border-0 focus-visible:ring-0 focus-visible:ring-offset-0",
+                searchTrailing && "pr-9",
+              )}
             />
-            {tab === PICKER_TAB.hub && isHubLoading && (
+            {tab === PICKER_TAB.hub && isHubLoading ? (
               <Spinner className="pointer-events-none absolute right-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-            )}
+            ) : searchTrailing ? (
+              <div className="absolute right-1.5 top-1/2 flex -translate-y-1/2 items-center">
+                {searchTrailing}
+              </div>
+            ) : null}
           </div>
           {queryStatus && (
             <output
