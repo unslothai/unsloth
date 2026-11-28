@@ -166,8 +166,9 @@ def test_a_tool_loop_keeps_its_request_and_results_when_the_window_fills(
     assert "C" not in calls.strip("C")
 
 
+@pytest.mark.parametrize("result", ["ok", "ok\n" * 600])
 @pytest.mark.parametrize("nudged", [False, True])
-def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exchanges(nudged):
+def test_a_tool_loop_whose_call_arguments_fill_the_window_still_fits(nudged, result):
     import routes.inference as ri
     from models.inference import ChatCompletionRequest
 
@@ -179,7 +180,7 @@ def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exc
         call = {"id": f"c{n}", "type": "function", "function": fn}
         messages += [
             {"role": "assistant", "content": None, "tool_calls": [call]},
-            {"role": "tool", "tool_call_id": f"c{n}", "content": "ok"},
+            {"role": "tool", "tool_call_id": f"c{n}", "content": result},
         ]
     if nudged:
         messages.append({"role": "user", "content": "You are out of tool calls. Answer now."})
@@ -196,8 +197,14 @@ def test_a_tool_loop_whose_call_arguments_fill_the_window_still_evicts_older_exc
     fitted, truncation, _ = ri._fit_external_context(
         messages, payload, branch = [{"role": "user", "content": task}], tool_loop = True
     )
-    assert truncation["fits"] and truncation["dropped_messages"] > 0
     assert any(m.get("content") == task for m in fitted)
+    if result == "ok":
+        # Compacting the written files' arguments is enough; no exchange is evicted.
+        assert truncation is None
+        assert sum(m["role"] == "tool" for m in fitted) == 6
+        assert "x = compute" not in json.dumps(fitted)
+    else:
+        assert truncation["fits"] and truncation["dropped_messages"] > 0
 
 
 _OVERFLOW_CHARS = 9_000
