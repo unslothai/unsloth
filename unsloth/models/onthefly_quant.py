@@ -346,9 +346,6 @@ def _auto_8bit_common_reason(arguments, extra):
         return "load_in_fp8"
     if _explicit_4bit(arguments):
         return f"load_in_4bit = {arguments['load_in_4bit']!r}"
-    if "load_in_4bit" not in arguments:
-        # load_in_4bit keeps its True default: True alone has always been refused as 4-bit + 8-bit, on every GPU.
-        return "load_in_4bit left at its default"
     if arguments.get("load_in_16bit", False):
         return "load_in_16bit"
     if extra.get("float8_training", None) not in (None, False):
@@ -558,6 +555,11 @@ def onthefly_lowbit_load(fn):
         l8 = arguments.get("load_in_8bit", None)
         keep_bnb = isinstance(l8, str) and _norm(l8) in _BNB8_NAMES
         decision = None
+        if l8 is True and "load_in_4bit" not in arguments:
+            # load_in_4bit defaults to True, which the loader refuses next to 8-bit: an 8-bit request replaces it,
+            # as the load_in_8bit strings do.
+            arguments["load_in_4bit"] = False
+            args, kwargs = bound.args, bound.kwargs
         if var_keyword is not None:
             # A nested load (FastLanguageModel delegating to FastModel) keeps the outer call's bitsandbytes pick.
             decision = resolve_int8_8bit(arguments, var_keyword, auto = not _BNB8_KEPT.get())

@@ -130,8 +130,8 @@ def test_true_picks_int8_on_the_measured_gpus_and_says_so_once(wrapped, int8_gpu
             "int8_lora",
         )
     assert capsys.readouterr().out.count("load_in_8bit = True runs the rotated int8") == 1
-    # load_in_4bit left at its True default: unchanged (the loader refuses 4-bit + 8-bit as before).
-    assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
+    # load_in_4bit left at its True default: the 8-bit request replaces it, so the same pick applies.
+    assert wrapped("m", load_in_8bit = True) == (False, False, False, "int8_lora")
 
 
 @pytest.mark.parametrize(
@@ -154,6 +154,22 @@ def test_true_keeps_bitsandbytes_where_int8_cannot_replace_it(wrapped, int8_gpu,
 def test_auto_kill_switch(wrapped, int8_gpu, monkeypatch):
     monkeypatch.setenv(oq.AUTO_8BIT_ENV, "0")
     assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == (False, True, False, None)
+
+
+@pytest.mark.parametrize(
+    "l8, want",
+    [
+        (True, (False, True, False, None)),
+        ("bnb", (False, True, False, None)),
+        ("int8", (False, False, False, "int8_lora")),
+        ("fp8", (False, False, True, None)),
+    ],
+)
+def test_8bit_requests_replace_the_4bit_default(wrapped, monkeypatch, l8, want):
+    # load_in_4bit defaults to True and the loader refuses 4-bit next to 8-bit: an 8-bit request with the
+    # default left alone loads 8-bit (True on main raised "Can only load in 4bit or 8bit or 16bit").
+    monkeypatch.setenv("UNSLOTH_LOAD_IN_8BIT_AUTO", "0")
+    assert wrapped("m", load_in_8bit = l8) == want
 
 
 def test_false_and_fp8_untouched(wrapped, int8_gpu):
