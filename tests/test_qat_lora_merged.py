@@ -258,6 +258,21 @@ def test_lora_input_hook_follows_the_base_quantizer(monkeypatch):
         torch.testing.assert_close(lora_A(x), F.linear(x, lora_A.weight))
 
 
+def test_shared_recipe_keeps_quantizer_state_per_model(monkeypatch):
+    """Two merged models with one recipe: disabling the first one's quantizers (a QAD teacher pass) must not
+    switch off fake quantization in the second."""
+    first = _model("int4", monkeypatch)
+    second = _model("int4", monkeypatch)
+    x = _x()
+    with torch.no_grad():
+        expected = second(x)
+        for m in first.modules():
+            if isinstance(m, qlm.MergedLoRAWeightFakeQuantizer):
+                m.enabled = False
+        torch.testing.assert_close(second(x), expected, rtol = 0, atol = 0)
+        torch.testing.assert_close(expected, _oracle_forward(second, x), rtol = 1e-5, atol = 1e-5)
+
+
 def test_default_stays_base_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_QAT_LORA_MERGED", raising = False)
     model = _model("int4", monkeypatch, merged = None)

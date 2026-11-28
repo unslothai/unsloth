@@ -30,6 +30,7 @@ Refused: lora_dropout > 0 (the dropped input cannot be merged), DoRA and other L
 fake quantized adapters (UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1) and more than one adapter on a layer."""
 
 import contextlib
+import copy
 import functools
 import os
 import types
@@ -121,13 +122,20 @@ _QUANTIZER_KEYS = {}
 
 
 def _quantizer_key(quantizer):
-    """One registry entry per (class, config): these weight quantizers are pure functions of their config."""
+    """One registry entry per (class, config). The entry is a private copy, never a model's own module: a
+    model's quantizer carries runtime state (`enabled`, a QAD teacher's pass-through) that must not reach another
+    layer or model through the shared entry. Each wrapper checks its own quantizer's state before the op."""
     cls = type(quantizer)
     signature = (cls.__module__, cls.__qualname__, repr(getattr(quantizer, "config", None)))
     key = _QUANTIZER_KEYS.get(signature)
     if key is None:
+        canonical = copy.deepcopy(quantizer)
+        canonical.__dict__.pop("forward", None)
+        if "enabled" in vars(canonical):
+            canonical.enabled = True
+        canonical.requires_grad_(False)
         key = _QUANTIZER_KEYS[signature] = len(_QUANTIZERS)
-        _QUANTIZERS[key] = quantizer
+        _QUANTIZERS[key] = canonical
     return key
 
 
