@@ -303,3 +303,30 @@ def test_no_gap_is_broadcast_when_the_device_order_is_unprovable(tmp_path, monke
     intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
     targets = h.fit_targets(_spawn_cmd(backend, intent))
     assert all(int(t) < 53023 for t in targets), targets
+
+
+@pytest.mark.parametrize("vram_fraction", [1.0, 0.97])
+def test_a_full_slider_cannot_eat_into_the_commit_gap(tmp_path, monkeypatch, vram_fraction):
+    """The slider's margin is clamped at llama.cpp's floor first; the commit gap sits outside it."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    gap = N1X_CUDA_FREE_IDLE - N1X_COMMIT_IDLE  # 51,755 MiB on the idle N1X
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.setattr(llama_cpp, "_active_vram_fraction", lambda: vram_fraction)
+    margins = []
+    for g in (0, gap):
+        backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 46_000, 46_000),))
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_WINDOWS_COMMIT_FIT_HEADROOM_MIB",
+            {0: g} if g else {},
+            raising = False,
+        )
+        intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+        margins.append(h.margin(_spawn_cmd(backend, intent)))
+    without, with_gap = margins
+    # The fitter keeps the slider's own (floored) margin plus the whole gap free.
+    assert with_gap == without + gap

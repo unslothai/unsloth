@@ -27449,12 +27449,21 @@ class LlamaCppBackend:
                     }
                     if any(_commit_fit_by_idx.values()):
                         _commit_gap_mib = max(_commit_fit_by_idx.values())
+                        # Clamp the slider's margin at the floor first, then add the gap outside
+                        # it: a 100% slider's negative delta must not eat into the commit gap.
+                        _min_delta = _VRAM_FLOOR_RESERVE_MIB - (
+                            _VRAM_FLOOR_RESERVE_MIB
+                            if gpu_memory_mode == "manual" and gpu_layers < 0
+                            else _LLAMA_FIT_TARGET_DEFAULT_MIB
+                        )
                         if len(set(_commit_fit_by_idx.values())) == 1:
                             # Every device has the same gap, so the broadcast value is exact.
-                            _fit_target_delta_mib += _commit_gap_mib
+                            _fit_target_delta_mib = (
+                                max(_min_delta, _fit_target_delta_mib) + _commit_gap_mib
+                            )
                             if _fit_target_delta_by_idx:
                                 _fit_target_delta_by_idx = {
-                                    _idx: _delta + _commit_gap_mib
+                                    _idx: max(_min_delta, _delta) + _commit_gap_mib
                                     for _idx, _delta in _fit_target_delta_by_idx.items()
                                 }
                         elif _fit_target_delta_by_idx or self._fit_target_per_device_ok(
@@ -27466,9 +27475,17 @@ class LlamaCppBackend:
                             # squeeze a discrete card by the iGPU's gap. The scalar stays without
                             # it, so a spawn that cannot spell the list keeps no gap at all.
                             _base_by_idx = dict(_fit_target_delta_by_idx or {})
+                            # Discrete cards keep their own delta, unclamped, as without the gap.
                             _fit_target_delta_by_idx = {
-                                _idx: _base_by_idx.get(_idx, _fit_target_delta_mib)
-                                + _commit_fit_by_idx.get(_idx, 0)
+                                _idx: (
+                                    max(
+                                        _min_delta,
+                                        _base_by_idx.get(_idx, _fit_target_delta_mib),
+                                    )
+                                    + _commit_fit_by_idx[_idx]
+                                    if _commit_fit_by_idx.get(_idx)
+                                    else _base_by_idx.get(_idx, _fit_target_delta_mib)
+                                )
                                 for _idx in {*_base_by_idx, *_commit_fit_by_idx}
                             }
                         else:
