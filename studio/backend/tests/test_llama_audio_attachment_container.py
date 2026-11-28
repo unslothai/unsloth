@@ -1360,3 +1360,11 @@ def test_av_open_does_not_swallow_an_unrelated_type_error():
     with pytest.raises(TypeError, match = "PathLike"):
         inference_route._av_open(av, "source")
     assert len(av.calls) == 1
+
+
+@pytest.fixture(autouse = True)
+def _fresh_prepared_audio_cache():
+    # A patched decoder must never be answered from another test's cached transcode.
+    inference_route._clear_prepared_audio_cache()
+    yield
+    inference_route._clear_prepared_audio_cache()

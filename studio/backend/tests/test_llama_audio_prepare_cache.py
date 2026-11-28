@@ -83,7 +83,7 @@ def test_a_budget_set_by_an_enclosing_decode_misses(monkeypatch):
 
 def test_only_one_entry_is_kept(monkeypatch):
     calls = _counting_decoder(monkeypatch)
-    a, b = [_clip(b"recording a")], [_clip(b"recording bb")]
+    a, b = [_clip(b"recording a")], [_clip(b"recording bbbb")]
     for clips in (a, b, a):
         inference_route._prepare_audio_clips_for_llama(clips)
     assert len(calls) == 3

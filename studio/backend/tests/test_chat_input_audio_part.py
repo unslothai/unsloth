@@ -962,3 +962,11 @@ def test_a_replay_marker_on_the_current_turn_is_refused():
     with pytest.raises(HTTPException) as exc:
         inference_route._reject_misplaced_audio_parts(_replay_request(replay_on_latest = True))
     assert exc.value.status_code == 400
+
+
+@pytest.fixture(autouse = True)
+def _fresh_prepared_audio_cache():
+    # A patched decoder must never be answered from another test's cached transcode.
+    inference_route._clear_prepared_audio_cache()
+    yield
+    inference_route._clear_prepared_audio_cache()
