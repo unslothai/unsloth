@@ -120,6 +120,31 @@ class TestKvGpuShare:
         # Without the total, attention cells only.
         assert probe._kv_gpu_share(2, 4096) == 1.0
 
+    def test_per_head_widths_pad_v_without_flash_attn(self):
+        # Heads [8, 2], K = V = 256, f16: FA off pads layer 1's V to 8 heads, as the total does.
+        probe = _probe(None, n_layers = 2, swa = 0, _n_kv_heads_by_layer = [8, 2])
+        assert probe._kv_gpu_share(2, 4096) == pytest.approx(2 / 10)
+        assert probe._kv_gpu_share(2, 4096, flash_attn = False) == pytest.approx(10 / 26)
+        # The vector sums to the total the estimator prices.
+        widths = probe._kv_head_layer_widths([8, 2], flash_attn = False)
+        cells = 4096
+        assert sum(widths) * cells == probe._estimate_kv_cache_bytes(4096, flash_attn = False)
+
+    def test_nemotron_ffn_only_layers_are_not_recurrent(self, monkeypatch):
+        probe = _probe(
+            None,
+            n_layers = 4,
+            _n_kv_heads_by_layer = [0, 0, 8, 0],
+            _feed_forward_length_by_layer = [0, 21504, 0, 0],
+            _architecture = "nemotron_h_moe",
+        )
+        monkeypatch.setattr(probe, "_rollback_state_bytes", lambda n_parallel = 1: 100)
+        # -ngl 2 offloads layer 3 only: one of the two Mamba layers (0, 3), no attention.
+        assert probe._kv_gpu_share(2, 4096, kv_bytes = 400) == pytest.approx(0.5 * 100 / 400)
+        # Elsewhere a zero-head layer stays recurrent: layers 0, 1, 3, one on the GPU.
+        probe._architecture = "qwen3"
+        assert probe._kv_gpu_share(2, 4096, kv_bytes = 400) == pytest.approx(100 / 3 / 400)
+
     def test_scalar_head_hybrid_uses_the_attention_interval(self):
         probe = _probe(None, n_layers = 8, _ssm_inner_size = 64, _full_attention_interval = 4)
         # Attention at layers 3 and 7; -ngl 5 offloads layers 4..7.

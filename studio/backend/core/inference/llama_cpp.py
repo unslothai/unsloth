@@ -19018,11 +19018,21 @@ class LlamaCppBackend:
             shared = int(getattr(self, "_shared_kv_layers", None) or 0)
             interval = getattr(self, "_full_attention_interval", None)
             if isinstance(heads, (list, tuple)) and len(heads) == n_slots:
-                # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
-                weights = [max(0, int(h or 0)) for h in heads]
+                # Per-layer KV heads (hybrid models), at the widths the total prices.
+                hs = [max(0, int(h or 0)) for h in heads]
+                weights = self._kv_head_layer_widths(hs, **shape)
                 if 0 < shared < n_slots:
                     weights[n_slots - shared :] = [0] * shared
-                recurrent_mask = [not int(h or 0) for h in heads[:n_target]]
+                # Zero-head layers are recurrent, except Nemotron-H's FFN-only blocks.
+                ffn = (
+                    getattr(self, "_feed_forward_length_by_layer", None)
+                    if getattr(self, "_architecture", None) in _SSM_FFN_FREE_LAYER_ARCHS
+                    else None
+                ) or []
+                recurrent_mask = [
+                    h == 0 and not (i < len(ffn) and (ffn[i] or 0) > 0)
+                    for i, h in enumerate(hs[:n_target])
+                ]
             elif self._ssm_inner_size is not None and interval:
                 # Scalar-head hybrid: llama.cpp's is_recr, every interval-th layer attends.
                 weights = [int((i + 1) % int(interval) == 0) for i in range(n_slots)]
@@ -19066,6 +19076,30 @@ class LlamaCppBackend:
                 rec_share = sum(rec_layers) / len(rec_layers)
                 share = (share * (kv_bytes - recurrent) + rec_share * recurrent) / kv_bytes
         return share
+
+    def _kv_head_layer_widths(
+        self,
+        heads: "list[int]",
+        *,
+        flash_attn: bool = True,
+        cache_type_kv: Optional[str] = None,
+        **_shape,
+    ) -> "list[float]":
+        """Per-layer bytes per cell as _estimate_kv_cache_bytes prices per-layer heads: one latent
+        per attention layer under MLA, else K plus V, with V padded to the widest layer when
+        flash attention is off (paths 4 and 5)."""
+        if self._kv_lora_rank is not None:
+            return [float(h > 0) for h in heads]
+        bpe_k = _kv_bytes_per_elem(cache_type_kv)
+        bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
+        key_len, val_len = self._kv_key_length, self._kv_value_length
+        if key_len is not None and val_len is not None:
+            pad = None if flash_attn else self._max_kv_value_width(val_len)
+            return [
+                h * key_len * bpe_k + (h * val_len if pad is None else pad) * bpe_v for h in heads
+            ]
+        v_max = max(heads or [0])
+        return [h * bpe_k + (h if flash_attn else v_max) * bpe_v for h in heads]
 
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
         if self._n_kv_heads_by_layer is not None and layer_idx < len(self._n_kv_heads_by_layer):
