@@ -8,6 +8,7 @@ rule, the size guard and the kill switch."""
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 import sys
 import types
@@ -23,6 +24,10 @@ torch = pytest.importorskip("torch")
 import torch.nn.functional as F  # noqa: E402
 
 from core.inference import video_vae_mps_pertap as P  # noqa: E402
+
+_needs_diffusers = pytest.mark.skipif(
+    importlib.util.find_spec("diffusers") is None, reason = "needs diffusers"
+)
 
 # (cin, cout, kernel, stride, padding, dilation, groups, T, H, W)
 GEOMETRIES = {
@@ -198,6 +203,7 @@ def _assert_same_padding(out_s, out_p, seen_s, seen_p, patched_mod, dtype):
     assert _rel_l2(out_p, out_s) < tol
 
 
+@_needs_diffusers
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("with_cache", [False, True])
 def test_wan_causal_conv_zero_pad_and_cache(on_cpu, monkeypatch, dtype, with_cache):
@@ -214,6 +220,7 @@ def test_wan_causal_conv_zero_pad_and_cache(on_cpu, monkeypatch, dtype, with_cac
     _assert_same_padding(*outs, dtype)
 
 
+@_needs_diffusers
 @pytest.mark.parametrize("with_cache", [False, True])
 def test_wan_mps_zero_buffer_forward(on_cpu, monkeypatch, with_cache):
     """The MPS frame-pad fix's zero-buffer forward calls Conv3d.forward, so the wrap still sees its buffer."""
@@ -255,6 +262,7 @@ def test_wan_mps_zero_buffer_forward(on_cpu, monkeypatch, with_cache):
     assert _rel_l2(out_p, WanCausalConv3d.forward(stock, x, cache).detach()) < 1e-5
 
 
+@_needs_diffusers
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 @pytest.mark.parametrize("mode", ["zeros", "reflect"])
 @pytest.mark.parametrize("causal", [True, False])
@@ -271,6 +279,7 @@ def test_ltx2_causal_conv_replicate(on_cpu, monkeypatch, dtype, mode, causal):
     _assert_same_padding(*outs, dtype)
 
 
+@_needs_diffusers
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_hunyuanvideo15_causal_conv_replicate(on_cpu, monkeypatch, dtype):
     from diffusers.models.autoencoders.autoencoder_kl_hunyuanvideo15 import (
@@ -373,6 +382,7 @@ def _tiny_vaes():
     }
 
 
+@_needs_diffusers
 @pytest.mark.parametrize("name", ["wan22_residual", "ltx2", "hunyuanvideo15"])
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_tiny_vae_roundtrip(on_cpu, name, dtype):
