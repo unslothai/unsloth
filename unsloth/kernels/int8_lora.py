@@ -645,7 +645,8 @@ def _xq_key(x):
 def quantize_x(x):
     """Rotated per-token int8 codes of x [M, K] (shared with the previous call on the same eager input)."""
     _count("x_quant")
-    if not _SHARE_XQ or _compiling():
+    # A CUDA graph replays the kernels it captured: a cache hit while capturing would bake in stale codes.
+    if not _SHARE_XQ or _compiling() or torch.cuda.is_current_stream_capturing():
         return int8_lora_quant_x(x)
     root, key = _xq_key(x)
     entry = _XQ[0]
@@ -802,9 +803,9 @@ class Int8LoRABaseState(Fp8LoRABaseState):
         return out
 
     def _use_fp8(self, X):
-        return (
-            X.dtype in (torch.bfloat16, torch.float16)
-            and X.numel() // max(X.shape[-1], 1) >= _MIN_ROWS
+        # Offloaded master: the 16-bit path would rebuild the dense weight every call, so any row count runs int8.
+        return X.dtype in (torch.bfloat16, torch.float16) and (
+            self.offloaded or X.numel() // max(X.shape[-1], 1) >= _MIN_ROWS
         )
 
     def matmul(
@@ -840,6 +841,7 @@ class Int8LoRABaseState(Fp8LoRABaseState):
         delta = X.new_empty((X.shape[0], Bt.shape[1]))
         delta.addmm_(XA, Bt, alpha = alpha, beta = 0)
         if not self._use_fp8(X):
+            _count("dgrad_16bit" if _is_transposed(W) else "fwd_16bit")
             result = delta.addmm_(X, self._dense(W).t().to(X.dtype))
         elif _is_transposed(W):
             result = int8_lora_dgrad(X, self.wq, self.ws, self.wqt, delta)
@@ -891,6 +893,9 @@ def _int8_base_forward(self, x):
     """nn.Linear.forward of a converted base when Unsloth's fused LoRA kernels do not run it."""
     state = self.__dict__.get("_unsloth_fp8_lora")
     weight = self.weight
+    if x.is_floating_point() and torch.is_autocast_enabled(x.device.type):
+        dtype = torch.get_autocast_dtype(x.device.type)  # what F.linear would compute in
+        x = x if x.dtype == dtype else x.to(dtype)
     if state is None or weight.requires_grad or not state._use_fp8(x.reshape(-1, x.shape[-1])):
         _count("fwd_16bit")
         if state is not None and state.offloaded:
@@ -906,10 +911,27 @@ def _int8_base_forward(self, x):
     return y
 
 
+def _device_refusal(device) -> Optional[str]:
+    """Why the layer's own GPU cannot run the int8 base (kernel support, then its recipe gate), else None."""
+    why = int8_lora_supported(device)
+    if why is not None:
+        return why
+    from ..precision import get_recipe, gpu_class
+
+    cls = gpu_class(torch.cuda.get_device_capability(device))
+    gate = get_recipe("int8_lora_rotated").gate(cls)
+    return f"{cls} ({device}): {gate.reason}" if gate.status == "refused" else None
+
+
 def eligible_base(module) -> Optional[str]:
     why = _fp8.eligible_base(module)
     if why is not None:
         return why
+    weight = getattr(module, "weight", None)
+    if weight is not None and weight.is_cuda:  # each layer's GPU, not only the current one
+        why = _device_refusal(weight.device)
+        if why is not None:
+            return why
     if module.in_features % GROUP:
         return f"in_features {module.in_features} is not a multiple of {GROUP}"
     return None

@@ -196,3 +196,8 @@ def test_hidden_size_gate(monkeypatch, hidden, converts):
         if "_unsloth_fp8_lora" in m.__dict__
     ]
     assert all(type(s).__name__ == "Int8LoRABaseState" for s in states) and bool(states) is converts
+
+
+def test_fp16_activations_need_loss_scaling():
+    assert P.grad_scaler_kind("int8_lora_rotated", torch.float16) == "GradScaler"
+    assert P.grad_scaler_kind("int8_lora_rotated", torch.bfloat16) == "none"

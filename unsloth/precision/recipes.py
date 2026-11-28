@@ -647,6 +647,7 @@ _add(
         fwd = GemmPolicy(_op("int8", "row", rht = True), _op("int8", "row", rht = True)),
         dgrad = GemmPolicy(_op("int8", "row"), _op("int8", "row", rht = True)),
         hp_layers = _HP_FP8,
+        grad_scaler = "per_dtype",  # fp16 activations need loss scaling, as for fp8 LoRA
         input_dtypes = ("bf16", "fp16"),
         compile = "opaque",
         backend = "unsloth.kernels.int8_lora (UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
