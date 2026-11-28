@@ -319,7 +319,7 @@ def _tensor_args(t, GROUPS, STEPS, LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, 
 # Multi-tensor launches: one program per 256-element block of any weight in the launch, driven by
 # device tables of data pointers / sizes / (tensor, block) per program. Same op sequence per element
 # as the per-tensor kernels above, so the bits are bitsandbytes' too.
-@triton.jit
+@triton.jit(do_not_specialize = ["T"])
 def _adam8bit_multi_kernel(
     PTRS,  # int64 [6, T]: weight, gradient, state1, state2, absmax1, absmax2 data pointers
     NUMELS,  # int64 [T]
@@ -401,7 +401,7 @@ def _adam8bit_multi_kernel(
     tl.store(S2 + offs, q2.to(tl.uint8), valid)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["T"])
 def _adam32bit_multi_kernel(
     PTRS,  # int64 [4, T]: weight, gradient, state1, state2
     NUMELS,
@@ -471,7 +471,8 @@ def _spec(arg):
     if torch.is_tensor(arg):
         return (arg.dtype, arg.data_ptr() % 16 == 0)
     if isinstance(arg, int):
-        return (int, -(1 << 31) <= arg < (1 << 31))
+        # everything Triton may specialize an int on (== 1, % 16, width), do_not_specialize or not
+        return (int, -(1 << 31) <= arg < (1 << 31), arg == 1, arg % 16 == 0)
     return (type(arg),)
 
 

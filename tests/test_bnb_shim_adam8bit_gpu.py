@@ -360,8 +360,10 @@ def run(multi):
                               lr = 1e-3)
     for t in range(1, 13):
         for i, p in enumerate(ps):
-            # some weights miss a gradient on some steps
-            p.grad = None if (i == 1 and t % 4 == 0) else torch.randn(p.shape, generator = g0, device = dev).to(p.dtype)
+            # some weights miss a gradient on some steps; the bf16 launch starts with one weight and
+            # then grows (an int argument equal to 1 must not stay specialized)
+            skip = (i == 1 and t % 4 == 0) or (i == 0 and t == 1)
+            p.grad = None if skip else torch.randn(p.shape, generator = g0, device = dev).to(p.dtype)
         if t == 7:  # resume mid-run from its own checkpoint
             opt.load_state_dict(opt.state_dict())
         opt.param_groups[0]["lr"] = 1e-3 * (1 - t / 13)
