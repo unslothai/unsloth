@@ -177,14 +177,14 @@ def test_a_single_image_is_the_unbatched_call(pipe, monkeypatch):
     assert _maxabs(single[0], again[0]) == 0.0
 
 
-def test_the_anima_record_keeps_requests_serial_until_its_g2c_passes():
-    # Anima is held out of batching on every card: one chunk per image, and the route's adapter refuses it.
+def test_the_anima_record_keeps_requests_serial_without_a_card_verdict():
+    # No pipe, or a card without a verdict: one image per forward, adapter refuses.
     from core.inference import diffusion_families as families
     from core.inference.diffusion import _generation_chunks
     from core.inference.diffusion_batch_adapters import adapter_for
 
     record = next(f for f in families._FAMILIES if f.name == an.ANIMA_FAMILY_NAME)
-    assert record.batched_forward is False
+    assert record.batched_forward is None
     jobs = [("a", 1), ("a", 2), ("b", 3)]
     assert _generation_chunks(record, jobs, 4) == [[j] for j in jobs]
     assert adapter_for(record) is None

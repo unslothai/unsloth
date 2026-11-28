@@ -1833,6 +1833,9 @@ export const cs = {
       memoryAuto: "Automaticky",
       memoryLocked: "Nastaveno proměnnou UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Zadejte celé číslo od {min} do {max}.",
+      fileSizeLabel: "Limit velikosti souboru",
+      fileSizeDescription: "Největší soubor, který může jedno volání Pythonu nebo Terminálu v sandboxu zapsat. Zvyšte ho pro sestavení, která zapisují velké binární soubory. Platí od dalšího volání. Výchozí {defaultSize} MB.",
+      fileSizeLocked: "Nastaveno proměnnou UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Přístup byl odebrán ze složek (počet: {count}).",
       hostPrepLabel: "Nastavení správcem",
       prepPrepared: "Hotovo",
@@ -1879,6 +1882,7 @@ export const cs = {
       levelLow: "Nízká",
       levelHighShort:
         "Přidává izolaci operačního systému pro Python a Terminál",
+      editorMcpWarning: "{name} MCP spouští kód s oprávněními této aplikace mimo sandbox Unsloth, i když je úroveň sandboxu vysoká. Kód může přistupovat k souborům mimo váš projekt.",
       levelLowShort: "Pouze software. Rizikový kód se nejprve zeptá",
       levelFullAccessNote:
         "Úplný přístup vypíná sandbox. Toto nastavení začne znovu platit, když zvolíte jinou úroveň.",
@@ -2389,7 +2393,7 @@ export const cs = {
         details: {
           ask: "Ptá se před každým voláním nástroje, včetně kódu v terminálu a Pythonu, vyhledávání na webu, úprav souborů a nástrojů MCP. Nástroje spouštěné externím poskytovatelem se nepozastavují.",
           auto: "Běžná volání nástrojů provádí samo a ptá se jen tehdy, když akce vypadá riskantně, například čtení přihlašovacích údajů, zvyšování oprávnění nebo spouštění destruktivních příkazů.",
-          off: "Provádí každé volání nástroje bez ptaní. Kód v Pythonu a terminálu stále běží v sandboxu, který omezuje, ke kterým souborům ve vašem počítači má přístup. Bez funkčního sandboxu operačního systému se riskantní volání nejprve zeptají.",
+          off: "Povolené nástroje MCP používají oprávnění serveru a mohou se spustit bez potvrzení. Python a terminál používají zvolenou úroveň sandboxu. Riziková volání těchto nástrojů stále vyžadují potvrzení, pokud izolace na úrovni operačního systému není dostupná nebo je úroveň sandboxu nízká.",
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
       },
@@ -4123,6 +4127,9 @@ export const cs = {
         backendNone: "nedostupné",
         mediaImages: "Čte text a obrázky.",
         mediaText: "Čte pouze text.",
+        connectionImages: "Odesílat obrázky",
+        connectionImagesDescription:
+          "Přeposílat obrázky tomuto připojení. Jen pokud je vzdálený model čte: server jen pro text požadavek odmítne.",
         checking: "Kontrola…",
         notDownloaded: "Nestaženo · {size}",
         downloading: "Stahování…",
@@ -5438,6 +5445,9 @@ export const cs = {
       saveHistoryDescription: "Ukládá se pouze v tomto prohlížeči.",
       showPrompt: "Zobrazit prompt",
       showPromptDescription: "Zobrazit přesné pokyny odeslané modelu.",
+      keepNames: "Zachovat původní jména",
+      keepNamesDescription:
+        "Za každým jménem zobrazit jeho původní pravopis, např. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Neuloženo do historie: úložiště prohlížeče je plné.",

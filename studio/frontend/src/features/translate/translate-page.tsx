@@ -1191,13 +1191,15 @@ function OptionRow({
 
 function OptionsPopover() {
   const t = useT();
-  const { autoTranslate, saveHistory, showPrompt } = useTranslateStore(
-    useShallow((state) => ({
-      autoTranslate: state.prefs.autoTranslate,
-      saveHistory: state.prefs.saveHistory,
-      showPrompt: state.prefs.showPrompt,
-    })),
-  );
+  const { autoTranslate, saveHistory, showPrompt, keepNames } =
+    useTranslateStore(
+      useShallow((state) => ({
+        autoTranslate: state.prefs.autoTranslate,
+        saveHistory: state.prefs.saveHistory,
+        showPrompt: state.prefs.showPrompt,
+        keepNames: state.prefs.keepNames,
+      })),
+    );
   const setPrefs = useTranslateStore((state) => state.setPrefs);
   return (
     <Popover>
@@ -1249,6 +1251,18 @@ function OptionsPopover() {
               id={id}
               checked={showPrompt}
               onCheckedChange={(checked) => setPrefs({ showPrompt: checked })}
+            />
+          )}
+        </OptionRow>
+        <OptionRow
+          label={t("translate.options.keepNames")}
+          description={t("translate.options.keepNamesDescription")}
+        >
+          {(id) => (
+            <Switch
+              id={id}
+              checked={keepNames}
+              onCheckedChange={(checked) => setPrefs({ keepNames: checked })}
             />
           )}
         </OptionRow>
@@ -1439,6 +1453,7 @@ export function TranslatePage() {
       attempt.target === prefs.target &&
       attempt.mode === prefs.mode &&
       attempt.tone === prefs.tone &&
+      attempt.keepNames === prefs.keepNames &&
       attempt.custom === customPromptOf(prefs) &&
       attempt.modelKey === modelKey
     ) {

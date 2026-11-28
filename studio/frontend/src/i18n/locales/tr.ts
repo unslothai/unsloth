@@ -1828,6 +1828,9 @@ export const tr = {
       memoryAuto: "Otomatik",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB tarafından ayarlandı",
       memoryInvalid: "{min} ile {max} arasında bir tam sayı girin.",
+      fileSizeLabel: "Dosya boyutu sınırı",
+      fileSizeDescription: "Korumalı alandaki tek bir Python veya Terminal çağrısının yazabileceği en büyük dosya. Büyük ikili dosyalar yazan derlemeler için artırın. Bir sonraki çağrıdan itibaren geçerlidir. Varsayılan {defaultSize} MB.",
+      fileSizeLocked: "UNSLOTH_STUDIO_SANDBOX_FSIZE_MB tarafından ayarlandı",
       restored: "{count} klasörden erişim kaldırıldı.",
       hostPrepLabel: "Yönetici kurulumu",
       prepPrepared: "Tamamlandı",
@@ -1871,6 +1874,7 @@ export const tr = {
       levelHigh: "Yüksek",
       levelLow: "Düşük",
       levelHighShort: "Python ve Terminal'e işletim sistemi yalıtımı ekler",
+      editorMcpWarning: "{name} MCP, korumalı alan düzeyi yüksek olsa bile kodu uygulamanın izinleriyle Unsloth’un korumalı alanı dışında çalıştırır. Bu kod, projenizin dışındaki dosyalara erişebilir.",
       levelLowShort: "Yalnızca yazılım. Riskli kod önce onay ister",
       levelFullAccessNote:
         "Tam erişim korumalı alanı kapatır. Başka bir düzey seçtiğinizde bu ayar yeniden geçerli olur.",
@@ -2369,7 +2373,7 @@ export const tr = {
         details: {
           ask: "Terminal ve Python kodu, web aramaları, dosya düzenlemeleri ve MCP araçları dahil her araç çağrısından önce sorar. Harici bir sağlayıcının çalıştırdığı araçlar duraklatılmaz.",
           auto: "Rutin araç çağrılarını kendi başına çalıştırır ve yalnızca kimlik bilgilerini okumak, ayrıcalıkları yükseltmek veya yıkıcı komutlar çalıştırmak gibi riskli görünen bir eylemde sorar.",
-          off: "Her araç çağrısını sormadan çalıştırır. Python ve terminal kodu yine korumalı alanda çalışır; bu, bilgisayarınızda hangi dosyalara erişebileceklerini sınırlar. Çalışan bir işletim sistemi korumalı alanı yoksa riskli çağrılar önce onay ister.",
+          off: "Etkin MCP araçları sunucunun izinlerini kullanır ve onay istemeden çalışabilir. Python ve Terminal seçilen korumalı alan düzeyini kullanır. İşletim sistemi yalıtımı kullanılamıyorsa veya korumalı alan düzeyi düşükse bu araçların riskli çağrıları yine onay ister.",
           full: "Her araç çağrısını sormadan çalıştırır ve kod korumalı alanını kapatır; böylece Python ve terminal kodu, hesabınızın erişebildiği her dosyayı okuyabilir ve değiştirebilir.",
         },
       },
@@ -4104,6 +4108,9 @@ export const tr = {
         backendNone: "kullanılamıyor",
         mediaImages: "Metin ve görüntü okur.",
         mediaText: "Yalnızca metin okur.",
+        connectionImages: "Görselleri gönder",
+        connectionImagesDescription:
+          "Görselleri bu bağlantıya ilet. Yalnızca uzak model onları okuyorsa: yalnızca metin okuyan bir sunucu isteği reddeder.",
         checking: "Denetleniyor…",
         notDownloaded: "İndirilmedi · {size}",
         downloading: "İndiriliyor…",
@@ -5418,6 +5425,9 @@ export const tr = {
       saveHistoryDescription: "Yalnızca bu tarayıcıda saklanır.",
       showPrompt: "İstemi göster",
       showPromptDescription: "Modele gönderilen talimatların tam halini görün.",
+      keepNames: "Orijinal adları koru",
+      keepNamesDescription:
+        "Her adın ardından orijinal yazılışını gösterir, örneğin डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Geçmişe kaydedilmedi: tarayıcı depolama alanı dolu.",

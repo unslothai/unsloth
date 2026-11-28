@@ -1836,6 +1836,9 @@ export const vi = {
       memoryAuto: "Tự động",
       memoryLocked: "Được đặt bởi UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Nhập một số nguyên từ {min} đến {max}.",
+      fileSizeLabel: "Giới hạn kích thước tệp",
+      fileSizeDescription: "Tệp lớn nhất mà một lệnh gọi Python hoặc Terminal trong sandbox có thể ghi. Hãy tăng giới hạn này cho các bản build ghi tệp nhị phân lớn. Áp dụng từ lệnh gọi tiếp theo. Mặc định {defaultSize} MB.",
+      fileSizeLocked: "Được đặt bởi UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Đã gỡ quyền truy cập khỏi {count} thư mục.",
       hostPrepLabel: "Thiết lập của quản trị viên",
       prepPrepared: "Đã xong",
@@ -1879,6 +1882,7 @@ export const vi = {
       levelHigh: "Cao",
       levelLow: "Thấp",
       levelHighShort: "Thêm lớp cô lập hệ điều hành cho Python và Terminal",
+      editorMcpWarning: "{name} MCP chạy mã với quyền của ứng dụng bên ngoài sandbox của Unsloth, ngay cả khi chọn mức sandbox Cao. Mã này có thể truy cập các tệp bên ngoài dự án của bạn.",
       levelLowShort: "Chỉ phần mềm. Mã rủi ro sẽ hỏi trước",
       levelFullAccessNote:
         "Toàn quyền truy cập sẽ tắt sandbox. Cài đặt này sẽ áp dụng lại khi bạn chọn mức khác.",
@@ -2379,7 +2383,7 @@ export const vi = {
         details: {
           ask: "Hỏi trước mỗi lệnh gọi công cụ, bao gồm mã terminal và Python, tìm kiếm web, chỉnh sửa tệp và công cụ MCP. Các công cụ do nhà cung cấp bên ngoài chạy sẽ không bị tạm dừng.",
           auto: "Tự chạy các lệnh gọi công cụ thông thường và chỉ hỏi khi một thao tác có vẻ rủi ro, chẳng hạn đọc thông tin xác thực, nâng quyền hoặc chạy lệnh có tính phá hủy.",
-          off: "Chạy mọi lệnh gọi công cụ mà không hỏi. Mã Python và terminal vẫn chạy trong sandbox, giới hạn những tệp mà chúng có thể truy cập trên máy tính của bạn. Nếu không có sandbox hệ điều hành hoạt động, các lệnh gọi rủi ro sẽ hỏi trước.",
+          off: "Các công cụ MCP đang bật dùng quyền của máy chủ và có thể chạy mà không cần hỏi. Python và Terminal dùng mức sandbox đã chọn. Các lệnh gọi có rủi ro đến hai công cụ này vẫn cần được phê duyệt khi hệ điều hành không có tính năng cô lập hoặc khi chọn mức sandbox Thấp.",
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
       },
@@ -4106,6 +4110,9 @@ export const vi = {
         backendNone: "không khả dụng",
         mediaImages: "Đọc văn bản và hình ảnh.",
         mediaText: "Chỉ đọc văn bản.",
+        connectionImages: "Gửi hình ảnh",
+        connectionImagesDescription:
+          "Chuyển tiếp hình ảnh tới kết nối này. Chỉ khi mô hình từ xa đọc được: máy chủ chỉ đọc văn bản sẽ từ chối yêu cầu.",
         checking: "Đang kiểm tra…",
         notDownloaded: "Chưa tải xuống · {size}",
         downloading: "Đang tải xuống…",
@@ -5416,6 +5423,9 @@ export const vi = {
       saveHistoryDescription: "Chỉ lưu trong trình duyệt này.",
       showPrompt: "Hiển thị lời nhắc",
       showPromptDescription: "Xem hướng dẫn chính xác được gửi đến mô hình.",
+      keepNames: "Giữ tên gốc",
+      keepNamesDescription:
+        "Hiển thị cách viết gốc của mỗi tên ngay sau tên đó, ví dụ डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Chưa lưu vào Lịch sử: bộ nhớ của trình duyệt đã đầy.",

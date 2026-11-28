@@ -1843,6 +1843,9 @@ export const pl = {
       memoryAuto: "Automatycznie",
       memoryLocked: "Ustawione przez UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Wpisz liczbę całkowitą od {min} do {max}.",
+      fileSizeLabel: "Limit rozmiaru pliku",
+      fileSizeDescription: "Największy plik, jaki może zapisać jedno wywołanie Pythona lub Terminala w piaskownicy. Zwiększ go dla kompilacji zapisujących duże pliki binarne. Obowiązuje od następnego wywołania. Domyślnie {defaultSize} MB.",
+      fileSizeLocked: "Ustawione przez UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Odebrano dostęp do folderów (liczba: {count}).",
       hostPrepLabel: "Konfiguracja administratora",
       prepPrepared: "Gotowe",
@@ -1889,6 +1892,7 @@ export const pl = {
       levelHigh: "Wysoki",
       levelLow: "Niski",
       levelHighShort: "Dodaje izolację systemową do Python i Terminal",
+      editorMcpWarning: "{name} MCP uruchamia kod z uprawnieniami tej aplikacji poza piaskownicą Unsloth, nawet przy wysokim poziomie izolacji. Kod może uzyskać dostęp do plików spoza projektu.",
       levelLowShort: "Tylko programowa. Ryzykowny kod najpierw pyta o zgodę",
       levelFullAccessNote:
         "Pełny dostęp wyłącza piaskownicę. To ustawienie zacznie znów obowiązywać po wybraniu innego poziomu.",
@@ -2400,7 +2404,7 @@ export const pl = {
         details: {
           ask: "Pyta przed każdym wywołaniem narzędzia, w tym kodu w terminalu i Pythonie, wyszukiwań w sieci, edycji plików i narzędzi MCP. Narzędzia uruchamiane przez zewnętrznego dostawcę nie są wstrzymywane.",
           auto: "Samodzielnie wykonuje rutynowe wywołania narzędzi i pyta tylko wtedy, gdy działanie wygląda na ryzykowne, np. odczyt poświadczeń, podnoszenie uprawnień lub uruchamianie destrukcyjnych poleceń.",
-          off: "Wykonuje każde wywołanie narzędzia bez pytania. Kod w Pythonie i terminalu nadal działa w piaskownicy, która ogranicza dostęp do plików na komputerze. Bez działającej piaskownicy systemu ryzykowne wywołania najpierw pytają o zgodę.",
+          off: "Włączone narzędzia MCP używają uprawnień serwera i mogą działać bez pytania o zgodę. Python i Terminal korzystają z wybranego poziomu piaskownicy. Ryzykowne wywołania tych narzędzi nadal wymagają zgody, gdy izolacja systemowa jest niedostępna lub wybrano niski poziom piaskownicy.",
           full: "Wykonuje każde wywołanie narzędzia bez pytania i wyłącza piaskownicę kodu, więc kod w Pythonie i terminalu może odczytywać i zmieniać każdy plik dostępny dla Twojego konta.",
         },
       },
@@ -4152,6 +4156,9 @@ export const pl = {
         backendNone: "niedostępne",
         mediaImages: "Odczytuje tekst i obrazy.",
         mediaText: "Odczytuje tylko tekst.",
+        connectionImages: "Wysyłaj obrazy",
+        connectionImagesDescription:
+          "Przekazuj obrazy do tego połączenia. Tylko jeśli zdalny model je czyta: serwer obsługujący tylko tekst odrzuci żądanie.",
         checking: "Sprawdzanie…",
         notDownloaded: "Niepobrany · {size}",
         downloading: "Pobieranie…",
@@ -5469,6 +5476,9 @@ export const pl = {
       saveHistoryDescription: "Przechowywana tylko w tej przeglądarce.",
       showPrompt: "Pokaż prompt",
       showPromptDescription: "Zobacz dokładne instrukcje wysyłane do modelu.",
+      keepNames: "Zachowaj oryginalne nazwy",
+      keepNamesDescription:
+        "Pokazuj oryginalną pisownię po każdym imieniu, np. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Nie zapisano w historii: pamięć przeglądarki jest pełna.",

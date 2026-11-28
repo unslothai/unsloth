@@ -116,7 +116,13 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import (
+    first_token_timeout,
+    sandbox_file_size_limit,
+    sandbox_memory_limit,
+    systemone_settings,
+    tool_result_limit,
+)
 from utils import video_cpu_settings
 from utils.download_speed_limit import (
     DownloadSpeedLimitUnavailableError,
@@ -874,6 +880,7 @@ class SystemOneSettingsPayload(BaseModel):
     device: Optional[str] = None
     backend: Optional[str] = None
     native_ctx: Optional[int] = None
+    input_modalities: Optional[list[str]] = None
     expected_enabled: Optional[bool] = None
     expected_model: Optional[str] = None
 
@@ -2028,7 +2035,14 @@ def _systemone_values(payload: SystemOneSettingsPayload) -> dict[str, Any]:
     try:
         return systemone_settings.validate(
             **payload.model_dump(
-                include = {"enabled", "model", "device", "backend", "native_ctx"},
+                include = {
+                    "enabled",
+                    "model",
+                    "device",
+                    "backend",
+                    "native_ctx",
+                    "input_modalities",
+                },
                 exclude_none = True,
             )
         )
@@ -5999,6 +6013,16 @@ class SandboxMemoryStatus(BaseModel):
     locked_by_environment: bool
 
 
+class SandboxFileSizeStatus(BaseModel):
+    # MB one file a sandboxed run writes can reach (RLIMIT_FSIZE; macOS and Linux only).
+    limit_mb: int
+    saved_mb: int
+    default_mb: int
+    min_mb: int
+    max_mb: int
+    locked_by_environment: bool
+
+
 class SandboxStatusResponse(BaseModel):
     platform: str
     python: SandboxToolStatus
@@ -6007,6 +6031,8 @@ class SandboxStatusResponse(BaseModel):
     windows: Optional[SandboxWindowsStatus] = None
     # None only if the status could not be built.
     memory: Optional[SandboxMemoryStatus] = None
+    # None on Windows, which has no per-file size limit.
+    file_size: Optional[SandboxFileSizeStatus] = None
     setup: Optional[SandboxSetupStatus] = None
     checked_at: float
     grants_restored: Optional[int] = None
@@ -6023,6 +6049,11 @@ class SandboxSettingsPayload(BaseModel):
         le = sandbox_memory_limit.MAX_MEMORY_LIMIT_GB,
     )
     memory_limit_auto: Optional[Literal[True]] = None
+    file_size_limit_mb: Optional[StrictInt] = Field(
+        default = None,
+        ge = sandbox_file_size_limit.MIN_FILE_SIZE_LIMIT_MB,
+        le = sandbox_file_size_limit.MAX_FILE_SIZE_LIMIT_MB,
+    )
 
 
 class SandboxSetupPayload(BaseModel):
@@ -6227,13 +6258,29 @@ def _sandbox_memory_status() -> Optional[SandboxMemoryStatus]:
     )
 
 
+def _sandbox_file_size_status() -> Optional[SandboxFileSizeStatus]:
+    import sys
+    if sys.platform == "win32":
+        return None
+    return SandboxFileSizeStatus(
+        limit_mb = sandbox_file_size_limit.effective_file_size_limit_mb(),
+        saved_mb = sandbox_file_size_limit.saved_file_size_limit_mb(),
+        default_mb = sandbox_file_size_limit.DEFAULT_FILE_SIZE_LIMIT_MB,
+        min_mb = sandbox_file_size_limit.MIN_FILE_SIZE_LIMIT_MB,
+        max_mb = sandbox_file_size_limit.MAX_FILE_SIZE_LIMIT_MB,
+        locked_by_environment = sandbox_file_size_limit.locked_by_environment(),
+    )
+
+
 def _for_request(status: SandboxStatusResponse, request: Request) -> SandboxStatusResponse:
     """Blocking. The setup button: a direct local request, or a Linux install that prompts nobody here."""
     from core.inference import sandbox_setup_plan
     from utils.client_ip import is_direct_local_request
 
     # Read per request, not from the probe cache: a save must show at once.
-    status = status.model_copy(update = {"memory": _sandbox_memory_status()})
+    status = status.model_copy(
+        update = {"memory": _sandbox_memory_status(), "file_size": _sandbox_file_size_status()}
+    )
     setup = status.setup
     if setup is None:
         return status
@@ -6280,6 +6327,9 @@ def _sandbox_apply(payload: SandboxSettingsPayload) -> Optional[int]:
         sandbox_memory_limit.set_memory_limit_gb(payload.memory_limit_gb)
         # The route refuses it beside the Windows switches, so the MXC state below is untouched.
         return None
+    if payload.file_size_limit_mb is not None:
+        sandbox_file_size_limit.set_file_size_limit_mb(payload.file_size_limit_mb)
+        return None
     if payload.allow_dacl_fallback is not None:
         saved.set_dacl_fallback_setting(payload.allow_dacl_fallback)
     if payload.persistent_read_grants is not None:
@@ -6325,8 +6375,8 @@ async def update_sandbox_settings(
     # Host policy: changed at the console, never by an API key the owner happens to hold.
     _ui_session: None = Depends(_require_ui_session),
 ) -> SandboxStatusResponse:
-    """Save the Windows MXC opt-in, the persistent read grant choice, or the memory limit. Applies to the next
-    launch."""
+    """Save the Windows MXC opt-in, the persistent read grant choice, the memory limit or the file size limit.
+    Applies to the next launch."""
     import sys
 
     from core.inference import mxc_policy, mxc_read_grants
@@ -6340,12 +6390,24 @@ async def update_sandbox_settings(
         raise HTTPException(status_code = 422, detail = "Send a memory limit or auto, not both.")
     if memory_fields and windows_fields:
         raise HTTPException(status_code = 422, detail = "Save the memory limit on its own.")
+    file_size_fields = payload.file_size_limit_mb is not None
+    if file_size_fields and (memory_fields or windows_fields):
+        raise HTTPException(status_code = 422, detail = "Save the file size limit on its own.")
     if memory_fields and sandbox_memory_limit.locked_by_environment():
         raise HTTPException(
             status_code = 409,
             detail = f"{sandbox_memory_limit.MEMORY_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
         )
-    if sys.platform != "win32" and not memory_fields:
+    if file_size_fields and sys.platform == "win32":
+        raise HTTPException(
+            status_code = 409, detail = "The file size limit only applies on macOS and Linux."
+        )
+    if file_size_fields and sandbox_file_size_limit.locked_by_environment():
+        raise HTTPException(
+            status_code = 409,
+            detail = f"{sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV} is set in the environment Unsloth runs in, which decides this.",
+        )
+    if sys.platform != "win32" and not (memory_fields or file_size_fields):
         raise HTTPException(status_code = 409, detail = "These settings only apply on Windows.")
     locks = (
         (payload.allow_dacl_fallback, mxc_policy.DACL_FALLBACK_ENV),
@@ -6369,12 +6431,13 @@ async def update_sandbox_settings(
             log = logger,
         ) from exc
     logger.info(
-        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s memory_auto=%s",
+        "settings.sandbox_updated subject=%s dacl=%s grants=%s memory_gb=%s memory_auto=%s file_size_mb=%s",
         current_subject,
         payload.allow_dacl_fallback,
         payload.persistent_read_grants,
         payload.memory_limit_gb,
         payload.memory_limit_auto,
+        payload.file_size_limit_mb,
     )
     status = await asyncio.to_thread(_for_request, status, request)
     return status.model_copy(update = {"grants_restored": restored})

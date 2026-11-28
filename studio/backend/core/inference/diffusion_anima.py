@@ -187,6 +187,35 @@ def batch_rows_disabled() -> bool:
     return (os.environ.get(BATCH_ROWS_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
+def prompt_length_runs(pipe: Any, jobs: list) -> list:
+    """``jobs`` split into consecutive runs whose prompts condition to the same length: the rows ``_row_groups`` fuses
+    into one call. The engine chunks each run on its own, so every batched call keeps its own encode, denoise and
+    decode phase (a chunk holding two calls would reload the text encoder for the second and never release it).
+    Unmeasurable or switched off: one job per run, as before batching."""
+    alone = [[job] for job in jobs]
+    if len(jobs) < 2 or batch_rows_disabled():
+        return alone
+    try:
+        minimum = int(getattr(pipe.text_conditioner.config, "min_sequence_length", 0) or 0)
+        tokenizer = pipe.t5_tokenizer
+        runs: list = []
+        last = None
+        for job in jobs:
+            ids = tokenizer(
+                job[0] if job[0] is not None else "", truncation = True, max_length = _T5_MAX_LENGTH
+            )
+            length = max(len(ids["input_ids"]), minimum)
+            if runs and length == last:
+                runs[-1].append(job)
+            else:
+                runs.append([job])
+            last = length
+        return runs
+    except Exception as exc:  # noqa: BLE001 -- unmeasurable: one image per chunk, as before
+        logger.info("Anima rows chunk one by one (tokenize: %s)", exc)
+        return alone
+
+
 def _pad_rows(tensors: list) -> Any:
     import torch
     import torch.nn.functional as F

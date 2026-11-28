@@ -1686,6 +1686,9 @@ export const fr = {
       memoryAuto: "Auto",
       memoryLocked: "Défini par UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Saisissez un nombre entier de {min} à {max}.",
+      fileSizeLabel: "Limite de taille de fichier",
+      fileSizeDescription: "Plus gros fichier qu'un appel Python ou Terminal en sandbox peut écrire. Augmentez-la pour les builds qui écrivent de gros binaires. S'applique dès le prochain appel. Par défaut {defaultSize} Mo.",
+      fileSizeLocked: "Défini par UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Accès retiré pour {count} dossiers.",
       hostPrepLabel: "Configuration administrateur",
       prepPrepared: "Terminé",
@@ -1722,6 +1725,7 @@ export const fr = {
       levelHigh: "Élevé",
       levelLow: "Faible",
       levelHighShort: "Python et le Terminal tournent aussi dans le bac à sable du système",
+      editorMcpWarning: "{name} MCP exécute le code avec les autorisations de l’application, hors du bac à sable d’Unsloth, même au niveau élevé. Ce code peut accéder à des fichiers en dehors de votre projet.",
       levelLowShort: "Bac à sable logiciel uniquement. Le code risqué demande d'abord",
       levelFullAccessNote: "L'Accès complet désactive le bac à sable. Ce réglage s'applique de nouveau quand vous choisissez un autre niveau.",
       learnMore: "En savoir plus",
@@ -2471,7 +2475,7 @@ export const fr = {
           auto:
             "Exécute seul les appels d'outils courants et ne demande votre accord que lorsqu'une action semble risquée, comme lire des identifiants, élever des privilèges ou lancer des commandes destructrices.",
           off:
-            "Exécute chaque appel d'outil sans demander. Le code Python et terminal reste exécuté dans le bac à sable, qui limite les fichiers auxquels il peut accéder sur votre ordinateur. Sans bac à sable du système fonctionnel, les appels risqués demandent d'abord.",
+            "Les outils MCP activés utilisent les autorisations de leur serveur et peuvent s’exécuter sans demander d’approbation. Python et le terminal utilisent le niveau de bac à sable sélectionné. Leurs appels risqués nécessitent toujours une approbation si l’isolation du système est indisponible ou si le niveau bas est sélectionné.",
           full:
             "Exécute chaque appel d'outil sans demander et désactive le bac à sable du code : le code Python et terminal peut lire et modifier tout fichier accessible à votre compte.",
         },
@@ -3943,6 +3947,9 @@ export const fr = {
         backendNone: "indisponible",
         mediaImages: "Lit le texte et les images.",
         mediaText: "Lit uniquement le texte.",
+        connectionImages: "Envoyer les images",
+        connectionImagesDescription:
+          "Transmet les images à cette connexion. Seulement si le modèle distant les lit : un serveur texte seul refuse la requête.",
         checking: "Vérification…",
         notDownloaded: "Non téléchargé · {size}",
         downloading: "Téléchargement…",
@@ -5162,6 +5169,9 @@ export const fr = {
       saveHistoryDescription: "Conservé uniquement dans ce navigateur.",
       showPrompt: "Afficher le prompt",
       showPromptDescription: "Voir les instructions exactes envoyées au modèle.",
+      keepNames: "Conserver les noms d'origine",
+      keepNamesDescription:
+        "Affiche l'orthographe d'origine de chaque nom après celui-ci, par exemple डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Non enregistrée dans l'historique : le stockage du navigateur est plein.",

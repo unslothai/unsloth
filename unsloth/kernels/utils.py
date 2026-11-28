@@ -124,6 +124,17 @@ def is_rdna():
     )
 
 
+@functools.lru_cache(1)
+def max_num_warps():
+    # 1024 threads per block: 16 warps on every wave64 AMD arch (gfx906 / gfx90a too, not only is_cdna's).
+    if not is_hip():
+        return 32
+    try:
+        return 1024 // int(triton.runtime.driver.active.get_current_target().warp_size)
+    except Exception:
+        return 16
+
+
 def calculate_settings(
     n: int,
 ) -> (

@@ -1555,6 +1555,9 @@ export const it = {
       memoryAuto: "Automatico",
       memoryLocked: "Impostato da UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Inserisci un numero intero da {min} a {max}.",
+      fileSizeLabel: "Limite dimensione file",
+      fileSizeDescription: "File più grande che una chiamata Python o Terminal nella sandbox può scrivere. Aumentalo per le build che scrivono binari grandi. Si applica dalla chiamata successiva. Predefinito {defaultSize} MB.",
+      fileSizeLocked: "Impostato da UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Accesso rimosso da {count} cartelle.",
       hostPrepLabel: "Configurazione amministratore",
       prepPrepared: "Fatto",
@@ -1591,6 +1594,7 @@ export const it = {
       levelHigh: "Alto",
       levelLow: "Basso",
       levelHighShort: "Python e Terminale girano anche nella sandbox del sistema",
+      editorMcpWarning: "{name} MCP esegue codice con le autorizzazioni dell’app, fuori dalla sandbox di Unsloth, anche con il livello Alto attivo. Il codice può accedere a file esterni al progetto.",
       levelLowShort: "Solo sandbox software. Il codice rischioso chiede prima",
       levelFullAccessNote: "Accesso completo disattiva la sandbox. Questa impostazione torna valida quando scegli un altro livello.",
       learnMore: "Scopri di più",
@@ -2089,7 +2093,7 @@ export const it = {
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:
-            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
+            "Gli strumenti MCP abilitati usano le autorizzazioni del server e possono essere eseguiti senza chiedere l’approvazione. Python e il terminale usano il livello di sandbox selezionato. Le chiamate rischiose a Python e al terminale richiedono comunque l’approvazione se l’isolamento del sistema operativo non è disponibile o si seleziona il livello Basso.",
           full:
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
@@ -3810,6 +3814,9 @@ export const it = {
         backendNone: "non disponibile",
         mediaImages: "Legge testo e immagini.",
         mediaText: "Legge solo testo.",
+        connectionImages: "Invia immagini",
+        connectionImagesDescription:
+          "Inoltra le immagini a questa connessione. Solo se il modello remoto le legge: un server solo testo rifiuta la richiesta.",
         checking: "Verifica in corso…",
         notDownloaded: "Non scaricato · {size}",
         downloading: "Download in corso…",
@@ -5147,6 +5154,9 @@ export const it = {
       saveHistoryDescription: "Conservata solo in questo browser.",
       showPrompt: "Mostra prompt",
       showPromptDescription: "Vedi le istruzioni esatte inviate al modello.",
+      keepNames: "Mantieni i nomi originali",
+      keepNamesDescription:
+        "Mostra l'ortografia originale di ogni nome dopo di esso, ad esempio डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Non salvata nella cronologia: lo spazio di archiviazione del browser è pieno.",

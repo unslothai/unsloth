@@ -1679,6 +1679,9 @@ export const zhCN = {
       memoryAuto: "自动",
       memoryLocked: "由 UNSLOTH_STUDIO_SANDBOX_AS_GB 设置",
       memoryInvalid: "请输入 {min} 到 {max} 之间的整数。",
+      fileSizeLabel: "文件大小上限",
+      fileSizeDescription: "沙盒中一次 Python 或 Terminal 调用可写入的最大文件。对于会写出大型二进制文件的构建，请调高此值。从下一次调用起生效。默认 {defaultSize} MB。",
+      fileSizeLocked: "由 UNSLOTH_STUDIO_SANDBOX_FSIZE_MB 设置",
       restored: "已移除 {count} 个文件夹的访问权限。",
       hostPrepLabel: "管理员设置",
       prepPrepared: "已完成",
@@ -1716,6 +1719,7 @@ export const zhCN = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "Python 和终端还会在操作系统沙盒中运行",
+      editorMcpWarning: "即使沙盒级别设为高，{name} MCP 也会在 Unsloth 沙盒之外以该应用的权限运行代码。这些代码可以访问项目之外的文件。",
       levelLowShort: "仅软件沙盒。有风险的代码会先询问",
       levelFullAccessNote: "完全访问会关闭沙盒。选择其他级别后，此设置将重新生效。",
       learnMore: "了解详情",
@@ -2419,7 +2423,7 @@ export const zhCN = {
           auto:
             "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
           off:
-            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。没有可用的操作系统沙盒时，有风险的调用会先询问。",
+            "已启用的 MCP 工具使用其服务器的权限，可能无需确认即可运行。Python 和终端使用所选的沙盒级别。操作系统隔离不可用或沙盒级别设为低时，这两种工具的高风险调用仍需确认。",
           full:
             "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。",
         },
@@ -3840,6 +3844,9 @@ export const zhCN = {
         backendNone: "不可用",
         mediaImages: "可读取文本和图片。",
         mediaText: "仅读取文本。",
+        connectionImages: "发送图片",
+        connectionImagesDescription:
+          "将图片转发到此连接。仅在远程模型能读取图片时开启。纯文本服务器会拒绝该请求。",
         checking: "正在检查…",
         notDownloaded: "未下载 · {size}",
         downloading: "正在下载…",
@@ -4978,6 +4985,9 @@ export const zhCN = {
       saveHistoryDescription: "仅保存在此浏览器中。",
       showPrompt: "显示提示词",
       showPromptDescription: "查看发送给模型的确切指令。",
+      keepNames: "保留原名",
+      keepNamesDescription:
+        "在每个名字后显示其原始拼写，例如 डेविन वे (Devin Way)。",
     },
     history: {
       notSaved: "未保存到历史记录：浏览器存储空间已满。",

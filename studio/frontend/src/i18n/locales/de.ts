@@ -1686,6 +1686,9 @@ export const de = {
       memoryAuto: "Automatisch",
       memoryLocked: "Festgelegt durch UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Gib eine ganze Zahl von {min} bis {max} ein.",
+      fileSizeLabel: "Dateigrößenlimit",
+      fileSizeDescription: "Größte Datei, die ein einzelner Python- oder Terminal-Aufruf in der Sandbox schreiben kann. Für Builds mit großen Binärdateien erhöhen. Gilt ab dem nächsten Aufruf. Standard {defaultSize} MB.",
+      fileSizeLocked: "Festgelegt durch UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Zugriff auf {count} Ordner entfernt.",
       hostPrepLabel: "Administrator-Einrichtung",
       prepPrepared: "Erledigt",
@@ -1722,6 +1725,7 @@ export const de = {
       levelHigh: "Hoch",
       levelLow: "Niedrig",
       levelHighShort: "Python und Terminal laufen zusätzlich in der OS-Sandbox",
+      editorMcpWarning: "{name} MCP führt Code mit den Berechtigungen der App außerhalb der Unsloth-Sandbox aus, auch auf der Sandbox-Stufe Hoch. Der Code kann auf Dateien außerhalb deines Projekts zugreifen.",
       levelLowShort: "Nur Software-Sandboxing. Riskanter Code fragt zuerst",
       levelFullAccessNote: "Vollzugriff schaltet die Sandbox aus. Diese Einstellung gilt wieder, sobald du eine andere Stufe wählst.",
       learnMore: "Weitere Informationen",
@@ -2473,7 +2477,7 @@ export const de = {
           auto:
             "Führt gewöhnliche Tool-Aufrufe selbst aus und fragt nur nach, wenn eine Aktion riskant wirkt, etwa beim Lesen von Zugangsdaten, beim Erhöhen von Rechten oder bei zerstörerischen Befehlen.",
           off:
-            "Führt jeden Tool-Aufruf ohne Nachfrage aus. Python- und Terminal-Code läuft weiterhin in der Sandbox, die begrenzt, auf welche Dateien deines Computers er zugreifen kann. Ohne funktionierende OS-Sandbox fragen riskante Aufrufe zuerst.",
+            "Aktivierte MCP-Tools nutzen die Berechtigungen ihres Servers und können ohne Rückfrage laufen. Python und Terminal verwenden die gewählte Sandbox-Stufe. Riskante Aufrufe dieser Tools erfordern weiterhin eine Bestätigung, wenn keine Betriebssystem-Isolation verfügbar oder die Sandbox-Stufe Niedrig gewählt ist.",
           full:
             "Führt jeden Tool-Aufruf ohne Nachfrage aus und schaltet die Code-Sandbox ab, sodass Python- und Terminal-Code jede Datei lesen und ändern kann, auf die dein Konto zugreifen kann.",
         },
@@ -3943,6 +3947,9 @@ export const de = {
         backendNone: "nicht verfügbar",
         mediaImages: "Liest Text und Bilder.",
         mediaText: "Liest nur Text.",
+        connectionImages: "Bilder senden",
+        connectionImagesDescription:
+          "Bilder an diese Verbindung weiterleiten. Nur wenn das entfernte Modell sie liest: ein reiner Textserver lehnt die Anfrage ab.",
         checking: "Wird geprüft…",
         notDownloaded: "Nicht heruntergeladen · {size}",
         downloading: "Wird heruntergeladen…",
@@ -5152,6 +5159,9 @@ export const de = {
       saveHistoryDescription: "Wird nur in diesem Browser gespeichert.",
       showPrompt: "Prompt anzeigen",
       showPromptDescription: "Genaue Anweisungen an das Modell anzeigen.",
+      keepNames: "Originalnamen beibehalten",
+      keepNamesDescription:
+        "Zeigt nach jedem Namen seine Originalschreibweise, z. B. डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Nicht im Verlauf gespeichert: Der Browserspeicher ist voll.",

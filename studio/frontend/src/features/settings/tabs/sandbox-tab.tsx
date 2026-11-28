@@ -34,6 +34,7 @@ import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 
 import { toast } from "sonner";
 import {
   type HostPrepJob,
+  type SandboxFileSizeStatus,
   type SandboxMemoryStatus,
   type SandboxSettingsUpdate,
   type SandboxStatus,
@@ -242,6 +243,98 @@ function MemoryLimitRow({
   );
 }
 
+function FileSizeLimitRow({
+  fileSize,
+  saving,
+  error,
+  onSave,
+}: {
+  fileSize: SandboxFileSizeStatus;
+  saving: boolean;
+  error: string | null;
+  onSave: (fileSizeLimitMb: number) => void;
+}) {
+  const t = useT();
+  const locked = fileSize.lockedByEnvironment;
+  const [draft, setDraft] = useState(
+    String(locked ? fileSize.limitMb : fileSize.savedMb),
+  );
+  const [invalid, setInvalid] = useState(false);
+  const submit = () => {
+    const value = Number(draft.trim());
+    if (
+      !Number.isInteger(value) ||
+      value < fileSize.minMb ||
+      value > fileSize.maxMb
+    ) {
+      setInvalid(true);
+      return;
+    }
+    setInvalid(false);
+    if (value !== fileSize.savedMb) onSave(value);
+  };
+  const note = locked
+    ? t("settings.sandbox.fileSizeLocked")
+    : invalid
+      ? t("settings.sandbox.memoryInvalid", {
+          min: String(fileSize.minMb),
+          max: String(fileSize.maxMb),
+        })
+      : error;
+  return (
+    <SettingsRow
+      label={t("settings.sandbox.fileSizeLabel")}
+      description={t("settings.sandbox.fileSizeDescription", {
+        defaultSize: String(fileSize.defaultMb),
+      })}
+      below={
+        note ? (
+          <span
+            className={cn(
+              NOTE_CLASS,
+              locked ? "text-muted-foreground" : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <div className="flex items-center gap-3">
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="number"
+            min={fileSize.minMb}
+            max={fileSize.maxMb}
+            step={1}
+            value={draft}
+            disabled={locked}
+            aria-label={t("settings.sandbox.fileSizeLabel")}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submit();
+            }}
+            className="h-control w-24"
+          />
+          <span className="text-xs font-medium text-muted-foreground">
+            MB
+          </span>
+        </div>
+        {locked ? null : (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={saving}
+            onClick={submit}
+          >
+            {saving ? t("common.saving") : t("common.save")}
+          </Button>
+        )}
+      </div>
+    </SettingsRow>
+  );
+}
+
 const SANDBOX_LEVEL_TEXT = {
   off: { name: "settings.sandbox.levelOff", detail: "settings.sandbox.levelFullAccessNote" },
   low: { name: "settings.sandbox.levelLow", detail: "settings.sandbox.levelLowDetail" },
@@ -433,6 +526,8 @@ function OsSandboxSections() {
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The limit rows share one save: a failed file size save shows under its own row only.
+  const [lastSaveWasFileSize, setLastSaveWasFileSize] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [restored, setRestored] = useState<number | null>(null);
@@ -811,9 +906,27 @@ function OsSandboxSections() {
                     key={`${status.memory.savedGb}:${status.memory.limitGb}:${status.memory.auto}`}
                     memory={status.memory}
                     saving={saving}
-                    error={actionError}
-                    onSave={(memoryLimitGb) => void save({ memoryLimitGb })}
-                    onAuto={() => void save({ memoryLimitAuto: true })}
+                    error={lastSaveWasFileSize ? null : actionError}
+                    onSave={(memoryLimitGb) => {
+                      setLastSaveWasFileSize(false);
+                      void save({ memoryLimitGb });
+                    }}
+                    onAuto={() => {
+                      setLastSaveWasFileSize(false);
+                      void save({ memoryLimitAuto: true });
+                    }}
+                  />
+                ) : null}
+                {status.fileSize ? (
+                  <FileSizeLimitRow
+                    key={`${status.fileSize.savedMb}:${status.fileSize.limitMb}`}
+                    fileSize={status.fileSize}
+                    saving={saving}
+                    error={lastSaveWasFileSize ? actionError : null}
+                    onSave={(fileSizeLimitMb) => {
+                      setLastSaveWasFileSize(true);
+                      void save({ fileSizeLimitMb });
+                    }}
                   />
                 ) : null}
               </>

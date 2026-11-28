@@ -1684,6 +1684,9 @@ export const ptBR = {
       memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Digite um número inteiro de {min} a {max}.",
+      fileSizeLabel: "Limite de tamanho de arquivo",
+      fileSizeDescription: "Maior arquivo que uma chamada de Python ou Terminal no sandbox pode gravar. Aumente para builds que gravam binários grandes. Vale a partir da próxima chamada. Padrão {defaultSize} MB.",
+      fileSizeLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Acesso removido de {count} pastas.",
       hostPrepLabel: "Configuração de administrador",
       prepPrepared: "Concluído",
@@ -1720,6 +1723,7 @@ export const ptBR = {
       levelHigh: "Alto",
       levelLow: "Baixo",
       levelHighShort: "Python e Terminal também rodam na sandbox do sistema",
+      editorMcpWarning: "O MCP de {name} executa código com as permissões do app, fora da sandbox do Unsloth, mesmo com o nível Alto ativado. O código pode acessar arquivos fora do seu projeto.",
       levelLowShort: "Só sandbox de software. Código arriscado pergunta antes",
       levelFullAccessNote: "Acesso total desliga o sandbox. Esta configuração volta a valer quando você escolher outro nível.",
       learnMore: "Saiba mais",
@@ -2460,7 +2464,7 @@ export const ptBR = {
           auto:
             "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
           off:
-            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar. Sem um sandbox do sistema funcionando, chamadas arriscadas perguntam antes.",
+            "As ferramentas MCP ativadas usam as permissões do servidor e podem ser executadas sem pedir aprovação. O Python e o Terminal usam o nível de sandbox selecionado. Chamadas arriscadas a essas ferramentas ainda pedem aprovação quando o isolamento do sistema operacional não está disponível ou o nível Baixo está selecionado.",
           full:
             "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa.",
         },
@@ -3910,6 +3914,9 @@ export const ptBR = {
         backendNone: "indisponível",
         mediaImages: "Lê texto e imagens.",
         mediaText: "Lê apenas texto.",
+        connectionImages: "Enviar imagens",
+        connectionImagesDescription:
+          "Encaminha imagens para esta conexão. Só se o modelo remoto as lê: um servidor somente de texto recusa a requisição.",
         checking: "Verificando…",
         notDownloaded: "Não baixado · {size}",
         downloading: "Baixando…",
@@ -5107,6 +5114,9 @@ export const ptBR = {
       saveHistoryDescription: "Fica guardado apenas neste navegador.",
       showPrompt: "Mostrar prompt",
       showPromptDescription: "Veja as instruções exatas enviadas ao modelo.",
+      keepNames: "Manter nomes originais",
+      keepNamesDescription:
+        "Mostra a grafia original de cada nome depois dele, como डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Não foi salva no histórico: o armazenamento do navegador está cheio.",

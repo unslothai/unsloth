@@ -1685,6 +1685,9 @@ export const es = {
       memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Introduce un número entero de {min} a {max}.",
+      fileSizeLabel: "Límite de tamaño de archivo",
+      fileSizeDescription: "Archivo más grande que puede escribir una llamada de Python o Terminal en el sandbox. Auméntalo para compilaciones que escriben binarios grandes. Se aplica desde la próxima llamada. Predeterminado: {defaultSize} MB.",
+      fileSizeLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Se quitó el acceso a {count} carpetas.",
       hostPrepLabel: "Configuración de administrador",
       prepPrepared: "Listo",
@@ -1721,6 +1724,7 @@ export const es = {
       levelHigh: "Alto",
       levelLow: "Bajo",
       levelHighShort: "Python y Terminal también se ejecutan en la sandbox del sistema",
+      editorMcpWarning: "{name} MCP ejecuta código con los permisos de la app fuera del entorno aislado de Unsloth, incluso con el nivel de aislamiento alto. El código puede acceder a archivos fuera de tu proyecto.",
       levelLowShort: "Solo sandbox de software. El código riesgoso pregunta antes",
       levelFullAccessNote: "Acceso total desactiva el sandbox. Este ajuste vuelve a aplicarse cuando elijas otro nivel.",
       learnMore: "Más información",
@@ -2468,7 +2472,7 @@ export const es = {
           auto:
             "Ejecuta por sí solo las llamadas habituales y solo pregunta cuando una acción parece arriesgada, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
           off:
-            "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu equipo puede acceder. Sin un sandbox del sistema que funcione, las llamadas arriesgadas preguntan primero.",
+            "Las herramientas MCP habilitadas usan los permisos del servidor y pueden ejecutarse sin pedir aprobación. Python y el terminal usan el nivel de aislamiento seleccionado. Las llamadas de riesgo a estas herramientas siguen requiriendo aprobación si el aislamiento del sistema operativo no está disponible o si se selecciona el nivel bajo.",
           full:
             "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
@@ -3936,6 +3940,9 @@ export const es = {
         backendNone: "no disponible",
         mediaImages: "Lee texto e imágenes.",
         mediaText: "Solo lee texto.",
+        connectionImages: "Enviar imágenes",
+        connectionImagesDescription:
+          "Reenvía imágenes a esta conexión. Solo si el modelo remoto las lee: un servidor de solo texto rechaza la petición.",
         checking: "Comprobando…",
         notDownloaded: "No descargado · {size}",
         downloading: "Descargando…",
@@ -5151,6 +5158,9 @@ export const es = {
       saveHistoryDescription: "Se guarda solo en este navegador.",
       showPrompt: "Mostrar prompt",
       showPromptDescription: "Ver las instrucciones exactas enviadas al modelo.",
+      keepNames: "Conservar nombres originales",
+      keepNamesDescription:
+        "Muestra la ortografía original de cada nombre después de él, como डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "No se ha guardado en el historial: el almacenamiento del navegador está lleno.",

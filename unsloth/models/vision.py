@@ -5841,6 +5841,8 @@ class FastBaseModel:
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
+        # Merged QAT-LoRA (models/_qat_lora_merged.py); None reads UNSLOTH_QAT_LORA_MERGED. Not a LoraConfig field.
+        qat_lora_merged = kwargs.pop("qat_lora_merged", None)
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
@@ -6350,7 +6352,9 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _original_car
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = _prepare_model_for_qat(model, qat_scheme)
+            model = _prepare_model_for_qat(model, qat_scheme, lora_merged = qat_lora_merged)
+        elif qat_lora_merged:
+            raise ValueError("Unsloth: qat_lora_merged = True needs a qat_scheme.")
         fix_lora_auto_mapping(model)
         requires_grad_for_gradient_checkpointing(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)

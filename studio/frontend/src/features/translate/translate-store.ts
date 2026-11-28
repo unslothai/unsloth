@@ -61,6 +61,7 @@ export type TranslatePrefs = {
   customPrompts: Partial<Record<TranslatePromptKind, string>>;
   autoTranslate: boolean;
   saveHistory: boolean;
+  keepNames: boolean;
 };
 
 export type TranslateError =
@@ -73,6 +74,7 @@ type Result = {
   target: string;
   mode: TranslateMode;
   tone: TranslateTone;
+  keepNames: boolean;
   modelKey: string;
   custom: string | null;
   customName: string | null;
@@ -209,6 +211,7 @@ function loadPrefs(): TranslatePrefs {
     ),
     autoTranslate: saved.autoTranslate === true,
     saveHistory: saved.saveHistory !== false,
+    keepNames: saved.keepNames === true,
   });
 }
 
@@ -233,6 +236,7 @@ function resultOf(source: string, prefs: TranslatePrefs): Result {
     target: prefs.target,
     mode: prefs.mode,
     tone: prefs.tone,
+    keepNames: prefs.keepNames,
     modelKey: translateModelKey(prefs.modelId, prefs.customModel),
     custom: customPromptOf(prefs),
     customName:
@@ -259,6 +263,7 @@ export function translatePromptOptions(
     | "modelId"
     | "customModel"
     | "customPrompts"
+    | "keepNames"
   >,
 ): TranslatePromptOptions | null {
   const target = findTranslateLanguage(prefs.target);
@@ -269,6 +274,8 @@ export function translatePromptOptions(
     mode: prefs.mode,
     tone: prefs.tone,
     custom: customPromptOf(prefs),
+    keepNames: prefs.keepNames,
+    sourceCode: prefs.from === AUTO_SOURCE ? null : prefs.from,
   };
 }
 
@@ -577,6 +584,7 @@ export function translationIsStale(
       result.target !== prefs.target ||
       result.mode !== prefs.mode ||
       result.tone !== prefs.tone ||
+      result.keepNames !== prefs.keepNames ||
       result.custom !== customPromptOf(prefs) ||
       result.modelKey !== translateModelKey(prefs.modelId, prefs.customModel))
   );

@@ -1681,6 +1681,9 @@ export const ko = {
       memoryAuto: "자동",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB로 설정됨",
       memoryInvalid: "{min}에서 {max} 사이의 정수를 입력하세요.",
+      fileSizeLabel: "파일 크기 한도",
+      fileSizeDescription: "샌드박스에서 Python 또는 Terminal 호출 한 번이 쓸 수 있는 가장 큰 파일입니다. 큰 바이너리를 쓰는 빌드라면 늘리세요. 다음 호출부터 적용됩니다. 기본값 {defaultSize} MB.",
+      fileSizeLocked: "UNSLOTH_STUDIO_SANDBOX_FSIZE_MB로 설정됨",
       restored: "폴더 {count}개에서 액세스를 제거했습니다.",
       hostPrepLabel: "관리자 설정",
       prepPrepared: "완료",
@@ -1718,6 +1721,7 @@ export const ko = {
       levelHigh: "높음",
       levelLow: "낮음",
       levelHighShort: "Python과 터미널을 OS 샌드박스에서도 실행",
+      editorMcpWarning: "{name} MCP는 샌드박스 수준이 높음이어도 Unsloth 샌드박스 외부에서 앱의 권한으로 코드를 실행합니다. 이 코드는 프로젝트 외부의 파일에 접근할 수 있습니다.",
       levelLowShort: "소프트웨어 샌드박스만 사용. 위험한 코드는 먼저 확인",
       levelFullAccessNote: "전체 액세스는 샌드박스를 끕니다. 다른 수준을 선택하면 이 설정이 다시 적용됩니다.",
       learnMore: "자세히 알아보기",
@@ -2436,7 +2440,7 @@ export const ko = {
           auto:
             "일반적인 도구 호출은 알아서 실행하고, 자격 증명 읽기, 권한 상승, 파괴적인 명령 실행처럼 위험해 보이는 작업일 때만 묻습니다.",
           off:
-            "모든 도구 호출을 묻지 않고 실행합니다. Python과 터미널 코드는 여전히 샌드박스 안에서 실행되어 컴퓨터에서 접근할 수 있는 파일이 제한됩니다. 작동하는 OS 샌드박스가 없으면 위험한 호출은 먼저 묻습니다.",
+            "활성화된 MCP 도구는 서버의 권한으로 실행되며 승인을 요청하지 않고 실행될 수 있습니다. Python과 터미널에는 선택한 샌드박스 수준이 적용됩니다. OS 격리를 사용할 수 없거나 샌드박스 수준이 낮음이면 두 도구의 위험한 호출은 계속 승인을 요청합니다.",
           full:
             "모든 도구 호출을 묻지 않고 실행하며 코드 샌드박스를 꺼서, Python과 터미널 코드가 계정이 접근할 수 있는 모든 파일을 읽고 변경할 수 있습니다.",
         },
@@ -3884,6 +3888,9 @@ export const ko = {
         backendNone: "사용할 수 없음",
         mediaImages: "텍스트와 이미지를 읽습니다.",
         mediaText: "텍스트만 읽습니다.",
+        connectionImages: "이미지 전송",
+        connectionImagesDescription:
+          "이 연결로 이미지를 전달합니다. 원격 모델이 이미지를 읽을 때만 켜세요. 텍스트 전용 서버는 요청을 거부합니다.",
         checking: "확인 중…",
         notDownloaded: "다운로드 안 됨 · {size}",
         downloading: "다운로드 중…",
@@ -5067,6 +5074,9 @@ export const ko = {
       saveHistoryDescription: "이 브라우저에만 보관됩니다.",
       showPrompt: "프롬프트 표시",
       showPromptDescription: "모델에 보내는 정확한 지시를 확인합니다.",
+      keepNames: "원래 이름 유지",
+      keepNamesDescription:
+        "각 이름 뒤에 원래 철자를 표시합니다. 예: डेविन वे (Devin Way)",
     },
     history: {
       notSaved: "기록에 저장되지 않았습니다: 브라우저 저장 공간이 가득 찼습니다.",

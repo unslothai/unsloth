@@ -18,6 +18,7 @@ import {
   PREFERRED_SETUP_WINDOW_SIZE,
   calculateCenteredPosition,
   calculateFirstAppWindowSize,
+  calculateOnScreenRect,
   calculateWindowSizeBounds,
   constrainWindowSize,
   fitWindowSize,
@@ -331,6 +332,135 @@ test("centers against the work area of the monitor it is on", () => {
     calculateCenteredPosition(secondary, { width: 1500, height: 800 }),
     { x: 1920, y: 40 },
   );
+});
+
+function rect(x: number, y: number, width: number, height: number) {
+  return { position: { x, y }, size: { width, height } };
+}
+
+test("pulls a window saved at a larger resolution back on screen", () => {
+  const screen = rect(0, 0, 1920, 1080);
+  const workAreaRect = rect(0, 0, 1920, 1040);
+
+  // Saved near the bottom right of a 2560x1440 desktop: its top-left corner still lands on screen.
+  assert.deepEqual(
+    calculateOnScreenRect(rect(1500, 800, 1000, 600), [screen], workAreaRect),
+    rect(920, 440, 1000, 600),
+  );
+  assert.deepEqual(
+    calculateOnScreenRect(rect(100, 60, 2400, 1350), [screen], workAreaRect),
+    rect(0, 0, 1920, 1040),
+  );
+  assert.deepEqual(
+    calculateOnScreenRect(rect(2600, 1200, 900, 600), [screen], workAreaRect),
+    rect(1020, 440, 900, 600),
+  );
+});
+
+test("leaves on-screen and multi-monitor windows where they are", () => {
+  const primary = rect(0, 0, 1920, 1080);
+  const secondary = rect(1920, 0, 1366, 768);
+
+  assert.equal(
+    calculateOnScreenRect(
+      rect(200, 100, 1200, 800),
+      [primary],
+      rect(0, 0, 1920, 1040),
+    ),
+    null,
+  );
+  // A snapped window's invisible resize borders reach a few pixels past the edge.
+  assert.equal(
+    calculateOnScreenRect(
+      rect(-7, 0, 974, 1047),
+      [primary],
+      rect(0, 0, 1920, 1040),
+    ),
+    null,
+  );
+  // At 250% scaling the borders are wider than the 100% tolerance.
+  assert.equal(
+    calculateOnScreenRect(
+      rect(-19, 0, 1958, 2059),
+      [rect(0, 0, 3840, 2160)],
+      rect(0, 0, 3840, 2040),
+      2.5,
+    ),
+    null,
+  );
+  assert.equal(
+    calculateOnScreenRect(
+      rect(1500, 100, 1000, 600),
+      [primary, secondary],
+      rect(0, 0, 1920, 1040),
+    ),
+    null,
+  );
+  assert.deepEqual(
+    calculateOnScreenRect(
+      rect(2000, 400, 1000, 600),
+      [primary, secondary],
+      rect(1920, 0, 1366, 728),
+    ),
+    rect(2000, 128, 1000, 600),
+  );
+  // Mirrored monitors overlap; the title bar above both is still off screen.
+  assert.deepEqual(
+    calculateOnScreenRect(
+      rect(200, -200, 1000, 600),
+      [primary, rect(0, 0, 1920, 1080)],
+      rect(0, 0, 1920, 1040),
+    ),
+    rect(200, 0, 1000, 600),
+  );
+});
+
+test("a restored window is kept on screen only after it is shown and remeasured", async () => {
+  const events: string[] = [];
+  const measured = {
+    bounds: { minimum: { width: 460, height: 480 } },
+    monitor: null,
+    frameSize: { width: 0, height: 0 },
+  };
+  const finalize = (restored: boolean, shown = true) =>
+    finalizeAppWindowLayout({
+      restored,
+      measured,
+      show: async () => {
+        events.push("show");
+        return shown;
+      },
+      measure: async () => {
+        events.push("measure");
+        return measured;
+      },
+      setMinimumConstraints: async () => {
+        events.push("constraints");
+      },
+      enforceBounds: async () => {
+        events.push("enforce");
+      },
+      keepOnScreen: async (current) => {
+        assert.equal(current, measured);
+        events.push("on-screen");
+      },
+      isCurrent: () => true,
+    });
+
+  await finalize(true);
+  assert.deepEqual(events, [
+    "show",
+    "measure",
+    "constraints",
+    "enforce",
+    "on-screen",
+  ]);
+
+  // A first layout is already centered on its monitor; a hidden autostart waits for the tray.
+  events.length = 0;
+  await finalize(false);
+  await finalize(true, false);
+  assert.deepEqual(events, ["show", "constraints", "enforce", "show"]);
 });
 
 test("falls back to the nominal size when no monitor can be read", () => {

@@ -43,6 +43,10 @@ execution warning and choose **Enable**. Each app runs its own MCP server, so Un
 nothing: it connects to `http://127.0.0.1:<port>/mcp` on the backend machine, or for Roblox Studio
 starts the launcher Studio ships.
 
+Unity, Unreal Engine, Godot and Blender MCP run code outside Unsloth's sandbox, even with **Sandbox High**
+on. That code can access any file the app can, including files outside your project. In **Run
+automatically** mode, enabled MCP tools can run without asking.
+
 | App | MCP server | Default | Notes |
 |---|---|---|---|
 | Unity | [MCP for Unity](https://github.com/CoplayDev/unity-mcp) | 8080 | Start the server in **Window → MCP for Unity** with the HTTP transport. **Test connection** turns green once an Editor has joined (`/api/instances`). |

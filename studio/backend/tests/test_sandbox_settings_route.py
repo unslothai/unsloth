@@ -539,3 +539,81 @@ def test_windows_status_names_the_update_that_adds_the_builtin_container(
     monkeypatch.setattr(sandbox_setup_plan, "windows_builtin_container_update", lambda: update)
     block = settings._sandbox_windows_status()
     assert (block.windows_build, block.builtin_container_build) == (update or (None, None))
+
+
+@pytest.fixture
+def file_size(monkeypatch):
+    from utils import sandbox_file_size_limit
+
+    stored = {}
+    monkeypatch.delenv(sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV, raising = False)
+    monkeypatch.setattr(
+        sandbox_file_size_limit, "_stored_file_size_limit_mb", lambda: stored.get("mb")
+    )
+    monkeypatch.setattr(
+        sandbox_file_size_limit, "set_file_size_limit_mb", lambda v: stored.__setitem__("mb", v)
+    )
+    return stored
+
+
+def test_posix_status_carries_the_file_size_limit(host, posix, memory, file_size):
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()
+    assert body["file_size"] == {
+        "limit_mb": 4096,
+        "saved_mb": 4096,
+        "default_mb": 4096,
+        "min_mb": 1,
+        "max_mb": 1024 * 1024,
+        "locked_by_environment": False,
+    }
+
+
+def test_saving_the_file_size_limit_shows_at_once(host, posix, memory, file_size):
+    calls, _saved = host
+    with _client(OWNER) as client:
+        for _ in range(2):
+            response = client.put("/sandbox", json = {"file_size_limit_mb": 8192})
+            assert response.status_code == 200, response.text
+            assert response.json()["file_size"]["limit_mb"] == 8192
+        assert client.get("/sandbox").json()["file_size"]["saved_mb"] == 8192
+    assert file_size == {"mb": 8192}
+    assert memory == {}
+    assert calls["invalidate"] == 0 and calls["revoke"] == 0
+
+
+@pytest.mark.parametrize(
+    "payload, status",
+    [
+        ({"file_size_limit_mb": 0}, 422),
+        ({"file_size_limit_mb": 1024 * 1024 + 1}, 422),
+        ({"file_size_limit_mb": "4096"}, 422),
+        ({"file_size_limit_mb": 4096, "memory_limit_gb": 32}, 422),
+    ],
+)
+def test_a_bad_file_size_save_is_refused(host, posix, memory, file_size, payload, status):
+    with _client(OWNER) as client:
+        assert client.put("/sandbox", json = payload).status_code == status
+    assert file_size == {} and memory == {}
+
+
+def test_an_environment_file_size_limit_is_shown_and_locked(
+    host, posix, memory, file_size, monkeypatch
+):
+    from utils import sandbox_file_size_limit
+
+    monkeypatch.setenv(sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV, "2048")
+    with _client(OWNER) as client:
+        body = client.get("/sandbox").json()["file_size"]
+        assert body["limit_mb"] == 2048 and body["locked_by_environment"] is True
+        response = client.put("/sandbox", json = {"file_size_limit_mb": 8192})
+    assert response.status_code == 409
+    assert sandbox_file_size_limit.FILE_SIZE_LIMIT_ENV in response.json()["detail"]
+    assert file_size == {}
+
+
+def test_windows_has_no_file_size_limit(host, windows, memory, file_size):
+    with _client(OWNER) as client:
+        assert client.get("/sandbox").json()["file_size"] is None
+        assert client.put("/sandbox", json = {"file_size_limit_mb": 8192}).status_code == 409
+    assert file_size == {}

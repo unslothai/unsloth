@@ -1769,6 +1769,9 @@ export const sv = {
       memoryAuto: "Automatiskt",
       memoryLocked: "Inställt av UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Ange ett heltal från {min} till {max}.",
+      fileSizeLabel: "Gräns för filstorlek",
+      fileSizeDescription: "Största fil som ett Python- eller Terminal-anrop i sandlådan kan skriva. Höj den för byggen som skriver stora binärfiler. Gäller från nästa anrop. Standard {defaultSize} MB.",
+      fileSizeLocked: "Inställt av UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Tog bort åtkomst från {count} mappar.",
       hostPrepLabel: "Administratörskonfiguration",
       prepPrepared: "Klar",
@@ -1814,6 +1817,7 @@ export const sv = {
       levelHigh: "Hög",
       levelLow: "Låg",
       levelHighShort: "Lägger till OS-isolering för Python och Terminal",
+      editorMcpWarning: "{name} MCP kör kod med appens behörigheter utanför Unsloths sandlåda, även när sandlådenivån Hög är vald. Koden kan komma åt filer utanför ditt projekt.",
       levelLowShort: "Endast programvara. Riskabel kod frågar först",
       levelFullAccessNote:
         "Fullständig åtkomst stänger av sandlådan. Den här inställningen gäller igen när du väljer en annan nivå.",
@@ -2310,7 +2314,7 @@ export const sv = {
         details: {
           ask: "Frågar före varje verktygsanrop, inklusive terminal- och Python-kod, webbsökningar, filredigeringar och MCP-verktyg. Verktyg som körs av en extern leverantör pausas inte.",
           auto: "Kör rutinmässiga verktygsanrop på egen hand och frågar bara när en åtgärd ser riskabel ut, till exempel att läsa inloggningsuppgifter, höja behörigheter eller köra destruktiva kommandon.",
-          off: "Kör varje verktygsanrop utan att fråga. Python- och terminalkod körs fortfarande i sandlådan, som begränsar vilka filer de kan nå på din dator. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
+          off: "Aktiverade MCP-verktyg använder serverns behörigheter och kan köras utan godkännande. Python och Terminal använder den valda sandlådenivån. Riskabla anrop till de verktygen kräver fortfarande godkännande om OS-isolering saknas eller sandlådenivån Låg är vald.",
           full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
       },
@@ -4082,6 +4086,9 @@ export const sv = {
         backendNone: "inte tillgänglig",
         mediaImages: "Läser text och bilder.",
         mediaText: "Läser bara text.",
+        connectionImages: "Skicka bilder",
+        connectionImagesDescription:
+          "Vidarebefordra bilder till den här anslutningen. Bara om fjärrmodellen läser dem: en server som bara hanterar text avvisar förfrågan.",
         checking: "Kontrollerar …",
         notDownloaded: "Inte hämtad · {size}",
         downloading: "Hämtar …",
@@ -5293,6 +5300,9 @@ export const sv = {
       saveHistoryDescription: "Sparas bara i den här webbläsaren.",
       showPrompt: "Visa prompt",
       showPromptDescription: "Se exakta instruktioner som skickas till modellen.",
+      keepNames: "Behåll ursprungliga namn",
+      keepNamesDescription:
+        "Visa varje namns ursprungliga stavning efter det, till exempel डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Inte sparad i historiken: webbläsarens lagring är full.",

@@ -1844,6 +1844,9 @@ export const es419 = {
       memoryAuto: "Automático",
       memoryLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Ingresa un número entero de {min} a {max}.",
+      fileSizeLabel: "Límite de tamaño de archivo",
+      fileSizeDescription: "Archivo más grande que puede escribir una llamada de Python o Terminal en el sandbox. Auméntalo para compilaciones que escriben binarios grandes. Se aplica desde la próxima llamada. Predeterminado: {defaultSize} MB.",
+      fileSizeLocked: "Definido por UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Se quitó el acceso a {count} carpetas.",
       hostPrepLabel: "Configuración de administrador",
       prepPrepared: "Listo",
@@ -1889,6 +1892,7 @@ export const es419 = {
       levelHigh: "Alto",
       levelLow: "Bajo",
       levelHighShort: "Agrega aislamiento del sistema a Python y Terminal",
+      editorMcpWarning: "{name} MCP ejecuta código con los permisos de la app fuera del entorno aislado de Unsloth, incluso con el nivel de aislamiento alto. El código puede acceder a archivos fuera de tu proyecto.",
       levelLowShort: "Solo software. El código riesgoso pregunta primero",
       levelFullAccessNote:
         "El acceso total desactiva el sandbox. Esta opción vuelve a aplicarse cuando elijas otro nivel.",
@@ -2405,7 +2409,7 @@ export const es419 = {
         details: {
           ask: "Pregunta antes de cada llamada a herramienta, incluido el código de terminal y Python, las búsquedas web, la edición de archivos y las herramientas MCP. Las herramientas que ejecuta un proveedor externo no se pausan.",
           auto: "Ejecuta por sí solo las llamadas a herramientas habituales y solo pregunta cuando una acción parece riesgosa, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
-          off: "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu computadora puede acceder. Sin un sandbox del sistema que funcione, las llamadas riesgosas preguntan primero.",
+          off: "Las herramientas MCP habilitadas usan los permisos del servidor y pueden ejecutarse sin pedir aprobación. Python y la terminal usan el nivel de aislamiento seleccionado. Las llamadas riesgosas a estas herramientas siguen requiriendo aprobación si el aislamiento del sistema operativo no está disponible o si se selecciona el nivel bajo.",
           full: "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así que el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
       },
@@ -4164,6 +4168,9 @@ export const es419 = {
         backendNone: "no disponible",
         mediaImages: "Lee texto e imágenes.",
         mediaText: "Solo lee texto.",
+        connectionImages: "Enviar imágenes",
+        connectionImagesDescription:
+          "Reenvía imágenes a esta conexión. Solo si el modelo remoto las lee: un servidor de solo texto rechaza la solicitud.",
         checking: "Verificando…",
         notDownloaded: "No descargado · {size}",
         downloading: "Descargando…",
@@ -5505,6 +5512,9 @@ export const es419 = {
       showPrompt: "Mostrar prompt",
       showPromptDescription:
         "Consulta las instrucciones exactas enviadas al modelo.",
+      keepNames: "Conservar nombres originales",
+      keepNamesDescription:
+        "Muestra la ortografía original de cada nombre después de él, como डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "No se guardó en el historial: el almacenamiento del navegador está lleno.",

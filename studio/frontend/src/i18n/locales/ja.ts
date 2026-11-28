@@ -1683,6 +1683,9 @@ export const ja = {
       memoryAuto: "自動",
       memoryLocked: "UNSLOTH_STUDIO_SANDBOX_AS_GB で設定されています",
       memoryInvalid: "{min} から {max} までの整数を入力してください。",
+      fileSizeLabel: "ファイルサイズ上限",
+      fileSizeDescription: "サンドボックス内の Python または Terminal の 1 回の呼び出しが書き込めるファイルの最大サイズです。大きなバイナリを書き出すビルドでは上げてください。次の呼び出しから適用されます。既定値 {defaultSize} MB。",
+      fileSizeLocked: "UNSLOTH_STUDIO_SANDBOX_FSIZE_MB で設定されています",
       restored: "{count} 個のフォルダーからアクセスを削除しました。",
       hostPrepLabel: "管理者による設定",
       prepPrepared: "完了",
@@ -1720,6 +1723,7 @@ export const ja = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "Python とターミナルを OS サンドボックス内でも実行",
+      editorMcpWarning: "{name} MCP は、サンドボックスが「高」でも Unsloth のサンドボックス外でアプリの権限を使ってコードを実行します。このコードはプロジェクト外のファイルにもアクセスできます。",
       levelLowShort: "ソフトウェア サンドボックスのみ。危険なコードは先に確認",
       levelFullAccessNote: "フルアクセスではサンドボックスがオフになります。別のレベルを選ぶと、この設定が再び適用されます。",
       learnMore: "詳細",
@@ -2427,7 +2431,7 @@ export const ja = {
           auto:
             "通常のツール呼び出しは自動で実行し、認証情報の読み取り、権限昇格、破壊的なコマンドなど、危険そうな操作のときだけ確認します。",
           off:
-            "すべてのツール呼び出しを確認なしで実行します。Python とターミナルのコードは引き続きサンドボックス内で実行され、コンピューター上でアクセスできるファイルが制限されます。OS サンドボックスが動作しない場合、危険な呼び出しは先に確認します。",
+            "有効な MCP ツールはサーバーの権限を使用し、承認を求めずに実行されることがあります。Python とターミナルには選択したサンドボックスレベルが適用されます。OS による分離が利用できない場合やレベルが「低」の場合、安全性に懸念のある Python やターミナルの呼び出しには引き続き承認が必要です。",
           full:
             "すべてのツール呼び出しを確認なしで実行し、コードサンドボックスをオフにします。Python とターミナルのコードは、アカウントがアクセスできる任意のファイルを読み取り、変更できます。",
         },
@@ -3867,6 +3871,9 @@ export const ja = {
         backendNone: "利用不可",
         mediaImages: "テキストと画像を読み取ります。",
         mediaText: "テキストのみ読み取ります。",
+        connectionImages: "画像を送信",
+        connectionImagesDescription:
+          "この接続に画像を転送します。リモートのモデルが画像を読む場合だけです。テキストのみのサーバーはリクエストを拒否します。",
         checking: "確認中…",
         notDownloaded: "未ダウンロード · {size}",
         downloading: "ダウンロード中…",
@@ -5027,6 +5034,9 @@ export const ja = {
       saveHistoryDescription: "このブラウザにのみ保存されます。",
       showPrompt: "プロンプトを表示",
       showPromptDescription: "モデルに送られる正確な指示を表示します。",
+      keepNames: "元の名前を残す",
+      keepNamesDescription:
+        "各名前の後に元の綴りを表示します（例：डेविन वे (Devin Way)）。",
     },
     history: {
       notSaved: "履歴に保存されませんでした: ブラウザのストレージがいっぱいです。",

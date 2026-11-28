@@ -1751,6 +1751,9 @@ export const zhTW = {
       memoryAuto: "自動",
       memoryLocked: "由 UNSLOTH_STUDIO_SANDBOX_AS_GB 設定",
       memoryInvalid: "請輸入 {min} 到 {max} 之間的整數。",
+      fileSizeLabel: "檔案大小上限",
+      fileSizeDescription: "沙盒中一次 Python 或 Terminal 呼叫可寫入的最大檔案。若建置會寫出大型二進位檔，請調高此值。從下一次呼叫起生效。預設 {defaultSize} MB。",
+      fileSizeLocked: "由 UNSLOTH_STUDIO_SANDBOX_FSIZE_MB 設定",
       restored: "已移除 {count} 個資料夾的存取權。",
       hostPrepLabel: "系統管理員設定",
       prepPrepared: "已完成",
@@ -1793,6 +1796,7 @@ export const zhTW = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "為 Python 與終端機加上作業系統隔離",
+      editorMcpWarning: "即使沙箱層級設為高，{name} MCP 也會在 Unsloth 沙箱之外使用該應用程式的權限執行程式碼。這些程式碼可以存取專案以外的檔案。",
       levelLowShort: "僅限軟體。有風險的程式碼會先詢問",
       levelFullAccessNote:
         "完整存取權會關閉沙箱。當您選擇其他等級時，此設定會再次生效。",
@@ -2261,7 +2265,7 @@ export const zhTW = {
         details: {
           ask: "每次工具呼叫前都會先詢問，包括終端機與 Python 程式碼、網頁搜尋、檔案編輯及 MCP 工具。由外部供應商執行的工具不會暫停。",
           auto: "自行執行例行的工具呼叫，只在動作看起來有風險時才詢問，例如讀取憑證、提升權限或執行破壞性命令。",
-          off: "執行所有工具呼叫而不詢問。Python 與終端機程式碼仍會在沙箱中執行，限制其可存取的電腦檔案範圍。若沒有可用的作業系統沙箱，有風險的呼叫會先詢問。",
+          off: "已啟用的 MCP 工具使用其伺服器的權限，可能不經確認即可執行。Python 和終端機使用所選的沙箱層級。作業系統隔離無法使用或沙箱層級設為低時，這兩種工具的高風險呼叫仍需確認。",
           full: "執行所有工具呼叫而不詢問，並關閉程式碼沙箱，因此 Python 與終端機程式碼可以讀取及變更您帳號能存取的任何檔案。",
         },
       },
@@ -3920,6 +3924,9 @@ export const zhTW = {
         backendNone: "無法使用",
         mediaImages: "可讀取文字和圖片。",
         mediaText: "僅能讀取文字。",
+        connectionImages: "傳送圖片",
+        connectionImagesDescription:
+          "將圖片轉發至此連線。僅在遠端模型能讀取圖片時開啟：純文字伺服器會拒絕請求。",
         checking: "正在檢查…",
         notDownloaded: "尚未下載 · {size}",
         downloading: "正在下載…",
@@ -5150,6 +5157,9 @@ export const zhTW = {
       saveHistoryDescription: "僅保存在這個瀏覽器中。",
       showPrompt: "顯示提示詞",
       showPromptDescription: "查看傳送給模型的確切指示。",
+      keepNames: "保留原名",
+      keepNamesDescription:
+        "在每個名字後顯示其原始拼寫，例如 डेविन वे (Devin Way)。",
     },
     history: {
       notSaved: "未儲存到歷史記錄：瀏覽器儲存空間已滿。",

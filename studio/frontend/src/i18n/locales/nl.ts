@@ -1851,6 +1851,9 @@ export const nl = {
       memoryAuto: "Automatisch",
       memoryLocked: "Ingesteld door UNSLOTH_STUDIO_SANDBOX_AS_GB",
       memoryInvalid: "Voer een geheel getal in van {min} tot {max}.",
+      fileSizeLabel: "Limiet bestandsgrootte",
+      fileSizeDescription: "Grootste bestand dat één Python- of Terminal-aanroep in de sandbox kan schrijven. Verhoog dit voor builds die grote binaire bestanden schrijven. Geldt vanaf de volgende aanroep. Standaard {defaultSize} MB.",
+      fileSizeLocked: "Ingesteld door UNSLOTH_STUDIO_SANDBOX_FSIZE_MB",
       restored: "Toegang tot {count} mappen verwijderd.",
       hostPrepLabel: "Beheerdersinstallatie",
       prepPrepared: "Gereed",
@@ -1895,6 +1898,7 @@ export const nl = {
       levelHigh: "Hoog",
       levelLow: "Laag",
       levelHighShort: "Voegt OS-isolatie toe aan Python en Terminal",
+      editorMcpWarning: "{name} MCP voert code uit met de rechten van de app, buiten de sandbox van Unsloth, ook als het sandboxniveau Hoog is. De code kan bestanden buiten je project openen.",
       levelLowShort: "Alleen software. Riskante code vraagt eerst",
       levelFullAccessNote:
         "Volledige toegang schakelt de sandbox uit. Deze instelling geldt weer zodra je een ander niveau kiest.",
@@ -2410,7 +2414,7 @@ export const nl = {
         details: {
           ask: "Vraagt vóór elke toolaanroep, inclusief terminal- en Python-code, zoekopdrachten op het web, bestandsbewerkingen en MCP-tools. Tools die door een externe provider worden uitgevoerd, worden niet gepauzeerd.",
           auto: "Voert routinematige toolaanroepen zelf uit en vraagt alleen wanneer een actie riskant lijkt, zoals het lezen van inloggegevens, het verhogen van rechten of het uitvoeren van destructieve opdrachten.",
-          off: "Voert elke toolaanroep uit zonder te vragen. Python- en terminalcode draaien nog steeds in de sandbox, die beperkt welke bestanden ze op je computer kunnen bereiken. Zonder werkende OS-sandbox wordt bij riskante aanroepen eerst om toestemming gevraagd.",
+          off: "Ingeschakelde MCP-tools gebruiken de rechten van de server en kunnen zonder bevestiging worden uitgevoerd. Python en Terminal gebruiken het gekozen sandboxniveau. Riskante aanroepen van deze tools vragen nog steeds om toestemming als OS-isolatie ontbreekt of het sandboxniveau Laag is geselecteerd.",
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
       },
@@ -4151,6 +4155,9 @@ export const nl = {
         backendNone: "niet beschikbaar",
         mediaImages: "Leest tekst en afbeeldingen.",
         mediaText: "Leest alleen tekst.",
+        connectionImages: "Afbeeldingen versturen",
+        connectionImagesDescription:
+          "Stuur afbeeldingen door naar deze verbinding. Alleen als het externe model ze leest: een server die alleen tekst leest, weigert het verzoek.",
         checking: "Controleren…",
         notDownloaded: "Niet gedownload · {size}",
         downloading: "Downloaden…",
@@ -5468,6 +5475,9 @@ export const nl = {
       saveHistoryDescription: "Wordt alleen in deze browser bewaard.",
       showPrompt: "Prompt tonen",
       showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
+      keepNames: "Originele namen behouden",
+      keepNamesDescription:
+        "Toon na elke naam de oorspronkelijke spelling, zoals डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Niet opgeslagen in de geschiedenis: de opslag van de browser is vol.",

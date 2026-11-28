@@ -21,8 +21,7 @@ def _default_serial_names() -> frozenset:
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
     from .diffusion_flux3 import FLUX3_FAMILY_NAMES
 
-    # FLUX.3 and Anima loop one prompt per modular call; MiniMax-H3-Image runs each image as batch 1 (lockstep);
-    # MOSS loops samples outside its layer loop except on a measured layer-major load (_moss_layer_major).
+    # One image per forward unless a G2c verdict (Anima) or a measured layer-major load (MOSS) says otherwise.
     return frozenset(
         (
             *FLUX3_FAMILY_NAMES,
@@ -54,10 +53,26 @@ def _qwen21_denoiser(pipe: Any) -> bool:
     return type(getattr(pipe, "transformer", None)).__name__ == _CLASS
 
 
+def _card_verdict_families() -> frozenset:
+    from .diffusion_anima import ANIMA_FAMILY_NAME
+
+    # Batch-shape GEMM tiling moves a row by IEEE noise: fuse only where a stored G2c PASS bounds it.
+    return frozenset((ANIMA_FAMILY_NAME,))
+
+
+def _card_measured(family: Any, pipe: Any) -> bool:
+    if pipe is None or getattr(pipe, "transformer", None) is None:
+        return False
+    from .diffusion_batch_quality import family_card_ok
+    return family_card_ok(getattr(family, "name", None), pipe)
+
+
 def default_batched_forward(family: Any, pipe: Any = None) -> bool:
     """Today's answer for a family that does not say: whether its list call runs the rows in one forward."""
     if getattr(family, "layer_count", 0):
         return False  # the layered pipeline's per-prompt layer stride is only right for one input
+    if getattr(family, "name", None) in _card_verdict_families():
+        return _card_measured(family, pipe)
     if getattr(family, "name", None) in _default_serial_names():
         return _moss_layer_major(family, pipe)
     if pipe is not None and _qwen21_denoiser(pipe):
@@ -67,14 +82,15 @@ def default_batched_forward(family: Any, pipe: Any = None) -> bool:
 
 def admits_without_pipe(family: Any) -> bool:
     """The route's family check, which has no pipe: refuse only when the answer cannot depend on the load. MOSS fuses
-    rows only on a measured layer-major load, which the engine decides with its pipe (coalesce_plan)."""
+    rows only on a measured layer-major load and Anima only on a card with a G2c verdict, which the engine decides
+    with its pipe (coalesce_plan)."""
     from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
 
     if batched_forward(family):
         return True
-    return (
-        getattr(family, BATCHED_FORWARD_ATTR, None) is None
-        and getattr(family, "name", None) == MOSS_IMAGE_FAMILY_NAME
+    return getattr(family, BATCHED_FORWARD_ATTR, None) is None and (
+        getattr(family, "name", None) == MOSS_IMAGE_FAMILY_NAME
+        or getattr(family, "name", None) in _card_verdict_families()
     )
 
 

@@ -11,6 +11,7 @@ import { openLink } from "@/lib/open-link";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Spinner } from "@/components/ui/spinner";
+import { useT } from "@/i18n";
 import { subscribeToMcpServerMutationSettlements } from "./api/mcp-server-mutation-tracker";
 import {
   type EditorMcpId,
@@ -64,6 +65,7 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
   onBusyChange: (busy: boolean) => void;
   onClose?: () => void;
 }) {
+  const t = useT();
   const copy = EDITOR_MCP[editorId];
   const [config, setConfig] = useState<McpBuiltinConfig | null>(null);
   const [port, setPort] = useState("");
@@ -199,9 +201,24 @@ export function EditorMcpSetup({ editorId, servers, onBusyChange, onClose }: {
         </div>
       )}
       {duplicate && <p className="text-xs leading-relaxed text-amber-600">A custom {copy.name} server also exists. Disable it in Manage MCP servers if you prefer Unsloth’s managed setup.</p>}
+      {copy.sandboxWarning && (
+        <p
+          id={`${editorId}-mcp-sandbox-warning`}
+          className="text-xs leading-relaxed text-amber-700 dark:text-amber-400"
+        >
+          {t("settings.sandbox.editorMcpWarning", { name: copy.name })}
+        </p>
+      )}
       {config && !config.is_enabled && (
         <div className="flex items-start gap-3">
-          <Checkbox id={`${editorId}-mcp-consent`} className="mt-0.5" checked={consent} disabled={locked} onCheckedChange={(checked) => setConsent(checked === true)} />
+          <Checkbox
+            id={`${editorId}-mcp-consent`}
+            aria-describedby={copy.sandboxWarning ? `${editorId}-mcp-sandbox-warning` : undefined}
+            className="mt-0.5"
+            checked={consent}
+            disabled={locked}
+            onCheckedChange={(checked) => setConsent(checked === true)}
+          />
           <Label htmlFor={`${editorId}-mcp-consent`} className="text-xs font-normal leading-relaxed">{copy.consent}</Label>
         </div>
       )}

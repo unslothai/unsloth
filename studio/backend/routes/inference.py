@@ -4998,6 +4998,33 @@ def _passthrough_client_tools(payload):
     return payload.tools or None
 
 
+def _client_tools_beside_studio_tools(payload, studio_tools) -> list[dict]:
+    """The request's function tools for the GGUF tool loop; Unsloth's win shared names (#19593)."""
+    if getattr(payload, "tool_choice", None) == "none":
+        return []
+    taken = {
+        (tool.get("function") or {}).get("name")
+        for tool in studio_tools or []
+        if isinstance(tool, dict)
+    }
+    client_tools: list[dict] = []
+    for tool in getattr(payload, "tools", None) or []:
+        if not isinstance(tool, dict) or tool.get("type", "function") != "function":
+            continue
+        function = tool.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if name in taken:
+            logger.warning(
+                "Client tool %r shares a name with an Unsloth tool; the Unsloth tool is used", name
+            )
+            continue
+        taken.add(name)
+        client_tools.append({**tool, "type": "function"})
+    return client_tools
+
+
 def _admit_tool_access(payload) -> None:
     """Refuse full access before a stream opens and 400 is no longer possible."""
     from state.tool_policy import require_tool_access
@@ -35634,6 +35661,7 @@ async def produce_openai_chat_completions(
         ):
             use_tools = True
 
+        _gguf_client_tools: list[dict] = []
         if use_tools:
             from core.inference.tools import set_mcp_listing_context_tokens
 
@@ -35655,9 +35683,10 @@ async def produce_openai_chat_completions(
                 checkpoint_fitted = _rolling_context_policy(payload) is not None,
                 ui_events = _ui_events,
             )
-            _reject_missing_forced_tool(payload.tool_choice, tools_to_use)
+            _gguf_client_tools = _client_tools_beside_studio_tools(payload, tools_to_use)
+            _reject_missing_forced_tool(payload.tool_choice, tools_to_use + _gguf_client_tools)
             # Skip the loop when no tool survived so 'empty = allow all' cannot reach built-ins.
-            if not tools_to_use:
+            if not tools_to_use and not _gguf_client_tools:
                 use_tools = False
 
         if _response_format_constrains_decoding(payload):
@@ -35690,7 +35719,10 @@ async def produce_openai_chat_completions(
             # Derive confirm from permission_mode for CLI-forced loops; a non-stream ask/auto is rejected below.
             _effective_confirm = _permission_mode_confirm(payload)
             # Bypass, or auto with only always-safe tools, never prompts, so no stream is required.
-            if _confirm_gate_has_no_channel(payload, _ui_events, _catalog_names(tools_to_use)):
+            # A client-only catalogue runs nothing here, so there is nothing to approve.
+            if tools_to_use and _confirm_gate_has_no_channel(
+                payload, _ui_events, _catalog_names(tools_to_use)
+            ):
                 raise _reject(
                     400,
                     openai_error_body(
@@ -35745,6 +35777,10 @@ async def produce_openai_chat_completions(
             from core.inference.tools import mcp_match_exchange
 
             _gguf_mcp_exchange = mcp_match_exchange(gguf_messages, tools_to_use)
+            _gguf_loop_tools = tools_to_use + _gguf_client_tools
+            _gguf_client_tool_names = frozenset(
+                tool["function"]["name"] for tool in _gguf_client_tools
+            )
 
             _gguf_auto_heal_tool_calls = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
@@ -35773,7 +35809,7 @@ async def produce_openai_chat_completions(
                     payload = payload,
                     # NOT `or 0`: None means uncapped; zero would re-cost the loop on its first round.
                     output_tokens = effective_max_tokens,
-                    injected_tools = tools_to_use,
+                    injected_tools = _gguf_loop_tools,
                     count_prepared_prompt = True,
                     # Same event the loop polls, so a cache-room wait still honors Stop.
                     cancel_event = cancel_event,
@@ -35782,7 +35818,7 @@ async def produce_openai_chat_completions(
                 )
 
             # Active tool names gating the bare-rehearsal strip, matching the loop gate.
-            _gguf_display_tool_names = _display_tool_name_gate(tools_to_use)
+            _gguf_display_tool_names = _display_tool_name_gate(_gguf_loop_tools)
 
             # ── Strip stale tool-call XML from conversation history ─
             # Continuation target keeps exact whitespace: the frontend appends output to its partial.
@@ -35833,7 +35869,8 @@ async def produce_openai_chat_completions(
                     instruction_anchor_ids = skill_instruction_ids,
                     messages = gguf_messages,
                     replayed_image_parts = tuple(_gguf_replayed_image_parts),
-                    tools = tools_to_use,
+                    tools = _gguf_loop_tools,
+                    client_tool_names = _gguf_client_tool_names,
                     temperature = payload.temperature,
                     top_p = payload.top_p,
                     top_k = payload.top_k,
@@ -35896,7 +35933,7 @@ async def produce_openai_chat_completions(
                     llama_backend = llama_backend,
                     payload = payload,
                     # Server-side catalogue: not in payload.tools and roughly 1250 prompt tokens.
-                    injected_tools = tools_to_use,
+                    injected_tools = _gguf_loop_tools,
                     # Server-side loop from any tool source opens at an equal share; _gguf_recost re-costs it.
                     tool_loop = True,
                 )
@@ -36208,6 +36245,20 @@ async def produce_openai_chat_completions(
                             _stream_finish = event.get("finish_reason")
                             continue
 
+                        if event["type"] == "client_tool_calls":
+                            for chunk in _release_held_mention() + _flush_reasoning_extractor():
+                                yield chunk
+                            api_monitor.mark_first_token(monitor_id)
+                            yield _gguf_chat_delta_line(
+                                ChoiceDelta(
+                                    tool_calls = [
+                                        {"index": index, **call}
+                                        for index, call in enumerate(event["tool_calls"])
+                                    ]
+                                )
+                            )
+                            continue
+
                         if event["type"] == "context_usage":
                             # Must not reach the content branch below: its empty text resets prev_text.
                             if _ui_events:
@@ -36488,11 +36539,24 @@ async def produce_openai_chat_completions(
                 context_truncation = None
                 gen = gguf_generate_with_tools()
                 raw_text = None
+                client_calls = None
+                # Content since the last run tool: the calling turn's own snapshot, <think> included.
+                round_has_content = False
                 turn_mark = snapshot_mark = _think_ledger_mark(_gguf_think_prov)
                 try:
                     for event in gen:
                         if cancel_event.is_set():
                             break
+                        if event.get("type") == "client_tool_calls":
+                            client_calls = event["tool_calls"]
+                            if not round_has_content:
+                                snapshot_mark = turn_mark
+                                raw_text = event.get("content") or ""
+                            continue
+                        if event.get("type") == "tool_start" and not (
+                            event.get("provenance") or {}
+                        ).get("provisional"):
+                            round_has_content = False
                         if event.get("type") == "tool_start" or (
                             event.get("type") == "status" and not event.get("text")
                         ):
@@ -36507,6 +36571,7 @@ async def produce_openai_chat_completions(
                                 context_truncation, event
                             )
                         elif event.get("type") == "content":
+                            round_has_content = True
                             # Taken with the snapshot: a terminal empty status would move the mark past it.
                             snapshot_mark = turn_mark
                             # Content is cumulative within a turn and resets
@@ -36526,7 +36591,15 @@ async def produce_openai_chat_completions(
                             auto_heal_tool_calls = _gguf_auto_heal_tool_calls,
                             enabled_tool_names = _gguf_display_tool_names,
                         )
-                    return full_text, usage, finish, timings, context_truncation, provenance
+                    return (
+                        full_text,
+                        usage,
+                        finish,
+                        timings,
+                        context_truncation,
+                        provenance,
+                        client_calls,
+                    )
                 finally:
                     # Close on early break/cancel so the llama-server socket is released.
                     try:
@@ -36601,6 +36674,7 @@ async def produce_openai_chat_completions(
                         completion_timings,
                         completion_context_truncation,
                         think_provenance,
+                        completion_client_calls,
                     ) = await asyncio.shield(drain_task)
                 finally:
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
@@ -36610,6 +36684,13 @@ async def produce_openai_chat_completions(
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
+                if completion_client_calls:
+                    # A pure tool-call turn carries content=null, as OpenAI sends it.
+                    message_kwargs = {
+                        "content": visible_text or None,
+                        "tool_calls": completion_client_calls,
+                    }
+                    completion_finish = "tool_calls"
                 if reasoning_text:
                     message_kwargs["reasoning_content"] = reasoning_text
                 _usage = completion_usage or {}
@@ -46698,8 +46779,10 @@ async def chat_count_tokens(
         )
         # Appended in the position _select_request_tools would have used, so the order matches.
         tools_to_use = tools_to_use + _mcp_tools
-        if tools_to_use:
-            openai_tools = tools_to_use
+        # The GGUF loop renders the request's own tools after Unsloth's.
+        _count_client_tools = _client_tools_beside_studio_tools(payload, tools_to_use)
+        if tools_to_use or _count_client_tools:
+            openai_tools = tools_to_use + _count_client_tools
             openai_messages = _set_or_prepend_system_message(
                 openai_messages,
                 _apply_current_date_prompt(
@@ -46733,7 +46816,7 @@ async def chat_count_tokens(
             _count_auto_heal = (
                 payload.auto_heal_tool_calls if payload.auto_heal_tool_calls is not None else True
             )
-            _count_history_gate = _display_tool_name_gate(tools_to_use)
+            _count_history_gate = _display_tool_name_gate(openai_tools)
             openai_messages = [dict(msg) for msg in openai_messages]
             for _msg in openai_messages:
                 if _msg.get("role") == "assistant" and isinstance(_msg.get("content"), str):
