@@ -347,15 +347,13 @@ def test_only_the_measured_int8_skips_the_resident_bf16_rule(fam):
     assert fam.profile.auto_prequant_when_resident == frozenset({"int8"})
     assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", fam)
     assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", fam)
-    for repo in ("Wan-AI/Wan2.2-T2V-A14B-Diffusers",):
+    # Wan2.2 TI2V-5B and T2V-A14B: INT8 weights failed the video LPIPS bar when re-gated, so Auto keeps a resident
+    # bf16 DiT; an explicit INT8 pick is still honoured.
+    for repo in ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "Wan-AI/Wan2.2-T2V-A14B-Diffusers"):
         wan = detect_video_family(repo)
-        assert wan.profile.auto_prequant_when_resident == frozenset({"int8"})
-        assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", wan)
-        assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", wan)
-    # Wan2.2 TI2V-5B: INT8 weights failed the video LPIPS bar when re-gated, so Auto keeps a resident bf16 DiT.
-    wan5b = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
-    assert not wan5b.profile.auto_prequant_when_resident
-    assert vid._auto_seed_yields_to_resident_bf16("int8", "auto", wan5b)
+        assert not wan.profile.auto_prequant_when_resident
+        assert vid._auto_seed_yields_to_resident_bf16("int8", "auto", wan)
+        assert not vid._auto_seed_yields_to_resident_bf16("int8", "int8", wan)
     for repo in ("Lightricks/LTX-2", "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"):
         other = detect_video_family(repo)
         assert other.name != fam.name
