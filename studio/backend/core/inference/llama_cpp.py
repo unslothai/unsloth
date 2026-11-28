@@ -8419,6 +8419,18 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
 
 
+def _windows_integrated_cuda_commit_mib(free_mib: int, total_mib: int) -> Optional[tuple[int, int]]:
+    """(free, total) for a Windows integrated CUDA device (N1X): its driver reading counts the carve-out
+    plus shared RAM, and every byte is charged to commit, so cap at commit. None off Windows or unread."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from .diffusion_memory import _windows_integrated_commit_credit_mib
+        return _windows_integrated_commit_credit_mib(free_mib, total_mib)
+    except Exception:  # noqa: BLE001 - an unread commit keeps the shared-pool sizing
+        return None
+
+
 def _resolve_llama_binary(binary: str, *, template_only: bool = False) -> Path:
     """Follows the link chain, bounded; template_only stops at the first link not from the installer."""
     resolved = Path(binary).resolve()
@@ -13706,8 +13718,12 @@ class LlamaCppBackend:
                 if pool_mib > total_mib:
                     total_mib = pool_mib
                 raw_mib = free_mib
+                # nvidia-smi's free is the carve-out alone; commit is the whole pool's ceiling.
+                commit = _windows_integrated_cuda_commit_mib(total_mib, total_mib)
+                if commit is not None:
+                    raw_mib, total_mib = commit
                 # MemAvailable: both free readings undercount here. A zero total never caps.
-                if avail is not None and total_mib > 0:
+                elif avail is not None and total_mib > 0:
                     raw_mib = min(total_mib, max(raw_mib, avail))
                 cgroup_bound = False
                 if cgroup_mib is not None and cgroup_mib <= raw_mib:
@@ -13718,8 +13734,9 @@ class LlamaCppBackend:
                     raw_mib //= shared_count
                     total_mib //= shared_count
                 capped = _apply_igpu_host_reserve_mib(raw_mib, True)
-                # Floor at the driver's free reading, except under a cgroup (charged to memory.max).
-                if not cgroup_bound:
+                # Floor at the driver's free reading, except under a cgroup (charged to memory.max) or
+                # Windows commit, where that reading overstates the pool (112 GB on a 64 GB N1X).
+                if not cgroup_bound and commit is None:
                     capped = max(capped, free_mib // shared_count)
                 # Log only on change: _get_gpu_memory is uncached and polled every 0.25 s.
                 if capped != free_mib or total_mib != cli_total_mib:
@@ -16025,10 +16042,13 @@ class LlamaCppBackend:
                     if avail is not None:
                         raw_mib = min(raw_mib, avail)
                 elif integrated:
+                    commit = _windows_integrated_cuda_commit_mib(raw_mib, total_mib)
                     # cudaMemGetInfo reports MemFree; MemAvailable adds back the page cache.
                     avail = LlamaCppBackend._available_system_memory_mib()
+                    if commit is not None:
+                        raw_mib, total_mib = commit
                     # Zero total = unsized pool, not empty; capping by it zeroes the device.
-                    if avail is not None and total_mib > 0:
+                    elif avail is not None and total_mib > 0:
                         raw_mib = min(total_mib, max(raw_mib, avail))
                     # cgroup available is a ceiling too, since allocations are charged to the cgroup.
                     # `<=` on purpose: equality is normal when the cgroup caps MemAvailable.
@@ -16956,7 +16976,8 @@ class LlamaCppBackend:
                 return None  # an unread GPU probe looks GPU-less; never refuse on it
             # An integrated or unified-memory GPU reports dedicated plus shared host memory as its
             # own (a 64 GB Windows-on-Arm part shows about 110 GB), so its free figure is never a
-            # VRAM credit, and this check leaves those loads to the unified-memory paths. Probed
+            # VRAM credit, and this check leaves those loads to the unified-memory paths, whose
+            # integrated CUDA rows are capped at commit on Windows. Probed
             # here even when uncached: this runs once, right before a model load.
             try:
                 unified = set(self._rocm_unified_memory_gpu_ids())
