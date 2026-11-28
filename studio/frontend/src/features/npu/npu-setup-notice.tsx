@@ -3,9 +3,30 @@
 
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { cn } from "@/lib/utils";
 import { Alert02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { npuGpuHint } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
+
+export function NpuGpuHint({
+  catalog,
+  className,
+}: {
+  catalog: NpuCatalog;
+  className?: string;
+}) {
+  const hint = npuGpuHint(catalog.status);
+  if (!hint) return null;
+  return (
+    <p
+      data-testid="npu-gpu-hint"
+      className={cn("text-xs text-muted-foreground", className)}
+    >
+      {hint}
+    </p>
+  );
+}
 
 export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
   const { status, ready, models, listError } = catalog;
@@ -23,6 +44,7 @@ export function NpuSetupNotice({ catalog }: { catalog: NpuCatalog }) {
       ) : (
         <NpuEnableCard catalog={catalog} />
       )}
+      <NpuGpuHint catalog={catalog} />
       {status.error || problems.length > 0 ? (
         <div className="flex gap-2 rounded-lg bg-destructive/10 p-2.5 text-destructive">
           <HugeiconsIcon

@@ -35,7 +35,7 @@ export {
   npuRepoLabel,
 } from "./display-name";
 export { refreshNpuModels, useNpuCatalogStore } from "./npu-catalog-store";
-export { NpuSetupNotice } from "./npu-setup-notice";
+export { NpuGpuHint, NpuSetupNotice } from "./npu-setup-notice";
 export { npuEngineVersions, npuVersionTag } from "./runtime-versions";
 export {
   type NpuCatalog,

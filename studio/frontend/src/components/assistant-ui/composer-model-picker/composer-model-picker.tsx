@@ -141,6 +141,7 @@ import { isCapableCheckpointQuant } from "@/features/model-picker/components/mod
 import {
   NPU_CATALOG_TAG,
   NPU_TAG_TEXT,
+  NpuGpuHint,
   type NpuModel,
   NpuSetupNotice,
   npuDeleteDescription,
@@ -5409,13 +5410,18 @@ export function ComposerModelPicker({
           <Fragment key="custom-folders">{customFolders.body}</Fragment>,
         );
       }
-      if (
-        section === "npu" &&
-        viewed === RECOMMENDED_TAB &&
-        npuCatalog &&
-        npuNoticeShown(npuCatalog)
-      ) {
-        out.push(<NpuSetupNotice key="npu-setup" catalog={npuCatalog} />);
+      if (section === "npu" && viewed === RECOMMENDED_TAB && npuCatalog) {
+        out.push(
+          npuNoticeShown(npuCatalog) ? (
+            <NpuSetupNotice key="npu-setup" catalog={npuCatalog} />
+          ) : (
+            <NpuGpuHint
+              key="npu-gpu-hint"
+              catalog={npuCatalog}
+              className="px-3 pb-1.5"
+            />
+          ),
+        );
       }
       for (const row of shownRows) {
         if (row.section === section) {

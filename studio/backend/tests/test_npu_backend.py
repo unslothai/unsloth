@@ -66,6 +66,7 @@ def npu(tmp_path, monkeypatch):
         "detect_amd_npu",
         lambda: {"present": True, "supported": True, "family": "XDNA2", "name": "NPU Strix Halo"},
     )
+    monkeypatch.setattr(nb, "_strix_halo_gpu", lambda: False)
     backend = nb.LemonadeNpuBackend(root = tmp_path / "lemonade")
     backend.installer = installer
     yield backend

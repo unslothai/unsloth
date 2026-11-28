@@ -32,6 +32,7 @@ test("enabling the NPU in one view updates every other mounted view", async () =
           calls += 1;
           return { supported: true, ready: false };
         },
+        npuProvisionalRetryMs: () => null,
       },
     },
   );
