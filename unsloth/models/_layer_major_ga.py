@@ -10,6 +10,10 @@ Trainer.training_step runs the N micro-batches of the step together through unsl
 through the trainer's own training_step: same shapes, loss, num_items_in_batch normalisation and accumulation order,
 so losses and gradients match standard accumulation bitwise.
 
+Random draws (dropout, lora_dropout, NEFTune) keep standard accumulation's order: each micro-batch's draws are
+learned from a standard step of its shape, the window starts every micro-batch where standard accumulation would and
+checks it (see the random draws section below).
+
 "auto" by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
 decoder; "auto" (or unset) only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
 accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (on after
@@ -46,6 +50,15 @@ try:
     )
 except Exception:  # unsloth_zoo without layer-major windows
     run_layer_major = None
+try:
+    from unsloth_zoo.block_swap_layer_major import (
+        ZERO_CONSUMPTION,
+        rng_consumption,
+        rng_same,
+        rng_snapshot,
+    )
+except Exception:  # unsloth_zoo whose windows cannot follow standard accumulation's random draws
+    rng_snapshot = None
 
 _TLS = threading.local()
 # With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (the allowlisted decoders below, after measured copy stalls, when the
@@ -77,6 +90,22 @@ _AUTO_LAYERS = {
     "Gemma2DecoderLayer": ("gemma2",),
     "Gemma3DecoderLayer": ("gemma3_text",),
 }
+
+
+def _engine_rng():
+    """Whether unsloth_zoo's window takes a random-draw plan (micro-batches start where standard ones would)."""
+    if run_layer_major is None or rng_snapshot is None:
+        return False
+    key = id(run_layer_major)
+    if key not in _ENGINE_RNG:
+        try:
+            _ENGINE_RNG[key] = "rng_plan" in inspect.signature(run_layer_major).parameters
+        except (TypeError, ValueError):
+            _ENGINE_RNG[key] = False
+    return _ENGINE_RNG[key]
+
+
+_ENGINE_RNG = {}
 
 
 def _mode():
@@ -512,17 +541,131 @@ def layer_major_ineligible(
         value = getattr(config, key, 0)
         if isinstance(value, int) and value > 0:
             return "a mixture-of-experts model (router losses)"
+    if not _engine_rng():
+        # An unsloth_zoo window without random-draw plans would draw in another order across micro-batches.
+        why = _random_draws_expected(trainer, model)
+        if why is not None:
+            return f"{why} (unsloth_zoo is too old to keep random draws in standard order)"
+    return None
+
+
+def _random_draws_expected(trainer, model):
+    """Dropout (config, any module, lora_dropout) or NEFTune: the micro-batches draw random numbers. A hint only: a
+    window learns each micro-batch shape's draws from a standard step first (and checks them in any case)."""
+    config = _text_config(model)
     for key in _DROPOUT_KEYS:
         value = getattr(config, key, 0)
         if isinstance(value, (int, float)) and value > 0:
-            return f"{key} = {value} (dropout draws differ by micro-batch order)"
-    # Anywhere in the model (lora_dropout on the head too): the window reorders the draws across micro-batches.
+            return f"{key} = {value}"
     found = _dropout_modules(model)
     if found is not None:
         return f"dropout {found}"
-    if getattr(args, "neftune_noise_alpha", None):
-        return "NEFTune embedding noise (random draws)"
+    if getattr(getattr(trainer, "args", None), "neftune_noise_alpha", None):
+        return "NEFTune embedding noise"
     return None
+
+
+# ---- random draws in standard order ----
+# A window starts micro-batch m where standard accumulation would: where micro-batch m - 1's standard step ends. What
+# each micro-batch draws (dropout masks, NEFTune noise) depends on its shapes, so it is learned from standard steps
+# (every standard micro-batch step while a block swap is active is bracketed by generator snapshots) per micro-batch
+# signature and passed to the window as its plan; the window checks every micro-batch ended where the next started.
+_RNG_VOLATILE_MAX = 2
+
+
+def _signature(inputs):
+    if not isinstance(inputs, Mapping):
+        return None
+    out = []
+    for key in sorted(inputs, key = str):
+        value = inputs[key]
+        if isinstance(value, torch.Tensor):
+            out.append((str(key), tuple(value.shape), str(value.dtype), str(value.device)))
+        elif value is None or isinstance(value, (bool, int, float, str)):
+            out.append((str(key), value))
+        else:
+            out.append((str(key), type(value).__name__))
+    return tuple(out)
+
+
+def _rng_state(trainer):
+    return trainer.__dict__.setdefault(
+        "_unsloth_layer_major_rng",
+        {"ledger": {}, "draws": False, "volatile": 0, "records": [], "off": None},
+    )
+
+
+def _rng_off(trainer, why):
+    state = _rng_state(trainer)
+    if state["off"] is None:
+        state["off"] = why
+        _say_once(
+            trainer,
+            "rng-off",
+            f"Unsloth: offload_layers runs micro-batches one after another from here on: {why}.",
+        )
+
+
+def _rng_learn(trainer, sig, consumption):
+    state = _rng_state(trainer)
+    if consumption is None:
+        _rng_off(
+            trainer,
+            "random draws that a draw count cannot replay (a reseed or cached normal samples)",
+        )
+        return
+    if consumption != ZERO_CONSUMPTION:
+        state["draws"] = True
+    known = state["ledger"].get(sig)
+    if known is not None and known != consumption:
+        state["volatile"] += 1
+        if state["volatile"] >= _RNG_VOLATILE_MAX:
+            _rng_off(
+                trainer, "the random draws of a micro-batch depend on its data, not only its shapes"
+            )
+    state["ledger"][sig] = consumption
+
+
+def _rng_flush(trainer):
+    """Learn from the standard micro-batch steps recorded since the last step began."""
+    state = trainer.__dict__.get("_unsloth_layer_major_rng")
+    if not state or not state["records"]:
+        return
+    records, state["records"] = state["records"], []
+    for (sig, before, after), nxt in zip(records, records[1:] + [None]):
+        if len(before[1]) != len(after[1]):
+            continue  # CUDA came up during the step: its generators were not in the first snapshot
+        _rng_learn(trainer, sig, rng_consumption(before, after))
+        if nxt is not None and len(nxt[1][1]) == len(after[1]) and not rng_same(after, nxt[1]):
+            # A window runs every micro-batch's step back to back; draws between them would move.
+            _rng_off(trainer, "random numbers are drawn between the micro-batches of a step")
+
+
+def _rng_recording(trainer):
+    """Whether this standard micro-batch step is bracketed by generator snapshots."""
+    if not _engine_rng() or _mode() == "off":
+        return False
+    cached = trainer.__dict__.get("_unsloth_layer_major_target")
+    return cached is not None and cached[2] is not None and _rng_state(trainer)["off"] is None
+
+
+def _rng_plan(trainer, model, samples):
+    """(plan, None) for a window over `samples`, or (None, message) when a micro-batch shape's draws are unknown."""
+    state = _rng_state(trainer)
+    if state["off"] is not None:
+        return None, None
+    plan = []
+    for sample in samples[:-1]:
+        known = state["ledger"].get(_signature(sample))
+        if known is None:
+            if state["draws"] or _random_draws_expected(trainer, model) is not None:
+                return None, (
+                    "Unsloth: offload_layers runs micro-batches one after another for a micro-batch shape whose "
+                    "random draws (dropout, noise) it has not seen yet; it learns them from this step."
+                )
+            known = ZERO_CONSUMPTION
+        plan.append(known)
+    return plan, None
 
 
 def _tokens(sample):
@@ -846,6 +989,14 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     if plan[0] is None and plan[1] is not None:
         _say_once(trainer, plan[1], plan[2])
     layers, swapper, need = plan
+    rng_plan = None
+    if layers is not None and _engine_rng():
+        _rng_flush(trainer)
+        rng_plan, message = _rng_plan(trainer, inner, samples)
+        if rng_plan is None:
+            if message is not None:
+                _say_once(trainer, "rng-learn", message)
+            layers = swapper = None
     agree = None
     if ddp is not None:
         group, device = ddp.process_group, _collective_device(ddp.process_group)
@@ -879,8 +1030,11 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         for k in ("_metrics", "_total_train_tokens")
         if k in trainer.__dict__
     }
+    rng_trace = []
     try:
         vote = {"agree": agree} if agree is not None else {}
+        if rng_plan is not None:
+            vote.update(rng_plan = rng_plan, rng_trace = rng_trace)
         losses, why = run_layer_major(layers, fns, swapper = swapper, model = inner, **vote)
     except BaseException:
         trainer.__dict__.update(counters)  # the engine already put back gradients and RNG
@@ -891,6 +1045,21 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         _restore_buffers(buffers)
         if why.startswith("another layer-major window"):
             return None  # transient: another trainer in this process holds the window
+        if why.startswith("random draws"):
+            # The plan was wrong for this step (data-dependent draws, or a shape seen with other draws): this step's
+            # standard retry is recorded and corrects it; twice turns windows off.
+            state = _rng_state(trainer)
+            for sample in samples:
+                state["ledger"].pop(
+                    _signature(sample), None
+                )  # relearned from the retry, not counted twice
+            state["volatile"] += 1
+            if state["volatile"] >= _RNG_VOLATILE_MAX:
+                _rng_off(
+                    trainer,
+                    "the random draws of a micro-batch depend on its data, not only its shapes",
+                )
+            return None
         _say_once(
             trainer,
             "abort",
@@ -902,6 +1071,13 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
     if ddp is not None:
         # The step's only gradient reduction: the window ran inside no_sync and outside DDP's forward.
         _reduce_like_ddp(ddp)
+    if rng_trace:
+        # The last micro-batch had no plan entry: learn its shape's draws from the window itself.
+        sig = _signature(samples[-1])
+        if sig not in _rng_state(trainer)["ledger"]:
+            before, after = rng_trace[-1]
+            if before is not None and after is not None and len(before[1]) == len(after[1]):
+                _rng_learn(trainer, sig, rng_consumption(before, after))
     _say_once(
         trainer,
         "on",
@@ -939,6 +1115,10 @@ def patch_layer_major_gradient_accumulation(Trainer):
     @functools.wraps(get_batch_samples)
     def _get_batch_samples(self, *args, **kwargs):
         out = get_batch_samples(self, *args, **kwargs)
+        if "_unsloth_layer_major_rng" in self.__dict__:
+            _rng_flush(
+                self
+            )  # one step's records at a time: draws between steps (optimizer, logging) are not checked
         self.__dict__.pop("_unsloth_layer_major_window", None)
         self.__dict__.pop("_unsloth_layer_major_batch", None)
         try:
@@ -968,11 +1148,16 @@ def patch_layer_major_gradient_accumulation(Trainer):
         *args,
         **kwargs,
     ):
-        if not getattr(_TLS, "passthrough", False):
-            loss = _layer_major_step(self, model, inputs, num_items_in_batch, args, kwargs)
-            if loss is not None:
-                return loss
-        return training_step(self, model, inputs, num_items_in_batch, *args, **kwargs)
+        if getattr(_TLS, "passthrough", False):
+            return training_step(self, model, inputs, num_items_in_batch, *args, **kwargs)
+        loss = _layer_major_step(self, model, inputs, num_items_in_batch, args, kwargs)
+        if loss is not None:
+            return loss
+        before = rng_snapshot() if _rng_recording(self) else None
+        loss = training_step(self, model, inputs, num_items_in_batch, *args, **kwargs)
+        if before is not None:
+            _rng_state(self)["records"].append((_signature(inputs), before, rng_snapshot()))
+        return loss
 
     _get_batch_samples._unsloth_layer_major = True
     _training_step._unsloth_layer_major = True

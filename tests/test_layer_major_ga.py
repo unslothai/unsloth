@@ -329,12 +329,137 @@ def test_no_block_swap_means_no_window(ga, tmp_path, monkeypatch):
     assert _windows(engine) == 0
 
 
-def test_lora_dropout_is_ineligible(ga, tmp_path, monkeypatch, capsys):
+def _fixed_collate(rows, length = 20):
+    """Every micro-batch padded to one length: one micro-batch signature, so its random draws are learned once."""
+    out = _collate(rows)
+    pad = length - out["input_ids"].shape[1]
+    return {
+        k: torch.nn.functional.pad(v, (0, pad), value = -100 if k == "labels" else 0)
+        for k, v in out.items()
+    }
+
+
+def _assert_bitwise(a, b):
+    (w0, l0), (w1, l1) = a, b
+    assert l0 == l1 and l0
+    assert w0.keys() == w1.keys()
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+def _attention_dropout(p):
+    def hook(model):
+        model.config.attention_dropout = p
+        for m in model.modules():
+            if hasattr(m, "attention_dropout"):
+                m.attention_dropout = p
+
+    return hook
+
+
+def _head_dropout(kind, p = 0.3):
+    def hook(model):
+        base = model.get_base_model().model
+        base.norm = torch.nn.Sequential(
+            base.norm, getattr(torch.nn, kind)(p)
+        )  # after the layers: the loss part
+
+    return hook
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lora_dropout",
+        "attention_dropout",
+        "neftune",
+        "Dropout1d",
+        "AlphaDropout",
+        "FeatureAlphaDropout",
+    ],
+)
+def test_random_draws_match_standard_accumulation_bitwise(ga, tmp_path, monkeypatch, capsys, case):
+    """lora_dropout, config attention dropout, NEFTune noise and every dropout kind (here in the head, the loss
+    part): the first step is standard and teaches the window each micro-batch's draws, the later steps run windows,
+    and losses and LoRA weights are bitwise those of UNSLOTH_OFFLOAD_LAYER_MAJOR = 0."""
     mod, engine = ga
+    kw = {"collate": _fixed_collate, "steps": 3}
+    if case == "lora_dropout":
+        kw["dropout"] = 0.1
+    elif case == "attention_dropout":
+        kw["model_hook"] = _attention_dropout(0.1)
+    elif case == "neftune":
+        kw["neftune_noise_alpha"] = 5.0
+    else:
+        if not hasattr(torch.nn, case):
+            pytest.skip(case)
+        kw["model_hook"] = _head_dropout(case)
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", **kw)
+    assert _windows(engine) == 0
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", **kw)
+    assert _windows(engine) == 2
+    assert engine.layer_major_stats()["rng_mismatches"] == 0
+    assert "learns them from this step" in capsys.readouterr().out
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_trl_sft_trainer_with_lora_dropout_matches_standard_bitwise(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    a = _sft(mod, tmp_path, monkeypatch, "0", dropout = 0.1, steps = 3, collate = _fixed_collate)
+    assert _windows(engine) == 0
+    b = _sft(mod, tmp_path, monkeypatch, "1", dropout = 0.1, steps = 3, collate = _fixed_collate)
+    assert _windows(engine) == 2
+    _assert_bitwise(a, b)
+
+
+def test_new_micro_batch_shapes_with_dropout_are_learned_first(ga, tmp_path, monkeypatch):
+    """Dynamic padding: a step with a micro-batch shape whose draws were not seen runs the standard way (and is
+    learned); every step stays bitwise."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", dropout = 0.1, steps = 4)
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", dropout = 0.1, steps = 4)
+    assert engine.layer_major_stats()["rng_mismatches"] == 0
+    assert _windows(engine) < 4
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_a_wrong_learned_count_rolls_back_and_is_relearned(ga, tmp_path, monkeypatch):
+    """A ledger entry off by one draw: that step's window rolls back (rng_mismatches 1), the step runs the standard
+    way and relearns, the next step's window is exact."""
+    mod, engine = ga
+    kw = {"collate": _fixed_collate, "steps": 4, "dropout": 0.1}
+
+    class Corrupt(transformers.TrainerCallback):
+        def on_step_end(self, args, state, control, **kwargs):
+            if state.global_step == 1:
+                mod._rng_flush(_LAST[0])
+                ledger = _LAST[0].__dict__["_unsloth_layer_major_rng"]["ledger"]
+                assert ledger
+                for k, (count, cuda) in list(ledger.items()):
+                    ledger[k] = (count + 1, cuda)
+
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", **kw)
+    engine.layer_major_stats(reset = True)
+    w1, l1, _ = _train(
+        mod, tmp_path, monkeypatch, "1", trainer_kwargs = {"callbacks": [Corrupt()]}, **kw
+    )
+    st = engine.layer_major_stats()
+    assert st["rng_mismatches"] == 1 and st["windows"] == 2
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_dropout_with_an_engine_without_draw_plans_stays_standard(
+    ga, tmp_path, monkeypatch, capsys
+):
+    mod, engine = ga
+    monkeypatch.setattr(mod, "_engine_rng", lambda: False)
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", dropout = 0.1)
     assert _windows(engine) == 0
-    assert "dropout" in capsys.readouterr().out
+    assert "too old to keep random draws" in capsys.readouterr().out
 
 
 def test_trainer_overriding_compute_loss_is_ineligible(ga, tmp_path, monkeypatch):
@@ -375,6 +500,10 @@ def _sft(
     mode,
     trainer_cls = None,
     abort_once = False,
+    dropout = 0.0,
+    steps = 2,
+    collate = None,
+    **extra_args,
 ):
     trl = pytest.importorskip("trl")
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
@@ -382,7 +511,7 @@ def _sft(
     T = (
         trainer_cls or trl.SFTTrainer
     )  # the real SFTTrainer chain over the patched transformers.Trainer
-    model = _model()
+    model = _model(dropout)
     model.get_base_model().model.layers._unsloth_block_swap = _Swap()
     data = _Data()
     try:
@@ -394,7 +523,7 @@ def _sft(
         output_dir = str(tmp_path / f"sft{mode}"),
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 3,
-        max_steps = 2,
+        max_steps = steps,
         learning_rate = 1e-2,
         logging_steps = 1,
         report_to = [],
@@ -407,12 +536,13 @@ def _sft(
         disable_tqdm = True,
         dataset_kwargs = {"skip_prepare_dataset": True},
         remove_unused_columns = False,
+        **extra_args,
     )
     trainer = T(
         model = model,
         args = args,
         train_dataset = ds,
-        data_collator = _collate,
+        data_collator = collate or _collate,
         processing_class = _tokenizer(),
     )
     if abort_once:
@@ -881,20 +1011,6 @@ def test_wrapped_training_step_overrides_are_ineligible(ga, tmp_path, monkeypatc
     assert _windows(engine) == 0
 
 
-def test_dropout_outside_the_decoder_is_ineligible(ga, tmp_path, monkeypatch, capsys):
-    mod, engine = ga
-
-    def head_dropout(model):
-        head = model.get_base_model().lm_head
-        head.drop = torch.nn.Dropout(0.3)  # as lora_dropout on a head adapter
-        head.register_forward_hook(lambda module, args, out: module.drop(out))
-
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", model_hook = head_dropout)
-    assert _windows(engine) == 0
-    assert "Dropout(p = 0.3)" in capsys.readouterr().out
-
-
 def test_gradient_hooks_on_trainable_parameters_are_ineligible(ga, tmp_path, monkeypatch):
     mod, engine = ga
 
@@ -992,30 +1108,6 @@ def test_trainer_classes_are_matched_by_identity_not_name(ga, tmp_path, monkeypa
     Lookalike.__module__ = "unsloth_finetune"
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", trainer_base = Lookalike)
-    assert _windows(engine) == 0
-
-
-@pytest.mark.parametrize("kind", ["Dropout1d", "AlphaDropout", "FeatureAlphaDropout"])
-def test_every_dropout_kind_is_ineligible(ga, tmp_path, monkeypatch, capsys, kind):
-    mod, engine = ga
-    if not hasattr(torch.nn, kind):
-        pytest.skip(kind)
-
-    def add(model):
-        emb = model.get_base_model().model.embed_tokens
-        emb.drop = getattr(torch.nn, kind)(0.3)
-        emb.register_forward_hook(lambda module, args, out: module.drop(out))
-
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", model_hook = add)
-    assert _windows(engine) == 0
-    assert f"{kind}(p = 0.3)" in capsys.readouterr().out
-
-
-def test_neftune_is_ineligible(ga, tmp_path, monkeypatch):
-    mod, engine = ga
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", neftune_noise_alpha = 5.0)
     assert _windows(engine) == 0
 
 
