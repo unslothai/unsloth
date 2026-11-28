@@ -4591,6 +4591,8 @@ export const ar = {
       lrSchedulerOptions: {
         linear: "خطي",
         cosine: "جيب التمام (Cosine)",
+        constantWithWarmup: "ثابت + إحماء",
+        constant: "ثابت",
       },
       batchSize: "حجم الدفعة",
       batchSizeTooltip:

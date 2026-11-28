@@ -4886,6 +4886,8 @@ export const fa = {
       lrSchedulerOptions: {
         linear: "خطی",
         cosine: "کسینوسی",
+        constantWithWarmup: "ثابت + گرم‌کردن",
+        constant: "ثابت",
       },
       batchSize: "اندازهٔ دسته",
       batchSizeTooltip:

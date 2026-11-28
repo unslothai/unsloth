@@ -4903,6 +4903,8 @@ export const id = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Konstan + warmup",
+        constant: "Konstan",
       },
       batchSize: "Ukuran Batch",
       batchSizeTooltip:

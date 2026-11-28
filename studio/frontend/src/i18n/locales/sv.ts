@@ -4786,6 +4786,8 @@ export const sv = {
       lrSchedulerOptions: {
         linear: "Linjär",
         cosine: "Cosinus",
+        constantWithWarmup: "Konstant + uppvärmning",
+        constant: "Konstant",
       },
       batchSize: "Batchstorlek",
       batchSizeTooltip:

@@ -67,6 +67,10 @@ function formatSchedulerLabel(
       return t("studio.params.lrSchedulerOptions.linear");
     case "cosine":
       return t("studio.params.lrSchedulerOptions.cosine");
+    case "constant_with_warmup":
+      return t("studio.params.lrSchedulerOptions.constantWithWarmup");
+    case "constant":
+      return t("studio.params.lrSchedulerOptions.constant");
     default:
       return fallback;
   }

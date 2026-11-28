@@ -4580,6 +4580,8 @@ export const ko = {
       lrSchedulerOptions: {
         linear: "Linear",
         cosine: "Cosine",
+        constantWithWarmup: "Constant + 워밍업",
+        constant: "Constant",
       },
       batchSize: "배치 크기",
       batchSizeTooltip:

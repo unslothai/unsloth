@@ -4946,6 +4946,8 @@ export const uk = {
       lrSchedulerOptions: {
         linear: "Лінійний",
         cosine: "Косинусний",
+        constantWithWarmup: "Постійний + розігрів",
+        constant: "Постійний",
       },
       batchSize: "Розмір пакета",
       batchSizeTooltip:
