@@ -37,6 +37,7 @@ const EVEN_MORE_PROVIDER_TYPES = new Set([
   "vertex",
   "typesafe",
   "liquid",
+  "nace",
 ]);
 
 export interface ConnectionGalleryItem {

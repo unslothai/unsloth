@@ -39,7 +39,7 @@ export function letterTileColor(name: string): string {
   return `oklch(${lightness.toFixed(2)} 0.15 ${h % 360})`;
 }
 
-const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe", "vercel", "xai", "zai", "kimi", "opencode", "opencode_go"]);
+const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid", "typesafe", "vercel", "xai", "zai", "kimi", "opencode", "opencode_go", "nace"]);
 // Pale brand marks get a hairline edge on light surfaces instead of inverting.
 const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 

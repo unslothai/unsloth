@@ -494,7 +494,7 @@ def test_providers_that_list_their_own_models_take_none_from_the_catalog(
 ):
     monkeypatch.setitem(_RAW_MODELS_DEV, "openrouter", _RAW_MODEL_LISTS["openai"])
     listed_catalog()
-    for name in ("openai_codex", "openrouter", "qwencloud", "typesafe", "liquid"):
+    for name in ("openai_codex", "openrouter", "qwencloud", "typesafe", "liquid", "nace"):
         assert _registry_models(name) == [], name
 
 

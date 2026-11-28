@@ -397,6 +397,35 @@ def test_system_one_sends_the_default_model_and_maps_every_answer_type(monkeypat
     }
 
 
+def test_system_one_keys_a_legend_sent_as_a_list(monkeypatch):
+    # A Drex connection lists a score's levels in order; the tool keys them like Laya does.
+    drex = {
+        "model": "drex-max",
+        "answers": {
+            "tone": {
+                "type": "score",
+                "score": 0.93,
+                "confidence": 0.705,
+                "legend": ["calm", {"text": "angry"}],
+                "probabilities": {"0": 0.3, "1": 0.7},
+            }
+        },
+        "usage": {"input_tokens": 307, "output_tokens": 311},
+    }
+    args = {"state": "x", "questions": {"tone": QUESTIONS["tone"]}, "model": "drex-max"}
+    result, studio = _decide(monkeypatch, args, JSONResponse(drex))
+    assert result["structuredContent"]["answers"]["tone"] == {
+        "type": "score",
+        "noul": None,
+        "choice": None,
+        "score": 0.93,
+        "confidence": 0.705,
+        "probabilities": {"0": 0.3, "1": 0.7},
+        "legend": {"0": "calm", "1": '{"text": "angry"}'},
+    }
+    assert bodies(studio, "/v1/systemone")[0]["model"] == "drex-max"
+
+
 def test_a_detail_error_type_message_is_used(monkeypatch):
     unknown = JSONResponse(
         {"detail": {"error_type": "api_usage_error", "message": "Unknown model: nope"}},
