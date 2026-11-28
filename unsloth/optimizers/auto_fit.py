@@ -33,6 +33,7 @@ import json
 import os
 import sys
 import weakref
+from collections.abc import Mapping
 
 import torch
 
@@ -1326,6 +1327,18 @@ def _repeatable(trainer, model):
             metrics.update(saved_metrics)
 
 
+def _fresh_views(obj):
+    """The same inputs as new tensor objects (views): torch.compile marks dynamic dimensions on the tensors a pass
+    sees, and the real pass must see its inputs as they were, or every compiled graph recompiles once."""
+    if isinstance(obj, torch.Tensor):
+        return obj.view(obj.shape)
+    if isinstance(obj, (list, tuple)) and type(obj) in (list, tuple):
+        return type(obj)(_fresh_views(o) for o in obj)
+    if isinstance(obj, Mapping):
+        return {k: _fresh_views(v) for k, v in obj.items()}
+    return obj
+
+
 def _arm_training_step(trainer, wrapper):
     original = trainer.training_step
     if getattr(original, "_unsloth_in_backward", False):
@@ -1355,7 +1368,11 @@ def _arm_training_step(trainer, wrapper):
             owner = trainer_ref()
             model = args[0] if args else kwargs.get("model")
             with _repeatable(owner, model), opt.measuring():
-                type(owner).training_step(owner, *args, **kwargs)
+                type(owner).training_step(
+                    owner,
+                    *(args[:1] + tuple(_fresh_views(a) for a in args[1:])),
+                    **{k: v if k == "model" else _fresh_views(v) for k, v in kwargs.items()},
+                )
         with opt.armed():
             return original(*args, **kwargs)
 
