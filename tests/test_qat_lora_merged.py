@@ -243,6 +243,21 @@ def test_disabled_adapters_and_quantizers_fall_back(monkeypatch):
         torch.testing.assert_close(plain, ref, rtol = 1e-6, atol = 1e-6)
 
 
+def test_lora_input_hook_follows_the_base_quantizer(monkeypatch):
+    """The LoRA branch reads the base's fake quantized input only while the base has an activation quantizer:
+    after the export strips fake quantization, the in-memory model is plain LoRA again."""
+    model = _model("fp8-fp8", monkeypatch)
+    up = _lora_layers(model)[0]
+    x = _x()
+    lora_A = up.lora_A["default"]
+    quantizer = up.get_base_layer().activation_fake_quantizer
+    with torch.no_grad():
+        torch.testing.assert_close(lora_A(x), F.linear(quantizer(x), lora_A.weight))
+        del up.get_base_layer()._modules["activation_fake_quantizer"]
+        up.get_base_layer().activation_fake_quantizer = None
+        torch.testing.assert_close(lora_A(x), F.linear(x, lora_A.weight))
+
+
 def test_default_stays_base_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_QAT_LORA_MERGED", raising = False)
     model = _model("int4", monkeypatch, merged = None)

@@ -266,9 +266,13 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
 
 
 def _activation_quantize_lora_input(module, args):
-    """forward_pre_hook on lora_A: the LoRA branch sees the base layer's fake quantized input."""
-    quantizer = module.__dict__.get("_unsloth_qat_lora_input_quantizer")
-    if quantizer is None or not getattr(quantizer, "enabled", True) or not args:
+    """forward_pre_hook on lora_A: the LoRA branch sees the base layer's fake quantized input. Read from the
+    base layer per call: once the export strips fake quantization the hook is a no-op."""
+    layer = module.__dict__.get("_unsloth_qat_lora_owner")
+    if layer is None or not args or not layer.__dict__.get(_FLAG, False):
+        return None
+    quantizer = layer.get_base_layer()._modules.get("activation_fake_quantizer")
+    if quantizer is None or not getattr(quantizer, "enabled", True):
         return None
     return (quantizer(args[0]), *args[1:])
 
@@ -325,7 +329,11 @@ def _refusal(layer, name):
             return f"{name} uses lora_bias; merged QAT-LoRA supports adapters without a bias"
         if factor._modules.get("weight_fake_quantizer") is not None:
             return f"{name} fake quantizes its adapter weights (UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1)"
-    config = getattr(layer.get_base_layer()._modules.get("weight_fake_quantizer"), "config", None)
+    base = layer.get_base_layer()
+    weight = base._parameters.get("weight")
+    if weight is None or type(weight.data) is not torch.Tensor or weight.device.type == "meta":
+        return f"{name} has no plain base weight (sharded, offloaded or a tensor subclass)"
+    config = getattr(base._modules.get("weight_fake_quantizer"), "config", None)
     if getattr(config, "range_learning", False) or not getattr(config, "is_dynamic", True):
         return f"{name} uses a static or learned weight scale; merged QAT-LoRA needs dynamic scales"
     return None
@@ -360,8 +368,8 @@ def install_qat_lora_merged(model):
             activation = base._modules.get("activation_fake_quantizer")
             if activation is not None:
                 for lora_A in layer.lora_A.values():
-                    if "_unsloth_qat_lora_input_quantizer" not in lora_A.__dict__:
-                        lora_A.__dict__["_unsloth_qat_lora_input_quantizer"] = activation
+                    if "_unsloth_qat_lora_owner" not in lora_A.__dict__:
+                        lora_A.__dict__["_unsloth_qat_lora_owner"] = layer
                         lora_A.register_forward_pre_hook(_activation_quantize_lora_input)
         else:
             if "_unsloth_qat_lora_weight_forward" not in base.__dict__:
