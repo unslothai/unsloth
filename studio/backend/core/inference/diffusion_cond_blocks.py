@@ -10,7 +10,8 @@ images the joint blocks take one row per span (image, references) instead of a p
 UNSLOTH_DIFFUSION_FLUX3_SPAN_MOD=0 restores the per-token rows. Text-to-image renders on a resident denoiser cache the
 text stream too (its five blocks were 1.4-1.6% of a 1024^2 step on L4 / A100);
 UNSLOTH_DIFFUSION_FLUX3_TEXT_COND_CACHE=0 runs them every step again. Guided steps on a resident denoiser compute the
-image prefix once and share it across both branches; UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX=0 disables"""
+image prefix once and share it across both branches (also a block-offloaded one whose every group the placement kept
+resident at that call); UNSLOTH_DIFFUSION_FLUX3_IMAGE_PREFIX=0 disables"""
 
 from __future__ import annotations
 
@@ -74,12 +75,14 @@ def image_prefix_enabled() -> bool:
     return _switch(IMAGE_PREFIX_ENV)
 
 
-def _text_only(module: Any) -> bool:
+def _text_only(module: Any, offloaded: Optional[bool] = None) -> bool:
     """Cache the text stream when there is no reference stream; offloaded denoisers keep stock (prefetch order)."""
     flag = module.__dict__.get("_unsloth_cond_text_only")
     if flag is not None:
         return bool(flag)
-    return text_cond_enabled() and not module.__dict__.get(_OFFLOADED_ATTR)
+    if offloaded is None:
+        offloaded = _offloaded_now(module)
+    return text_cond_enabled() and not offloaded
 
 
 def span_enabled() -> bool:
@@ -125,6 +128,40 @@ def _offloaded(module: Any) -> Optional[str]:
         if any("offload" in str(k).lower() for k in hooks):
             return f"{name or '<root>'} is group offloaded"
     return None
+
+
+_RESIDENT_ATTR = "_unsloth_cond_all_resident"
+
+
+def _offloaded_now(module: Any) -> bool:
+    """Offloaded at this call: a block-offloaded denoiser whose every group is resident runs the resident path."""
+    return bool(module.__dict__.get(_OFFLOADED_ATTR)) and not _groups_all_resident(module)
+
+
+def _groups_all_resident(module: Any) -> bool:
+    """Block offloaded, but every offload group (the top-level one included) is resident right now: the image prefix
+    then reads only device weights, as on a resident denoiser. Read per call, cached per placement epoch: the prompt
+    encode streams groups out after ``begin_render`` and pins them back before step 0."""
+    try:
+        from .diffusion_offload_prefetch import placement_epoch
+        epoch = placement_epoch()
+    except Exception:  # noqa: BLE001 - no epoch to key on: read it now
+        epoch = None
+    held = module.__dict__.get(_RESIDENT_ATTR)
+    if epoch is not None and held is not None and held[0] == epoch:
+        return held[1]
+    ok = False
+    try:
+        from .diffusion_memory import _offload_groups
+
+        groups = _offload_groups(module)
+        ok = bool(groups) and all(getattr(g, "_unsloth_resident", False) for g in groups)
+        if ok:
+            ok = not any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+    except Exception:  # noqa: BLE001 - unknown layout: keep the per-call prefix
+        ok = False
+    module.__dict__[_RESIDENT_ATTR] = (epoch, ok)
+    return ok
 
 
 def _fixed_prefetch_chain(module: Any) -> Optional[str]:
@@ -626,11 +663,11 @@ def _pre_hook(module: Any, args: tuple, kwargs: dict) -> Any:
     iid = kwargs.get("image_cond_ids")
     if hidden_states is None or ehs is None or txt_ids is None or (ich is None) != (iid is None):
         return None
-    if ich is None and not _text_only(module):
-        return None
     if hidden_states.is_cuda and torch.cuda.is_current_stream_capturing():
         return None
-    offloaded = bool(module.__dict__.get(_OFFLOADED_ATTR))
+    offloaded = _offloaded_now(module)
+    if ich is None and not _text_only(module, offloaded):
+        return None
     if offloaded and not _offload_device_ok(hidden_states):
         stats["skipped"] += 1
         stats["reason"] = (
