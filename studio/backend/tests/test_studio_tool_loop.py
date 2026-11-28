@@ -9,9 +9,13 @@ import asyncio
 import json
 import threading
 
+import httpx
 import pytest
 
+from core.inference import external_provider as ep_mod
 from core.inference import passthrough_healing
+from core.inference.external_provider import ExternalProviderClient
+from core.inference.external_tool_transport import OAICompatTransport
 from core.inference import studio_tool_loop as loop_mod
 from core.inference.studio_tool_loop import (
     ToolLoopPolicy,
@@ -1406,6 +1410,77 @@ def test_a_repeated_identical_call_does_not_re_execute(executed):
     _run(transport)
 
     assert [c["name"] for c in executed] == ["web_search"]
+
+
+def _self_hosted_transport(monkeypatch, message_fitter = None):
+    def turn(call_id):
+        call = {
+            "index": 0,
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "web_search", "arguments": '{"query":"x"}'},
+        }
+        return [{"delta": {"tool_calls": [call]}}, {"delta": {}, "finish_reason": "tool_calls"}]
+
+    replies = [turn("c1"), turn("c2"), [{"delta": {"content": "answer"}, "finish_reason": "stop"}]]
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content.decode("utf-8")))
+        chunks = replies.pop(0) if replies else [{"delta": {}, "finish_reason": "stop"}]
+        sse = "".join(f"data: {json.dumps({'choices': [{'index': 0, **c}]})}\n\n" for c in chunks)
+        return httpx.Response(
+            200,
+            content = (sse + "data: [DONE]\n\n").encode(),
+            headers = {"content-type": "text/event-stream"},
+        )
+
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+    client = ExternalProviderClient(
+        provider_type = "llama_cpp", base_url = "http://self-hosted.example/v1", api_key = ""
+    )
+    transport = OAICompatTransport(
+        client, model = "local-model", max_tokens = 64, message_fitter = message_fitter
+    )
+    return transport, bodies
+
+
+def _duplicate_note(body) -> str:
+    return "\n".join(
+        str(m["content"]) for m in body["messages"] if "was not executed" in str(m["content"])
+    )
+
+
+def test_a_duplicate_note_does_not_point_above_once_the_fit_drops_that_result(
+    executed, monkeypatch
+):
+    async def fitter(messages, tools = None):
+        if not any("was not executed" in str(m.get("content")) for m in messages):
+            return messages, 64, None
+        first = next(i for i, m in enumerate(messages) if m.get("tool_calls"))
+        return messages[:first] + messages[first + 2 :], 64, None
+
+    transport, bodies = _self_hosted_transport(monkeypatch, fitter)
+    _run(transport)
+
+    assert [c["arguments"]["query"] for c in executed] == ["x"]
+    note = _duplicate_note(bodies[-1])
+    assert "already completed successfully" in note
+    assert "result above" not in note
+    assert "removed from the conversation" in note
+
+
+def test_a_duplicate_note_is_unchanged_while_its_result_is_still_sent(executed, monkeypatch):
+    transport, bodies = _self_hosted_transport(monkeypatch)
+    _run(transport)
+
+    assert [c["arguments"]["query"] for c in executed] == ["x"]
+    assert any(
+        m["role"] == "tool" and m["content"] == "RESULT<web_search>" for m in bodies[-1]["messages"]
+    )
+    assert "so its result above still holds. Do not repeat" in _duplicate_note(bodies[-1])
 
 
 def test_a_stalled_model_is_nudged_to_act(executed):

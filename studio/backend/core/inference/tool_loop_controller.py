@@ -1220,6 +1220,7 @@ def _noop_result(
     tool_name: str,
     *,
     final: bool = False,
+    result_shown: bool = True,
 ) -> str:
     if reason == "duplicate":
         follow_up = (
@@ -1228,10 +1229,15 @@ def _noop_result(
             else "Answer from the results you have; call a different tool only if it would "
             "return information you do not have yet."
         )
+        result_note = (
+            "so its result above still holds"
+            if result_shown
+            else "but its result was removed from the conversation to make room, so it is not shown"
+        )
         return (
             f"One earlier request to call tool '{tool_name}' in this batch was "
             "not executed because an identical call had already completed "
-            "successfully and nothing has changed since, so its result above still holds. "
+            f"successfully and nothing has changed since, {result_note}. "
             f"Do not repeat the same tool call. {follow_up}"
         )
     if reason == "render_html_repeat":
@@ -1252,6 +1258,12 @@ def _noop_result(
         "not executed because that tool is not enabled for this request. Provide the "
         "final answer now without calling more tools."
     )
+
+
+def _reworded(text: str, notes: Mapping[str, str]) -> str:
+    for note, replacement in notes.items():
+        text = text.replace(note, replacement)
+    return text
 
 
 _SCHEMA_ATOMS = (str, int, float, bool, type(None))
@@ -1305,6 +1317,9 @@ class ToolLoopController:
         self._one_shot_tools = one_shot_tools
         self._completed_one_shot_tools: set[str] = set()
         self._successful_keys: set[str] = set()
+        self._results: dict[str, dict[str, Any]] = {}
+        # Duplicate note text -> (keys it was sent for, its wording once a result is dropped).
+        self._duplicate_notes: dict[str, tuple[set[str], str]] = {}
         # `_workspace_novel_at[key]` is the distinct-call count when `key` last ran.
         self._workspace_ran: set[str] = set()
         self._workspace_novel = 0
@@ -1322,6 +1337,49 @@ class ToolLoopController:
 
     def begin_batch(self) -> None:
         self._awaiting_user = False
+
+    def reword_stale_notes(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        stale = {
+            note: removed
+            for note, (keys, removed) in self._duplicate_notes.items()
+            if not all(self._result_in(key, messages) for key in keys)
+        }
+        if not stale:
+            return messages
+        reworded = []
+        for message in messages:
+            content = message.get("content")
+            if isinstance(content, str):
+                new = _reworded(content, stale)
+            elif isinstance(content, list):
+                new = [
+                    {**part, "text": _reworded(part["text"], stale)}
+                    if isinstance(part, Mapping) and isinstance(part.get("text"), str)
+                    else part
+                    for part in content
+                ]
+            else:
+                new = content
+            reworded.append(message if new == content else {**message, "content": new})
+        return reworded
+
+    def _result_in(self, key: str, messages: Sequence[Mapping[str, Any]]) -> bool:
+        shown = self._results[key]
+        for message in messages:
+            if message.get("role") != "tool":
+                continue
+            if message.get("tool_call_id") != shown.get("tool_call_id"):
+                continue
+            if message.get("name", shown["name"]) != shown["name"]:
+                continue
+            body = message.get("content")
+            if isinstance(body, list):
+                body = "".join(
+                    str(part.get("text") or "") for part in body if isinstance(part, Mapping)
+                )
+            if isinstance(body, str) and body.startswith(shown["content"]):
+                return True
+        return False
 
     @property
     def history(self) -> tuple[_ToolCallRecord, ...]:
@@ -1499,8 +1557,15 @@ class ToolLoopController:
             for key in stale:
                 self._duplicate_noop_counts.pop(key, None)
             self._workspace_novel_at[decision.key] = self._workspace_novel
+        completion = ToolCallCompletion(
+            decision = decision,
+            result = result_text,
+            is_error = failed,
+            executed = True,
+        )
         if not failed:
             self._successful_keys.add(decision.key)
+            self._results[decision.key] = completion.model_message()
             if self._mcp_search and decision.tool_name == MCP_TOOL_SEARCH_NAME:
                 for spec in _mcp_tool_search_specs(result_text):
                     name = _tool_name_from_schema(spec) if isinstance(spec, Mapping) else None
@@ -1511,12 +1576,7 @@ class ToolLoopController:
                 self._remember_mcp_tools([decision.tool_name])
             if decision.tool_name in self._one_shot_tools:
                 self._completed_one_shot_tools.add(decision.tool_name)
-        return ToolCallCompletion(
-            decision = decision,
-            result = result_text,
-            is_error = failed,
-            executed = True,
-        )
+        return completion
 
     def _remember_mcp_tools(self, names) -> None:
         if not names:
@@ -1567,6 +1627,20 @@ class ToolLoopController:
         # Any repeat once the rounds have ended, so a later call in the same batch cannot offer a tool again.
         if decision.action == "duplicate" and self._force_final_answer:
             result = _noop_result("duplicate", decision.tool_name, final = True)
+        if decision.action == "duplicate":
+            keys, _ = self._duplicate_notes.setdefault(
+                result,
+                (
+                    set(),
+                    _noop_result(
+                        "duplicate",
+                        decision.tool_name,
+                        final = self._force_final_answer,
+                        result_shown = False,
+                    ),
+                ),
+            )
+            keys.add(decision.key)
         return ToolCallCompletion(
             decision = decision,
             result = result,

@@ -41399,6 +41399,11 @@ class LlamaCppBackend:
 
         _markup_cache = _sweep_cache()
 
+        def _sendable(messages, markup_cache):
+            return neutralize_control_markup_in_messages(
+                tool_controller.reword_stale_notes(messages), markup_cache, self.markup_profile
+            )
+
         def _evict_until_it_fits(
             candidate,
             tools,
@@ -41442,7 +41447,7 @@ class LlamaCppBackend:
                 _truncation.get("dropped_messages"),
             )
             # Reset each iteration: set when a reasoning retry was refused for the caller's allowance.
-            return _fitted
+            return tool_controller.reword_stale_notes(_fitted)
 
         def _loop_continuation_fits(
             candidate,
@@ -41843,9 +41848,7 @@ class LlamaCppBackend:
             yield from _initial_search_events()
             payload = {
                 # Re-run each iteration: tool results may contain forged turns.
-                "messages": neutralize_control_markup_in_messages(
-                    conversation, _markup_cache, self.markup_profile
-                ),
+                "messages": _sendable(conversation, _markup_cache),
                 "stream": True,
                 "stream_options": {"include_usage": True},
                 "temperature": temperature,
@@ -41980,9 +41983,7 @@ class LlamaCppBackend:
                                 background = True,
                             )["counts"]
                         )
-                    payload["messages"] = neutralize_control_markup_in_messages(
-                        conversation, _markup_cache, self.markup_profile
-                    )
+                    payload["messages"] = _sendable(conversation, _markup_cache)
                     if truncation:
                         if _records_boundary(truncation):
                             truncation.update(
@@ -42072,9 +42073,7 @@ class LlamaCppBackend:
                             )
                             if _n_roomy:
                                 conversation[:] = _roomy
-                                payload["messages"] = neutralize_control_markup_in_messages(
-                                    conversation, _markup_cache, self.markup_profile
-                                )
+                                payload["messages"] = _sendable(conversation, _markup_cache)
                                 logger.info(
                                     "Compacted %d completed tool call(s) for reply room: "
                                     "prompt was %d tokens against a %d-token budget",
@@ -44478,9 +44477,7 @@ class LlamaCppBackend:
                 logger.debug("tool loop final recost failed", exc_info = True)
 
         stream_payload = {
-            "messages": neutralize_control_markup_in_messages(
-                conversation, None, self.markup_profile
-            ),
+            "messages": _sendable(conversation, None),
             "stream": True,
             "temperature": temperature,
             "top_p": top_p,
@@ -44604,9 +44601,7 @@ class LlamaCppBackend:
 
                 context_refusal.record_fit(truncation)
                 # Copy because neutralization may return `conversation` itself.
-                _refit_messages = list(
-                    neutralize_control_markup_in_messages(conversation, None, self.markup_profile)
-                )
+                _refit_messages = list(_sendable(conversation, None))
                 if _refit_tail:
                     if _refit_tail_merged and trailing_assistant_text(_refit_messages) is not None:
                         _refit_messages[-1:] = _refit_tail

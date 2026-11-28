@@ -284,6 +284,73 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
     assert controller.active_tools() == []
 
 
+def test_duplicate_note_is_reworded_only_where_its_result_was_dropped():
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
+    search = _call("web_search", {"query": "gpu prices"}, "call_0")
+    run = _call("python", {"code": "print(1)"}, "call_0")
+    ran = [controller.record_result(controller.prepare_call(call), "ok") for call in (search, run)]
+    notes = [
+        controller.record_noop(controller.prepare_call(call)).model_message()
+        for call in (search, run)
+    ]
+    exchange = [
+        [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [c.decision.as_assistant_tool_call()],
+            },
+            c.tool_message(),
+        ]
+        for c in ran
+    ]
+    folded = {**exchange[1][1], "content": exchange[1][1]["content"] + "\n\n" + notes[1]["content"]}
+    full = [{"role": "user", "content": "go"}, *exchange[0], exchange[1][0], folded, notes[0]]
+
+    assert controller.reword_stale_notes(full) is full
+    assert "so its result above still holds" in notes[0]["content"]
+
+    compacted = [{"role": "user", "content": "go"}, exchange[1][0], folded, notes[0]]
+    sent = controller.reword_stale_notes(compacted)
+    assert "result above" not in sent[-1]["content"]
+    assert "removed from the conversation" in sent[-1]["content"]
+    assert sent[2] is folded
+    assert compacted[-1] is notes[0]
+
+
+def test_final_duplicate_note_is_reworded_once_its_result_is_dropped():
+    controller = ToolLoopController(tools = [_tool("web_search")])
+    call = _call("web_search", {"query": "gpu prices"}, "call_0")
+    controller.record_result(controller.prepare_call(call), "ok")
+    controller.record_noop(controller.prepare_call(call))
+    final = controller.record_noop(controller.prepare_call(call)).model_message()
+    assert controller.force_final_answer
+
+    sent = controller.reword_stale_notes([{"role": "user", "content": "go"}, final])
+    assert "result above" not in sent[-1]["content"]
+    assert "removed from the conversation" in sent[-1]["content"]
+    assert "Provide the final answer now" in sent[-1]["content"]
+
+
+def test_kept_results_hold_no_image_bytes():
+    from core.inference import mcp_images
+
+    controller = ToolLoopController(tools = [_tool("web_search"), _tool("computer")])
+    payload = "QUJD" * 50_000
+    envelope = mcp_images.SENTINEL + json.dumps([{"data": payload, "mimeType": "image/png"}])
+    done = {}
+    for name in ("web_search", "computer"):
+        call = _call(name, {"q": name}, "call_0")
+        done[name] = controller.record_result(controller.prepare_call(call), "seen\n" + envelope)
+        assert payload in done[name].result
+    assert payload not in json.dumps(controller._results)
+
+    search = _call("web_search", {"q": "web_search"}, "call_1")
+    note = controller.record_noop(controller.prepare_call(search)).model_message()
+    sent = [{"role": "user", "content": "go"}, done["web_search"].tool_message(), note]
+    assert controller.reword_stale_notes(sent) is sent
+
+
 def test_repeat_after_the_rounds_end_in_the_same_batch_also_asks_for_the_answer():
     controller = ToolLoopController(tools = [_tool("web_search"), _tool("python")])
     for query in ("a", "b"):

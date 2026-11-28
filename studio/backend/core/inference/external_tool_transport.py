@@ -38,6 +38,7 @@ class OAICompatTransport:
     heals_text_tool_calls = True
     # The client already sanitized upstream lines; what remains here is our own synthesized frames.
     sanitizes_provider_frames = True
+    reword_messages: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
 
     def __init__(
         self,
@@ -139,6 +140,8 @@ class OAICompatTransport:
             request_kwargs["max_tokens"] = max_tokens
             if truncation_line:
                 yield truncation_line
+        if self.reword_messages is not None:
+            messages = self.reword_messages(messages)
         if self._reply_limit is not None:
             # Sized from this round's fitted prompt: a replayed summary shrinks it, tool results grow it.
             request_kwargs["max_tokens"] = self._reply_limit(messages, tools)
@@ -168,6 +171,8 @@ class OAICompatTransport:
             if fit is None or fit[0] is None:
                 return None
             refit_messages, max_tokens, truncation_line = fit
+            if self.reword_messages is not None:
+                refit_messages = self.reword_messages(refit_messages)
             if self._reply_limit is not None:
                 # The refit sizes the reply from the request's window, not the smaller one served.
                 max_tokens = self._reply_limit(refit_messages, tools)

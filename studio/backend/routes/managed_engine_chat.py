@@ -26,6 +26,7 @@ from utils.api_errors import openai_error_body
 class ManagedToolTransport:
     heals_text_tool_calls = True
     sanitizes_provider_frames = False
+    reword_messages = None
 
     def __init__(
         self,
@@ -52,6 +53,8 @@ class ManagedToolTransport:
         truncation_line = max_tokens = None
         if self._message_fitter is not None:
             messages, max_tokens, truncation_line = await self._message_fitter(messages)
+        if self.reword_messages is not None:
+            messages = self.reword_messages(messages)
         body = {
             **self.body,
             "messages": self.engine.replay_reasoning(
