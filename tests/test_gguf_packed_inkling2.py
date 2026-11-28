@@ -333,6 +333,13 @@ def _quantized_file(
     if not split:
         _write_gguf(path, kv, tensors)
         return [path], scales, expected
+    if split == "two":
+        # Two shards, every tensor in the second: the one shard that holds tensors is not the first.
+        stem = str(path)[: -len(".gguf")]
+        paths = [f"{stem}-{i:05d}-of-00002.gguf" for i in (1, 2)]
+        for i, (shard_path, shard) in enumerate(zip(paths, ({}, tensors))):
+            _write_gguf(shard_path, kv, shard, shard = (i, 2))
+        return paths, scales, expected
     # Three shards as the Small repos ship them: the first holds the metadata only, and each expert stack's `.scale`
     # sits in a different shard from the stack itself.
     second = {
@@ -407,7 +414,9 @@ def test_bf16_load_keeps_the_float32_modules(tmp_path):
     assert kept >= 6 * len(_LAYER_TYPES)
 
 
-@pytest.mark.parametrize("split", [False, True], ids = ["single", "split"])
+@pytest.mark.parametrize(
+    "split", [False, True, "two"], ids = ["single", "split", "split_one_tensor_shard"]
+)
 def test_inkling2_packed_experts_carry_the_gguf_scales(tmp_path, split):
     _skip_unless_supported()
     if gp.gguf_expert_param_class() is None:

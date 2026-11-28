@@ -1078,10 +1078,12 @@ def gguf_packed_load(gguf_path = None):
 
         def get_state_dict(self, checkpoint_file, model):
             owners = getattr(self, "_unsloth_tensor_owner", None)
+            # Any tensor in a shard other than the merged header's own file (the first, often metadata only) needs
+            # the owner-aware reader, even when a single shard holds every tensor.
             if (
                 getattr(self, "supported", False)
                 and owners
-                and len({id(h) for h in owners.values()}) > 1
+                and any(h.path != self.header.path for h in owners.values())
             ):
                 names = {info.name for info in self.header.tensors}
                 return {k: v for k, v in _split_state_dict(owners).items() if k in names}
