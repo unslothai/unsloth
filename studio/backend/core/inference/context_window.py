@@ -982,6 +982,7 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
     r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
     r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
 )
+_SANDBOX_ATTACHMENT_NOTE_KEY = ": its text is below, so answer from it. For calculations, the python tool has the file at path = "
 # The frontend's wrapper tag (attachment, pasted_text, document_annotations); the cut goes inside it.
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # The browser parsers' header ("[PDF: name]", runtime-provider.tsx): their text has no closing tag.
@@ -992,11 +993,30 @@ _ATTACHMENT_FIT_MARGIN = 0.125
 _MAX_CHARS_PER_TOKEN = 16
 
 
+def _sandbox_attachment_notes(text: str):
+    """Same matches as ``_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text)``, without its cost on long lines.
+
+    A match runs from a line's first ``[`` to the end of that line (which must end in ``]``), so at most one
+    per line, only on a line holding the key. finditer retries from every ``[``: seconds per turn on minified JSON.
+    """
+    found = text.find(_SANDBOX_ATTACHMENT_NOTE_KEY)
+    while found >= 0:
+        end = text.find("\n", found)
+        if end < 0:
+            return
+        start = text.find("[", text.rfind("\n", 0, found) + 1, end)
+        if start >= 0 and text[end - 1] == "]":
+            note = _SANDBOX_ATTACHMENT_NOTE_RE.match(text, start, end + 1)
+            if note:
+                yield note
+        found = text.find(_SANDBOX_ATTACHMENT_NOTE_KEY, end)
+
+
 def _attachment_spans(text: str):
     """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
     # A note starts an attachment only when its content follows; a file quoting the note is text (#16913).
     notes, openers, fences = [], [], []
-    for note in _SANDBOX_ATTACHMENT_NOTE_RE.finditer(text):
+    for note in _sandbox_attachment_notes(text):
         fences.append(note.start())
         opened = _ATTACHMENT_OPEN_RE.match(text, note.end())
         if opened or _LABELLED_TEXT_RE.match(text, note.end()):
