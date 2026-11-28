@@ -900,7 +900,6 @@ export const InventoryRow = memo(function InventoryRow({
             owner={row.owner}
             repoName={title}
             className="size-8 shrink-0 rounded-sm text-ui-12"
-            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">
@@ -971,7 +970,6 @@ export const InventoryRow = memo(function InventoryRow({
             owner={row.owner}
             repoName={title}
             className="size-9 rounded-md"
-            remote={false}
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-1.5">

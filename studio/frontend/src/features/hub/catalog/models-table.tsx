@@ -400,7 +400,7 @@ export const ResultCard = memo(function ResultCard({
       <OwnerAvatar
         owner={row.owner}
         repoName={row.repo}
-        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-lg text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-md max-md:text-ui-14 ring-1 ring-[rgb(0_0_0_/_calc(0.05*var(--contrast-edge-gain,1)))] dark:ring-[rgb(255_255_255_/_calc(0.1*var(--contrast-edge-gain,1)))]"
+        className="size-[calc(52px*var(--ui-space-scale,1))] shrink-0 rounded-lg text-ui-16 max-md:size-[calc(42px*var(--ui-space-scale,1))] max-md:rounded-md max-md:text-ui-14"
         remote={false}
       />
       <div className="flex min-w-0 flex-1 flex-col">

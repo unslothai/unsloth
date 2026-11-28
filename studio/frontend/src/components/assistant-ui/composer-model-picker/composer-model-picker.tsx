@@ -74,7 +74,10 @@ import {
   servedCheckpoint,
   useOnlineStatus,
 } from "@/features/hub";
-import { useAvatarImageUrl } from "@/features/hub/catalog/owner-avatar";
+import {
+  useAvatarImageRetry,
+  useAvatarImageUrl,
+} from "@/features/hub/catalog/owner-avatar";
 import {
   hasMlxCardTag,
   isMlxId,
@@ -567,17 +570,24 @@ function hubParts(
 
 type Maker = NonNullable<ReturnType<typeof resolveOwnerProviderLogo>>;
 
-function rowMaker(
+function rowHubParts(
   row?: Pick<Row, "kind"> & { id?: string; lora?: LoraModelOption },
-): Maker | null {
+) {
   if (!row || row.kind === "external") {
     return null;
   }
   // A cache snapshot path names its repo, so the logo shows before rows load.
-  const parts =
+  return (
     hubParts(row.id) ??
     hubParts(row.lora?.baseModel) ??
-    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined);
+    hubParts(row.id ? (hfCacheRepoId(row.id) ?? undefined) : undefined)
+  );
+}
+
+function rowMaker(
+  row?: Pick<Row, "kind"> & { id?: string; lora?: LoraModelOption },
+): Maker | null {
+  const parts = rowHubParts(row);
   return parts ? resolveOwnerProviderLogo(parts.owner, parts.name) : null;
 }
 
@@ -749,10 +759,20 @@ type RowMarkRow = Pick<Row, "kind" | "providerType" | "providerName"> & {
   npu?: Pick<NpuModel, "hf_repo">;
 };
 
-function NpuOwnerMark({ owner, name }: { owner: string; name?: string }) {
-  const src = useAvatarImageUrl(owner);
-  const [failed, setFailed] = useState<string | null>(null);
-  if (!src || failed === src) {
+function OwnerImageMark({
+  owner,
+  repoName,
+  name,
+  remote = true,
+}: {
+  owner: string;
+  repoName?: string;
+  name?: string;
+  remote?: boolean;
+}) {
+  const src = useAvatarImageUrl(owner, repoName, remote);
+  const image = useAvatarImageRetry(src);
+  if (!src || !image.show) {
     return (
       <ApiProviderLogo
         providerType={null}
@@ -767,7 +787,8 @@ function NpuOwnerMark({ owner, name }: { owner: string; name?: string }) {
       alt=""
       aria-hidden={true}
       decoding="async"
-      onError={() => setFailed(src)}
+      onLoad={image.onLoad}
+      onError={image.onError}
       className="size-[calc(14px*var(--ui-space-scale,1))] shrink-0 rounded-[3px] object-cover"
     />
   );
@@ -787,13 +808,16 @@ function hasRowMark(row?: RowMarkRow): boolean {
 
 function RowMark({ row }: { row?: RowMarkRow }) {
   const size = "size-[calc(14px*var(--ui-space-scale,1))] shrink-0";
-  const provider = rowMaker(row);
+  const parts = rowHubParts(row);
+  const provider = parts
+    ? resolveOwnerProviderLogo(parts.owner, parts.name)
+    : null;
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
   }
   const npuOwner = npuMarkOwner(row);
   if (npuOwner) {
-    return <NpuOwnerMark owner={npuOwner} name={rowMarkName(row)} />;
+    return <OwnerImageMark owner={npuOwner} name={rowMarkName(row)} />;
   }
   if (row?.kind === "external" && row.providerType) {
     return (
@@ -807,6 +831,17 @@ function RowMark({ row }: { row?: RowMarkRow }) {
     );
   }
   const name = row?.kind === "external" ? undefined : rowMarkName(row);
+  if (parts?.owner) {
+    return (
+      <OwnerImageMark
+        owner={parts.owner}
+        repoName={parts.name}
+        name={name ?? parts.name}
+        // Discover search rows list any owner on HF: cached logos only, like the Hub.
+        remote={row?.kind !== "hub"}
+      />
+    );
+  }
   // 2px over the slot: a solid disc reads smaller than the logos.
   return name ? (
     <ApiProviderLogo

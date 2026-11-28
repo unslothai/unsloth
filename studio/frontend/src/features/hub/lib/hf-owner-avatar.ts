@@ -9,7 +9,7 @@ import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 
 type AvatarCacheEntry =
   | { kind: "url"; url: string; expiresAt: number }
-  | { kind: "miss-permanent" }
+  | { kind: "miss-permanent"; until: number }
   | { kind: "miss-transient"; until: number; failures: number };
 
 // Stale-while-revalidate after this TTL.
@@ -27,6 +27,111 @@ const AVATAR_FETCH_DEBOUNCE_MS = 200;
 
 const cache = new LruMap<string, AvatarCacheEntry>(256);
 const inflight = new Map<string, Promise<string | null>>();
+const listeners = new Map<string, Set<() => void>>();
+const persisted = new Map<string, PersistedAvatarEntry>();
+
+const STORAGE_KEY = "unsloth:hf-owner-avatars:v1";
+const MAX_PERSISTED_AVATARS = 256;
+
+// A 404 owner is persisted too, or every launch re-asks HF twice per such owner.
+const MISS_PERSIST_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// url null = both profile endpoints 404'd; held until expiresAt.
+interface PersistedAvatarEntry {
+  key: string;
+  url: string | null;
+  expiresAt: number;
+}
+
+function subscribeAvatarKey(key: string, listener: () => void): () => void {
+  let set = listeners.get(key);
+  if (!set) {
+    set = new Set();
+    listeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = listeners.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) listeners.delete(key);
+  };
+}
+
+function notifyAvatarKey(key: string): void {
+  const set = listeners.get(key);
+  if (!set) return;
+  for (const listener of set) listener();
+}
+
+function readStorage(): Storage | null {
+  try {
+    return typeof globalThis.localStorage !== "undefined"
+      ? globalThis.localStorage
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hydratePersistedAvatars(): void {
+  const storage = readStorage();
+  if (!storage) return;
+  try {
+    const raw = storage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return;
+    for (const item of parsed) {
+      const entry = (item ?? {}) as Partial<PersistedAvatarEntry>;
+      const { key, url, expiresAt } = entry;
+      if (typeof key !== "string" || typeof expiresAt !== "number") continue;
+      if (url === null) {
+        if (expiresAt <= Date.now()) continue;
+        persisted.set(key, { key, url, expiresAt });
+        cache.set(key, { kind: "miss-permanent", until: expiresAt });
+      } else if (typeof url === "string") {
+        persisted.set(key, { key, url, expiresAt });
+        cache.set(key, { kind: "url", url, expiresAt });
+      }
+    }
+  } catch {
+    // Ignore corrupt or inaccessible storage.
+  }
+}
+
+function persistAvatar(
+  key: string,
+  url: string | null,
+  expiresAt: number,
+): void {
+  persisted.delete(key);
+  persisted.set(key, { key, url, expiresAt });
+  while (persisted.size > MAX_PERSISTED_AVATARS) {
+    const oldest = persisted.keys().next().value;
+    if (oldest === undefined) break;
+    persisted.delete(oldest);
+  }
+  writePersisted();
+}
+
+function writePersisted(): void {
+  try {
+    readStorage()?.setItem(STORAGE_KEY, JSON.stringify([...persisted.values()]));
+  } catch {
+    // Ignore quota or private-mode storage errors.
+  }
+}
+
+hydratePersistedAvatars();
+
+/** Re-hydrate from storage, as a relaunch would. */
+export function resetAvatarCacheForTests(): void {
+  cache.clear();
+  inflight.clear();
+  persisted.clear();
+  hydratePersistedAvatars();
+}
 
 // Mirrors the modelInfo limiter in hf-cache.ts.
 const MAX_AVATAR_CONCURRENT = 6;
@@ -51,25 +156,41 @@ function release(): void {
   waiting.shift()?.();
 }
 
-// Keyed by endpoint too: hits and 404s are held long enough to outlive a late mirror switch.
+// Keyed by endpoint and lowercased owner; hits and 404s outlive a late mirror switch.
 function avatarKey(name: string): string {
-  return `${getHfEndpoint()}::${name}`;
+  return `${getHfEndpoint()}::${name.trim().toLowerCase()}`;
 }
 
-// Expired transient misses are kept so the failure count can escalate the next backoff.
+// Expired misses read as absent; transient ones stay cached to escalate the next backoff.
 function readCache(name: string): AvatarCacheEntry | null {
   const entry = cache.get(avatarKey(name));
   if (!entry) return null;
-  if (entry.kind === "miss-transient" && Date.now() >= entry.until) {
+  if (entry.kind !== "url" && Date.now() >= entry.until) {
     return null;
   }
   return entry;
 }
 
-function readCachedUrl(name: string): string | null {
-  if (!name) return null;
+export function readCachedHfOwnerAvatar(name: string): string | null {
+  if (!name.trim()) return null;
   const entry = readCache(name);
   return entry?.kind === "url" ? entry.url : null;
+}
+
+/** An <img> failed: expire every owner cached with that URL so the next mount asks HF again. */
+export function expireHfOwnerAvatarUrl(url: string): void {
+  // The cache and the persisted list evict in different orders, so walk both.
+  const keys = [...cache.entries()]
+    .filter(([, entry]) => entry.kind === "url" && entry.url === url)
+    .map(([key]) => key);
+  for (const key of keys) cache.set(key, { kind: "url", url, expiresAt: 0 });
+  let changed = false;
+  for (const entry of persisted.values()) {
+    if (entry.url !== url || entry.expiresAt === 0) continue;
+    entry.expiresAt = 0;
+    changed = true;
+  }
+  if (changed) writePersisted();
 }
 
 function transientMiss(name: string): AvatarCacheEntry {
@@ -131,11 +252,16 @@ function loadAvatar(name: string): Promise<string | null> {
     .then(
       ({ url, transient }) => {
         if (url) {
-          cache.set(key, { kind: "url", url, expiresAt: Date.now() + URL_TTL_MS });
+          const expiresAt = Date.now() + URL_TTL_MS;
+          cache.set(key, { kind: "url", url, expiresAt });
+          persistAvatar(key, url, expiresAt);
+          notifyAvatarKey(key);
         } else if (transient) {
           cache.set(key, transientMiss(name));
         } else {
-          cache.set(key, { kind: "miss-permanent" });
+          const until = Date.now() + MISS_PERSIST_TTL_MS;
+          cache.set(key, { kind: "miss-permanent", until });
+          persistAvatar(key, null, until);
         }
         inflight.delete(key);
         return url;
@@ -158,13 +284,26 @@ export function useHfOwnerAvatar(
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
-    return { key, url: readCachedUrl(key) };
+    return { key, url: readCachedHfOwnerAvatar(key) };
   });
-  const url = state.key === key ? state.url : readCachedUrl(key);
+  const url = state.key === key ? state.url : readCachedHfOwnerAvatar(key);
 
   useEffect(() => {
+    if (!key) return;
+    // Subscribed even when disabled, so remote={false} rows pick up a logo another view fetched.
+    const syncFromCache = () => {
+      const next = readCachedHfOwnerAvatar(key);
+      setState((prev) =>
+        prev.key === key && prev.url === next ? prev : { key, url: next },
+      );
+    };
+    syncFromCache();
+    const unsubscribe = subscribeAvatarKey(avatarKey(key), syncFromCache);
+
     // Disabled (virtualized rows): never hit the network, to avoid a per-row lookup storm.
-    if (!key || !online || !enabled) return;
+    if (!online || !enabled) {
+      return unsubscribe;
+    }
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let fetchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -216,6 +355,7 @@ export function useHfOwnerAvatar(
 
     return () => {
       cancelled = true;
+      unsubscribe();
       if (retryTimer != null) clearTimeout(retryTimer);
       if (fetchTimer != null) clearTimeout(fetchTimer);
     };
