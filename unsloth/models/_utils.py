@@ -3959,6 +3959,11 @@ def gguf_dequantize_kwargs(kwargs):
     so Trainer refuses LoRA and full finetuning alike. `GgufConfig(dequantize = True)` unpacks every weight and
     drops the quantizer, which is what a GGUF load did before 5.17. A `quantization_config` the caller passed
     is left alone."""
+    if kwargs.pop("gguf_packed", None) and kwargs.get("gguf_file"):
+        # Keep the GGUF blocks packed (unsloth/models/gguf_packed.py); checked in the loader's entry point.
+        from .gguf_packed import gguf_packed_quantization_config
+        kwargs["quantization_config"] = gguf_packed_quantization_config()
+        return kwargs
     if not kwargs.get("gguf_file") or kwargs.get("quantization_config") is not None:
         return kwargs
     try:
@@ -3971,12 +3976,20 @@ def gguf_dequantize_kwargs(kwargs):
     return kwargs
 
 
-def gguf_drop_bitsandbytes(gguf_file, load_in_4bit, load_in_8bit):
+def gguf_drop_bitsandbytes(
+    gguf_file,
+    load_in_4bit,
+    load_in_8bit,
+    gguf_packed = False,
+):
     """A `gguf_file` is unpacked to dense weights at load, and transformers refuses a bitsandbytes config
     beside it. So `load_in_4bit` (the default) and `load_in_8bit` are dropped for GGUF loads, with a notice.
     Returns the new `(load_in_4bit, load_in_8bit)`."""
     if not gguf_file or not (load_in_4bit or load_in_8bit):
         return load_in_4bit, load_in_8bit
+    if gguf_packed:
+        # The GGUF's own blocks are the quantization: nothing for bitsandbytes to add.
+        return False, False
     print(
         "Unsloth: `gguf_file` weights are dequantized at load, so load_in_4bit / load_in_8bit is ignored "
         "and the model loads in 16bit."
@@ -4105,6 +4118,10 @@ def maybe_prefetch_hf_snapshot(
             else gguf_file
         )
         allow_patterns = [_gguf_path, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # A llama.cpp split GGUF (name-00001-of-00003.gguf) is read whole: warm every sibling shard too.
+        _split = re.match(r"^(.*)-\d{5}-of-(\d{5})\.gguf$", _gguf_path)
+        if _split is not None:
+            allow_patterns.insert(1, f"{_split.group(1)}-*-of-{_split.group(2)}.gguf")
     elif tokenizer_only:
         # A distinct tokenizer repo: warm only tokenizer / config / vocab files, never its weights.
         allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)

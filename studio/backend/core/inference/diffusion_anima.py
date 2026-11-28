@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -169,6 +170,166 @@ class _AnimaInterrupted(Exception):
     pass
 
 
+class _AnimaRowsMismatch(Exception):
+    """Batched text steps did not match the rows: run them one by one."""
+
+
+_ROW_TEXT = contextvars.ContextVar("unsloth_anima_row_text", default = None)
+
+BATCH_ROWS_ENV = "UNSLOTH_DIFFUSION_ANIMA_BATCH"
+# The text step's default max_sequence_length.
+_T5_MAX_LENGTH = 512
+_ROW_BRIDGE = "_unsloth_row_bridge"
+
+
+def batch_rows_disabled() -> bool:
+    import os
+    return (os.environ.get(BATCH_ROWS_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
+def _pad_rows(tensors: list) -> Any:
+    import torch
+    import torch.nn.functional as F
+
+    longest = max(int(t.shape[1]) for t in tensors)
+    padded = []
+    for t in tensors:
+        extra = longest - int(t.shape[1])
+        if extra:
+            pad = [0, 0] * (t.ndim - 2) + [0, extra]
+            t = F.pad(t, pad)
+        padded.append(t)
+    return torch.cat(padded, dim = 0)
+
+
+def _bridge_row_steps(mp: Any) -> bool:
+    """Per-row text bridges (inert unless _ROW_TEXT is set): each row is encoded and conditioned alone, then stacked."""
+    text_steps, cond_steps = [], []
+    seen: set = set()
+
+    def walk(block: Any) -> None:
+        if block is None or id(block) in seen:
+            return
+        seen.add(id(block))
+        if callable(getattr(type(block), "encode_prompt", None)) and hasattr(
+            type(block), "_get_t5_prompt_ids"
+        ):
+            text_steps.append(block)
+        if callable(getattr(type(block), "_condition_prompt_embeds", None)):
+            cond_steps.append(block)
+        for child in (getattr(block, "sub_blocks", None) or {}).values():
+            walk(child)
+
+    walk(getattr(mp, "_blocks", None))
+    if len(text_steps) != 1 or not cond_steps:
+        return False
+    for step in text_steps:
+        if not getattr(step.__dict__.get("encode_prompt"), _ROW_BRIDGE, False):
+            step.encode_prompt = _row_encode(type(step).encode_prompt)
+    for step in cond_steps:
+        if not getattr(step.__dict__.get("_condition_prompt_embeds"), _ROW_BRIDGE, False):
+            step._condition_prompt_embeds = _row_condition(type(step)._condition_prompt_embeds)
+    return True
+
+
+class _RowText:
+    __slots__ = ("prompts", "negatives", "lengths", "conditioned")
+
+    def __init__(self, prompts: list, negatives: list) -> None:
+        self.prompts = prompts
+        self.negatives = negatives
+        self.lengths: list = []
+        self.conditioned = 0
+
+
+_ROW_FIELDS = (
+    ("qwen_prompt_embeds", "qwen_attention_mask", "t5_input_ids", "t5_attention_mask"),
+    (
+        "negative_qwen_prompt_embeds",
+        "negative_qwen_attention_mask",
+        "negative_t5_input_ids",
+        "negative_t5_attention_mask",
+    ),
+)
+
+
+def _row_encode(original: Callable) -> Callable:
+    def bridged(*args: Any, **kwargs: Any) -> Any:
+        rows = _ROW_TEXT.get()
+        if rows is None:
+            return original(*args, **kwargs)
+        prompt = kwargs.get("prompt")
+        prompts = [prompt] if isinstance(prompt, str) else list(prompt or ())
+        if prompts != rows.prompts or rows.lengths:
+            raise _AnimaRowsMismatch("the text step encoded prompts that are not the batch's rows")
+        outs = []
+        for i, one in enumerate(prompts):
+            row_kwargs = dict(kwargs)
+            row_kwargs["prompt"] = one
+            row_kwargs["negative_prompt"] = rows.negatives[i]
+            outs.append(original(*args, **row_kwargs))
+        merged: dict = {}
+        for fields in _ROW_FIELDS:
+            present = [out.get(fields[0]) is not None for out in outs]
+            if not any(present):
+                for name in fields:
+                    merged[name] = None
+                rows.lengths.append(None)
+                continue
+            if not all(present):
+                raise _AnimaRowsMismatch("rows disagree on the unconditional branch")
+            rows.lengths.append(
+                [(int(out[fields[0]].shape[1]), int(out[fields[2]].shape[1])) for out in outs]
+            )
+            for name in fields:
+                merged[name] = _pad_rows([out[name] for out in outs])
+        for name, value in outs[0].items():
+            merged.setdefault(name, value)
+        return merged
+
+    setattr(bridged, _ROW_BRIDGE, True)
+    return bridged
+
+
+def _row_condition(original: Callable) -> Callable:
+    def bridged(components: Any, **kwargs: Any) -> Any:
+        import torch
+
+        rows = _ROW_TEXT.get()
+        if rows is None:
+            return original(components, **kwargs)
+        branches = [lengths for lengths in rows.lengths if lengths is not None]
+        if rows.conditioned >= len(branches):
+            raise _AnimaRowsMismatch(
+                "the conditioning step ran more often than the rows were encoded"
+            )
+        lengths = branches[rows.conditioned]
+        rows.conditioned += 1
+        qwen, qwen_mask = kwargs["qwen_prompt_embeds"], kwargs["qwen_attention_mask"]
+        t5, t5_mask = kwargs["t5_input_ids"], kwargs["t5_attention_mask"]
+        if int(qwen.shape[0]) != len(lengths):
+            raise _AnimaRowsMismatch("the conditioning step saw another batch than the rows")
+        outs = []
+        for i, (n_qwen, n_t5) in enumerate(lengths):
+            row_kwargs = dict(kwargs)
+            row_kwargs["qwen_prompt_embeds"] = qwen[i : i + 1, :n_qwen]
+            row_kwargs["qwen_attention_mask"] = qwen_mask[i : i + 1, :n_qwen]
+            row_kwargs["t5_input_ids"] = t5[i : i + 1, :n_t5]
+            row_kwargs["t5_attention_mask"] = t5_mask[i : i + 1, :n_t5]
+            outs.append(original(components, **row_kwargs))
+        if any(o.shape[1:] != outs[0].shape[1:] for o in outs):
+            raise _AnimaRowsMismatch("rows condition to different text lengths")
+        return torch.cat(outs, dim = 0)
+
+    setattr(bridged, _ROW_BRIDGE, True)
+    return bridged
+
+
+def _per_call_scaled(module: Any) -> Optional[str]:
+    from .diffusion_flux3 import _per_call_scaled as scaled
+    return scaled(module)
+
+
 _PIPELINE_CLASS: Optional[type] = None
 
 
@@ -230,6 +391,10 @@ class _AnimaPipelineMixin:
 
         if self._modular is None:
             self._modular = getattr(diffusers, ANIMA_BLOCKS)().init_pipeline()
+            try:
+                _bridge_row_steps(self._modular)
+            except Exception as exc:  # noqa: BLE001 -- rows then render one call each
+                logger.info("Anima rows render one by one (no row bridge: %s)", exc)
         mp = self._modular
         updates = {
             name: getattr(self, name)
@@ -277,7 +442,6 @@ class _AnimaPipelineMixin:
             raise ValueError("Anima takes a text prompt (str) per image.")
         generators = list(generator) if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # One image per modular call, so each image keeps its own generator and negative prompt.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -292,34 +456,84 @@ class _AnimaPipelineMixin:
             ]
         else:
             calls = [(prompts[0], generator, int(num_images_per_prompt or 1))]
+
+        def call_kwargs(index: int) -> dict:
+            one_prompt, one_generator, per_prompt = calls[index]
+            kwargs: dict[str, Any] = {
+                "prompt": one_prompt,
+                "num_inference_steps": int(num_inference_steps),
+                "num_images_per_prompt": per_prompt,
+                "output_type": output_type,
+            }
+            if negative_prompt is not None:
+                kwargs["negative_prompt"] = row_negative(index)
+            if one_generator is not None:
+                kwargs["generator"] = one_generator
+            if height is not None:
+                kwargs["height"] = int(height)
+            if width is not None:
+                kwargs["width"] = int(width)
+            if latents is not None:
+                kwargs["latents"] = latents
+            return kwargs
+
+        def row_negative(index: int) -> Any:
+            if negatives is None:
+                return negative_prompt
+            return negatives[index if len(negatives) > 1 else 0]
+
+        def run(
+            kwargs: dict,
+            first: bool,
+            rows: Optional[_RowText] = None,
+        ) -> list:
+            token = _ROW_TEXT.set(rows) if rows is not None else None
+            try:
+                with self._step_hooks(mp, callback_on_step_end, int(num_inference_steps), first):
+                    out = mp(**kwargs, output = "images")
+            finally:
+                if token is not None:
+                    _ROW_TEXT.reset(token)
+            return out if isinstance(out, list) else [out]
+
+        def run_rows(group: list, first: bool) -> list:
+            kwargs = call_kwargs(group[0])
+            kwargs["prompt"] = [calls[i][0] for i in group]
+            kwargs["generator"] = [calls[i][1] for i in group]
+            kwargs["num_images_per_prompt"] = 1
+            negatives_by_row = [row_negative(i) for i in group]
+            kwargs["negative_prompt"] = [n if n is not None else "" for n in negatives_by_row]
+            out = run(kwargs, first, _RowText(kwargs["prompt"], negatives_by_row))
+            if len(out) == len(group):
+                return out
+            if (
+                len(out) == 1
+                and getattr(out[0], "shape", None) is not None
+                and int(out[0].shape[0]) == len(group)
+            ):
+                return [out[0][i : i + 1] for i in range(len(group))]
+            raise RuntimeError(
+                f"a batched Anima call returned {len(out)} outputs for {len(group)} rows"
+            )
+
         images: list = []
         try:
-            for index, (one_prompt, one_generator, per_prompt) in enumerate(calls):
-                kwargs: dict[str, Any] = {
-                    "prompt": one_prompt,
-                    "num_inference_steps": int(num_inference_steps),
-                    "num_images_per_prompt": per_prompt,
-                    "output_type": output_type,
-                }
-                if negative_prompt is not None:
-                    kwargs["negative_prompt"] = (
-                        negative_prompt
-                        if negatives is None
-                        else negatives[index if len(negatives) > 1 else 0]
-                    )
-                if one_generator is not None:
-                    kwargs["generator"] = one_generator
-                if height is not None:
-                    kwargs["height"] = int(height)
-                if width is not None:
-                    kwargs["width"] = int(width)
-                if latents is not None:
-                    kwargs["latents"] = latents
-                with self._step_hooks(
-                    mp, callback_on_step_end, int(num_inference_steps), index == 0
-                ):
-                    out = mp(**kwargs, output = "images")
-                images.extend(out if isinstance(out, list) else [out])
+            by_row: dict = {}
+            for group_index, group in enumerate(
+                self._row_groups(mp, calls, latents, generators, row_negative)
+            ):
+                first = group_index == 0
+                if len(group) > 1:
+                    try:
+                        for i, image in zip(group, run_rows(group, first)):
+                            by_row[i] = [image]
+                        continue
+                    except _AnimaRowsMismatch as exc:
+                        logger.info("Anima rows render one by one: %s", exc)
+                for i in group:
+                    by_row[i] = run(call_kwargs(i), first and i == group[0])
+            for i in range(len(calls)):
+                images.extend(by_row[i])
         except _AnimaInterrupted:
             images = []
         # The modular pipeline does not own the hooks enable_model_cpu_offload put on these components.
@@ -327,6 +541,41 @@ class _AnimaPipelineMixin:
         if not return_dict:
             return (images,)
         return AnimaPipelineOutput(images = images)
+
+    def _row_groups(
+        self,
+        mp: Any,
+        calls: list,
+        latents: Any,
+        generators: Optional[list],
+        negative: Callable[[int], Any],
+    ) -> list:
+        """Call indexes per batched call, grouped by conditioned (prompt, negative) length; else one call each."""
+        alone = [[i] for i in range(len(calls))]
+        if len(calls) < 2 or latents is not None or generators is None or batch_rows_disabled():
+            return alone
+        if any(per_prompt != 1 or g is None for _, g, per_prompt in calls):
+            return alone
+        if getattr(mp, "_blocks", None) is None or not _bridge_row_steps(mp):
+            return alone
+        if _per_call_scaled(getattr(self, "transformer", None)) is not None:
+            return alone
+        try:
+            minimum = int(getattr(self.text_conditioner.config, "min_sequence_length", 0) or 0)
+            keyed: dict = {}
+
+            def length(text: Any) -> int:
+                ids = self.t5_tokenizer(
+                    text if text is not None else "", truncation = True, max_length = _T5_MAX_LENGTH
+                )["input_ids"]
+                return max(len(ids), minimum)
+
+            for i, (prompt, _, _) in enumerate(calls):
+                keyed.setdefault((length(prompt), length(negative(i))), []).append(i)
+        except Exception as exc:  # noqa: BLE001 -- unmeasurable: the per-row calls run as before
+            logger.info("Anima rows render one by one (tokenize: %s)", exc)
+            return alone
+        return list(keyed.values())
 
     def _step_hooks(
         self, mp, callback: Optional[Callable], num_inference_steps: int, first_call: bool

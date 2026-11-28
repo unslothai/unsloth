@@ -193,3 +193,23 @@ def test_real_backend_returns_none_when_the_reservation_moved():
     assert backend.generate_progress(expected_account = ALICE.account_id) is None
     assert backend.generate_progress(expected_account = BOB.account_id)["phase"] == "completed"
     assert backend.generate_progress()["phase"] == "completed"
+
+
+def test_progress_counts_a_watcher_only_for_a_visible_preview_poll_of_the_running_job(monkeypatch):
+    from core.inference import diffusion_preview as DP
+
+    monkeypatch.setattr(DP, "_last_watch", {})
+    _install(monkeypatch, HandoffVideoBackend(hand_off = True))
+    with _client(ALICE) as client:
+        client.get(PROGRESS + "?preview=1")
+    assert (
+        "video" not in DP._last_watch
+    ), "a poll that was not answered with the job's progress watched it"
+
+    _install(monkeypatch, SoloVideoBackend())
+    with _client(ALICE) as client:
+        client.get(PROGRESS)
+        client.get(PROGRESS + "?preview=false")
+        assert "video" not in DP._last_watch
+        client.get(PROGRESS + "?preview=true")
+    assert set(DP._last_watch) == {"video"}

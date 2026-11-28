@@ -66,15 +66,31 @@ def _loader_utils_functions(
 
 def _real_function(path, name):
     """One self-contained function compiled from its module's source, so the fixture runs the real code without
-    importing the module (unsloth.models._utils pulls in torch)."""
-    node = next(
+    importing the module (unsloth.models._utils pulls in torch). Module-level literal constants the function
+    reads (gguf_packed.GGUF_PACKED_KWARG) come with it."""
+    body = ast.parse(path.read_text(encoding = "utf-8")).body
+    node = next(n for n in body if isinstance(n, ast.FunctionDef) and n.name == name)
+    reads = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    constants = [
         n
-        for n in ast.parse(path.read_text(encoding = "utf-8")).body
-        if isinstance(n, ast.FunctionDef) and n.name == name
-    )
+        for n in body
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id in reads
+        and _is_literal(n.value)
+    ]
     namespace = {}
-    exec(compile(ast.Module([node], type_ignores = []), str(path), "exec"), namespace)
+    exec(compile(ast.Module([*constants, node], type_ignores = []), str(path), "exec"), namespace)
     return namespace[name]
+
+
+def _is_literal(node):
+    try:
+        ast.literal_eval(node)
+    except ValueError:
+        return False
+    return True
 
 
 def _gguf_load_module(path):
@@ -177,6 +193,10 @@ def loader():
         _unsloth_load_begins = lambda: None,
         # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
         gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
+        # #20022: the real check. No case passes gguf_packed, so it pops nothing and answers False.
+        check_gguf_packed_request = _real_function(
+            path.parent / "gguf_packed.py", "check_gguf_packed_request"
+        ),
     )
     # #19947: from_pretrained imports its GGUF checks from unsloth/_gguf_load.py. That module needs only the stdlib,
     # so the fixture loads all of it (helpers added there later included) instead of stubbing one name at a time.
@@ -423,3 +443,13 @@ def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, models
 
     assert captured["dispatch"]["model_name"] == "hf-only/base"
     assert ("hf-only/base", None) in calls
+
+
+def test_the_real_gguf_packed_check_runs_at_the_entry_point(loader):
+    """The fixture binds the real check_gguf_packed_request, so a packed request without a file is refused
+    before any config probe or dispatch, as it is for users."""
+    env, captured = loader
+    with pytest.raises(ValueError, match = "gguf_file"):
+        env["from_pretrained"](gguf_packed = True)
+    assert captured["config_calls"] == 0
+    assert "dispatch" not in captured

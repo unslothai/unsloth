@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -5338,6 +5338,19 @@ def _torchao_gather_options(model, arguments):
     return gather_on_accelerator_if_it_fits(model)
 
 
+def _shard_bytes(max_shard_size):
+    """`max_shard_size` ("5GB", "500MB" or bytes) as bytes for the GGUF dense writer."""
+    from transformers.utils.hub import convert_file_size_to_int
+    return convert_file_size_to_int(max_shard_size)
+
+
+# The dense writer reads the model's own (packed or merged) weights; a supplied state dict would be ignored.
+_GGUF_PACKED_STATE_DICT_REFUSAL = (
+    "Unsloth: this model still holds GGUF-packed weights, which are saved from the model itself, so a supplied "
+    "`state_dict` cannot be used. Load its weights into the model, or call without `state_dict`."
+)
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 @_fsdp2_export_on_rank0("save_pretrained_gguf", adapter_only = _gguf_lora_only)
 @_normalize_tied_weights_keys_for_save
@@ -5558,7 +5571,27 @@ def unsloth_save_pretrained_gguf(
             original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
                 self.config, "_name_or_path", None
             )
-            if _gguf_reuses_loaded_checkpoint(self, state_dict):
+            from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+            if is_gguf_packed_model(self):
+                # Packed GGUF linears are uint8 blocks to save_pretrained: the converter reads the dequantized
+                # (and any merged) weights instead.
+                if state_dict is not None:
+                    raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
+                print("Unsloth: Model is not a PEFT model. Saving its dequantized GGUF weights...")
+                try:
+                    write_gguf_dense_base(
+                        self, save_directory, max_shard_bytes = _shard_bytes(max_shard_size)
+                    )
+                    if getattr(self, "generation_config", None) is not None:
+                        self.generation_config.save_pretrained(save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to save model: {_describe_exception(e)}"
+                        f"{_offloaded_parameter_hint(self)}"
+                    ) from e
+            elif _gguf_reuses_loaded_checkpoint(self, state_dict):
                 print(
                     f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
                 )
@@ -7745,6 +7778,31 @@ def unsloth_generic_save(
     if not _is_peft:
         if _defer_to_main_process(is_main_process):
             return
+        from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+
+        if is_gguf_packed_model(model):
+            # GGUF blocks are not a checkpoint transformers reads: write the dequantized (and any merged) weights.
+            if state_dict is not None:
+                raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
+            if "16bit" not in save_method:
+                raise RuntimeError(
+                    "Unsloth: this model's base weights stay packed in their GGUF blocks, so it saves as "
+                    '`save_method = "merged_16bit"` (dequantized) or, before merging, as a LoRA adapter.'
+                )
+            print(f"Unsloth: Saving the dequantized GGUF model to '{save_directory}' ...")
+            write_gguf_dense_base(
+                model,
+                save_directory,
+                dtype = torch.float32 if _requests_float32(dtype) else None,
+                max_shard_bytes = _shard_bytes(max_shard_size),
+            )
+            if getattr(model, "generation_config", None) is not None:
+                model.generation_config.save_pretrained(save_directory)
+            if tokenizer is not None:
+                with _left_padding_side(tokenizer):
+                    tokenizer.save_pretrained(save_directory)
+            print(f"Unsloth: Model saved successfully to '{save_directory}'")
+            return
 
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
@@ -7921,29 +7979,42 @@ def unsloth_generic_save(
                 "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
                 "locally with `save_pretrained_merged` and upload that folder."
             )
-        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+        from unsloth.models.gguf_packed import gguf_dense_base_for_merge
 
-        # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
-        # its GPU first, so the merge below only unloads those layers.
-        streamed = []
-        if in_place and getattr(model.config, "quantization_config", None):
-            from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
-            streamed = merge_4bit_lora_layer_by_layer(model)
-        relative = nullcontext() if in_place else lora_relative_to_original_base(model)
-        with relative, _unmerge_flags_on_error(streamed):
-            merge_and_overwrite_lora(
-                _merge_base_resolver(in_place),
-                model = model,
-                tokenizer = tokenizer,
-                save_directory = save_directory,
-                push_to_hub = push_to_hub,
-                private = private,
-                token = token,
-                save_method = save_method,
-                output_dtype = dtype,
-                low_disk_space_usage = True,
-                use_temp_file = False,
+        # A packed GGUF base has no 16-bit checkpoint to read: merge onto its dequantized copy.
+        _merge_stack = ExitStack()
+        try:
+            _gguf_resolver = (
+                None
+                if in_place
+                else _merge_stack.enter_context(gguf_dense_base_for_merge(model, save_directory))
             )
+            if _gguf_resolver is None:
+                _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+
+            # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
+            # its GPU first, so the merge below only unloads those layers.
+            streamed = []
+            if in_place and getattr(model.config, "quantization_config", None):
+                from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
+                streamed = merge_4bit_lora_layer_by_layer(model)
+            relative = nullcontext() if in_place else lora_relative_to_original_base(model)
+            with relative, _unmerge_flags_on_error(streamed):
+                merge_and_overwrite_lora(
+                    _gguf_resolver or _merge_base_resolver(in_place),
+                    model = model,
+                    tokenizer = tokenizer,
+                    save_directory = save_directory,
+                    push_to_hub = push_to_hub,
+                    private = private,
+                    token = token,
+                    save_method = save_method,
+                    output_dtype = dtype,
+                    low_disk_space_usage = True,
+                    use_temp_file = False,
+                )
+        finally:
+            _merge_stack.close()
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             if _trained_rope_factor is not None and _is_main_rank():

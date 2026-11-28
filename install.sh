@@ -4367,7 +4367,7 @@ _CU130_TORCH_CEILING="2.15.0"
 _CU130_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
 # Apple Silicon: 2.13 is the first with fused MPS attention (mflux needs >=2.13); 2.15 lacks cp310/torchvision.
 _MACOS_TORCH_CEILING="2.15.0"
-_MACOS_NEW_INSTALL_TORCH="torch>=2.13.0,<2.14.0"
+_MACOS_NEW_INSTALL_TORCH="torch>=2.14.1,<2.15.0"
 
 # ── Resolve repo root (for --local installs) ──
 _REPO_ROOT="$(cd "$(dirname "$0" 2>/dev/null || echo ".")" && pwd)"
@@ -7052,8 +7052,8 @@ elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform "$TORCH_INDEX_UR
        && { [ "$_EXISTING_INSTALL" = false ] || [ "${UNSLOTH_TORCH_UPGRADE:-0}" = "1" ]; } \
        && [ "${_torch_index_pinned:-false}" = false ] \
        && [ "$(_macos_torch213_host_ok)" = "yes" ] \
-       && [ "$(_pypi_unsloth_admits_torch "2.13.0")" = "yes" ]; then
-        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.13: only the chosen one moves
+       && [ "$(_pypi_unsloth_admits_torch "2.14.1")" = "yes" ]; then
+        # an index set with UNSLOTH_TORCH_INDEX_URL (a mirror or snapshot) may not carry 2.14: only the chosen one moves
         _MACOS_NEW_INSTALL_ROUTE=true
     fi
 fi
@@ -7079,7 +7079,7 @@ if [ -z "$_PREV_TORCH_PIN" ] && [ "$_CU130_NEW_INSTALL_ROUTE" = true ]; then
 fi
 if [ -z "$_PREV_TORCH_PIN" ] && [ "$_MACOS_NEW_INSTALL_ROUTE" = true ]; then
     TORCH_CONSTRAINT="$_MACOS_NEW_INSTALL_TORCH"
-    TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"
+    TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"
 fi
 
 _TAURI_TORCH_INDEX_FAMILY=$(_tauri_torch_index_family "$TORCH_INDEX_URL")

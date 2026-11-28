@@ -3658,6 +3658,8 @@ from models.inference import (
     ValidateModelResponse,
     EstimateMemoryRequest,
     EstimateMemoryResponse,
+    GpuLayerEstimate,
+    GpuSplitBasis,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
     AnePrefillAvailabilityRequest,
@@ -3904,13 +3906,9 @@ from core.inference.external_provider import (
     llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
-    _ANTHROPIC_COMPACTION_MIN,
-    _OPENAI_COMPACTION_MIN,
-    compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
-    _sse_payload,
     is_ui_control_sse_line,
     ServerToolCallStripper,
 )
@@ -15191,6 +15189,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
+    per_gpu: Optional[list[GpuLayerEstimate]] = None
+    per_gpu_basis: Optional[GpuSplitBasis] = None
 
 
 def _gguf_offloaded_layer_fraction(
@@ -15534,6 +15534,184 @@ def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
         return None
 
 
+class _ManualLayerSplit(NamedTuple):
+    ids: list[int]
+    shares: list[float]
+    basis: GpuSplitBasis
+
+
+def _manual_estimate_split(
+    request: EstimateMemoryRequest, gguf_path: str
+) -> Optional[_ManualLayerSplit]:
+    """Reconstruct the fixed layer split from the picker and /api/system's last inventory."""
+    from core.inference.llama_cpp import (
+        _CPU_FFN_COUNT_FLAGS,
+        _OVERRIDE_TENSOR_FLAGS,
+        _extra_args_main_device,
+        _extra_args_set_any_flag,
+    )
+    from core.inference.llama_server_args import (
+        _as_emitted,
+        _effective_tensor_parallel,
+        parse_gpu_layers_override,
+        parse_split_mode_override,
+        parse_tensor_split_override,
+    )
+
+    if request.gpu_memory_mode != "manual" or request.n_cpu_moe:
+        return None
+    args = request.llama_extra_args
+    try:
+        layers = parse_gpu_layers_override(args)
+        if layers is None:
+            layers = request.gpu_layers
+        if layers is None or layers <= 0:
+            return None
+        if _effective_tensor_parallel(args, bool(request.tensor_parallel)):
+            return None
+        if (parse_split_mode_override(args) or "layer").strip().lower() != "layer":
+            return None
+        # /load promotes these extras into the manual fields before stripping them.
+        ratio = parse_tensor_split_override(args, reserialized = True) or request.tensor_split
+    except ValueError:
+        return None
+
+    # These reach the child and can re-place tensors or devices (manual strips only -ncmoe/-cmoe).
+    if _extra_args_set_any_flag(
+        args,
+        _OVERRIDE_TENSOR_FLAGS
+        | _CPU_FFN_COUNT_FLAGS
+        | {
+            "--override-kv",
+            "--rpc",
+            "--moe-cache-mib",
+            "--ple",
+            "--shard",
+            "-mv",
+            "--model-vocoder",
+        },
+    ) or any(
+        os.environ.get(key)
+        for key in (
+            "LLAMA_ARG_OVERRIDE_TENSOR",
+            "LLAMA_ARG_N_CPU_FFN",
+            "LLAMA_ARG_RPC",
+            "LLAMA_ARG_MOE_CACHE_MIB",
+        )
+    ):
+        return None
+    if request.native_path_lease:
+        # A lease authorizes only sibling shards: validate them before GGUFReader opens any.
+        from core.inference.offload_layout import split_shard_paths
+        try:
+            for shard in split_shard_paths(gguf_path) or ():
+                _validate_native_gguf_companion(shard, gguf_path, "GGUF shard")
+        except HTTPException:
+            return None
+    pin = request.selected_gpu_ids
+    # A pin strips --device / LLAMA_ARG_DEVICE; unpinned, they can change membership and order.
+    if not pin and (
+        _extra_args_main_device(args) is not None or os.environ.get("LLAMA_ARG_DEVICE")
+    ):
+        return None
+    main = sys.modules.get("main")
+    cached = getattr(main, "_system_gpu_cache", None)
+    if not cached:
+        return None
+    sampled_at, (_, inventory) = cached
+    if not inventory or not inventory.get("available") or inventory.get("stale"):
+        return None
+    backend = inventory.get("backend")
+    if (
+        backend not in {"cuda", "rocm", "vulkan"}
+        # An unpinned ROCm child may drop GPUs unsupported by the installed llama.cpp build.
+        or (backend == "rocm" and not pin)
+        or not inventory.get("gguf_gpu_ids_supported")
+        or inventory.get("index_kind") not in {"physical", "vulkan", "cuda_device"}
+    ):
+        return None
+    devices = inventory.get("devices") or []
+    by_id = {d["index"]: d for d in devices if isinstance(d.get("index"), int)}
+    ids = list(pin or by_id)
+    if (
+        len(ids) < 2
+        or len(set(ids)) != len(ids)
+        or len(by_id) != len(devices)
+        or any(i not in by_id for i in ids)
+        or any(by_id[i].get("shared_memory") or by_id[i].get("unified_memory") for i in ids)
+    ):
+        return None
+    if ratio and len(ratio) == len(ids):
+        # Unpinned, the launch counts torch devices, which a Vulkan inventory need not match.
+        if not pin and backend == "vulkan":
+            return None
+        # An emitted ratio pins picker order (see _pin_visible_gpu_order_for_split).
+        rendered = [_as_emitted(v) for v in ratio]
+        try:
+            parse_tensor_split_override(["-ts", ",".join(str(v) for v in rendered)])
+        except ValueError:
+            return None
+        return _ManualLayerSplit(ids, rendered, "tensor_split")
+
+    if not pin:
+        # No ratio: the child keeps its inherited order, which the picker's PCI order may not match.
+        if backend == "cuda" and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            return None
+        ordinals = [d.get("visible_ordinal") for d in devices]
+        if set(ordinals) != set(range(len(ids))):
+            return None
+        ids = sorted(ids, key = lambda i: by_id[i]["visible_ordinal"])
+    if time.monotonic() - sampled_at >= getattr(main, "_SYSTEM_GPU_CACHE_TTL_SECONDS", 10.0):
+        return None
+    # llama.cpp splits by raw free bytes; rounded or display figures can move the boundary block.
+    free = [by_id[i].get("vram_free_bytes") for i in ids]
+    if any(type(value) is not int or value < 0 for value in free) or not any(free):
+        return None
+    return _ManualLayerSplit(ids, free, "free_memory")
+
+
+@functools.lru_cache(maxsize = 16)
+def _estimate_layer_layout(gguf_path: str, shard_stats: tuple):
+    """The header-derived layout survives slider changes until any shard changes."""
+    from core.inference.offload_layout import layout_from_gguf
+    return layout_from_gguf(gguf_path, all_shards = True)
+
+
+def _estimate_gpu_layers(
+    gguf_path: str,
+    gpu_layers: int,
+    split: _ManualLayerSplit,
+    cache_bytes: Optional[int],
+    n_parallel: int,
+) -> Optional[list[GpuLayerEstimate]]:
+    from core.inference.offload_layout import split_shard_paths
+    from core.inference.offload_planner import estimate_layer_split
+
+    try:
+        paths = split_shard_paths(gguf_path) or [gguf_path]
+        stats = [os.stat(path) for path in paths]
+        layout = _estimate_layer_layout(gguf_path, tuple((s.st_size, s.st_mtime_ns) for s in stats))
+    except OSError:
+        return None
+    rows = estimate_layer_split(
+        layout, gpu_layers, split.shares, kv_bytes = cache_bytes, n_parallel = n_parallel
+    )
+    return [
+        GpuLayerEstimate(
+            gpu_id = gpu_id,
+            layer_count = row.layer_count,
+            output_layer = row.has_output_layer,
+            weights_bytes = row.weights_bytes,
+            cache_bytes = (
+                row.kv_bytes + row.recurrent_bytes
+                if row.kv_bytes is not None and row.recurrent_bytes is not None
+                else None
+            ),
+        )
+        for gpu_id, row in zip(split.ids, rows)
+    ] or None
+
+
 def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
     """Tensor split needs two usable GPUs, since load_model falls back to a layer split below that."""
     if requested_gpu_ids:
@@ -15792,6 +15970,7 @@ def _gguf_memory_breakdown(
     # A GPU pin owns placement: load_model strips device flags and env before launch.
     device_pin_governs: bool = False,
     selected_gpu_ids: Optional[list[int]] = None,
+    layer_split: Optional[_ManualLayerSplit] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """None if nothing sizes. Files are cached; the KV and compute buffers are re-derived per call."""
     from core.inference.llama_server_args import (
@@ -16260,8 +16439,40 @@ def _gguf_memory_breakdown(
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
     # Context checkpoints are host heap (--cache-ram); excluded from the GPU figure.
     gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
-    # Cache follows its layer's device; scale linearly by offloaded fraction (exact at 0 and full).
-    gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
+    per_gpu = None
+    if (
+        layer_split
+        and gpu_layers is not None
+        and not tensor_parallel
+        and not (embedded_mtp or companion_bytes or host_drafter_bytes or drafter_kv_unsized)
+        and not (adapter_bytes or adapters_unsized or lookup_table_bytes or _lt_device_bytes)
+        and not getattr(probe, "is_diffusion", False)
+    ):
+        from core.inference.llama_cpp import (
+            _extra_args_n_parallel,
+            _kv_bytes_per_elem,
+            _planned_main_cache_types,
+        )
+
+        cache_bytes = None
+        if not kv_on_gpu:
+            cache_bytes = 0
+        elif runtime.kv_estimable:
+            # Mixed K/V types or a pass-through --parallel make the aggregate cache unsplittable.
+            types = _planned_main_cache_types(cache_type_kv, extras)
+            slots = _extra_args_n_parallel(extras, {})
+            if len({_kv_bytes_per_elem(t) for t in types}) == 1 and slots in (
+                None,
+                runtime.n_parallel,
+            ):
+                cache_bytes = gpu_kv_bytes
+        per_gpu = _estimate_gpu_layers(
+            gguf_path, gpu_layers, layer_split, cache_bytes, runtime.n_parallel
+        )
+    if per_gpu and all(row.cache_bytes is not None for row in per_gpu):
+        gpu_bytes = sum(row.weights_bytes + row.cache_bytes for row in per_gpu)
+    else:
+        gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
@@ -16285,6 +16496,7 @@ def _gguf_memory_breakdown(
     ):
         # No GPU given or present: zero even for companions, which ignore --gpu-layers; a GPU pin overrides both readings.
         gpu_bytes = 0
+        per_gpu = None
         drafter_runtime_gpu_bytes = 0
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
@@ -16307,6 +16519,8 @@ def _gguf_memory_breakdown(
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
         lookup_table_bytes = lookup_table_bytes,
         lookup_table_on_disk = lookup_table_on_disk,
+        per_gpu = per_gpu,
+        per_gpu_basis = layer_split.basis if per_gpu else None,
     )
 
 
@@ -23181,6 +23395,7 @@ async def estimate_memory(
             # A pin names the cards; the launch strips conflicting device flags.
             device_pin_governs = bool(request.selected_gpu_ids),
             selected_gpu_ids = pinned_gpu_ids,
+            layer_split = _manual_estimate_split(request, gguf_path),
         )
         breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:
@@ -30653,9 +30868,6 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 # keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
-# /compact on Anthropic lowers the native trigger to its 50K floor, which only fires on a prompt
-# past it; the margin covers the estimate running high. Shorter threads get Unsloth's summary.
-_ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
@@ -30941,6 +31153,7 @@ def _fit_external_context(
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
     replays a /compact epoch on a request that may not start one. ``unsummarised`` is ``messages``
     before a summary replaced its oldest turns, so those are archived and recalled too."""
+    from core.inference import cloud_compaction
     from core.inference.context_window import (
         _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
@@ -31020,7 +31233,7 @@ def _fit_external_context(
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = anchors or None,
+        anchor_ids = (anchors | cloud_compaction.request_reference_ids(messages, turn)) or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -31180,6 +31393,7 @@ def _plan_external_compaction(
             cut = cloud_compaction.tail_start(
                 plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
+        cut = cloud_compaction.keep_request_reference(plan.body, cut, turn)
         if cut > plan.covered:
             plan.cut = cut
             plan.to_summarise = plan.body[plan.covered : cut]
@@ -31388,31 +31602,6 @@ async def _finish_external_compaction(
     if truncation is None and refusal is not None:
         truncation = {**refusal, "summary_failed": bool(summary_failed)}
     return current, truncation, max_tokens
-
-
-def _is_compaction_block_sse(line: str) -> bool:
-    if '"compaction_block"' not in line:
-        return False
-    event = (_sse_payload(line) or {}).get("_toolEvent")
-    return isinstance(event, dict) and event.get("type") == "compaction_block"
-
-
-def _provider_compaction_truncation(messages: list[dict]) -> dict:
-    latest_user = max(
-        (index for index, message in enumerate(messages) if message.get("role") == "user"),
-        default = 0,
-    )
-    summarized = sum(
-        1
-        for message in messages[:latest_user]
-        if message.get("role") not in ("system", "developer")
-    )
-    return {
-        "dropped_messages": summarized,
-        "boundary_messages": summarized,
-        "fits": True,
-        "summarized": True,
-    }
 
 
 async def _proxy_to_external_provider(
@@ -32141,13 +32330,11 @@ async def _proxy_to_external_provider(
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
-    _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
     if (
         managed is None
         and payload.context_overflow == "truncate_oldest"
         and (provider_type == "ollama" or not payload.compaction_threshold)
-        and not _provider_compacts
     ):
         # a self-hosted server reports its startup window when the catalog has none.
         _loaded_window = None
@@ -32218,31 +32405,18 @@ async def _proxy_to_external_provider(
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _compaction_fallback = None
     _request_branch = chat_messages
     _rolling = _rolling_context_policy(payload) is not None
-    # The connection's "Auto-compact after" may pass the 200K default, never the model's window.
-    _compaction_uncapped = bool(payload.compaction_uncapped and payload.compaction_threshold)
-    if _compaction_uncapped and payload.context_window:
+    if payload.compaction_uncapped and payload.compaction_threshold and payload.context_window:
         payload = payload.model_copy(
             update = {
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
     # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
-    _evict_only = (
-        managed is None
-        and payload.compaction_mode in ("rolling", "checkpoint")
-        and not _provider_compacts
-    )
+    _evict_only = managed is None and payload.compaction_mode in ("rolling", "checkpoint")
     _rolling_only = _evict_only and payload.compaction_mode == "rolling"
-    # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = (
-        bool(payload.compaction_threshold)
-        and _rolling
-        and not _provider_compacts
-        and not _evict_only
-    )
+    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _evict_only
     # /compact. A saved thread only, so the summary outlives this request.
     _compact_now = (
         managed is None
@@ -32250,22 +32424,7 @@ async def _proxy_to_external_provider(
         and payload.compact_context is True
         and bool(payload.thread_id)
     )
-    _first_turn_overrides: dict = {}
-    if _compact_now and _provider_compacts:
-        _native_trigger = None
-        if provider_type != "anthropic":
-            _native_trigger = _OPENAI_COMPACTION_MIN
-        elif (
-            await asyncio.to_thread(
-                _external_token_counter(payload, _external_fit_tools), chat_messages
-            )
-            >= _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS
-        ):
-            _native_trigger = _ANTHROPIC_COMPACTION_MIN
-        if _native_trigger is not None:
-            # The provider compacts on this request because its trigger is already behind us.
-            _first_turn_overrides = {"compaction_threshold": _native_trigger}
-    _manual_summary_pending = _compact_now and not _first_turn_overrides
+    _manual_summary_pending = _compact_now
     _has_saved_summary = False
     if (
         managed is None
@@ -32491,16 +32650,6 @@ async def _proxy_to_external_provider(
     # Only with auto-compact on: a user who switched it off gets the provider's refusal as is.
     _overflow_recovery = managed is None and _rolling
 
-    if (
-        payload.compaction_threshold
-        and _rolling
-        and _provider_compacts
-        and (provider_type == "openai" or api_type == "responses")
-    ):
-
-        async def _compaction_fallback(messages):
-            return await _external_context_fitter(messages, auto = True)
-
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
     _unfitted_messages = chat_messages
@@ -32579,9 +32728,6 @@ async def _proxy_to_external_provider(
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
-            compaction_threshold = payload.compaction_threshold,
-            compaction_uncapped = _compaction_uncapped,
-            compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
@@ -32611,7 +32757,6 @@ async def _proxy_to_external_provider(
                     continue_final_message = _continue_final_message(payload),
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
-                    first_turn_overrides = _first_turn_overrides,
                     reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
@@ -32672,7 +32817,7 @@ async def _proxy_to_external_provider(
 
             async def _plain_turn():
                 nonlocal _sent_messages
-                overrides = dict(_first_turn_overrides)
+                overrides = {}
                 if _deferred_fit_plan is not None:
                     fit = None
                     async for step in _external_fit_steps(chat_messages, plan = _deferred_fit_plan):
@@ -32740,7 +32885,6 @@ async def _proxy_to_external_provider(
                 yield _context_truncated_sse_chunk(
                     f"chatcmpl-{uuid.uuid4().hex}", model, _external_truncation
                 )
-            provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():
                     # intercept [DONE] before the monitor records a cut-short reply as complete.
@@ -32777,25 +32921,6 @@ async def _proxy_to_external_provider(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                 yield f"{line}\n\n"
-                if (
-                    _provider_compacts
-                    and not provider_compaction_reported
-                    and _is_compaction_block_sse(line)
-                ):
-                    provider_compaction_reported = True
-                    yield _context_truncated_sse_chunk(
-                        f"chatcmpl-{uuid.uuid4().hex}",
-                        model,
-                        {
-                            **_provider_compaction_truncation(chat_messages),
-                            # /compact lowered the provider's trigger for this request.
-                            **(
-                                {"manual": True, "checkpoint_started": True}
-                                if _first_turn_overrides
-                                else {}
-                            ),
-                        },
-                    )
                 # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
                     sent_done = True
@@ -55513,7 +55638,10 @@ async def diffusion_load_progress(
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
-async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_generate_progress(
+    current_subject: str = Depends(get_current_subject), preview: bool = Query(False)
+):
+    """``preview``: a visible page shows the running render's live preview, so the denoise loop keeps producing it."""
     external = _external_image_run_active()
 
     def _hidden():
@@ -55538,6 +55666,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
+    if preview is True:  # a direct call gets the Query default object
+        from core.inference.diffusion_preview import note_preview_watch
+        note_preview_watch("image")
     log_media_generation_progress("image", progress)
     if not progress["active"]:
         from core.inference.flux3_prompt_upsampler import progress as upsampler_progress
@@ -56593,6 +56724,15 @@ def _follow_up_pass():
 _COALESCE_KEY_IGNORED = frozenset({"live_preview"})
 
 
+def _callable_takes(fn: Any, name: str) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 async def _coalesced_image_generate(
     backend: Any,
     status: Optional[dict],
@@ -56603,12 +56743,13 @@ async def _coalesced_image_generate(
     generate_kwargs: dict,
 ) -> Optional[dict]:
     """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
+    from core.inference import diffusion_batch_trace as batch_trace
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_batch_adapters import admits_without_pipe
+    from core.inference.diffusion_cuda_graph import batch_rows
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
     from core.inference.generation_ticket import (
         GenerationTicket,
         TicketStopEvent,
@@ -56618,19 +56759,27 @@ async def _coalesced_image_generate(
     holder = getattr(backend, "generation_holder", None)
     if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
         return None
+    batch_trace.count("admitted")
     if not image_request_batching.collecting():
         try:
             if holder() is None:
+                # Idle: dispatch now, before any key, policy, status read or timer.
+                batch_trace.count("idle_direct")
                 return None
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
             return None
     if status is None:
         status = await asyncio.to_thread(backend.status)
     family = status.get("family")
-    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
-        return None
-    if family and getattr(detect_family("", family), "layer_count", 0):
-        return None
+    if family:
+        try:
+            fused = admits_without_pipe(detect_family("", family))
+        except Exception:  # noqa: BLE001 -- an unknown family renders alone
+            fused = False
+        if not fused:
+            # FLUX.3, Anima, layered and the other families that loop one image per forward, unless they say so.
+            batch_trace.fallback("family renders one image per forward")
+            return None
     if generate_kwargs.get("expected_load") is None:
         # Pin to the model read here, so a swapped model is refused rather than rendering every member.
         from core.inference.diffusion_families import load_identity
@@ -56646,6 +56795,7 @@ async def _coalesced_image_generate(
     if plan is not None:
         decided = await asyncio.to_thread(plan, prompt, bool(loras))
         if decided is None:
+            batch_trace.fallback("engine policy or prompt layout")
             return None
         prompt_key, private = decided
     else:
@@ -56704,7 +56854,8 @@ async def _coalesced_image_generate(
             # Row 0 may be another account's image, so a cross-account batch shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
         runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
-        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
+        # A user's call never records a batch-size graph (only an idle race does): an unrecorded size runs eager.
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")), batch_rows(len(seeds)):
             try:
                 return await runner(
                     backend.generate,
@@ -56760,15 +56911,61 @@ async def _coalesced_image_generate(
         }
 
     sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+    shape_kwargs = {}
+    if sizes_of is not None and _callable_takes(sizes_of, "guidance"):
+        shape_kwargs["guidance"] = generate_kwargs.get("guidance")
+    if sizes_of is not None and _callable_takes(sizes_of, "steps"):
+        shape_kwargs["steps"] = generate_kwargs.get("steps")
+    if sizes_of is not None and _callable_takes(sizes_of, "layout"):
+        # A verdict won by graph replay holds only for the prompt layout it was raced at.
+        shape_kwargs["layout"] = prompt_key
 
     def fits(total: int) -> bool:
         if sizes_of is None:
             return True
         try:
-            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+            sizes = sizes_of(
+                generate_kwargs.get("width"), generate_kwargs.get("height"), **shape_kwargs
+            )
         except Exception:  # noqa: BLE001 -- unknown shapes: render alone
             return False
         return sizes is None or total in sizes
+
+    if sizes_of is not None:
+        try:
+            admitted = await asyncio.to_thread(
+                sizes_of,
+                generate_kwargs.get("width"),
+                generate_kwargs.get("height"),
+                **shape_kwargs,
+            )
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            admitted = frozenset()
+        if admitted is not None and not any(size > n for size in admitted):
+            # No batch size this request could be part of at this shape: never wait to coalesce.
+            batch_trace.fallback("no admitted batch size at this shape")
+            return None
+
+    seeded_of = getattr(backend, "coalesce_seeded_ok", None)
+    seeded_steps = seeded_of is not None and _callable_takes(seeded_of, "steps")
+    seeded_layout = seeded_of is not None and _callable_takes(seeded_of, "layout")
+
+    def seeded_ok() -> bool:
+        if seeded_of is None:
+            return False
+        try:
+            return bool(
+                seeded_of(
+                    generate_kwargs.get("width"),
+                    generate_kwargs.get("height"),
+                    generate_kwargs.get("guidance"),
+                    n,
+                    **({"steps": generate_kwargs.get("steps")} if seeded_steps else {}),
+                    **({"layout": prompt_key} if seeded_layout else {}),
+                )
+            )
+        except Exception:  # noqa: BLE001 -- unknown: a seeded request renders alone
+            return False
 
     waiter = getattr(backend, "generation_waiter", None)
     rider = getattr(backend, "generation_rider", None)
@@ -56790,6 +56987,9 @@ async def _coalesced_image_generate(
             salvage = salvage,
             on_lead = on_lead,
             wait = wait,
+            seeded_ok = seeded_ok,
+            # Left out of a fired batch: coalesce again behind the generation running now.
+            on_rejoin = arrived_behind.clear,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
@@ -56813,6 +57013,65 @@ async def _coalesced_image_generate(
             lead["remove"]()
         if "turn" in lead:
             backend.release_slot_turn(lead["turn"])
+
+
+class ImageBatchRaceRequest(BaseModel):
+    width: Optional[int] = None
+    height: Optional[int] = None
+    steps: Optional[int] = None
+    guidance: Optional[float] = None
+    sizes: Optional[list[int]] = None
+    repeats: int = 5
+    accuracy: bool = True
+
+
+@studio_router.post("/images/batching/race")
+async def images_batching_race(
+    body: Optional[ImageBatchRaceRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Explicit warm-up: on an idle engine, race serial against batched calls for the loaded model at this shape and
+    persist the verdicts that decide whether concurrent requests share a call. Owner only; 409 when a request holds
+    or waits for the slot (the race never runs on a user's request)."""
+    from core.inference.diffusion_batch_race import RACE_SIZES, RaceRefused, invalid_race_sizes
+    from core.inference.diffusion_engine_router import (
+        ENGINE_DIFFUSERS,
+        active_engine_name,
+        get_active_diffusion_engine,
+    )
+
+    if account_access.managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the owner can run the batching race.")
+    body = body or ImageBatchRaceRequest()
+    bad = invalid_race_sizes(body.sizes)
+    if bad:
+        raise HTTPException(status_code = 422, detail = bad)
+    backend = get_active_diffusion_engine()
+    race = getattr(backend, "batch_race", None)
+    if race is None or active_engine_name() != ENGINE_DIFFUSERS:
+        raise HTTPException(
+            status_code = 409, detail = "The active image engine does not batch requests."
+        )
+    status = await asyncio.to_thread(backend.status)
+    if not status.get("loaded"):
+        raise HTTPException(status_code = 409, detail = "No image model is loaded.")
+    steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+    try:
+        report = await asyncio.to_thread(
+            functools.partial(
+                race,
+                width = int(body.width or 1024),
+                height = int(body.height or 1024),
+                steps = int(body.steps or steps),
+                guidance = float(guidance if body.guidance is None else body.guidance),
+                sizes = tuple(body.sizes or RACE_SIZES),
+                repeats = max(1, min(int(body.repeats), 20)),
+                accuracy = bool(body.accuracy),
+            )
+        )
+    except RaceRefused as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return {"race": report, "request_batching": backend.request_batching()}
 
 
 async def _batched_openai_images(

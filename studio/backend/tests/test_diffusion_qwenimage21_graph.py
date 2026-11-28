@@ -180,8 +180,8 @@ def test_a_failed_capture_falls_back_to_the_callers_own_call():
     """A planned call whose capture fails (here: host tensors) must run the stock call, not the planned kwargs."""
     m = _model()
     inp = _inputs(batch = 2, pad = 3)
-    ref = _render(m, inp)
     assert q.install()
+    ref = _render(m, inp)
     handle = cg.GraphedForward(m).enable()
     try:
         got = _render(m, _inputs(batch = 2, pad = 3))

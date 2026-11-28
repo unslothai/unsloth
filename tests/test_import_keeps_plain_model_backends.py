@@ -99,7 +99,31 @@ def test_init_snapshots_before_gpu_init_and_restores_last():
     assert restore > last_import
 
 
+def _first_work_is_the_load_hook(fn):
+    """True when the first statement of `fn` that does anything is `_unsloth_load_begins()`.
+
+    Local imports (and a docstring) may come first: they only bind names, and the hook itself is one of
+    them. Counting statements instead broke as soon as a load path needed a third import (#20022)."""
+    for node in fn.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            continue
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            continue
+        return (
+            isinstance(node, ast.Expr)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "_unsloth_load_begins"
+        )
+    return False
+
+
 def test_every_from_pretrained_starts_with_the_load_hook():
+    seen = []
     for rel, owner in (
         ("unsloth/models/loader.py", ("FastLanguageModel", "FastModel")),
         ("unsloth/models/llama.py", ("FastLlamaModel",)),
@@ -115,14 +139,32 @@ def test_every_from_pretrained_starts_with_the_load_hook():
                 for n in cls.body
                 if isinstance(n, ast.FunctionDef) and n.name == "from_pretrained"
             )
-            first_calls = [
-                n.value.func.id
-                for n in fn.body[:3]
-                if isinstance(n, ast.Expr)
-                and isinstance(n.value, ast.Call)
-                and isinstance(n.value.func, ast.Name)
-            ]
-            assert "_unsloth_load_begins" in first_calls, (rel, cls.name)
+            seen.append(cls.name)
+            assert _first_work_is_the_load_hook(fn), (rel, cls.name)
+    assert sorted(seen) == ["FastBaseModel", "FastLanguageModel", "FastLlamaModel", "FastModel"]
+
+
+@pytest.mark.parametrize(
+    "body, first",
+    [
+        (
+            "from ._utils import _unsloth_load_begins\nfrom .a import b\nfrom .c import d\n_unsloth_load_begins()",
+            True,
+        ),
+        ("'doc'\nimport os\n_unsloth_load_begins()\nx = 1", True),
+        (
+            "from ._utils import _unsloth_load_begins\nx = kwargs.pop('config')\n_unsloth_load_begins()",
+            False,
+        ),
+        ("from ._utils import _unsloth_load_begins\nprepare()\n_unsloth_load_begins()", False),
+        ("from ._utils import _unsloth_load_begins\nx = 1", False),
+    ],
+)
+def test_the_hook_check_rejects_work_before_the_hook(body, first):
+    source = "def from_pretrained(**kwargs):\n" + "".join(
+        f"    {line}\n" for line in body.split("\n")
+    )
+    assert _first_work_is_the_load_hook(ast.parse(source).body[0]) is first
 
 
 def test_unsloth_load_marks_every_transformers_model():

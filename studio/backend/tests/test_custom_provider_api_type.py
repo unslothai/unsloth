@@ -295,8 +295,8 @@ def test_non_stream_route_returns_json_or_upstream_error(monkeypatch, upstream_s
     assert monitor.active_count() == 0
 
 
-@pytest.mark.parametrize("server_compaction_rejected", [False, True])
-def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_compaction_rejected):
+@pytest.mark.parametrize("openai_cloud", [False, True])
+def test_non_stream_route_reports_local_context_truncation(monkeypatch, openai_cloud):
     from routes import inference
 
     requests = []
@@ -304,16 +304,6 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
     def handle(request):
         body = json.loads(request.content)
         requests.append(body)
-        if server_compaction_rejected and "context_management" in body:
-            return httpx.Response(
-                400,
-                json = {
-                    "error": {
-                        "message": "context_management is unavailable for this deployment",
-                        "type": "invalid_request_error",
-                    }
-                },
-            )
         return httpx.Response(
             200,
             json = {
@@ -339,12 +329,7 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
         async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
             monkeypatch.setattr(ep, "_http_client", transport)
             monkeypatch.setattr(inference, "_fit_external_context", fit)
-            monkeypatch.setattr(
-                inference, "compacts_server_side", lambda *_args: server_compaction_rejected
-            )
-            monkeypatch.setattr(
-                ep, "_is_openai_family_cloud", lambda _base_url: server_compaction_rejected
-            )
+            monkeypatch.setattr(ep, "_is_openai_family_cloud", lambda _base_url: openai_cloud)
             payload = ChatCompletionRequest(
                 messages = [
                     {"role": "user", "content": "old"},
@@ -379,7 +364,8 @@ def test_non_stream_route_reports_local_context_truncation(monkeypatch, server_c
     assert body["context_truncated"] == {**truncation, "summary_failed": False}
     assert "old" not in json.dumps(requests[-1]["input"])
     assert "latest" in json.dumps(requests[-1]["input"])
-    assert len(requests) == (2 if server_compaction_rejected else 1)
+    [sent] = requests
+    assert "context_management" not in sent
 
 
 def test_responses_follow_up_preserves_reasoning_metadata():

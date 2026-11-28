@@ -563,6 +563,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # per-family range measured); declared so /diffusion/info never advertises a sure 400
             train_scheme_deny = frozenset({"fp8", "mxfp8"}),
             auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
+            # Fitted on H3's own VAE; the modular loop's video scheduler.step feeds its packed rows.
+            preview_factors = "minimax_h3",
         ),
         pipeline_class = "ModularPipeline",
         transformer_class = "MiniMaxH3Transformer3DModel",

@@ -1550,6 +1550,7 @@ def test_rowwise_failure_does_not_change_the_scaling_recipe(monkeypatch, error):
     monkeypatch.setattr(FL, "_ROWWISE_BF16_ONLY", set())
     monkeypatch.setattr(FL, "_ROWWISE_PROBED", {})
     monkeypatch.setattr(FL, "_ROWWISE_UNSUPPORTED", set())
+    monkeypatch.setattr(FL, "_TENSORWISE_MISSING", set(), raising = False)
     calls = []
 
     def fail_once(*args):

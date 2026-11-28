@@ -21,6 +21,7 @@ type ResidentState = Pick<
   | "loadedGpuLayers"
   | "loadedNCpuMoe"
   | "loadedGpuIds"
+  | "loadedSplitRatio"
   | "loadedLlamaExtraArgs"
   | "loadedCpuFallback"
   | "specFallbackReason"
@@ -60,6 +61,7 @@ export function selectResidentEstimateSettings(state: ResidentState) {
         : null,
     nCpuMoe: state.loadedNCpuMoe,
     selectedGpuIds: state.loadedGpuIds,
+    tensorSplit: state.loadedSplitRatio,
     llamaExtraArgs: state.loadedLlamaExtraArgs,
   };
 }

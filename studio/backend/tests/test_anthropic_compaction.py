@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The compaction trigger is clamped up to the 50k-token minimum so the request does not 400."""
+"""Anthropic compaction blocks saved in older threads: parsed, replayed with their beta, never requested."""
 
 import asyncio
 import json
@@ -28,47 +28,6 @@ def _make_client() -> ExternalProviderClient:
     )
 
 
-def _capture(
-    monkeypatch,
-    model: str,
-    threshold,
-    tools = None,
-) -> dict:
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["body"] = json.loads(request.content.decode("utf-8"))
-        captured["headers"] = dict(request.headers)
-        return httpx.Response(
-            200,
-            content = b'event: message_stop\ndata: {"type": "message_stop"}\n\n',
-            headers = {"content-type": "text/event-stream"},
-        )
-
-    monkeypatch.setattr(
-        ep_mod,
-        "_http_client",
-        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
-    )
-
-    async def run():
-        client = _make_client()
-        async for _ in client.stream_chat_completion(
-            messages = [{"role": "user", "content": "hi"}],
-            model = model,
-            temperature = 0.7,
-            top_p = 0.95,
-            max_tokens = 32,
-            enabled_tools = tools,
-            compaction_threshold = threshold,
-        ):
-            pass
-        await client.close()
-
-    _drive(run())
-    return captured
-
-
 @pytest.mark.parametrize(
     "model, supported",
     [
@@ -89,61 +48,7 @@ def test_supports_compaction_gate(model, supported):
     assert _anthropic_supports_compaction(model) is supported
 
 
-def test_supported_model_attaches_compaction_block_and_beta(monkeypatch):
-    captured = _capture(monkeypatch, "claude-opus-4-7", 150_000)
-    cm = captured["body"].get("context_management")
-    assert cm == {
-        "edits": [
-            {
-                "type": "compact_20260112",
-                "trigger": {"type": "input_tokens", "value": 150_000},
-            }
-        ]
-    }, cm
-    assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
-
-
-def test_threshold_clamped_to_50k_minimum(monkeypatch):
-    captured = _capture(monkeypatch, "claude-opus-4-7", 60_000)
-    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 60_000
-    captured = _capture(monkeypatch, "claude-opus-4-7", 1)
-    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 50_000
-
-
-def test_threshold_capped_at_200k(monkeypatch):
-    captured = _capture(monkeypatch, "claude-opus-4-7", 750_000)
-    assert captured["body"]["context_management"]["edits"][0]["trigger"]["value"] == 200_000
-
-
-# ── beta header merge with code execution ────────────────────────────
-
-
-def test_compaction_beta_merges_with_code_execution_beta(monkeypatch):
-    captured = _capture(
-        monkeypatch,
-        "claude-opus-4-7",
-        150_000,
-        tools = ["code_execution"],
-    )
-    beta = captured["headers"].get("anthropic-beta", "")
-    assert "code-execution-2025-08-25" in beta
-    assert "compact-2026-01-12" in beta
-
-
-def test_unsupported_model_silently_drops_compaction(monkeypatch):
-    captured = _capture(monkeypatch, "claude-haiku-4-5-20251001", 150_000)
-    assert "context_management" not in captured["body"]
-    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
-
-
-def test_omitted_threshold_no_body_field(monkeypatch):
-    captured = _capture(monkeypatch, "claude-opus-4-7", None)
-    assert "context_management" not in captured["body"]
-    assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
-
-
 def test_chat_completion_request_accepts_sub_50k_compaction_threshold():
-    # ge=50_000 would 422 before the in-helper clamp fires.
     from models.inference import ChatCompletionRequest
 
     req = ChatCompletionRequest.model_validate(
@@ -211,7 +116,6 @@ def test_message_delta_iterations_array_aggregates_compaction_tokens(monkeypatch
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 32,
-            compaction_threshold = 150_000,
         ):
             pass
         await client.close()
@@ -257,7 +161,6 @@ def test_message_delta_no_iterations_leaves_compaction_keys_unset(monkeypatch, c
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 32,
-            compaction_threshold = 150_000,
         ):
             pass
         await client.close()
@@ -335,7 +238,6 @@ def test_compaction_block_emitted_as_tool_event(monkeypatch):
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 1024,
-            compaction_threshold = 150_000,
         )
     )
     _drive(client.close())
@@ -411,7 +313,6 @@ def test_failed_compaction_block_is_not_replayed_or_persisted(monkeypatch):
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 1024,
-            compaction_threshold = 150_000,
             tools = [
                 {
                     "type": "function",
@@ -486,7 +387,6 @@ def test_compaction_block_round_trips_through_outbound_messages(monkeypatch):
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 32,
-            compaction_threshold = 150_000,
         ):
             pass
 
@@ -659,7 +559,6 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 1024,
-            compaction_threshold = 150_000,
         )
     )
     _drive(client.close())
@@ -678,7 +577,11 @@ def test_compaction_delta_summary_reaches_the_tool_event(monkeypatch):
     ]
 
 
-def _replay(monkeypatch, model: str, threshold) -> dict:
+def _replay(
+    monkeypatch,
+    model: str,
+    temperature = 0.7,
+) -> dict:
     captured: dict = {}
 
     def http_handler(request: httpx.Request) -> httpx.Response:
@@ -715,10 +618,9 @@ def _replay(monkeypatch, model: str, threshold) -> dict:
                 {"role": "user", "content": "turn 2"},
             ],
             model = model,
-            temperature = 0.7,
+            temperature = temperature,
             top_p = 0.95,
             max_tokens = 32,
-            compaction_threshold = threshold,
         ):
             pass
 
@@ -727,8 +629,14 @@ def _replay(monkeypatch, model: str, threshold) -> dict:
     return captured
 
 
-def test_a_replayed_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
-    captured = _replay(monkeypatch, "claude-sonnet-4-6", None)
+@pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-opus-4-6"])
+def test_a_summary_request_without_temperature_omits_it(monkeypatch, model):
+    assert "temperature" not in _replay(monkeypatch, model, temperature = None)["body"]
+    assert _replay(monkeypatch, model)["body"]["temperature"] == 0.7
+
+
+def test_a_replayed_compaction_block_keeps_its_beta(monkeypatch):
+    captured = _replay(monkeypatch, "claude-sonnet-4-6")
     assistant = captured["body"]["messages"][1]
     assert assistant["content"][0] == {
         "type": "compaction",
@@ -740,7 +648,7 @@ def test_a_replayed_compaction_block_keeps_its_beta_with_auto_compact_off(monkey
 
 
 def test_a_model_without_compaction_is_never_sent_a_compaction_block(monkeypatch):
-    captured = _replay(monkeypatch, "claude-haiku-4-5", 150_000)
+    captured = _replay(monkeypatch, "claude-haiku-4-5")
     assistant = captured["body"]["messages"][1]
     assert [part["type"] for part in assistant["content"]] == ["text"]
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")
@@ -749,7 +657,6 @@ def test_a_model_without_compaction_is_never_sent_a_compaction_block(monkeypatch
 def _native_replay(
     monkeypatch,
     model: str,
-    threshold,
     native = None,
 ) -> dict:
     captured: dict = {}
@@ -789,7 +696,6 @@ def _native_replay(
             temperature = 0.7,
             top_p = 0.95,
             max_tokens = 32,
-            compaction_threshold = threshold,
         ):
             pass
 
@@ -798,8 +704,8 @@ def _native_replay(
     return captured
 
 
-def test_a_replayed_native_compaction_block_keeps_its_beta_with_auto_compact_off(monkeypatch):
-    captured = _native_replay(monkeypatch, "claude-sonnet-4-6", None)
+def test_a_replayed_native_compaction_block_keeps_its_beta(monkeypatch):
+    captured = _native_replay(monkeypatch, "claude-sonnet-4-6")
     assistant = captured["body"]["messages"][1]
     assert assistant["content"][0] == {"type": "compaction", "content": "PRIOR SUMMARY"}
     assert "compact-2026-01-12" in captured["headers"].get("anthropic-beta", "")
@@ -812,12 +718,12 @@ def test_a_replayed_compaction_block_and_its_signed_thinking_stay_byte_exact(mon
         {"type": "thinking", "thinking": "chapter 2 next", "signature": "SIG"},
         {"type": "text", "text": "answer"},
     ]
-    captured = _native_replay(monkeypatch, "claude-opus-5-5", None, native = native)
+    captured = _native_replay(monkeypatch, "claude-opus-5-5", native = native)
     assert captured["body"]["messages"][1]["content"] == native
 
 
 def test_a_model_without_compaction_is_never_sent_a_native_compaction_block(monkeypatch):
-    captured = _native_replay(monkeypatch, "claude-haiku-4-5", 150_000)
+    captured = _native_replay(monkeypatch, "claude-haiku-4-5")
     assistant = captured["body"]["messages"][1]
     assert [part["type"] for part in assistant["content"]] == ["text"]
     assert "compact-2026-01-12" not in captured["headers"].get("anthropic-beta", "")

@@ -859,13 +859,15 @@ def test_split_calls_pair_each_prompt_with_its_own_negative():
         )
 
 
-def test_every_flux3_image_is_its_own_generation_chunk():
-    # One chunk per image, so each image gets its own encode / denoise phase and text-encoder release.
+def test_flux3_images_share_one_generation_chunk():
     from core.inference.diffusion import _generation_chunks
 
     jobs = [("a", 1), ("a", 2), ("b", 3)]
     for name in (FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME):
-        assert _generation_chunks(_family(name), jobs, 1) == [[j] for j in jobs]
+        assert _family(name).batched_forward is True
+        assert _generation_chunks(_family(name), jobs, 1) == [jobs]
+    unstated = SimpleNamespace(name = FLUX3_KLEIN_FAMILY_NAME)
+    assert _generation_chunks(unstated, jobs, 1) == [[j] for j in jobs]
     # Other families keep one forward for the whole list.
     other = next(f for f in families._FAMILIES if f.name == "flux.2-klein")
     assert _generation_chunks(other, jobs, 1) == [jobs]

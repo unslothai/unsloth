@@ -18,7 +18,7 @@ import time
 import uuid
 import weakref
 import wave
-from typing import Any, AsyncGenerator, Awaitable, Callable, Literal, NamedTuple, Optional, Union
+from typing import Any, AsyncGenerator, Literal, NamedTuple, Optional, Union
 from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 import httpx
@@ -127,11 +127,6 @@ logger = structlog.get_logger(__name__)
 
 _MAX_CONCATENATED_WAV_BYTES = 64 * 1024 * 1024
 _MAX_CONCATENATED_WAV_SEGMENTS = 1_024
-
-CompactionFallback = Callable[
-    [list[dict[str, Any]]],
-    Awaitable[tuple[list[dict[str, Any]], Optional[int], Optional[str]]],
-]
 
 
 def _merge_concatenated_wav_segments(
@@ -695,28 +690,6 @@ _ANTHROPIC_COMPACTION_PREFIXES = _ANTHROPIC_5_PREFIXES + (
     "claude-mythos-preview",
 )
 _ANTHROPIC_COMPACTION_BETA = "compact-2026-01-12"
-_ANTHROPIC_COMPACTION_TYPE = "compact_20260112"
-# thresholds below 50K tokens return an upstream 400.
-_ANTHROPIC_COMPACTION_MIN = 50_000
-# The default ceiling: compaction above this is slow and costly on 1M-token windows (Anthropic's own
-# default is 150K). Neither vendor documents an upper limit, only a floor, so a connection's
-# "Auto-compact after" setting may go past it up to the model's window (compaction_uncapped):
-#   Anthropic: trigger "value must be at least 50,000 tokens", default 150,000
-#     https://platform.claude.com/docs/en/build-with-claude/compaction-threshold
-#   OpenAI: context_management[].compact_threshold "minimum: 1000"
-#     https://developers.openai.com/api/reference/resources/responses/methods/create
-_SERVER_COMPACTION_MAX = 200_000
-_OPENAI_COMPACTION_MIN = 1_000
-
-
-def anthropic_compaction_trigger(threshold: int, uncapped: bool = False) -> int:
-    trigger = max(int(threshold), _ANTHROPIC_COMPACTION_MIN)
-    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
-
-
-def openai_compaction_threshold(threshold: int, uncapped: bool = False) -> int:
-    trigger = max(int(threshold), _OPENAI_COMPACTION_MIN)
-    return trigger if uncapped else min(trigger, _SERVER_COMPACTION_MAX)
 
 
 # Anthropic fast mode is limited to Opus 5/4.8; Opus 4.7 rejects speed, 4.6 reports standard, and Priority conflicts.
@@ -729,16 +702,6 @@ _ANTHROPIC_FAST_MODE_PREFIXES = (
 
 def _anthropic_supports_compaction(model: str) -> bool:
     return model.startswith(_ANTHROPIC_COMPACTION_PREFIXES)
-
-
-def compacts_server_side(
-    provider_type: Optional[str], base_url: Optional[str], api_type: Optional[str], model: str
-) -> bool:
-    if provider_type == "anthropic":
-        return _anthropic_supports_compaction(model)
-    return (provider_type == "openai" or api_type == "responses") and _is_openai_family_cloud(
-        base_url
-    )
 
 
 def _anthropic_supports_fast_mode(model: str) -> bool:
@@ -1630,10 +1593,6 @@ class ExternalProviderClient:
         self._timeout = httpx.Timeout(timeout, connect = 10.0)
         # Generous read timeout for reasoning pauses, but a dead upstream must error, not hang forever.
         self._stream_timeout = httpx.Timeout(timeout, connect = 10.0, read = 300.0)
-        # Some OpenAI/Azure deployments expose /responses but reject its optional context_management field. The
-        # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
-        # same guaranteed 400 on every provider turn.
-        self._responses_compaction_rejected = False
 
     def _stream_timeout_for(self, read_timeout: Optional[float]) -> httpx.Timeout:
         if read_timeout is None:
@@ -1760,7 +1719,6 @@ class ExternalProviderClient:
         openai_code_exec_container_id: Optional[str] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
-        compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         fast_mode: Optional[bool] = None,
@@ -1769,8 +1727,6 @@ class ExternalProviderClient:
         stream: bool = True,
         preserve_thinking: Optional[bool] = None,
         thread_id: Optional[str] = None,
-        compaction_fallback: Optional[CompactionFallback] = None,
-        compaction_uncapped: bool = False,
         read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in.
@@ -1835,12 +1791,10 @@ class ExternalProviderClient:
                 enable_prompt_caching,
                 anthropic_code_exec_container_id,
                 prompt_cache_ttl,
-                compaction_threshold,
                 tool_choice,
                 fast_mode = fast_mode,
                 tools = tools,
                 response_format = response_format,
-                compaction_uncapped = compaction_uncapped,
             ):
                 yield line
             return
@@ -1858,14 +1812,11 @@ class ExternalProviderClient:
                 enabled_tools,
                 enable_prompt_caching,
                 openai_code_exec_container_id,
-                compaction_threshold,
                 tools,
                 tool_choice,
                 response_format,
                 stream = stream if self.provider_type == "custom" else True,
-                compaction_fallback = compaction_fallback,
                 thread_id = thread_id,
-                compaction_uncapped = compaction_uncapped,
                 read_timeout = read_timeout,
             ):
                 yield line
@@ -2687,13 +2638,11 @@ class ExternalProviderClient:
         enable_prompt_caching: Optional[bool] = None,
         anthropic_code_exec_container_id: Optional[str] = None,
         prompt_cache_ttl: Optional[str] = None,
-        compaction_threshold: Optional[int] = None,
         tool_choice: Optional[Any] = None,
         *,
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         response_format: Optional[dict[str, Any]] = None,
-        compaction_uncapped: bool = False,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -3235,26 +3184,6 @@ class ExternalProviderClient:
             if anthropic_code_exec_container_id:
                 body["container"] = anthropic_code_exec_container_id
 
-        # clamp Anthropic compaction thresholds to the supported range to avoid upstream 400s.
-        compaction_active = (
-            compaction_threshold is not None
-            and compaction_threshold > 0
-            and _anthropic_supports_compaction(model)
-        )
-        if compaction_active and compaction_threshold is not None:
-            trigger_value = anthropic_compaction_trigger(compaction_threshold, compaction_uncapped)
-            body["context_management"] = {
-                "edits": [
-                    {
-                        "type": _ANTHROPIC_COMPACTION_TYPE,
-                        "trigger": {
-                            "type": "input_tokens",
-                            "value": trigger_value,
-                        },
-                    }
-                ]
-            }
-
         # fast mode is limited to Opus 5/4.8 and conflicts with the Priority service tier.
         fast_mode_active = bool(fast_mode) and _anthropic_supports_fast_mode(model)
         if fast_mode_active:
@@ -3299,9 +3228,7 @@ class ExternalProviderClient:
         )
         if code_execution_enabled and _ANTHROPIC_CODE_EXECUTION_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_CODE_EXECUTION_BETA)
-        if (
-            compaction_active or compaction_replayed
-        ) and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
+        if compaction_replayed and _ANTHROPIC_COMPACTION_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_COMPACTION_BETA)
         if fast_mode_active and _ANTHROPIC_FAST_MODE_BETA not in beta_parts:
             beta_parts.append(_ANTHROPIC_FAST_MODE_BETA)
@@ -5667,33 +5594,15 @@ class ExternalProviderClient:
         enabled_tools: Optional[list[str]] = None,
         enable_prompt_caching: Optional[bool] = None,
         openai_code_exec_container_id: Optional[str] = None,
-        compaction_threshold: Optional[int] = None,
         tools: Optional[list[dict[str, Any]]] = None,
         tool_choice: Optional[Any] = None,
         response_format: Optional[dict[str, Any]] = None,
         stream: bool = True,
-        compaction_fallback: Optional[CompactionFallback] = None,
         thread_id: Optional[str] = None,
-        compaction_uncapped: bool = False,
         read_timeout: Optional[float] = None,
     ) -> AsyncGenerator[str, None]:
         """Responses takes input and instructions, not messages; presence_penalty and top_k are dropped."""
         import json as _json
-
-        # A deployment that rejected context_management once will reject it on every later Studio-tool turn too.
-        # Apply the same local fitting fallback up front and suppress the unsupported field for the rest of this
-        # client's run, rather than deliberately incurring another 400 before each continuation.
-        if (
-            self._responses_compaction_rejected
-            and compaction_threshold is not None
-            and compaction_threshold > 0
-        ):
-            if compaction_fallback is not None:
-                messages, max_tokens, truncation_line = await compaction_fallback(messages)
-                if truncation_line:
-                    yield truncation_line
-            compaction_threshold = None
-            compaction_fallback = None
 
         is_openai_cloud = _is_openai_family_cloud(self.base_url)
         _responses_tool_choice_none = (
@@ -6041,17 +5950,6 @@ class ExternalProviderClient:
         ):
             body["prompt_cache_retention"] = "24h"
 
-        # server-side context compaction is available only on OpenAI cloud.
-        if is_openai_cloud and compaction_threshold is not None and compaction_threshold > 0:
-            body["context_management"] = [
-                {
-                    "type": "compaction",
-                    "compact_threshold": openai_compaction_threshold(
-                        compaction_threshold, compaction_uncapped
-                    ),
-                }
-            ]
-
         # only OpenAI cloud accepts Responses API server tools.
         code_execution_enabled_openai = bool(
             enabled_tools and "code_execution" in enabled_tools and is_openai_cloud
@@ -6229,46 +6127,6 @@ class ExternalProviderClient:
                             and 400 <= response.status_code < 500
                             and _is_openai_container_expired_error(error_text)
                         )
-                        if (
-                            response.status_code == 400
-                            and (
-                                "compact_threshold" in error_text
-                                or "context_management" in error_text
-                            )
-                            and body.pop("context_management", None) is not None
-                        ):
-                            self._responses_compaction_rejected = True
-                            if compaction_fallback is not None:
-                                (
-                                    fallback_messages,
-                                    fallback_max_tokens,
-                                    truncation_line,
-                                ) = await compaction_fallback(messages)
-                                await response.aclose()
-                                if truncation_line:
-                                    yield truncation_line
-                                async for fallback_line in self._stream_openai_responses(
-                                    messages = fallback_messages,
-                                    model = model,
-                                    temperature = temperature,
-                                    top_p = top_p,
-                                    max_tokens = fallback_max_tokens,
-                                    enable_thinking = enable_thinking,
-                                    reasoning_effort = reasoning_effort,
-                                    enabled_tools = enabled_tools,
-                                    enable_prompt_caching = enable_prompt_caching,
-                                    openai_code_exec_container_id = openai_code_exec_container_id,
-                                    compaction_threshold = None,
-                                    compaction_fallback = None,
-                                    tools = tools,
-                                    tool_choice = tool_choice,
-                                    response_format = response_format,
-                                    stream = stream,
-                                    thread_id = thread_id,
-                                ):
-                                    yield fallback_line
-                                return
-                            continue
                         if expired_container_4xx and not retried:
                             if stream:
                                 yield (
