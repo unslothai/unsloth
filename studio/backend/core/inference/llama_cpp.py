@@ -432,6 +432,7 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
+    original = messages
     if (
         not kwargs.get("replay_only")
         and (kwargs.get("context_length") or 0) > 1
@@ -450,18 +451,27 @@ def _fit_with_instruction_pins(
                     messages = compacted
         except Exception:
             logger.debug("Pre-eviction argument compaction failed", exc_info = True)
-    fitted, truncation = _fit_context(
-        messages, protected_message_ids = (anchors | pins) or None, **kwargs
-    )
-    # Only a refusal returning the ORIGINAL messages was already failing; a rescue is servable.
-    if (
-        not kwargs.get("replay_only")
-        and pins
-        and truncation
-        and not truncation.get("fits")
-        and not int(truncation.get("dropped_messages") or 0)
-    ):
-        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+
+    def refused(truncation):
+        return bool(
+            truncation
+            and not truncation.get("fits")
+            and not int(truncation.get("dropped_messages") or 0)
+        )
+
+    def fit(messages):
+        fitted, truncation = _fit_context(
+            messages, protected_message_ids = (anchors | pins) or None, **kwargs
+        )
+        # Only a refusal returning the ORIGINAL messages was already failing; a rescue is servable.
+        if not kwargs.get("replay_only") and pins and refused(truncation):
+            return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+        return fitted, truncation
+
+    fitted, truncation = fit(messages)
+    if messages is not original and refused(truncation):
+        # The eviction rescue judges the uncompacted prompt against n_ctx; compaction must not hide it.
+        return fit(original)
     return fitted, truncation
 
 

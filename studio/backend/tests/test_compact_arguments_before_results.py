@@ -109,3 +109,27 @@ def test_unmeasurable_or_already_fitting_history_keeps_arguments(monkeypatch):
             count_tokens = counter,
         )
         assert fitted is messages
+
+
+def test_a_compaction_that_still_overflows_keeps_the_eviction_rescue():
+    # Compaction lands this prompt between the budget and n_ctx; the rescue must still evict.
+    partial = {"role": "assistant", "content": "x" * 15000}
+    nudge = {"role": "user", "content": "go"}
+    messages = [
+        {"role": "user", "content": "q"},
+        *exchange("a", "# step\n" * 200, "facts " * 50),
+        nudge,
+        partial,
+    ]
+    count = lambda fitted: sum(len(json.dumps(m)) // 4 for m in fitted)
+    assert count(messages) >= 4096
+    fitted, truncation = llama_cpp._fit_with_instruction_pins(
+        messages,
+        anchor_ids = {id(partial), id(nudge)},
+        context_length = 4096,
+        max_tokens = 1024,
+        count_tokens = count,
+        estimate_message = lambda message: count([message]),
+    )
+    assert truncation["dropped_messages"] > 0
+    assert fitted[-1] is partial
