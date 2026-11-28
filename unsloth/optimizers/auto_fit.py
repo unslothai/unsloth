@@ -452,7 +452,13 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             if ids:
                 self._fsdp_last.add(ids[-1])
         unmanaged = [p for p in trainable if id(p) not in managed]
-        if unmanaged and (any(_is_dtensor(p) for p in unmanaged) or not _is_native_fsdp2(model)):
+        # (native FSDP2 also keeps float32 weights such as A_log / dt_bias as Replicate DTensors, averaged the same way)
+        stray = [
+            p
+            for p in unmanaged
+            if _is_dtensor(p) and not getattr(p, "_unsloth_fsdp2_float32_replicate", False)
+        ]
+        if unmanaged and (stray or not _is_native_fsdp2(model)):
             raise RuntimeError(
                 "Unsloth: stepping the optimizer inside backward under FSDP2 needs every trainable parameter in a "
                 "fully_shard group (an unsharded one is averaged over ranks only after backward)."
