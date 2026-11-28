@@ -19,6 +19,7 @@ reading the same input (q / k / v, gate / up) share one activation quantization.
 import contextlib
 import math
 import os
+import threading
 from typing import Optional
 
 import torch
@@ -74,12 +75,36 @@ _SHARE_XQ = os.environ.get("UNSLOTH_INT8_LORA_SHARE_XQ", "1") != "0"
 # Keep the transposed int8 weight for the input gradient (+1 byte per weight) instead of transposing per call.
 _CACHE_T = os.environ.get("UNSLOTH_INT8_LORA_CACHE_T", "0") == "1"
 _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
-# Tile (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on an RTX 5090 and an RTX PRO 6000.
+# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on 5090 / PRO 6000, and A100 / L4 without prefetch.
 _TILE = (128, 128, 64, 8, 4, 4)
-# Input gradient (BLOCK_M, BLOCK_R reduction step, GROUP_M, warps, stages), output block = GROUP: fastest of 8 on an
-# RTX PRO 6000 (8 warps for the un-rotation dots in the epilogue).
+# Input gradient (BLOCK_M, BLOCK_R, GROUP_M, warps, stages): fastest of 8 on PRO 6000 and L4.
 _DGRAD_TILE = (128, 128, 8, 8, 3)
+# A100: 1.10x the tile above (geomean, Qwen3 1.7B-8B shapes).
+_DGRAD_TILE_SM80 = (64, 128, 8, 4, 3)
 _ROTQ_ROWS = 16
+# One-pass quantization up to this row length (measured): rotated x on L4 (1.1-1.7x), dY on sm_8x (2.2x on A100);
+# A100 keeps two-pass rotated x (one-pass was up to 1.7x slower there).
+_ONE_PASS_MAX = 16384
+_ROTQ1_BUDGET = 128  # rows x 128-blocks held per program by the one-pass rotated quantization
+
+
+def _one_pass_block(n) -> Optional[int]:
+    # Two row widths only (<= 2 compiled variants per call site across a model's projections), None = two-pass.
+    return 4096 if n <= 4096 else (_ONE_PASS_MAX if n <= _ONE_PASS_MAX else None)
+
+
+# Triton >= 3.8's sm_8x prefetch pass splits 8-bit dots and the tiles spill (0.2x bf16 on A100); skipping it for
+# these kernels gives 1.5x bf16 on A100 / 1.7x on L4, bit-identical. Older Triton keeps it (3.2 is faster with it).
+_SKIP_PREFETCH = os.environ.get("UNSLOTH_INT8_LORA_SKIP_PREFETCH", "1") != "0"
+
+
+def _triton_version():
+    import re
+    m = re.match(r"(\d+)\.(\d+)", getattr(triton, "__version__", "") if triton is not None else "")
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+_TRITON_SPLITS_8BIT_PREFETCH = _triton_version() >= (3, 8)
 
 
 def reset_int8_lora_stats():
@@ -90,6 +115,87 @@ def reset_int8_lora_stats():
 def _count(key):
     if not _compiling():
         INT8_LORA_STATS[key] += 1
+
+
+class _Arch(tuple):
+    """Per-device launch configuration: (prefetch_off, dgrad_tile, rowq_one_pass, rotq_one_pass)."""
+
+    __slots__ = ()
+
+    prefetch_off = property(lambda self: self[0])
+    dgrad_tile = property(lambda self: self[1])
+    rowq_one_pass = property(lambda self: self[2])
+    rotq_one_pass = property(lambda self: self[3])
+
+
+def _arch_for(cap) -> _Arch:
+    """The launch configuration for compute capability cap (major, minor)."""
+    cap = (int(cap[0]), int(cap[1]))
+    sm8x = cap[0] == 8
+    prefetch_off = bool(
+        sm8x and _SKIP_PREFETCH and _TRITON_SPLITS_8BIT_PREFETCH and _install_prefetch_skip()
+    )
+    dgrad_tile = _DGRAD_TILE_SM80 if prefetch_off and cap == (8, 0) else _DGRAD_TILE
+    return _Arch((prefetch_off, dgrad_tile, sm8x, cap == (8, 9)))
+
+
+_ARCH = {}
+
+
+def _arch(device) -> _Arch:
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    arch = _ARCH.get(index)
+    if arch is None:
+        arch = _ARCH[index] = _arch_for(torch.cuda.get_device_capability(index))
+    return arch
+
+
+_PREFETCH = threading.local()
+_PREFETCH_SENTINEL = "_unsloth_int8_lora_prefetch_skip"
+_PREFETCH_INSTALLED = []
+
+
+def _install_prefetch_skip() -> bool:
+    """Wrap Triton's prefetch pass so it is skipped while _no_prefetch() is active (this thread only)."""
+    if _PREFETCH_INSTALLED:
+        return _PREFETCH_INSTALLED[0]
+    ok = False
+    try:
+        from triton._C.libtriton import passes
+
+        ttgpuir = passes.ttgpuir
+        original = ttgpuir.add_prefetch
+        if getattr(original, _PREFETCH_SENTINEL, False):
+            ok = True
+        elif callable(original):
+
+            def add_prefetch(*args, **kwargs):
+                if getattr(_PREFETCH, "skip", False):
+                    return None
+                return original(*args, **kwargs)
+
+            setattr(add_prefetch, _PREFETCH_SENTINEL, True)
+            add_prefetch.__wrapped__ = original
+            ttgpuir.add_prefetch = add_prefetch
+            ok = True
+    except Exception:
+        ok = False
+    _PREFETCH_INSTALLED.append(ok)
+    return ok
+
+
+@contextlib.contextmanager
+def _no_prefetch(active):
+    # PREFETCH_OFF gives these compiles their own Triton cache key, so stock and no-prefetch never mix.
+    if not active:
+        yield
+        return
+    previous = getattr(_PREFETCH, "skip", False)
+    _PREFETCH.skip = True
+    try:
+        yield
+    finally:
+        _PREFETCH.skip = previous
 
 
 def int8_lora_supported(device) -> Optional[str]:
@@ -164,6 +270,38 @@ if triton is not None:
         # tl.max drops NaN: a NaN row scale makes the whole output row NaN, as the 16-bit GEMM would.
         tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), amax * INV_SCALE), mask = rmask)
 
+    @triton.jit(do_not_specialize = ["M"])
+    def _int8_rotq1_kernel(
+        x_ptr,
+        h_ptr,
+        q_ptr,
+        s_ptr,
+        M,
+        K,
+        stride_x,
+        G: tl.constexpr,  # Hadamard block, fixed 128
+        INV_SCALE: tl.constexpr,  # 1 / (127 * sqrt(G))
+        ROWS: tl.constexpr,  # rows per program
+        NB: tl.constexpr,  # next power of two >= K / G (>= 16): the row is held as NB blocks of G
+    ):
+        # Same codes and scales as _int8_rotq_kernel, one read of x.
+        r = tl.arange(0, ROWS)
+        b = tl.arange(0, NB)
+        g = tl.arange(0, G)
+        rows = tl.program_id(0).to(tl.int64) * ROWS + r
+        mask = (rows < M)[:, None, None] & (b < K // G)[None, :, None]
+        cols = b[None, :, None] * G + g[None, None, :]
+        x = tl.load(x_ptr + rows[:, None, None] * stride_x + cols, mask = mask, other = 0.0)
+        H = tl.load(h_ptr + g[:, None] * G + g[None, :])
+        xr = tl.reshape(tl.dot(tl.reshape(x, (ROWS * NB, G)), H), (ROWS, NB * G))
+        amax = tl.maximum(tl.max(tl.abs(xr), axis = 1), 1e-30)
+        nans = tl.sum((xr != xr).to(tl.int32), axis = 1)
+        y = tl.extra.cuda.libdevice.rint(xr * (127.0 / amax)[:, None])
+        y = tl.reshape(tl.minimum(tl.maximum(y, -127.0), 127.0).to(tl.int8), (ROWS, NB, G))
+        tl.store(q_ptr + rows[:, None, None] * K + cols, y, mask = mask)
+        # tl.max drops NaN: a NaN row scale makes the whole output row NaN, as the 16-bit GEMM would.
+        tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), amax * INV_SCALE), mask = rows < M)
+
     @triton.jit(do_not_specialize = ["N"])
     def _int8_rowq_kernel(
         x_ptr,
@@ -198,6 +336,33 @@ if triton is not None:
         tl.store(s_ptr + row, tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), rmax / 127.0))
 
     @triton.jit(do_not_specialize = ["M"])
+    def _int8_rowq1_kernel(
+        x_ptr,
+        c_ptr,
+        q_ptr,
+        s_ptr,
+        M,
+        N,
+        stride_x,
+        ROWS: tl.constexpr,  # rows per program
+        BLOCK: tl.constexpr,  # next power of two >= N: the whole row is read once
+    ):
+        # Same codes and scales as _int8_rowq_kernel, one read of x.
+        rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+        offs = tl.arange(0, BLOCK)
+        mask = (rows < M)[:, None] & (offs < N)[None, :]
+        x = tl.load(x_ptr + rows[:, None] * stride_x + offs[None, :], mask = mask, other = 0.0).to(
+            tl.float32
+        )
+        xc = x * tl.load(c_ptr + offs, mask = offs < N, other = 0.0)[None, :]
+        rmax = tl.maximum(tl.max(tl.abs(xc), axis = 1), 1e-30)
+        nans = tl.sum((xc != xc).to(tl.int32), axis = 1)
+        y = tl.extra.cuda.libdevice.rint(xc * (127.0 / rmax)[:, None])
+        y = tl.minimum(tl.maximum(y, -127.0), 127.0)
+        tl.store(q_ptr + rows[:, None] * N + offs[None, :], y.to(tl.int8), mask = mask)
+        tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), rmax / 127.0), mask = rows < M)
+
+    @triton.jit(do_not_specialize = ["M"])
     def _int8_mm_kernel(
         a_ptr,
         b_ptr,
@@ -214,6 +379,7 @@ if triton is not None:
         BLOCK_N: tl.constexpr,  # columns of c per program
         BLOCK_K: tl.constexpr,  # reduction step; K % BLOCK_K == 0, so the K loop loads unmasked
         GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the b tiles
+        PREFETCH_OFF: tl.constexpr,  # compiled without the sm_8x prefetch pass (cache key only)
     ):
         # c[m, n] = as[m] * bs[n] * sum_k a[m, k] b[n, k] (+ d[m, n]); a, b int8 with K contiguous, K % BLOCK_K == 0.
         pid = tl.program_id(0)
@@ -267,6 +433,7 @@ if triton is not None:
         BLOCK_M: tl.constexpr,  # rows of c per program
         BLOCK_R: tl.constexpr,  # reduction (N) step
         GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the bt tiles
+        PREFETCH_OFF: tl.constexpr,  # compiled without the sm_8x prefetch pass (cache key only)
     ):
         # c[m, kblock] = (as[m] * sum_n a[m, n] bt[kblock, n]) @ H / sqrt(G) (+ d): a [M, N] int8 codes of dY * s,
         # bt [K, N] the transposed forward int8 codes of W @ H (int8 MMA operands are K-major); the epilogue undoes
@@ -322,6 +489,26 @@ def quantize_rotated_rows(x: torch.Tensor):
     q = torch.empty((M, K), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
     h = _hadamard_pm1(x.device, x.dtype)
+    width = _one_pass_block(K)
+    if width is not None and _arch(x.device).rotq_one_pass:
+        nb = width // GROUP
+        rows = _ROTQ1_BUDGET // nb
+        with _device_ctx(x):
+            _launch(
+                _int8_rotq1_kernel,
+                ((M + rows - 1) // rows,),
+                (x, h, q, s, M, K, x.stride(0)),
+                4,
+                {
+                    "G": GROUP,
+                    "INV_SCALE": 1.0 / (127.0 * math.sqrt(GROUP)),
+                    "ROWS": rows,
+                    "NB": nb,
+                },
+                x.device.index,
+                num_warps = 8,
+            )
+        return q, s
     with _device_ctx(x):
         _launch(
             _int8_rotq_kernel,
@@ -342,6 +529,20 @@ def quantize_rows_scaled(x: torch.Tensor, col_scale: torch.Tensor):
         x = x.contiguous()
     q = torch.empty((M, N), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
+    block = _one_pass_block(N)
+    if block is not None and _arch(x.device).rowq_one_pass:
+        rows = _ONE_PASS_MAX // block
+        with _device_ctx(x):
+            _launch(
+                _int8_rowq1_kernel,
+                ((M + rows - 1) // rows,),
+                (x, col_scale, q, s, M, N, x.stride(0)),
+                4,
+                {"ROWS": rows, "BLOCK": block},
+                x.device.index,
+                num_warps = 8,
+            )
+        return q, s
     with _device_ctx(x):
         _launch(
             _int8_rowq_kernel,
@@ -363,7 +564,8 @@ def _mm(xq, xs, wq, ws, delta, out_dtype):
     if delta is not None and delta.stride(-1) != 1:
         delta = delta.contiguous()  # the epilogue reads rows with a unit column stride
     d = delta if delta is not None else out
-    with _device_ctx(xq):
+    off = _arch(xq.device).prefetch_off
+    with _device_ctx(xq), _no_prefetch(off):
         _launch(
             _int8_mm_kernel,
             (((M + bm - 1) // bm) * ((N + bn - 1) // bn),),
@@ -375,6 +577,7 @@ def _mm(xq, xs, wq, ws, delta, out_dtype):
                 "BLOCK_N": bn,
                 "BLOCK_K": bk,
                 "GROUP_M": gm,
+                "PREFETCH_OFF": off,
             },
             xq.device.index,
             num_warps = warps,
@@ -387,12 +590,14 @@ def _dgrad_mm(dyq, dys, wqt, delta, out_dtype):
     M, N = dyq.shape
     K = wqt.shape[0]
     out = torch.empty((M, K), device = dyq.device, dtype = out_dtype)
-    bm, br, gm, warps, stages = _DGRAD_TILE
+    arch = _arch(dyq.device)
+    bm, br, gm, warps, stages = arch.dgrad_tile
     if delta is not None and delta.stride(-1) != 1:
         delta = delta.contiguous()
     d = delta if delta is not None else out
     h = _hadamard_pm1(dyq.device, torch.bfloat16)
-    with _device_ctx(dyq):
+    off = arch.prefetch_off
+    with _device_ctx(dyq), _no_prefetch(off):
         _launch(
             _int8_dgrad_kernel,
             (((M + bm - 1) // bm) * (K // GROUP),),
@@ -405,6 +610,7 @@ def _dgrad_mm(dyq, dys, wqt, delta, out_dtype):
                 "BLOCK_M": bm,
                 "BLOCK_R": br,
                 "GROUP_M": gm,
+                "PREFETCH_OFF": off,
             },
             dyq.device.index,
             num_warps = warps,
@@ -439,7 +645,8 @@ def _xq_key(x):
 def quantize_x(x):
     """Rotated per-token int8 codes of x [M, K] (shared with the previous call on the same eager input)."""
     _count("x_quant")
-    if not _SHARE_XQ or _compiling():
+    # A CUDA graph replays the kernels it captured: a cache hit while capturing would bake in stale codes.
+    if not _SHARE_XQ or _compiling() or torch.cuda.is_current_stream_capturing():
         return int8_lora_quant_x(x)
     root, key = _xq_key(x)
     entry = _XQ[0]
@@ -596,9 +803,9 @@ class Int8LoRABaseState(Fp8LoRABaseState):
         return out
 
     def _use_fp8(self, X):
-        return (
-            X.dtype in (torch.bfloat16, torch.float16)
-            and X.numel() // max(X.shape[-1], 1) >= _MIN_ROWS
+        # Offloaded master: the 16-bit path would rebuild the dense weight every call, so any row count runs int8.
+        return X.dtype in (torch.bfloat16, torch.float16) and (
+            self.offloaded or X.numel() // max(X.shape[-1], 1) >= _MIN_ROWS
         )
 
     def matmul(
@@ -634,6 +841,7 @@ class Int8LoRABaseState(Fp8LoRABaseState):
         delta = X.new_empty((X.shape[0], Bt.shape[1]))
         delta.addmm_(XA, Bt, alpha = alpha, beta = 0)
         if not self._use_fp8(X):
+            _count("dgrad_16bit" if _is_transposed(W) else "fwd_16bit")
             result = delta.addmm_(X, self._dense(W).t().to(X.dtype))
         elif _is_transposed(W):
             result = int8_lora_dgrad(X, self.wq, self.ws, self.wqt, delta)
@@ -685,6 +893,9 @@ def _int8_base_forward(self, x):
     """nn.Linear.forward of a converted base when Unsloth's fused LoRA kernels do not run it."""
     state = self.__dict__.get("_unsloth_fp8_lora")
     weight = self.weight
+    if x.is_floating_point() and torch.is_autocast_enabled(x.device.type):
+        dtype = torch.get_autocast_dtype(x.device.type)  # what F.linear would compute in
+        x = x if x.dtype == dtype else x.to(dtype)
     if state is None or weight.requires_grad or not state._use_fp8(x.reshape(-1, x.shape[-1])):
         _count("fwd_16bit")
         if state is not None and state.offloaded:
@@ -700,10 +911,27 @@ def _int8_base_forward(self, x):
     return y
 
 
+def _device_refusal(device) -> Optional[str]:
+    """Why the layer's own GPU cannot run the int8 base (kernel support, then its recipe gate), else None."""
+    why = int8_lora_supported(device)
+    if why is not None:
+        return why
+    from ..precision import get_recipe, gpu_class
+
+    cls = gpu_class(torch.cuda.get_device_capability(device))
+    gate = get_recipe("int8_lora_rotated").gate(cls)
+    return f"{cls} ({device}): {gate.reason}" if gate.status == "refused" else None
+
+
 def eligible_base(module) -> Optional[str]:
     why = _fp8.eligible_base(module)
     if why is not None:
         return why
+    weight = getattr(module, "weight", None)
+    if weight is not None and weight.is_cuda:  # each layer's GPU, not only the current one
+        why = _device_refusal(weight.device)
+        if why is not None:
+            return why
     if module.in_features % GROUP:
         return f"in_features {module.in_features} is not a multiple of {GROUP}"
     return None
