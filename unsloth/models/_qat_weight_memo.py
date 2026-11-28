@@ -349,6 +349,11 @@ def _weight_key(quantizer, w):
         or _multi_process()
     ):
         return None
+    # A quantizer whose output also depends on other tensors (merged QAT-LoRA: the adapter) keys them too.
+    extra = getattr(quantizer, "_unsloth_memo_extra_key", None)
+    extra = None if extra is None else extra()
+    if extra is False:
+        return None
     device_type = w.device.type
     autocast = torch.is_autocast_enabled(device_type)
     return (
@@ -362,6 +367,7 @@ def _weight_key(quantizer, w):
         torch.get_autocast_dtype(device_type) if autocast else None,
         # The cached tensor carries no event: serve it only on the stream that wrote it.
         _current_stream(w.device),
+        extra,
     )
 
 
@@ -516,7 +522,10 @@ def install_qat_weight_memo(model):
     count = new = 0
     for name, module in model.named_modules():
         quantizer = module._modules.get("weight_fake_quantizer")
-        if not isinstance(quantizer, FakeQuantizerBase) or _is_adapter_name(name):
+        if _is_adapter_name(name) or not (
+            isinstance(quantizer, FakeQuantizerBase)
+            or callable(getattr(quantizer, "_unsloth_memo_extra_key", None))
+        ):
             continue
         _patch_quantizer_class(type(quantizer))
         if not isinstance(quantizer.__dict__.get("_unsloth_qat_weight_memo"), _WeightMemo):

@@ -4,6 +4,7 @@
 """Merged QAT-LoRA (_qat_lora_merged.py): training computes Q(W + s B A) x with straight-through LoRA gradients,
 so the merged, quantized export is the trained model; base-only QAT (the default) shows the export gap."""
 
+import os
 import types
 
 import pytest
@@ -202,6 +203,24 @@ def test_merge_helper_is_bitwise_the_export_merge(monkeypatch):
         assert torch.equal(W, expected[id(proj)])
 
 
+def test_torchao_export_merges_round_to_nearest(monkeypatch):
+    """unsloth_zoo's stochastic merge rounding moves merged weights across quantization steps: the torchao
+    export of a merged QAT-LoRA model stages its 16-bit merge rounded to nearest, as training merged it."""
+    import inspect
+    from unsloth import save as unsloth_save
+
+    monkeypatch.setenv("UNSLOTH_MERGE_ROUNDING", "stochastic")
+    merged = _model("int4", monkeypatch)
+    base_only = _model("int4", monkeypatch, merged = False)
+    with qlm.nearest_merge_rounding(merged):
+        assert os.environ["UNSLOTH_MERGE_ROUNDING"] == "nearest"
+    assert os.environ["UNSLOTH_MERGE_ROUNDING"] == "stochastic"
+    with qlm.nearest_merge_rounding(base_only):
+        assert os.environ["UNSLOTH_MERGE_ROUNDING"] == "stochastic"
+    source = inspect.getsource(unsloth_save._unsloth_save_torchao_with_given_config)
+    assert "nearest_merge_rounding(model)" in source
+
+
 def test_disabled_adapters_and_quantizers_fall_back(monkeypatch):
     merged = _model("int4", monkeypatch)
     base_only = _model("int4", monkeypatch, merged = False)
@@ -247,30 +266,35 @@ def test_round_inplace_skips_merged_layers(monkeypatch):
         assert quantizer.enabled and not quantizer.inner.__dict__.get("_unsloth_qat_rounded", False)
 
 
-def test_cache_serves_one_residual_per_optimizer_step(monkeypatch):
-    monkeypatch.setenv("UNSLOTH_QAT_LORA_MERGED_CACHE", "1")
-    model = _model("int4", monkeypatch)
+def test_weight_memo_serves_one_residual_per_optimizer_step(monkeypatch):
+    from unsloth.models import _qat_weight_memo as memo
+
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "1")  # no budget, no arming step
+    model = _prepare_model_for_qat(_peft(), "int4", lora_merged = True)
     model.train()
     params = [p for n, p in model.named_parameters() if "lora_" in n]
     optimizer = torch.optim.SGD(params, lr = 0.1)
     x = _x()
-    before = qlm.qat_lora_merged_stats()
-    for _ in range(3):  # gradient accumulation micro batches: one residual per layer
+    calls, hits = qlm.qat_lora_merged_stats()["calls"], memo.qat_weight_memo_stats()["hits"]
+    for _ in range(
+        3
+    ):  # gradient accumulation micro batches: computed twice (key, then store), then served
         model(x).square().mean().backward()
-    mid = qlm.qat_lora_merged_stats()
-    assert mid["calls"] - before["calls"] == 2
-    assert mid["cache_hits"] - before["cache_hits"] == 4
-    out_cached = model(x).detach()
-    optimizer.step()
-    model(x)
-    assert (
-        qlm.qat_lora_merged_stats()["calls"] - mid["calls"] == 2
-    )  # the adapter changed: recomputed
-    monkeypatch.setenv("UNSLOTH_QAT_LORA_MERGED_CACHE", "0")
-    optimizer.zero_grad()
+    assert qlm.qat_lora_merged_stats()["calls"] - calls == 4
+    assert memo.qat_weight_memo_stats()["hits"] - hits == 2
+    optimizer.step()  # in-place adapter update: new version, so no stale residual is served
+    calls = qlm.qat_lora_merged_stats()["calls"]
     with torch.no_grad():
-        torch.testing.assert_close(model(x), _oracle_forward(model, x), rtol = 1e-5, atol = 1e-5)
-    assert torch.isfinite(out_cached).all()
+        out = model(x)
+    assert qlm.qat_lora_merged_stats()["calls"] - calls == 2
+    torch.testing.assert_close(out, _oracle_forward(model, x), rtol = 1e-5, atol = 1e-5)
+    with (
+        model.disable_adapter(),
+        torch.no_grad(),
+    ):  # the base-only output is not served for the merged one
+        base = model(x)
+    assert not torch.allclose(base, out)
+    memo.clear_qat_weight_memo(model)
 
 
 def test_compiles_without_graph_breaks(monkeypatch):

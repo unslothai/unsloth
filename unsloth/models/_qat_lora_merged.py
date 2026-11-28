@@ -19,9 +19,9 @@ quantizer) computes R x + s B A x = Q(W + s B A) x up to 16-bit rounding of R. T
 activation quantized base reads the same fake quantized input as the base. torchao's NVFP4 / MX QAT
 linears quantize inside forward(), so their forward runs on W + s B A and subtracts s B A x with the adapter
 weights detached. Live memory: one weight-sized residual per layer while autograd holds it (freed by
-gradient checkpointing, exactly like base-only QAT without the in-place rounding). UNSLOTH_QAT_LORA_MERGED_CACHE=1
-keeps each residual until the adapter changes (one per optimizer step under gradient accumulation), at the
-cost of one 16-bit copy of every adapted weight.
+gradient checkpointing, exactly like base-only QAT without the in-place rounding). The QAT weight memo
+(models/_qat_weight_memo.py) caches each residual, keyed on the adapter's storage and version, within its memory
+budget, so gradient accumulation micro batches and checkpoint replays reuse it until the optimizer step.
 
 The merge is the one save.py's _merge_lora writes (fp32 W^T + s A^T B^T, cast back), shared through
 qat_lora_merged_weight, so the exported 16-bit weights are bitwise the weights fake quantized in training.
@@ -29,6 +29,8 @@ Disabled adapters, merged adapters and disabled quantizers (QAD teacher) fall ba
 Refused: lora_dropout > 0 (the dropped input cannot be merged), DoRA and other LoRA variants, lora_bias,
 fake quantized adapters (UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1) and more than one adapter on a layer."""
 
+import contextlib
+import functools
 import os
 import types
 
@@ -41,13 +43,15 @@ __all__ = [
     "install_qat_lora_merged",
     "is_qat_lora_merged",
     "qat_lora_merged_stats",
+    "nearest_merge_rounding",
 ]
 
 _ENV = "UNSLOTH_QAT_LORA_MERGED"
-_CACHE_ENV = "UNSLOTH_QAT_LORA_MERGED_CACHE"
 _FLAG = "_unsloth_qat_lora_merged"
 _TEACHER = "_unsloth_qat_teacher"
-_STATS = {"layers": 0, "microscaling": 0, "calls": 0, "cache_hits": 0}
+_MERGE_ROUNDING_ENV = "UNSLOTH_MERGE_ROUNDING"
+_COMPILE_ENV = "UNSLOTH_QAT_LORA_MERGED_COMPILE"
+_STATS = {"layers": 0, "microscaling": 0, "calls": 0}
 _TRUE = ("1", "true", "yes", "on")
 
 
@@ -58,6 +62,27 @@ def qat_lora_merged_requested(value = None):
             raise TypeError(f"Unsloth: qat_lora_merged must be True, False or None, got {value!r}.")
         return value
     return os.environ.get(_ENV, "0").strip().lower() in _TRUE
+
+
+@contextlib.contextmanager
+def nearest_merge_rounding(model):
+    """Round the 16-bit LoRA merge to nearest while exporting a merged QAT-LoRA model.
+
+    unsloth_zoo's merge may round stochastically (UNSLOTH_MERGE_ROUNDING), which keeps sub-ulp LoRA updates in a
+    16-bit export on average but moves about a quarter of the merged weights by one ulp, and so across
+    quantization steps: the quantized export would no longer be the trained model. Other models: unchanged."""
+    if not any(is_qat_lora_merged(m) for m in model.modules()):
+        yield
+        return
+    previous = os.environ.get(_MERGE_ROUNDING_ENV)
+    os.environ[_MERGE_ROUNDING_ENV] = "nearest"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(_MERGE_ROUNDING_ENV, None)
+        else:
+            os.environ[_MERGE_ROUNDING_ENV] = previous
 
 
 def qat_lora_merged_stats():
@@ -106,11 +131,48 @@ def _quantizer_key(quantizer):
     return key
 
 
-def _residual_eager(W, A, B, scale, quantizer):
-    merged = _merged_fp32(W, A, B, scale)
+def _residual_tail(merged, W, quantizer):
     quantized = quantizer(merged.to(W.dtype))
-    # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype (in place: one fp32
-    # weight-sized buffer).
+    # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype.
+    return (quantized.to(torch.float32) - (merged - W.to(torch.float32))).to(quantized.dtype)
+
+
+_COMPILED_TAILS = {}
+
+
+def _compiled_tail(key, quantizer):
+    """UNSLOTH_QAT_LORA_MERGED_COMPILE=1: the quantize + residual step as one inductor kernel per recipe, about
+    3x less memory traffic. Not bitwise: Triton's fp32 division is not correctly rounded, so about 1e-4 of the
+    weights land one quantization step away from the export. Off by default."""
+    if os.environ.get(_COMPILE_ENV, "0").strip().lower() not in _TRUE:
+        return None
+    fn = _COMPILED_TAILS.get(key)
+    if fn is None:
+        fn = _COMPILED_TAILS[key] = torch.compile(
+            functools.partial(_residual_tail, quantizer = quantizer),
+            dynamic = True,
+            options = {"emulate_precision_casts": True},
+        )
+    return fn or None
+
+
+def _residual_eager(
+    W,
+    A,
+    B,
+    scale,
+    quantizer,
+    key = None,
+):
+    merged = _merged_fp32(W, A, B, scale)
+    fn = _compiled_tail(key, quantizer) if key is not None and W.is_cuda else None
+    if fn is not None:
+        try:
+            return fn(merged, W)
+        except Exception:
+            _COMPILED_TAILS[key] = False  # this recipe does not compile here: eager from now on
+    quantized = quantizer(merged.to(W.dtype))
+    # In place, one fp32 weight-sized buffer; the same values as _residual_tail.
     return merged.sub_(W).neg_().add_(quantized).to(quantized.dtype)
 
 
@@ -119,7 +181,7 @@ def _residual_op(
     W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float, key: int
 ) -> torch.Tensor:
     with torch.no_grad():
-        return _residual_eager(W, A, B, scale, _QUANTIZERS[key])
+        return _residual_eager(W, A, B, scale, _QUANTIZERS[key], key)
 
 
 @_residual_op.register_fake
@@ -153,26 +215,6 @@ def _active_adapter(layer):
     return None
 
 
-def _cache_enabled():
-    return os.environ.get(_CACHE_ENV, "0").strip().lower() in _TRUE
-
-
-def _cache_key(W, A, B, scale):
-    autocast = torch.is_autocast_enabled(W.device.type)
-    return (
-        W.data_ptr(),
-        W._version,
-        A.data_ptr(),
-        A._version,
-        B.data_ptr(),
-        B._version,
-        float(scale),
-        W.dtype,
-        autocast,
-        torch.get_autocast_dtype(W.device.type) if autocast else None,
-    )
-
-
 class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
     """Stands in for a QAT base layer's weight_fake_quantizer: returns Q(W + s B A) - s B A while the adapter is
     active, so base + LoRA computes Q(W + s B A) x. The wrapped torchao quantizer stays a child (`inner`)."""
@@ -182,7 +224,6 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
         self.inner = inner
         # Not a child module: the LoRA layer owns this quantizer, a child link would make a module cycle.
         self.__dict__["_lora_layer"] = layer
-        self.__dict__["_cache"] = None
         self.__dict__["_key"] = _quantizer_key(inner)
 
     @property
@@ -200,6 +241,17 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
     def extra_repr(self):
         return "merged LoRA: Q(W + s * B @ A) - s * B @ A"
 
+    def _unsloth_memo_extra_key(self):
+        """What the cached output (models/_qat_weight_memo.py) depends on besides W: the active adapter, by
+        storage and version, so an optimizer step (an in-place update) recomputes it."""
+        adapter = _active_adapter(self.__dict__["_lora_layer"])
+        if adapter is None:
+            return ("base",)
+        A, B, scale = adapter
+        if type(A.data) is not torch.Tensor or type(B.data) is not torch.Tensor:
+            return False
+        return (A.data_ptr(), A._version, B.data_ptr(), B._version, float(scale))
+
     def forward(self, W):
         inner = self.inner
         if not getattr(inner, "enabled", True):
@@ -208,31 +260,9 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
         if adapter is None:
             return inner(W)
         A, B, scale = adapter
-        caching = (
-            not torch.compiler.is_compiling()
-            and _cache_enabled()
-            and self.training
-            and type(W) in (torch.Tensor, torch.nn.Parameter)
-        )
-        if caching:
-            key = _cache_key(W, A, B, scale)
-            cached = self.__dict__["_cache"]
-            if cached is not None and cached[0] == key:
-                _STATS["cache_hits"] += 1
-                return cached[1]
         if not torch.compiler.is_compiling():
             _STATS["calls"] += 1
-        residual = _residual_op(
-            W.detach(), A.detach(), B.detach(), float(scale), self.__dict__["_key"]
-        )
-        if caching:
-            self.__dict__["_cache"] = (key, residual)
-        elif self.__dict__["_cache"] is not None:
-            self.__dict__["_cache"] = None
-        return residual
-
-    def clear_cache(self):
-        self.__dict__["_cache"] = None
+        return _residual_op(W.detach(), A.detach(), B.detach(), float(scale), self.__dict__["_key"])
 
 
 def _activation_quantize_lora_input(module, args):
