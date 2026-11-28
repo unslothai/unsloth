@@ -177,6 +177,8 @@ _STACK_NAMES = (("gate_up_proj", "gate_up"), ("down_proj", "down"))
 _FLOAT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 _HOOKS = "_unsloth_qat_expert_hooks"
 _ROUNDED = "_unsloth_qat_expert_rounded"
+_INCOMING = "_unsloth_qat_expert_incoming"
+_META = "unsloth_qat_expert_rounded"  # state dict metadata: fingerprints of this module's rounded stacks
 _STATS = {"fake_quantized": 0, "rounded": 0, "skipped": {}}
 
 
@@ -266,21 +268,29 @@ def _quantize_stack(param, quantizer, transposed):
     return q.contiguous()
 
 
+_CHUNK = 1 << 22
+
+
 def _fingerprint(t):
-    """Cheap identity of a stack's values: float64 sum and sum of squares plus a strided sample."""
+    """Order-sensitive identity of a stack's values, in bounded float64 chunks: (sum, sum of squares, index-weighted
+    sum). Plain floats, so it also travels in state dict metadata."""
     flat = t.detach().reshape(-1)
-    step = max(1, flat.numel() // 4096)
-    return (float(flat.double().sum()), float(flat.double().pow(2).sum()), flat[::step].clone())
-
-
-def _same(a, b):
-    return a[0] == b[0] and a[1] == b[1] and torch.equal(a[2], b[2])
+    total = squares = weighted = 0.0
+    for i in range(0, flat.numel(), _CHUNK):
+        x = flat[i : i + _CHUNK].double()
+        w = (torch.arange(i, i + x.numel(), device = x.device, dtype = torch.float64) % 997) + 1
+        total += float(x.sum())
+        squares += float((x * x).sum())
+        weighted += float((x * w).sum())
+        del x, w
+    return (total, squares, weighted)
 
 
 def _round_stack(owner, attr, quantizer, transposed):
-    """Write fake_quant(stack) into the frozen stack once, and keep it rounded across load_state_dict: a load that
-    brings other values (an unrounded checkpoint) is rounded again; one that brings back the rounded values (this
-    model's own state_dict) is kept as is, so nothing is quantized twice."""
+    """Write fake_quant(stack) into the frozen stack once, and keep it rounded across load_state_dict. A load that
+    brings rounded values back (this model's own state dict, or another prepared model's, whose state dict marks
+    its rounded stacks in the metadata) is kept as is, so nothing is quantized twice (int8 / cactus fake quant is
+    not idempotent); any other values (an unrounded checkpoint) are rounded again."""
     p = owner._parameters[attr]
     with torch.no_grad():
         p.data.copy_(_quantize_stack(p.detach(), quantizer, transposed))
@@ -290,16 +300,30 @@ def _round_stack(owner, attr, quantizer, transposed):
     if not first:
         return
 
+    def mark(module, state_dict, prefix, local_metadata):
+        rounded = module.__dict__.get(_ROUNDED, {})
+        local_metadata[_META] = {name: list(fp) for name, (_, _, fp) in rounded.items()}
+
+    def before_load(module, state_dict, prefix, local_metadata, *args):
+        module.__dict__[_INCOMING] = dict(local_metadata.get(_META) or {})
+
     def after_load(module, incompatible_keys):
         rounded = module.__dict__.get(_ROUNDED, {})
-        for name, (q, t, mark) in list(rounded.items()):
+        incoming = module.__dict__.pop(_INCOMING, None) or {}
+        for name, (q, t, own) in list(rounded.items()):
             w = module._parameters.get(name)
-            if w is None or w.dim() != 3 or w.requires_grad or _same(_fingerprint(w), mark):
+            if w is None or w.dim() != 3 or w.requires_grad:
+                continue
+            fp = _fingerprint(w)
+            if fp == own or (name in incoming and fp == tuple(incoming[name])):
+                rounded[name] = (q, t, fp)
                 continue
             with torch.no_grad():
                 w.data.copy_(_quantize_stack(w.detach(), q, t))
             rounded[name] = (q, t, _fingerprint(w))
 
+    owner._register_state_dict_hook(mark)
+    owner._register_load_state_dict_pre_hook(before_load, with_module = True)
     owner.register_load_state_dict_post_hook(after_load)
 
 

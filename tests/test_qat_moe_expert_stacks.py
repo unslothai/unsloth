@@ -242,3 +242,23 @@ def test_frozen_stacks_stay_rounded_across_load_state_dict():
     model.load_state_dict(unrounded, assign = True)  # new Parameter objects
     for name, p in _stacks(model).items():
         assert torch.equal(p.detach(), _reference_int4(originals[name], True)), name
+
+
+def test_rounded_checkpoint_from_another_prepared_model_is_not_quantized_twice():
+    """int8 fake quant is not idempotent: a rounded stack quantized again moves. Loading another prepared model's
+    state dict must reproduce its stacks exactly (its metadata marks them rounded)."""
+    src = _tiny_moe("gpt_oss")
+    for p in _stacks(src).values():
+        p.requires_grad_(False)
+    src = _prepare(src, "int8")
+    torch.manual_seed(123)
+    dst = _tiny_moe("gpt_oss")
+    with torch.no_grad():
+        for p in _stacks(dst).values():
+            p.normal_()  # differently initialized
+            p.requires_grad_(False)
+    dst = _prepare(dst, "int8")
+    sd = src.state_dict()
+    dst.load_state_dict(sd)
+    for name, p in _stacks(dst).items():
+        assert torch.equal(p.detach(), _stacks(src)[name].detach()), name
