@@ -1231,17 +1231,29 @@ if _IS_MLX:
             if max_grad_norm is None and max_grad_value is None and max_grad_leaf_norm is None:
                 args.max_grad_norm = 1.0
 
+    def _mlx_has_text_completions(dataset):
+        """True for plain string prompt / completion rows, which no chat template ends."""
+        # A one-shot iterator would lose the row read here.
+        if dataset is None or iter(dataset) is dataset:
+            return False
+        row = next(iter(dataset), None)
+        return isinstance(row, dict) and all(
+            isinstance(row.get(key), str) for key in ("prompt", "completion")
+        )
+
     def _apply_unsloth_trainer_mlx_defaults(
         args,
         model = None,
         max_seq_length_explicit = False,
+        train_dataset = None,
     ):
         _default_mlx_dataset_order(args)
 
         if isinstance(args, UnslothTrainingArguments) and not getattr(
             args, "_unsloth_mlx_append_eos_explicit", False
         ):
-            args.append_eos = False
+            # Templated text already ends its turns; plain completions need the EOS TRL appends.
+            args.append_eos = _mlx_has_text_completions(train_dataset)
 
         _default_mlx_grad_clip(args)
 
@@ -1607,11 +1619,12 @@ if _IS_MLX:
         def _unsloth_mlx_coerce_args(self, args, overrides):
             return _coerce_mlx_training_args(args, overrides)
 
-        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit):
+        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit, train_dataset):
             return _apply_unsloth_trainer_mlx_defaults(
                 args,
                 model = model,
                 max_seq_length_explicit = max_seq_length_explicit,
+                train_dataset = train_dataset,
             )
 
         def __init__(self, *args, **kwargs):
@@ -1725,6 +1738,10 @@ if _IS_MLX:
                 trainer_kwargs["args"],
                 trainer_kwargs.get("model"),
                 trainer_kwargs.get("max_seq_length") is not None,
+                # A formatting_func renders its own text.
+                None
+                if trainer_kwargs.get("formatting_func") is not None
+                else trainer_kwargs.get("train_dataset"),
             )
 
             super().__init__(**trainer_kwargs)
@@ -2038,7 +2055,7 @@ if _IS_MLX:
                 overrides = {**overrides, "max_grad_leaf_norm": 1.0}
             return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
 
-        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit):
+        def _unsloth_mlx_apply_defaults(self, args, model, max_seq_length_explicit, train_dataset):
             # args may be the caller's config, which another trainer can reuse.
             args = _copy.copy(args)
             if not self._unsloth_mlx_keep_dataset_order:
