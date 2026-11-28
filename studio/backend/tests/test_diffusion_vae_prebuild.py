@@ -379,3 +379,46 @@ def test_video_kick_runs_under_the_teardown_lock_after_the_token_check():
     body = hits[0]
     assert body.index("_load_token != self._load_token") < body.index("maybe_kick_video")
     assert src.count("maybe_kick_video(") == 1
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "PR_SET_PDEATHSIG is Linux-only")
+def test_child_outlives_the_load_thread_that_started_it(tmp_path):
+    # The load thread returns right after kicking the prebuild; the child must keep building after it exits.
+    (tmp_path / "pb_target.py").write_text(
+        textwrap.dedent(
+            """
+            import pathlib, time
+            def run(job):
+                time.sleep(3)
+                pathlib.Path(job["mark"]).write_text("built")
+            """
+        )
+    )
+    script = textwrap.dedent(
+        f"""
+        import sys, threading, time
+        sys.path[:0] = [{str(BACKEND)!r}, {str(tmp_path)!r}]
+        from core.inference import diffusion_vae_prebuild as vp
+
+        def main():
+            codes = []
+            job = {{"name": "probe", "owner": "image", "device": 0, "mark": {str(tmp_path / "mark")!r}}}
+            def load():
+                assert vp._spawn(job, None, target = ("pb_target", "run"), timeout = 60, on_exit = codes.append)
+            t = threading.Thread(target = load)
+            t.start()
+            t.join()
+            deadline = time.time() + 60
+            while not codes and time.time() < deadline:
+                time.sleep(0.2)
+            print("EXIT", codes)
+
+        if __name__ == "__main__":
+            main()
+        """
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output = True, text = True, timeout = 120, cwd = tmp_path
+    )
+    assert "EXIT [0]" in out.stdout, out.stdout + out.stderr
+    assert (tmp_path / "mark").read_text() == "built"

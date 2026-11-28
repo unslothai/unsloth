@@ -229,9 +229,21 @@ def test_compiled_fullgraph_no_breaks():
     assert torch.equal(out, eager)
 
 
+_ARCHS = {"own": None, "sm80": (8, 0), "sm89": (8, 9)}
+
+
+def _use_arch(monkeypatch, name):
+    """Run the launch configuration of another GPU class on this GPU (its kernels and tiles run anywhere)."""
+    cap = _ARCHS[name]
+    if cap is not None:
+        monkeypatch.setitem(IL._ARCH, torch.cuda.current_device(), IL._arch_for(cap))
+
+
+@pytest.mark.parametrize("arch", list(_ARCHS))
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_nan_rows_propagate(dtype):
+def test_nan_rows_propagate(monkeypatch, dtype, arch):
     """A NaN in one row of x / dY makes that output row NaN (as the 16-bit GEMM does) and leaves the others finite."""
+    _use_arch(monkeypatch, arch)
     M, N, K = 512, 256, 512
     x, w, dy = _inputs(M, N, K, dtype, seed = 3)
     wq, ws = IL.quantize_weight(w)
@@ -242,3 +254,156 @@ def test_nan_rows_propagate(dtype):
     dx = IL.int8_lora_dgrad(dy, wq, ws, None, None)
     assert torch.isnan(y[7]).all() and torch.isfinite(torch.cat([y[:7], y[8:]])).all()
     assert torch.isnan(dx[9]).all() and torch.isfinite(torch.cat([dx[:9], dx[10:]])).all()
+
+
+def _same(a, b):
+    return torch.equal(torch.isnan(a), torch.isnan(b)) and torch.equal(
+        a.nan_to_num(), b.nan_to_num()
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    "M,N,K", [(2048, 3072, 4096), (1000, 1000, 1024), (512, 20480, 512), (300, 512, 20480)]
+)
+def test_arch_configurations_are_bit_identical(monkeypatch, M, N, K, dtype):
+    """sm_80 / sm_89 configurations match this GPU's bits (N or K = 20480 keeps the two-pass kernels)."""
+    x, w, dy = _inputs(M, N, K, dtype, seed = 5)
+    x[5, 9] = float("nan")
+    dy[3, 7] = float("nan")
+    wq, ws = IL.quantize_weight(w)
+    delta = torch.randn((M, K), device = "cuda", dtype = dtype) * 1e-3
+    outs = {}
+    for arch in _ARCHS:
+        monkeypatch.delitem(IL._ARCH, torch.cuda.current_device(), raising = False)
+        _use_arch(monkeypatch, arch)
+        IL.clear_int8_lora_cache()
+        xq, xs = IL.quantize_rotated_rows(x)
+        dq, ds = IL.quantize_rows_scaled(dy, ws)
+        outs[arch] = (
+            xq,
+            xs,
+            dq,
+            ds,
+            IL.int8_lora_fwd(x, wq, ws),
+            IL.int8_lora_dgrad(dy, wq, ws, None, None),
+            IL.int8_lora_dgrad(dy, wq, ws, None, delta),
+        )
+    for arch in ("sm80", "sm89"):
+        for a, b in zip(outs["own"], outs[arch]):
+            assert _same(a, b), arch
+
+
+def test_one_pass_kernels_stay_within_two_variants(monkeypatch):
+    """Every Qwen3 / Llama projection width compiles at most 2 variants of each one-pass quantization kernel."""
+    if not hasattr(IL._int8_rowq1_kernel, "device_caches"):
+        pytest.skip("this Triton keeps no per-device compile cache")
+    monkeypatch.setitem(IL._ARCH, torch.cuda.current_device(), IL._arch_for((8, 9)))
+    widths = [1024, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 9728, 12288, 14336]
+    before = {
+        k: len(k.device_caches[torch.cuda.current_device()][0])
+        for k in (IL._int8_rowq1_kernel, IL._int8_rotq1_kernel)
+    }
+    for n in widths:
+        x = torch.randn((64, n), device = "cuda", dtype = torch.bfloat16)
+        IL.quantize_rows_scaled(x, torch.ones(n, device = "cuda"))
+        IL.quantize_rotated_rows(x)
+    for k, n0 in before.items():
+        assert len(k.device_caches[torch.cuda.current_device()][0]) - n0 <= 2, k.__name__
+
+
+def test_cuda_graph_capture_requantizes_the_static_input():
+    """A warm-up call must not let capture reuse its cached quantization: replay with new data in the static
+    input has to give that data's result."""
+    M, N, K = 2048, 1024, 2048
+    x, w, _ = _inputs(M, N, K, torch.bfloat16, seed = 7)
+    wq, ws = IL.quantize_weight(w)
+    static = x.clone()
+    IL.clear_int8_lora_cache()
+    s = torch.cuda.Stream()
+    s.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(s):
+        IL.int8_lora_fwd(static, wq, ws)  # warm-up fills the sharing cache
+    torch.cuda.current_stream().wait_stream(s)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        out = IL.int8_lora_fwd(static, wq, ws)
+    new = _inputs(M, N, K, torch.bfloat16, seed = 8)[0]
+    static.copy_(new)
+    graph.replay()
+    torch.cuda.synchronize()
+    IL.clear_int8_lora_cache()
+    assert torch.equal(out, IL.int8_lora_fwd(new, wq, ws))
+    IL.clear_int8_lora_cache()
+
+
+def test_offloaded_small_rows_run_int8_without_rebuilding_the_weight(monkeypatch):
+    lin = torch.nn.Linear(
+        2048, 1024, bias = False, device = "cuda", dtype = torch.bfloat16
+    ).requires_grad_(False)
+    state = IL.attach_int8_lora_base(lin, offload = True)
+    assert state.offloaded
+
+    def no_rebuild(*a, **k):
+        raise AssertionError("dense weight rebuilt for a small-row call")
+
+    monkeypatch.setattr(IL, "dequantize_weight", no_rebuild)
+    IL.reset_int8_lora_stats()
+    x = torch.randn((3, 16, 2048), device = "cuda", dtype = torch.bfloat16, requires_grad = True)
+    y = lin(x)  # 48 rows, far below _MIN_ROWS
+    y.float().sum().backward()
+    assert IL.INT8_LORA_STATS["fwd"] == 1 and IL.INT8_LORA_STATS["dgrad"] == 1
+    assert IL.INT8_LORA_STATS["fwd_16bit"] == 0
+    IL.clear_int8_lora_cache()
+
+
+@pytest.mark.parametrize(
+    "x_dtype,amp_dtype", [(torch.bfloat16, torch.float16), (torch.float16, torch.bfloat16)]
+)
+def test_large_rows_follow_the_autocast_dtype(x_dtype, amp_dtype):
+    """Under autocast the converted Linear returns what F.linear would: the autocast dtype."""
+    lin = torch.nn.Linear(2048, 1024, bias = True, device = "cuda", dtype = x_dtype).requires_grad_(False)
+    ref_lin = torch.nn.Linear(2048, 1024, bias = True, device = "cuda", dtype = x_dtype).requires_grad_(
+        False
+    )
+    ref_lin.load_state_dict(lin.state_dict())
+    IL.attach_int8_lora_base(lin, offload = False)
+    x = torch.randn((2048, 2048), device = "cuda", dtype = x_dtype)
+    IL.reset_int8_lora_stats()
+    with torch.autocast("cuda", dtype = amp_dtype):
+        y = lin(x)
+        ref = ref_lin(x)
+    assert IL.INT8_LORA_STATS["fwd"] == 1
+    assert y.dtype == ref.dtype == amp_dtype
+    assert _rel(y, ref.double()) < 0.03
+    IL.clear_int8_lora_cache()
+
+
+def test_small_row_fused_forward_is_counted(monkeypatch):
+    lin = torch.nn.Linear(256, 128, bias = False, device = "cuda", dtype = torch.bfloat16).requires_grad_(
+        False
+    )
+    state = IL.attach_int8_lora_base(lin, offload = False)
+    X = torch.randn((16, 256), device = "cuda", dtype = torch.bfloat16)
+    A = torch.randn((8, 256), device = "cuda", dtype = torch.bfloat16)
+    B = torch.randn((128, 8), device = "cuda", dtype = torch.bfloat16)
+    IL.reset_int8_lora_stats()
+    state.lora_first(X, lin.weight, X @ A.t(), B.t(), 2.0)
+    assert IL.INT8_LORA_STATS["fwd"] == 0 and IL.INT8_LORA_STATS["fwd_16bit"] == 1
+
+
+def test_each_layer_device_is_gated(monkeypatch):
+    """The recipe gate is applied to the layer's own GPU, not only to the current one."""
+    import dataclasses
+    from unsloth.precision import recipes as R, gpu_class
+
+    lin = torch.nn.Linear(256, 128, bias = False, device = "cuda", dtype = torch.bfloat16).requires_grad_(
+        False
+    )
+    assert IL.eligible_base(lin) is None
+    cls = gpu_class(torch.cuda.get_device_capability(lin.weight.device))
+    r = R.RECIPES["int8_lora_rotated"]
+    gates = dict(r.gates)
+    gates[cls] = R.Gate("refused", "measured slower here")
+    monkeypatch.setitem(R.RECIPES, "int8_lora_rotated", dataclasses.replace(r, gates = gates))
+    assert "measured slower here" in IL.eligible_base(lin)

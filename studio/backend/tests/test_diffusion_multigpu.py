@@ -1423,12 +1423,23 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
 
 
 def test_secondary_of_lower_compute_capability_takes_no_component(monkeypatch):
+    # a lower card stays in the selection; what it may hold is decided per component (placement_refusal)
     caps = {0: (8, 9), 1: (7, 5), 2: (8, 9), 3: (9, 0)}
     monkeypatch.setattr(mg, "_capability", lambda o: caps.get(int(o)))
-    assert mg.make_selection(0, [0, 1, 2, 3]) == mg.MultiGpuSelection(primary = 0, secondaries = (2, 3))
-    assert mg.make_selection(0, [0, 1]) is None
+    monkeypatch.setattr(mg, "_torch_arch_floor", lambda: (7, 5))
+    assert mg.make_selection(0, [0, 1, 2, 3]) == mg.MultiGpuSelection(
+        primary = 0, secondaries = (1, 2, 3)
+    )
+    assert mg.make_selection(0, [0, 1]) == mg.MultiGpuSelection(primary = 0, secondaries = (1,))
     assert mg.make_selection(1, [1, 0]) == mg.MultiGpuSelection(primary = 1, secondaries = (0,))
     assert mg.make_selection(0, [0, 7]) == mg.MultiGpuSelection(primary = 0, secondaries = (7,))
+    text_encoder = torch.nn.Linear(2, 2).to(torch.bfloat16)
+    pipe = type("Pipe", (), {"text_encoder": text_encoder})()
+    assert "bf16 compute needs sm 8.0" in mg.placement_refusal(pipe, ("text_encoder",), 0, 1)
+    assert mg.placement_refusal(pipe, ("text_encoder",), 0, 2) is None
+    # a card the torch build has no kernels for is the only one left out
+    monkeypatch.setattr(mg, "_torch_arch_floor", lambda: (8, 0))
+    assert mg.make_selection(0, [0, 1]) is None
 
 
 class _Cache:

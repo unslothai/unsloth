@@ -987,6 +987,20 @@ def refine_plan_for_layer_split(
             logger,
         )
         return plan
+    # denoiser blocks on a card below the primary (a mixed pair) must run their weights' kernels there (FP8 sm_89, ...)
+    from .diffusion_multigpu import placement_refusal
+
+    denoisers = tuple(layouts)
+    refused = {
+        int(o): why
+        for o in secondaries
+        if (why := placement_refusal(pipe, denoisers, int(selection.primary), int(o))) is not None
+    }
+    if refused:
+        secondaries = tuple(o for o in secondaries if int(o) not in refused)
+        if not secondaries:
+            _record_decline(pipe, "; ".join(refused.values()), logger)
+            return plan
     for o in secondaries:
         limit = secondary_limit_mib(int(o))
         if limit is not None:

@@ -206,6 +206,8 @@ class MultiGpuSelection:
     secondaries: tuple[int, ...]
     # No gpu_ids (the UI's Automatic): only the companion split runs, and only when one card would offload.
     automatic: bool = False
+    # (ordinal, why) of every picked card the selection left out; reported with the placement decision, never compared
+    excluded: tuple[tuple[int, str], ...] = dataclasses.field(default = (), compare = False)
 
 
 _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.ContextVar(
@@ -215,6 +217,122 @@ _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.Co
 
 AUTOMATIC_ORDINALS = "automatic"
 
+# bf16 compute (the dtype a load resolves on an Ampere or newer primary) needs sm_80 on the card that runs it.
+BF16_MIN_CAPABILITY = (8, 0)
+
+
+def _sm(cap: Optional[tuple[int, int]]) -> str:
+    return "sm unknown" if cap is None else f"sm {int(cap[0])}.{int(cap[1])}"
+
+
+def _card_label(ordinal: int) -> str:
+    try:
+        import torch
+        name = str(torch.cuda.get_device_name(int(ordinal)))
+    except Exception:  # noqa: BLE001
+        name = ""
+    return (
+        f"cuda:{int(ordinal)} ({name}, {_sm(_capability(int(ordinal)))})"
+        if name
+        else (f"cuda:{int(ordinal)} ({_sm(_capability(int(ordinal)))})")
+    )
+
+
+def _torch_arch_floor() -> Optional[tuple[int, int]]:
+    """The lowest ``sm_XY`` this torch build ships kernels for (``torch.cuda.get_arch_list``), or None if unreadable."""
+    try:
+        import torch
+
+        caps = []
+        for arch in torch.cuda.get_arch_list():
+            digits = str(arch).partition("_")[2]
+            if str(arch).startswith("sm_") and digits.isdigit() and len(digits) >= 2:
+                caps.append((int(digits[:-1]), int(digits[-1])))
+        return min(caps) if caps else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _capability_exclusion(primary: int, ordinal: int) -> Optional[str]:
+    """Why a CUDA card cannot be a secondary of ``primary``'s load at all, or None. Only a card below the primary that
+    this torch build has no kernels for is left out; what the planner may place on any other card (bf16 sm_80, FP8
+    sm_89, INT8, packed weights, attention backends) is decided per component (:func:`placement_refusal`), so a mixed
+    pair (an Ada beside a 3090, an A100 beside a T4) keeps both cards. Unknown reads as kept."""
+    need = _capability(int(primary))
+    have = _capability(int(ordinal))
+    if need is None or have is None or have >= need:
+        return None
+    floor = _torch_arch_floor()
+    if floor is not None and have < floor:
+        return (
+            f"{_card_label(ordinal)} left out: this torch build has no kernels below {_sm(floor)}"
+        )
+    return None
+
+
+def selection_and_reason(
+    primary: Optional[int],
+    ordinals: Optional[Sequence[int]],
+    *,
+    automatic: bool = False,
+) -> tuple[Optional[MultiGpuSelection], Optional[str]]:
+    """:func:`make_selection` plus, when at least one other card was picked but none is left, why the load runs on one
+    card (a mask, an unreadable count, a card the load's dtype cannot run on). The reason is None otherwise."""
+    if primary is None or multigpu_mode() == "off":
+        return None, None
+    picked = tuple(dict.fromkeys(int(o) for o in (ordinals or ()) if int(o) != int(primary)))
+    others = picked
+    # cards the load's dtype cannot run on (reported with the decision); masked ones only explain a one-card load
+    excluded: list[tuple[int, str]] = []
+    masked: list[str] = []
+    try:
+        import torch
+
+        # nvidia-smi can list a card this process's torch cannot address (a mask applied after the listing).
+        if torch.cuda.is_available():
+            visible = int(torch.cuda.device_count())
+            masked = [
+                f"cuda:{o} left out: this process sees {visible} CUDA card(s) (CUDA_VISIBLE_DEVICES)"
+                for o in others
+                if not 0 <= o < visible
+            ]
+            others = tuple(o for o in others if 0 <= o < visible)
+    except Exception:  # noqa: BLE001 - unknown count: the capability filter below still applies
+        pass
+    if not others:
+        return None, ("; ".join(masked) or None) if picked else None
+    if _rocm_torch():
+        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
+        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
+        for o in others:
+            if not _rocm_dtype_parity(int(primary), o):
+                excluded.append(
+                    (
+                        o,
+                        f"cuda:{o} left out: no native bf16 (this load runs bf16 on cuda:{int(primary)})",
+                    )
+                )
+        others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
+    else:
+        # Only a card torch has no kernels for is left out; per-component dtype and kernels are gated at placement.
+        for o in others:
+            why = _capability_exclusion(int(primary), o)
+            if why is not None:
+                excluded.append((o, why))
+        dropped = {o for o, _why in excluded}
+        others = tuple(o for o in others if o not in dropped)
+    if not others:
+        return None, "; ".join(why for _o, why in excluded)
+    return (
+        MultiGpuSelection(
+            primary = int(primary),
+            secondaries = others,
+            automatic = automatic,
+            excluded = tuple(excluded),
+        ),
+        None,
+    )
+
 
 def make_selection(
     primary: Optional[int],
@@ -223,36 +341,7 @@ def make_selection(
     automatic: bool = False,
 ) -> Optional[MultiGpuSelection]:
     """A selection when at least two distinct cards were picked and the lever is on, else None (one card)."""
-    if primary is None or multigpu_mode() == "off":
-        return None
-    others = tuple(dict.fromkeys(int(o) for o in (ordinals or ()) if int(o) != int(primary)))
-    try:
-        import torch
-
-        # nvidia-smi can list a card this process's torch cannot address (a mask applied after the listing).
-        if torch.cuda.is_available():
-            visible = int(torch.cuda.device_count())
-            others = tuple(o for o in others if 0 <= o < visible)
-    except Exception:  # noqa: BLE001 - unknown count: the capability filter below still applies
-        pass
-    if not others:
-        return None
-    if _rocm_torch():
-        # ROCm's capability is the gfx target (gfx942 (9, 4)), which does not order; match the primary's load dtype
-        # instead (arch-pinned attention kernels are gated per card in diffusion_layer_split_plan).
-        others = tuple(o for o in others if _rocm_dtype_parity(int(primary), o))
-        return (
-            MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
-            if others
-            else None
-        )
-    # Primary's dtype and patches (bf16 needs Ampere, FP8 Ada) exclude lower-capability cards.
-    need = _capability(int(primary))
-    if need is not None:
-        others = tuple(o for o in others if (_capability(o) or need) >= need)
-    if not others:
-        return None
-    return MultiGpuSelection(primary = int(primary), secondaries = others, automatic = automatic)
+    return selection_and_reason(primary, ordinals, automatic = automatic)[0]
 
 
 def models_kept_loaded() -> bool:
@@ -267,21 +356,29 @@ def models_kept_loaded() -> bool:
 def automatic_selection(primary: Optional[int]) -> Optional[MultiGpuSelection]:
     """The selection of an automatic load: the ranked card (or the current one) plus every other parent-visible CUDA
     card. None on one GPU, ROCm, XPU, MPS and CPU (the same cheap gate automatic ranking uses)."""
+    return automatic_selection_and_reason(primary)[0]
+
+
+def automatic_selection_and_reason(
+    primary: Optional[int],
+) -> tuple[Optional[MultiGpuSelection], Optional[str]]:
+    """:func:`automatic_selection` plus why a host past the ranking gate (several CUDA cards) ends on one card."""
     if multigpu_mode() == "off":
-        return None
+        return None, None
     try:
         from .diffusion_device import auto_cuda_ranking_possible, resolve_diffusion_device_target
-
         if not auto_cuda_ranking_possible() or resolve_diffusion_device_target().device != "cuda":
-            return None
+            return None, None
+    except Exception:  # noqa: BLE001 -- an unreadable host keeps one card
+        return None, None
+    try:
         import torch
-
         if primary is None:
             primary = int(torch.cuda.current_device())
         count = int(torch.cuda.device_count())
-    except Exception:  # noqa: BLE001 -- an unreadable host keeps one card
-        return None
-    return make_selection(primary, range(count), automatic = True)
+    except Exception as exc:  # noqa: BLE001 -- an unreadable host keeps one card
+        return None, f"the CUDA card count could not be read ({type(exc).__name__})"
+    return selection_and_reason(primary, range(count), automatic = True)
 
 
 def _capability(ordinal: int) -> Optional[tuple[int, int]]:
@@ -344,25 +441,138 @@ def selection_scope(
         _SELECTION.reset(token)
 
 
+def _kept_loaded_policy() -> Optional[str]:
+    """``fit`` / ``always`` while Keep multiple models loaded is on, else None (unreadable reads as off)."""
+    try:
+        from .gpu_residency import current_policy
+        policy = str(current_policy())
+    except Exception:  # noqa: BLE001
+        return None
+    return None if policy == "off" else policy
+
+
+# Keep multiple models loaded: the residency arbiter admits and claims an image or video load on the ONE card it priced
+# before the load (gpu_residency.media_fit_kwargs passes gpu_ids=[gpu_ordinal]); the multi-GPU planner picks its
+# secondary only after the weights load, so a second card would hold memory the arbiter never priced, claimed or
+# evicts for. Such a load stays on one card and says so (one_card_note).
+KEPT_LOADED_REASON = (
+    "Keep multiple models loaded is {policy}: the residency arbiter prices and claims one card per image or video "
+    "load, so a second card would hold memory it never accounted for"
+)
+
+
+@dataclasses.dataclass(frozen = True)
+class OneCardNote:
+    """A multi-card request (explicit gpu_ids, or Automatic on a host with several CUDA cards) that runs on one
+    card, and why. Recorded as the load's placement decision (``chosen`` one_card) and logged once."""
+
+    primary: Optional[int]
+    automatic: bool
+    reason: str
+
+    def summary(self) -> str:
+        card = f"cuda:{self.primary}" if self.primary is not None else "the selected card"
+        return f"one card: everything on {card} ({self.reason})"
+
+
+def one_card_note(
+    primary: Optional[int], ordinals: Any
+) -> tuple[Optional[MultiGpuSelection], Optional[OneCardNote]]:
+    """The selection of a load given begin_load's ``_gpu_ordinals``, and the note when a multi-card request ends on
+    one card. Selections are those of :func:`automatic_selection` / :func:`make_selection`."""
+    automatic = ordinals == AUTOMATIC_ORDINALS
+    # the reason is asked for only when the selection is None, so a load keeps calling the two selection functions
+    if automatic:
+        selection = automatic_selection(primary)
+        why = automatic_selection_and_reason(primary)[1] if selection is None else None
+    else:
+        selection = make_selection(primary, ordinals)
+        why = selection_and_reason(primary, ordinals)[1] if selection is None and ordinals else None
+    if selection is not None and models_kept_loaded():
+        policy = (_kept_loaded_policy() or "on").title()
+        return None, OneCardNote(
+            selection.primary, automatic, KEPT_LOADED_REASON.format(policy = policy)
+        )
+    if selection is None and why is not None:
+        if automatic and primary is None:
+            with contextlib.suppress(Exception):
+                import torch
+                primary = int(torch.cuda.current_device())
+        return None, OneCardNote(None if primary is None else int(primary), automatic, why)
+    return selection, None
+
+
+def _log_info(message: str, *args: Any) -> None:
+    try:
+        from loggers import get_logger
+        get_logger(__name__).info(message, *args)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).info(message, *args)
+
+
+def record_one_card_note(pipe: Any, note: Optional[OneCardNote]) -> bool:
+    """Report ``note`` as ``pipe``'s placement decision unless the planner recorded one. True when recorded."""
+    if pipe is None or note is None or placement_decision(pipe) is not None:
+        return False
+    with contextlib.suppress(TypeError):
+        _DECISIONS[pipe] = PlacementDecision(
+            chosen = "one_card",
+            summary = f"placement: {note.summary()}",
+            primary = note.primary,
+            automatic = bool(note.automatic),
+        )
+        return True
+    return False
+
+
 def with_load_selection(run_load: Callable[..., Any]) -> Callable[..., Any]:
     """Decorate a backend's ``_run_load(self, **kwargs)``: pop ``_gpu_ordinals`` (every selected card, from
     begin_load, or :data:`AUTOMATIC_ORDINALS`) and run the load inside :func:`selection_scope` with ``gpu_ordinal``
-    as the primary. Without a multi-card selection the load runs exactly as before."""
+    as the primary. Without a multi-card selection the load runs exactly as before; a multi-card request that ends on
+    one card logs why and reports it as the loaded pipeline's placement decision."""
     import functools
 
     @functools.wraps(run_load)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
         ordinals = kwargs.pop("_gpu_ordinals", None)
-        if ordinals and models_kept_loaded():
-            selection = None
-        elif ordinals == AUTOMATIC_ORDINALS:
-            selection = automatic_selection(kwargs.get("gpu_ordinal"))
-        else:
-            selection = make_selection(kwargs.get("gpu_ordinal"), ordinals)
+        selection, note = one_card_note(kwargs.get("gpu_ordinal"), ordinals)
+        if note is not None:
+            _log_info("diffusion.multigpu: %s", note.summary())
+        before = getattr(getattr(self, "_state", None), "pipe", None)
         with selection_scope(selection):
-            return run_load(self, *args, **kwargs)
+            result = run_load(self, *args, **kwargs)
+        if note is not None:
+            pipe = getattr(getattr(self, "_state", None), "pipe", None)
+            if pipe is not None and pipe is not before:
+                record_one_card_note(pipe, note)
+        return result
 
     return wrapper
+
+
+def peer_selection(selection: Optional[MultiGpuSelection]) -> Optional[MultiGpuSelection]:
+    """``selection`` without the secondaries below the primary's capability (the rule every selection used before mixed
+    pairs were kept), or None when none is left. For the sd.cpp servers: a separate binary whose kernels Studio does not
+    gate per card. ROCm and unknown capabilities are kept, as before."""
+    if selection is None or _rocm_torch():
+        return selection
+    need = _capability(int(selection.primary))
+    if need is None:
+        return selection
+    kept = tuple(o for o in selection.secondaries if (_capability(o) or need) >= need)
+    if kept == tuple(selection.secondaries):
+        return selection
+    dropped = [o for o in selection.secondaries if o not in kept]
+    _log_info(
+        "diffusion.multigpu: sd.cpp keeps %s off this load (below cuda:%s's %s)",
+        ", ".join(_card_label(o) for o in dropped),
+        selection.primary,
+        _sm(need),
+    )
+    if not kept:
+        return None
+    return dataclasses.replace(selection, secondaries = kept)
 
 
 def current_selection() -> Optional[MultiGpuSelection]:
@@ -472,17 +682,62 @@ def best_secondary(
         memory = DeviceMemory("cuda", "cuda", "discrete_vram", int(free), total)
         return int(limit_of(memory) or 0)
 
+    peer = _peer_rank(selection)
     if probes is None and selection.automatic:
         free = {o: _free_total_mib(o) for o in selection.secondaries}
-        return max(selection.secondaries, key = lambda o: (usable(*free[o]), -o))
+        return max(selection.secondaries, key = lambda o: (peer(o), usable(*free[o]), -o))
     if probes is None:
         probes = probe_devices((selection.primary, *selection.secondaries))
 
-    def key(o: int) -> tuple[int, int]:
+    def key(o: int) -> tuple[int, int, int]:
         p = probes.get(o)
-        return (usable(p.free_mib, p.total_mib) if p is not None else -1, -o)
+        return (peer(o), usable(p.free_mib, p.total_mib) if p is not None else -1, -o)
 
     return max(selection.secondaries, key = key)
+
+
+def _peer_rank(selection: MultiGpuSelection) -> Callable[[int], int]:
+    """1 for a secondary at or above the primary's capability (or unknown), 0 for a lower one: a card the old rule kept
+    is tried first, so a mixed selection decides as before whenever such a card is in it. Constant on identical cards."""
+    if _rocm_torch():
+        return lambda o: 1
+    need = _capability(int(selection.primary))
+    if need is None:
+        return lambda o: 1
+    return lambda o: 1 if (_capability(int(o)) or need) >= need else 0
+
+
+def same_model_secondaries(
+    selection: Optional[MultiGpuSelection], logger: Any = None
+) -> tuple[int, ...]:
+    """The secondaries of the primary's card model (by device name), in selection order: the cards a replica-type
+    split (the same work on both cards) may use without pricing a slower card. Unreadable names keep every card."""
+    if selection is None or not selection.secondaries:
+        return ()
+    try:
+        import torch
+        name = str(torch.cuda.get_device_name(int(selection.primary)))
+        names = {o: str(torch.cuda.get_device_name(int(o))) for o in selection.secondaries}
+    except Exception:  # noqa: BLE001
+        return tuple(selection.secondaries)
+    kept = tuple(o for o in selection.secondaries if names[o] == name)
+    if logger is not None and len(kept) < len(selection.secondaries):
+        logger.info(
+            "diffusion.multigpu: %s not used for a split of the same work (a different card model than cuda:%s)",
+            ", ".join(f"cuda:{o}" for o in selection.secondaries if o not in kept),
+            selection.primary,
+        )
+    return kept
+
+
+def secondary_below_primary(ordinal: int) -> bool:
+    """``ordinal`` is a CUDA card below the current selection's primary capability (a mixed pair). False without a
+    selection, on ROCm or when either capability is unknown."""
+    selection = current_selection()
+    if selection is None or _rocm_torch():
+        return False
+    need, have = _capability(int(selection.primary)), _capability(int(ordinal))
+    return need is not None and have is not None and have < need
 
 
 @dataclasses.dataclass(frozen = True)
@@ -560,7 +815,8 @@ def plan_companion_split(
         fits = [o for o, limit in limits.items() if secondary_required <= limit]
         if not fits:
             continue
-        best = max(fits, key = lambda o: (limits[o], -o))
+        peer = _peer_rank(selection)
+        best = max(fits, key = lambda o: (peer(o), limits[o], -o))
         return CompanionSplit(
             secondary_ordinal = best,
             primary_required_mib = primary_required,
@@ -709,14 +965,149 @@ def choose_component_assignment(
     return None
 
 
+_FP8_DTYPE_NAMES = (
+    "float8_e4m3fn",
+    "float8_e5m2",
+    "float8_e4m3fnuz",
+    "float8_e5m2fnuz",
+    "float8_e8m0fnu",
+)
+_PLAIN_TENSOR_TYPES: tuple[str, ...] = ("Tensor", "Parameter", "Buffer")
+
+
+def _weight_kernels(module: Any) -> set[str]:
+    """What the weights of ``module`` need a card to run: ``bf16`` (bf16 compute), ``fp8`` (FP8 weights: scaled_mm /
+    fp8-stored Linears), ``int8`` (plain int8 tensors: torch._int_mm / the INT8 GEMMs) or ``packed`` (GGUF, NVFP4 /
+    MXFP8 blocks, bitsandbytes / torchao or any other tensor subclass: kernels chosen for the primary's card). Empty for
+    fp16 / fp32 dense weights."""
+    kinds: set[str] = set()
+    if module is None:
+        return {"unknown"}
+    with contextlib.suppress(Exception):
+        from .diffusion_comfy_quant import fp8_stored_layers
+        if fp8_stored_layers(module) > 0:
+            kinds.add("fp8")
+    with contextlib.suppress(Exception):
+        from .diffusion_grouped_int8 import grouped_packed_layers
+        from .diffusion_packed_block import packed_block_layers
+        if packed_block_layers(module) > 0 or grouped_packed_layers(module) > 0:
+            kinds.add("packed")
+    try:
+        tensors = [*module.parameters(), *module.buffers()]
+    except Exception:  # noqa: BLE001 - unreadable: only the layer counters above
+        tensors = []
+    if not tensors and not kinds:
+        # nothing to read (a stub, a module not built yet): the caller assumes the load's dtype
+        return {"unknown"}
+    for t in tensors:
+        dtype = str(getattr(t, "dtype", "")).rpartition(".")[2]
+        cls = type(t).__name__
+        low = cls.lower()
+        if dtype in _FP8_DTYPE_NAMES or "float8" in low or "fp8" in low:
+            kinds.add("fp8")
+        elif dtype == "int8" and cls in _PLAIN_TENSOR_TYPES:
+            kinds.add("int8")
+        elif dtype in ("uint8", "int4", "uint4") or cls not in _PLAIN_TENSOR_TYPES:
+            kinds.add("packed")
+        elif dtype == "bfloat16":
+            kinds.add("bf16")
+    return kinds
+
+
+def _kernel_floors() -> dict[str, tuple[int, int]]:
+    """Minimum capability per weight kind: bf16 sm_80; int8 and fp8 from the dense-quant floors the hosted-checkpoint
+    ladder uses (diffusion_transformer_quant._HOSTED_AUTO_FLOORS: torch._int_mm sm_75, FP8 scaled_mm sm_89)."""
+    floors = {"bf16": BF16_MIN_CAPABILITY, "int8": (7, 5), "fp8": (8, 9)}
+    with contextlib.suppress(Exception):
+        from .diffusion_transformer_quant import _HOSTED_AUTO_FLOORS, TQ_FP8, TQ_INT8
+
+        table = dict(_HOSTED_AUTO_FLOORS)
+        floors["int8"] = tuple(table.get(TQ_INT8, floors["int8"]))
+        floors["fp8"] = tuple(table.get(TQ_FP8, floors["fp8"]))
+    return floors
+
+
+_KIND_LABELS = {
+    "bf16": "bf16 compute needs",
+    "fp8": "FP8 weights (scaled_mm) need",
+    "int8": "INT8 GEMMs need",
+}
+
+
+def placement_refusal(pipe: Any, names: Sequence[str], primary: int, ordinal: int) -> Optional[str]:
+    """Why the components ``names`` of ``pipe`` cannot run on ``ordinal`` beside ``primary``, or None. Only a CUDA
+    card of lower capability than the primary is checked (an equal or higher one, an unknown capability and ROCm
+    keep today's rule), so identical cards decide exactly as before. Each component needs what its weights run
+    (:func:`_weight_kernels`): bf16 sm_80, FP8 sm_89, INT8 sm_75, packed / unrecognised formats the primary's
+    capability. A denoiser must also run the engaged attention backend there (diffusion_layer_split_plan._backend_cards:
+    an arch-pinned backend such as flash3 / Sage / FA2 only on the primary's capability)."""
+    if _rocm_torch():
+        return None
+    need = _capability(int(primary))
+    have = _capability(int(ordinal))
+    if need is None or have is None or have >= need:
+        return None
+    if any(str(n) in DENOISER_ATTRS for n in names):
+        with contextlib.suppress(Exception):
+            from .diffusion_layer_split_plan import _backend_cards
+            kept, backend = _backend_cards(pipe, int(primary), (int(ordinal),), None, guard = False)
+            if int(ordinal) not in kept:
+                return (
+                    f"denoiser cannot run on cuda:{int(ordinal)} ({_sm(have)}): attention backend {backend} was "
+                    f"verified for cuda:{int(primary)}'s architecture only"
+                )
+    floors = _kernel_floors()
+    for name in names:
+        kinds = _weight_kernels(getattr(pipe, str(name), None))
+        if "unknown" in kinds:
+            # unreadable weights run the load's dtype: bf16 on an Ampere or newer primary
+            kinds = {"bf16"} if need >= BF16_MIN_CAPABILITY else set()
+        for kind in ("packed", "fp8", "int8", "bf16"):
+            if kind not in kinds:
+                continue
+            floor = need if kind == "packed" else floors[kind]
+            if have >= floor:
+                continue
+            what = (
+                f"packed / quantized weights whose kernels were chosen for cuda:{int(primary)} ({_sm(need)})"
+                if kind == "packed"
+                else f"{_KIND_LABELS[kind]} {_sm(floor)}"
+            )
+            return f"{name} cannot run on cuda:{int(ordinal)} ({_sm(have)}): {what}"
+    return None
+
+
 def _secondary_runs_denoiser(
     pipe: Any, selection: MultiGpuSelection, secondary: int, sizes: dict, logger: Any
 ) -> bool:
     """Whether a second denoiser may move wholesale to ``secondary``. ROCm admits mixed gfx targets (make_selection),
     so the card must pass the layer split's per-card attention gate: an arch-pinned kernel (flash_attn, AITER) only on
-    the primary's gfx target, native SDPA not math-only beside a fused primary. CUDA's capability order already holds."""
-    if not _rocm_torch() or sum(1 for _m, role in sizes.values() if role == "dit") < 2:
+    the primary's gfx target, native SDPA not math-only beside a fused primary. On CUDA only a card below the primary
+    (a mixed pair, see make_selection) is checked, by the layer split's backend gate."""
+    if sum(1 for _m, role in sizes.values() if role == "dit") < 2:
         return True
+    if not _rocm_torch():
+        # A card below the primary (a mixed pair) must run the engaged attention backend: an arch-pinned one
+        # (flash3 / Sage / FA2) only on the primary's capability. Equal or higher cards keep today's rule.
+        need, have = _capability(int(selection.primary)), _capability(int(secondary))
+        if need is None or have is None or have >= need:
+            return True
+        try:
+            from .diffusion_layer_split_plan import _backend_cards
+            kept, backend = _backend_cards(pipe, int(selection.primary), (int(secondary),), None)
+        except Exception:  # noqa: BLE001 - unverifiable: keep the denoisers on the primary
+            return False
+        if int(secondary) in kept:
+            return True
+        if logger is not None:
+            logger.info(
+                "diffusion.multigpu: second denoiser stays on cuda:%s (attention backend %s was verified for "
+                "cuda:%s's architecture only)",
+                selection.primary,
+                backend,
+                selection.primary,
+            )
+        return False
     try:
         from .diffusion_layer_split_plan import _rocm_backend_cards
         kept, _backend = _rocm_backend_cards(
@@ -754,7 +1145,7 @@ class PlacementDecision:
 
     chosen: str
     summary: str
-    primary: int
+    primary: Optional[int]
     automatic: bool
     rejected: tuple[PlacementCandidate, ...] = ()
     fallback_resident: bool = False
@@ -766,7 +1157,7 @@ class PlacementDecision:
         return {
             "chosen": self.chosen,
             "summary": self.summary,
-            "primary": f"cuda:{self.primary}",
+            "primary": None if self.primary is None else f"cuda:{self.primary}",
             "automatic": self.automatic,
             "rejected": [{"kind": c.kind, "reason": c.reason} for c in self.rejected],
         }
@@ -793,13 +1184,15 @@ def _record_decision(
     fallback_kind: Optional[str] = None,
     fallback_summary: Optional[str] = None,
 ) -> None:
+    # cards the selection left out (a card the load's dtype cannot run on, a masked one): named with the decision
+    left_out = tuple(PlacementCandidate("card", why) for _o, why in selection.excluded)
     with contextlib.suppress(TypeError):
         _DECISIONS[pipe] = PlacementDecision(
             chosen = chosen,
             summary = f"placement: {summary}",
             primary = int(selection.primary),
             automatic = bool(selection.automatic),
-            rejected = tuple(rejected),
+            rejected = (*tuple(rejected), *left_out),
             fallback_resident = bool(fallback_resident),
             fallback_kind = fallback_kind,
             fallback_summary = fallback_summary,
@@ -1884,7 +2277,7 @@ def refine_plan_for_multigpu(
             selection,
             chosen,
             summary,
-            rejected,
+            (*planned_rejected, *rejected),
             fallback_resident = getattr(resident, "offload_policy", None) == "none",
         )
         return plan
@@ -1896,6 +2289,18 @@ def refine_plan_for_multigpu(
             "offload", f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({why})"
         )
 
+    planned_rejected: list[PlacementCandidate] = []
+    if getattr(plan, "secondary_ordinal", None) is not None:
+        refused = placement_refusal(
+            pipe, _split_moved_names(pipe, plan), primary, int(plan.secondary_ordinal)
+        )
+        fallback = getattr(plan, "fallback_plan", None)
+        if refused is not None and fallback is not None:
+            # planned before the load from sizes; the loaded weights cannot run there: plan again from the one-card plan
+            planned_rejected.append(PlacementCandidate("companion_split", refused))
+            if logger is not None:
+                logger.info("diffusion.multigpu: planned companion split dropped (%s)", refused)
+            plan = fallback
     if getattr(plan, "secondary_ordinal", None) is not None:
         split_summary = (
             f"companion split: {', '.join(plan.secondary_components or ('companions',))} on "
@@ -1985,7 +2390,7 @@ def refine_plan_for_multigpu(
         # A split has no resident groups to stream back, so a reference request needs the flat headroom.
         headroom = max(headroom, int(flat_headroom or 0))
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
-    rejected: list[PlacementCandidate] = []
+    rejected: list[PlacementCandidate] = list(planned_rejected)
     if plan.offload_policy != "none":
         rejected.append(_one_card_rejection(plan, primary))
 
@@ -2131,12 +2536,19 @@ def refine_plan_for_multigpu(
             None if encoders_limit is None else int(encoders_limit) - reserve.get(int(secondary), 0)
         ),
     )
-    winner = next((t for t in trials if t.fits), None)
+    # the weights each trial moves must run on the secondary (a lower-capability card of a mixed pair)
+    refusals = {
+        trial.moved: placement_refusal(pipe, trial.moved, primary, secondary) for trial in trials
+    }
+    winner = next((t for t in trials if t.fits and refusals.get(t.moved) is None), None)
     moved = winner.moved if winner is not None else None
     for trial in trials:
         if trial is winner:
             break
-        rejected.append(PlacementCandidate("companion_split", trial.why_not(primary, secondary)))
+        why = refusals.get(trial.moved) if trial.fits else None
+        rejected.append(
+            PlacementCandidate("companion_split", why or trial.why_not(primary, secondary))
+        )
     if moved is None:
         if not trials:
             rejected.append(
@@ -5219,6 +5631,16 @@ def install_cfg_parallel(
             and probes[o].name == probes[primary.index].name
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
+        if cfg_parallel_mode() == "force":
+            # force pairs different card models; a card below the primary must still run the replica's weights
+            names = tuple(n for n in DENOISER_ATTRS if getattr(pipe, n, None) is denoiser) or (
+                "transformer",
+            )
+            candidates = [
+                o
+                for o in candidates
+                if placement_refusal(pipe, names, int(selection.primary), int(o)) is None
+            ]
         automatic = selection.automatic and cfg_parallel_mode() != "force"
         auto_reason = None
         try:
