@@ -791,6 +791,19 @@ def reset_static_step_skip(
     return True
 
 
+def rewind_static_step_skip(pipe: Any) -> bool:
+    """A new trajectory inside one engine call (a facade running several modular calls): restart the step count
+    and drop cached residuals; the plan and the stats carry on."""
+    skip = _find(pipe)
+    if skip is None or not skip.counting:
+        return False
+    skip.steps_ended = 0
+    skip.ordinal = 0
+    skip.counters = {}
+    skip.history = {}
+    return True
+
+
 def mark_step_end(pipe: Any) -> None:
     skip = _find(pipe)
     if skip is not None:
