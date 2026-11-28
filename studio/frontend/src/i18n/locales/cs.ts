@@ -5561,6 +5561,7 @@ export const cs = {
       modelEmpty:
         "Chcete-li vybrat jiný, stáhněte model v Centru modelů nebo přidejte připojení.",
       modelMissing: "{model} (není v tomto zařízení)",
+      modelIncompatible: "{model} (nepodporuje textový výstup)",
       allowLoad: "Přepnout automaticky, když nejsem u počítače",
       allowLoadHint:
         "Když je úloha na řadě a vy jste Unsloth 5 minut nepoužili, načte se tento model bez ptaní, úloha se spustí a pak se přepne zpět na váš původní model. Pokud v tu dobu Unsloth používáte nebo trénujete, běh se přeskočí a váš model zůstane beze změny. Když je volba vypnutá, Unsloth se před načtením zeptá.",

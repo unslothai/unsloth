@@ -5141,6 +5141,7 @@ export const ja = {
       modelNoteAllowed: "Unsloth を使っていない間だけこのモデルに切り替え、終わったら元に戻します。",
       modelEmpty: "別のモデルを選ぶには、Model Hub でダウンロードするか接続を追加してください。",
       modelMissing: "{model}（このデバイスにありません）",
+      modelIncompatible: "{model}（テキスト出力に非対応）",
       allowLoad: "離席中は自動で切り替える",
       allowLoadHint:
         "このタスクの時刻になり、Unsloth を 5 分間使っていない場合は、確認せずにこのモデルを読み込んでタスクを実行し、その後元のモデルに戻します。その時点で Unsloth を使用中か学習中の場合、実行はスキップされ、モデルはそのままです。オフにすると、読み込む前に Unsloth が確認します。",

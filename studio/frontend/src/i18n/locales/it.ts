@@ -5261,6 +5261,7 @@ export const it = {
       modelNoteAllowed: "Passa a questo modello solo mentre non usi Unsloth, poi torna al tuo.",
       modelEmpty: "Scarica un modello da Model Hub o aggiungi una connessione per sceglierne un altro.",
       modelMissing: "{model} (non su questo dispositivo)",
+      modelIncompatible: "{model} (non supporta la produzione di testo)",
       allowLoad: "Cambia automaticamente quando non ci sono",
       allowLoadHint:
         "Quando questa attività è in scadenza e non usi Unsloth da 5 minuti, carica questo modello senza chiedere, esegue l'attività e poi torna al modello che avevi. Se in quel momento stai usando Unsloth o è in corso un addestramento, l'esecuzione viene saltata e il tuo modello resta com'è. Se è disattivato, Unsloth chiede prima di caricarlo.",

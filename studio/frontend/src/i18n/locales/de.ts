@@ -5266,6 +5266,7 @@ export const de = {
       modelNoteAllowed: "Wechselt nur zu diesem Modell, während Sie Unsloth nicht nutzen, und danach zurück.",
       modelEmpty: "Laden Sie ein Modell im Model Hub herunter oder fügen Sie eine Verbindung hinzu, um ein anderes zu wählen.",
       modelMissing: "{model} (nicht auf diesem Gerät)",
+      modelIncompatible: "{model} (unterstützt keine Textausgabe)",
       allowLoad: "Automatisch wechseln, wenn ich weg bin",
       allowLoadHint:
         "Wenn diese Aufgabe fällig ist und du Unsloth seit 5 Minuten nicht benutzt hast, lädt sie dieses Modell ohne Nachfrage, führt die Aufgabe aus und wechselt dann zurück zu deinem vorherigen Modell. Benutzt du Unsloth gerade oder läuft ein Training, wird der Lauf übersprungen und dein Modell bleibt unverändert. Ist die Option aus, fragt Unsloth vor dem Laden.",

@@ -5534,6 +5534,7 @@ export const vi = {
       modelEmpty:
         "Tải xuống một mô hình trong Trung tâm mô hình hoặc thêm kết nối để chọn mô hình khác.",
       modelMissing: "{model} (không có trên thiết bị này)",
+      modelIncompatible: "{model} (không hỗ trợ đầu ra văn bản)",
       allowLoad: "Tự động chuyển khi tôi không dùng",
       allowLoadHint:
         "Khi đến giờ chạy tác vụ và bạn đã không dùng Unsloth trong 5 phút, Unsloth sẽ nạp mô hình này mà không hỏi, chạy tác vụ, rồi chuyển lại mô hình bạn đang dùng. Nếu lúc đó bạn đang dùng Unsloth hoặc đang huấn luyện, lượt chạy sẽ bị bỏ qua và mô hình của bạn được giữ nguyên. Khi tắt, Unsloth sẽ hỏi trước khi nạp.",

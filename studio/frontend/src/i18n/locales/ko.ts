@@ -5181,6 +5181,7 @@ export const ko = {
       modelNoteAllowed: "Unsloth를 사용하지 않는 동안에만 이 모델로 전환하고, 끝나면 원래 모델로 돌아갑니다.",
       modelEmpty: "다른 모델을 고르려면 Model Hub에서 모델을 다운로드하거나 연결을 추가하세요.",
       modelMissing: "{model} (이 기기에 없음)",
+      modelIncompatible: "{model} (텍스트 출력 미지원)",
       allowLoad: "자리를 비우면 자동으로 전환",
       allowLoadHint:
         "이 작업 시간이 되었고 5분 동안 Unsloth를 사용하지 않았다면, 묻지 않고 이 모델을 로드해 작업을 실행한 뒤 원래 모델로 되돌립니다. 그때 Unsloth를 사용 중이거나 학습 중이면 실행을 건너뛰고 모델은 그대로 둡니다. 끄면 로드하기 전에 Unsloth가 묻습니다.",

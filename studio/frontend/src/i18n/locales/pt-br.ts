@@ -5221,6 +5221,7 @@ export const ptBR = {
       modelNoteAllowed: "Muda para este modelo só enquanto você não usa o Unsloth e depois volta ao que você tinha.",
       modelEmpty: "Baixe um modelo no Model Hub ou adicione uma conexão para escolher outro.",
       modelMissing: "{model} (não está neste dispositivo)",
+      modelIncompatible: "{model} (não oferece suporte a saída de texto)",
       allowLoad: "Trocar automaticamente quando eu estiver fora",
       allowLoadHint:
         "Quando esta tarefa vence e você não usa o Unsloth há 5 minutos, ela carrega este modelo sem perguntar, executa a tarefa e depois volta para o modelo que você tinha. Se você estiver usando o Unsloth ou treinando nesse momento, a execução é pulada e seu modelo fica como está. Desativado, o Unsloth pergunta antes de carregar.",

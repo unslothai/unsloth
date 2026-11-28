@@ -6,6 +6,7 @@ import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
 import * as zustand from "zustand";
+import { registerBundlerResolver } from "./helpers/kit.ts";
 import type * as ScheduledTasksApi from "../src/features/scheduled-tasks/api.ts";
 import type * as ScheduledTasksStore from "../src/features/scheduled-tasks/store.ts";
 import type * as UnseenStore from "../src/features/scheduled-tasks/unseen.ts";
@@ -46,6 +47,35 @@ import {
   titleFromPrompt,
   zoneLabel,
 } from "../src/features/scheduled-tasks/schedule.ts";
+
+registerBundlerResolver();
+const { taskLocalModelChoices } = await import("../src/features/scheduled-tasks/task-model-options.ts");
+
+test("speech-only checkpoints cannot be selected as scheduled text models", () => {
+  const localRow = (id: string) => ({
+    id,
+    display_name: id,
+    path: `/fixtures/${id}`,
+    source: "models_dir" as const,
+  });
+  const { local, incompatible } = taskLocalModelChoices(
+    [
+      { ...localRow("tts"), audio_type: "snac" },
+      { ...localRow("whisper"), pipeline_tag: "automatic-speech-recognition" },
+      { ...localRow("audio-chat"), audio_type: "audio_vlm" },
+      localRow("text"),
+    ],
+    [
+      { repo_id: "tts", size_bytes: 1 },
+      { repo_id: "image", size_bytes: 1, capabilities: { can_chat: false } },
+      { repo_id: "cached-text", size_bytes: 1 },
+      { repo_id: "partial-text", size_bytes: 1, partial: true, capabilities: { can_chat: false } },
+      { repo_id: "unsupported-image", size_bytes: 1, task: "image-diffusion-unsupported", capabilities: { can_chat: true } },
+    ],
+  );
+  assert.deepEqual(local.map(({ id }) => id), ["audio-chat", "text", "cached-text"]);
+  assert.deepEqual([...incompatible], ["tts", "whisper", "image", "unsupported-image"]);
+});
 
 const ISO_ALL = [...ISO_WEEKDAYS];
 

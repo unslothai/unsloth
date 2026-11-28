@@ -5092,6 +5092,7 @@ export const zhCN = {
       modelNoteAllowed: "仅在你离开 Unsloth 时切换到此模型，完成后切回原来的模型。",
       modelEmpty: "在模型中心下载模型或添加连接，即可选择其他模型。",
       modelMissing: "{model}（不在此设备上）",
+      modelIncompatible: "{model}（不支持文本输出）",
       allowLoad: "离开时自动切换",
       allowLoadHint:
         "到了任务时间且你已 5 分钟未使用 Unsloth 时，它会直接加载此模型、运行任务，然后切换回你原来的模型。如果当时你正在使用 Unsloth 或正在训练，本次运行会被跳过，你的模型保持不变。关闭时，Unsloth 会在加载前询问。",

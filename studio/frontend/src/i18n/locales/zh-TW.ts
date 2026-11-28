@@ -5265,6 +5265,7 @@ export const zhTW = {
         "只在您離開 Unsloth 時載入此模型，之後再換回原本的模型。",
       modelEmpty: "在模型中心下載模型或新增連線，即可選擇其他模型。",
       modelMissing: "{model}（不在此裝置上）",
+      modelIncompatible: "{model}（不支援文字輸出）",
       allowLoad: "我離開時自動切換",
       allowLoadHint:
         "當此任務到期且您已 5 分鐘未使用 Unsloth 時，會直接載入此模型、執行任務，然後切換回原本的模型。如果當時您正在使用 Unsloth 或正在訓練，就會略過這次執行，不會更動您的模型。關閉時，Unsloth 會在載入前先詢問。",
