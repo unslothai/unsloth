@@ -6871,7 +6871,6 @@ def _load_optimizer_local_state(optimizer, saved):
         origin = {}
         from .portable_resume import _BNB_WRAPPED, _TORCH_ADAM_KEYS, _normalize_entry
 
-        # bitsandbytes >= 0.48 nests its moments under _BNB_WRAPPED.
         if to_torch_adam and ("state1" in entry or _BNB_WRAPPED in entry):
             converted = _normalize_entry(entry)
             if converted is None:

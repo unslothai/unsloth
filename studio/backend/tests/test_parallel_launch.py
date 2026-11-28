@@ -264,7 +264,6 @@ def test_wait_for_ranks_reports_a_rank_that_failed_its_save(monkeypatch):
 def test_sharded_full_finetune_steps_with_torch_adamw(
     monkeypatch, training_type, optim, layout, expected
 ):
-    # bfloat16 stochastic rounding steps DTensor weights only on the torch AdamW route.
     from core.training import worker as training_worker
 
     monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
