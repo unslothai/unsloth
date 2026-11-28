@@ -5,11 +5,11 @@
 so the merged, quantized export is the trained model; base-only QAT (the default) shows the export gap."""
 
 import os
-import types
 
 import pytest
 import torch
 import torch.nn.functional as F
+import transformers
 
 pytest.importorskip("torchao.quantization.qat")
 peft = pytest.importorskip("peft")
@@ -25,7 +25,8 @@ SCHEMES = ["int4", "int8", "cactus", "int8-int4", "fp8-int4", "fp8-fp8"]
 class _Block(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.config = types.SimpleNamespace(tie_word_embeddings = False)
+        # PEFT 0.18 reads model.config.get(...): a real config, not a namespace.
+        self.config = transformers.PretrainedConfig(tie_word_embeddings = False)
         self.up_proj = torch.nn.Linear(DIM, 2 * DIM, bias = False)
         self.down_proj = torch.nn.Linear(2 * DIM, DIM, bias = False)
 
