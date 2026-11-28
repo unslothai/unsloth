@@ -215,6 +215,15 @@ def _int8_auto_config_reason(arguments, extra):
     return None
 
 
+def _explicit_4bit(arguments):
+    """A 4-bit load the caller asked for: True or any string spelling ('nf4', 'nvfp4', even an unknown one,
+    which normalize_lowbit_flags then rejects). The load_in_4bit = True default is not a request."""
+    if "load_in_4bit" not in arguments:
+        return False
+    value = arguments["load_in_4bit"]
+    return value is True or (isinstance(value, str) and value.strip() != "")
+
+
 def _int8_auto_reason(arguments, extra):
     """None when load_in_8bit = True should run the rotated int8 base, else why bitsandbytes stays."""
     if not _truthy_env(AUTO_8BIT_ENV):
@@ -227,8 +236,8 @@ def _int8_auto_reason(arguments, extra):
         return "qat_scheme"
     if arguments.get("load_in_fp8", False) not in (False, None):
         return "load_in_fp8"
-    if arguments.get("load_in_4bit", False) is True and "load_in_4bit" in arguments:
-        return "load_in_4bit = True"
+    if _explicit_4bit(arguments):
+        return f"load_in_4bit = {arguments['load_in_4bit']!r}"
     if arguments.get("load_in_16bit", False):
         return "load_in_16bit"
     if extra.get("float8_training", None) not in (None, False):
@@ -276,8 +285,10 @@ def resolve_int8_8bit(
             raise NotImplementedError(
                 "Unsloth: load_in_8bit = 'int8' does not support fast_inference = True (vLLM) yet."
             )
-        if arguments.get("load_in_4bit", False) is True and "load_in_4bit" in arguments:
-            raise ValueError("Unsloth: load_in_8bit = 'int8' conflicts with load_in_4bit = True.")
+        if _explicit_4bit(arguments):
+            raise ValueError(
+                f"Unsloth: load_in_8bit = 'int8' conflicts with load_in_4bit = {arguments['load_in_4bit']!r}."
+            )
         if arguments.get("load_in_fp8", False) not in (False, None):
             raise ValueError(
                 f"Unsloth: load_in_8bit = 'int8' conflicts with load_in_fp8 = {arguments['load_in_fp8']!r}."

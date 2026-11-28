@@ -105,6 +105,18 @@ def test_true_stays_bitsandbytes_off_the_measured_gpus(wrapped, monkeypatch):
     assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
 
 
+@pytest.mark.parametrize("l4", [True, "nf4", "nvfp4", "int4"])
+def test_explicit_4bit_strings_are_not_dropped(wrapped, int8_gpu, l4):
+    with pytest.raises(ValueError, match = "conflicts with load_in_4bit"):
+        wrapped("m", load_in_8bit = "int8", load_in_4bit = l4)
+    # True leaves an explicit 4-bit request (and its validation) alone.
+    arguments = {"load_in_8bit": True, "load_in_4bit": l4}
+    assert oq.resolve_int8_8bit(arguments) == "bnb" and arguments["load_in_4bit"] == l4
+    if l4 == "int4":
+        with pytest.raises(ValueError, match = "not supported"):
+            wrapped("m", load_in_8bit = True, load_in_4bit = l4)
+
+
 def test_true_picks_int8_on_the_measured_gpus_and_says_so_once(wrapped, int8_gpu, capsys):
     assert wrapped("m", load_in_8bit = True) == (False, False, False, "int8_lora")
     assert wrapped("m", load_in_8bit = True) == (False, False, False, "int8_lora")
