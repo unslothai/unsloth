@@ -342,3 +342,16 @@ def test_memory_rule_keeps_bitsandbytes_when_the_16bit_load_does_not_fit(tmp_pat
     assert "unknown" in oq._int8_auto_memory_reason(
         {"model_name": str(tmp_path / "missing")}, {"local_files_only": True}
     )
+
+
+def test_size_probe_stays_off_the_network_when_offline(monkeypatch):
+    import huggingface_hub
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("network probe while offline")
+
+    monkeypatch.setattr(huggingface_hub, "get_safetensors_metadata", no_network)
+    assert (
+        oq._checkpoint_16bit_bytes({"model_name": "org/never-cached"}, {"local_files_only": True})
+        is None
+    )

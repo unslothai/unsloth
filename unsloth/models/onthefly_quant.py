@@ -296,11 +296,19 @@ def _checkpoint_16bit_bytes(arguments, extra):
         files = glob.glob(os.path.join(name, "*.safetensors"))
         return sum(os.path.getsize(f) for f in files) or None
     try:
-        from huggingface_hub import get_safetensors_metadata
-        meta = get_safetensors_metadata(name, revision = revision, token = arguments.get("token", None))
-        return 2 * sum(meta.parameter_count.values())
+        from .loader_utils import _get_effective_local_files_only
+        offline = bool(_get_effective_local_files_only(dict(extra)))
     except Exception:
-        pass
+        offline = True
+    if not offline:
+        try:
+            from huggingface_hub import get_safetensors_metadata
+            meta = get_safetensors_metadata(
+                name, revision = revision, token = arguments.get("token", None)
+            )
+            return 2 * sum(meta.parameter_count.values())
+        except Exception:
+            pass
     try:
         from huggingface_hub import try_to_load_from_cache
 
