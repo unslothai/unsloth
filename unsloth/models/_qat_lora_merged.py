@@ -87,6 +87,58 @@ def qat_lora_merged_weight(
         return _merged_fp32(W, A, B, scale).to(W.dtype if dtype is None else dtype)
 
 
+# Opaque custom ops, so a torch.compile region runs these eagerly, bit for bit what the export computes:
+# inductor otherwise fuses the 16-bit cast of the merged weight into the quantizer and skips its rounding
+# (torch._inductor.config.emulate_precision_casts is off), which moves weights across quantization steps.
+# Compile caches key on the op name: bump the suffix on schema changes.
+_QUANTIZERS = {}
+_QUANTIZER_KEYS = {}
+
+
+def _quantizer_key(quantizer):
+    """One registry entry per (class, config): these weight quantizers are pure functions of their config."""
+    cls = type(quantizer)
+    signature = (cls.__module__, cls.__qualname__, repr(getattr(quantizer, "config", None)))
+    key = _QUANTIZER_KEYS.get(signature)
+    if key is None:
+        key = _QUANTIZER_KEYS[signature] = len(_QUANTIZERS)
+        _QUANTIZERS[key] = quantizer
+    return key
+
+
+def _residual_eager(W, A, B, scale, quantizer):
+    merged = _merged_fp32(W, A, B, scale)
+    quantized = quantizer(merged.to(W.dtype))
+    # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype (in place: one fp32
+    # weight-sized buffer).
+    return merged.sub_(W).neg_().add_(quantized).to(quantized.dtype)
+
+
+@torch.library.custom_op("unsloth::qat_lora_merged_residual_v1", mutates_args = ())
+def _residual_op(
+    W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float, key: int
+) -> torch.Tensor:
+    with torch.no_grad():
+        return _residual_eager(W, A, B, scale, _QUANTIZERS[key])
+
+
+@_residual_op.register_fake
+def _(W, A, B, scale, key):
+    return torch.empty_like(W)
+
+
+@torch.library.custom_op("unsloth::qat_lora_merged_weight_v1", mutates_args = ())
+def _merged_weight_op(
+    W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float
+) -> torch.Tensor:
+    return qat_lora_merged_weight(W, A, B, scale)
+
+
+@_merged_weight_op.register_fake
+def _(W, A, B, scale):
+    return torch.empty_like(W)
+
+
 def _active_adapter(layer):
     """(A, B, scale) of the single active adapter, or None when the base alone runs."""
     if layer.disable_adapters or layer.merged:
@@ -131,6 +183,7 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
         # Not a child module: the LoRA layer owns this quantizer, a child link would make a module cycle.
         self.__dict__["_lora_layer"] = layer
         self.__dict__["_cache"] = None
+        self.__dict__["_key"] = _quantizer_key(inner)
 
     @property
     def enabled(self):
@@ -169,13 +222,9 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
                 return cached[1]
         if not torch.compiler.is_compiling():
             _STATS["calls"] += 1
-        with torch.no_grad():
-            merged = _merged_fp32(W, A, B, scale)
-            quantized = inner(merged.to(W.dtype))
-            # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype (in place: one
-            # fp32 weight-sized buffer).
-            residual = merged.sub_(W).neg_().add_(quantized).to(quantized.dtype)
-            del merged, quantized
+        residual = _residual_op(
+            W.detach(), A.detach(), B.detach(), float(scale), self.__dict__["_key"]
+        )
         if caching:
             self.__dict__["_cache"] = (key, residual)
         elif self.__dict__["_cache"] is not None:
@@ -222,8 +271,7 @@ def _merged_microscaling_forward(self, x):
     A, B, scale = adapter
     if not torch.compiler.is_compiling():
         _STATS["calls"] += 1
-    with torch.no_grad():
-        merged = qat_lora_merged_weight(self.weight, A, B, scale)
+    merged = _merged_weight_op(self.weight.detach(), A.detach(), B.detach(), float(scale))
     out = weight_forward(self, x, weight = merged)
     lora_x = x.to(A.dtype)
     correction = F.linear(F.linear(lora_x, A.detach()), B.detach()) * scale
@@ -247,6 +295,9 @@ def _refusal(layer, name):
             return f"{name} uses lora_bias; merged QAT-LoRA supports adapters without a bias"
         if factor._modules.get("weight_fake_quantizer") is not None:
             return f"{name} fake quantizes its adapter weights (UNSLOTH_QAT_FAKE_QUANTIZE_LORA=1)"
+    config = getattr(layer.get_base_layer()._modules.get("weight_fake_quantizer"), "config", None)
+    if getattr(config, "range_learning", False) or not getattr(config, "is_dynamic", True):
+        return f"{name} uses a static or learned weight scale; merged QAT-LoRA needs dynamic scales"
     return None
 
 

@@ -278,8 +278,19 @@ def test_compiles_without_graph_breaks(monkeypatch):
     x = _x()
     explanation = torch._dynamo.explain(model)(x)
     assert explanation.graph_break_count == 0, explanation.break_reasons
-    compiled = torch.compile(model, backend = "aot_eager", fullgraph = True)
-    torch.testing.assert_close(compiled(x), model(x), rtol = 1e-5, atol = 1e-5)
+    # inductor, not aot_eager: fused into the graph, the merged weight's 16-bit cast is skipped and weights move
+    # across quantization steps; the custom op keeps the export's eager numerics.
+    torch._dynamo.reset()
+    model = _model("int4", monkeypatch, dtype = torch.bfloat16)
+    from unsloth.kernels.utils import get_lora_parameters
+
+    def residuals():
+        return [get_lora_parameters(proj)[0] for proj in _lora_layers(model)]
+
+    compiled = torch.compile(residuals, fullgraph = True)
+    with torch.no_grad():
+        for eager, traced in zip(residuals(), compiled()):
+            assert torch.equal(eager, traced)
 
 
 def _sm100():
