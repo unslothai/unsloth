@@ -311,6 +311,16 @@ def _case(rank, world_size, shim):
     dcp.set_model_state_dict(dcp_model, full, options = opts)
     with torch.no_grad():
         after = dcp_model(x).clone()
+    # A CPU-offloaded full state dict: rank 0 gets bitsandbytes' entries, the others nothing.
+    offloaded = dcp.get_model_state_dict(
+        dcp_model, options = StateDictOptions(full_state_dict = True, cpu_offload = True)
+    )
+    out["dcp_offload_ok"] = (
+        sorted(offloaded) == sorted(expected)
+        and all(torch.equal(_bytes(offloaded[k]), _bytes(full[k])) for k in expected)
+        if rank == 0
+        else not offloaded
+    )
     # Optimizer-only DCP calls never gather the scales.
     gathers = []
     gather = q.ShardedAbsmax.gather
@@ -454,6 +464,7 @@ def _check(results, world_size):
         assert r["dcp_keys_equal"] and r["dcp_absmax_equal"], r
         assert r["dcp_rewrite_changed"] and r["dcp_restore_bitwise"], r
         assert r["optimizer_dcp_gathers"] == 0, r
+        assert r["dcp_offload_ok"], r
         assert r["save_scales_held"] == [rank == 0] * r["absmax_sharded"][1], r
         assert r["model_dcp_gathers"] == r["absmax_sharded"][1], r
     writer = results[0]

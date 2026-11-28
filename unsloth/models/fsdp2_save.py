@@ -1335,7 +1335,22 @@ def install_dcp_bnb_state_dict():
             # Sharded 4-bit absmax: whole while the QuantState entries are written or restored (model
             # state only: optimizer-only calls never touch the QuantState).
             needs_scales = not adapter_only and "optimizer" not in name
-            with _full_absmax(model, enabled = needs_scales):
+            options = kwargs.get("options", None)
+            offload = bool(getattr(options, "cpu_offload", False))
+            # A full, CPU-offloaded state dict lands on rank 0 only: the others just take part.
+            keep = not (
+                name.startswith("get_")
+                and offload
+                and bool(getattr(options, "full_state_dict", False))
+                and _dist() is not None
+                and _dist().get_rank() != 0
+            )
+            with _full_absmax(
+                model,
+                enabled = needs_scales,
+                device = "cpu" if offload else None,
+                keep = keep,
+            ):
                 return _dcp_body(adapter_only, *args, **kwargs)
 
         def _dcp_body(adapter_only, *args, **kwargs):
