@@ -42,7 +42,6 @@ test("a load id holding the repo::quant separator is not pinnable", () => {
 test("filesystem rows get a Pin menu and sort with the pinned section", () => {
   assert.match(hubRows, /const pinId = isDataset \? null : inventoryPinId\(row\);/);
   assert.match(hubRows, /onToggle: \(\) => toggleRepoPinned\(pinId\),/);
-  // A filesystem row keeps its own Reveal / Delete menu, with Pin added to it.
   assert.match(hubRows, /deletableRepoId \|\| \(pinId && !localMenuRow\) \? \(/);
   assert.match(hubRows, /pin=\{pinMenu\}\s*onReveal=\{\(\) => revealLocalModel\(localActionPath, row\.loadId\)\}/);
   assert.match(hubRows, /if \(pinId\) usePinnedModelsStore\.getState\(\)\.unpinRepo\(pinId\);/);

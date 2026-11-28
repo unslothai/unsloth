@@ -767,7 +767,6 @@ export const InventoryRow = memo(function InventoryRow({
 
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const toggleRepoPinned = usePinnedModelsStore((s) => s.toggleRepoPinned);
-  // Filesystem rows pin under their load id.
   const pinId = isDataset ? null : inventoryPinId(row);
   const rowPinned = pinId != null && pinCoversId(pinnedKeys, pinId);
   const deletableRepoId = canDelete ? cacheDeletableRepoId : null;
