@@ -122,8 +122,7 @@ def test_other_cases_run_peft(case, monkeypatch):
 
 @pytest.mark.parametrize("where", ["pre_hook", "hf_hook", "diffusers_hook"])
 def test_offloaded_adapters_run_peft(where):
-    # Leaf / sequential offload moves an adapter's weights onto the device only inside its own forward (a hook), so
-    # the epilogue must not read them directly: PEFT's forward runs and goes through the hook.
+    # Offload hooks onload adapter weights inside their forward, so PEFT's forward must run.
     m = _model()
     x = torch.randn(4, 64)
     ref = _stock(m, x)
