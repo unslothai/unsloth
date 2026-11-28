@@ -531,7 +531,7 @@ def _gguf_module(torch):
     torch.manual_seed(0)
     q8 = gguf.GGMLQuantizationType.Q8_0
     module = torch.nn.Module()
-    # Q8_0 rows: 34 bytes per 32 weights; a 1 MiB+ packed weight like a real linear's
+    # Q8_0: 34 bytes per 32 weights
     module.weight = gguf_utils.GGUFParameter(
         torch.randint(0, 256, (1024, 34 * 32), dtype = torch.uint8), quant_type = q8
     )
@@ -546,7 +546,6 @@ def test_gguf_weights_are_ring_sources_unless_switched_off(monkeypatch):
     monkeypatch.delenv(fl.FAST_UPLOAD_GGUF_ENV, raising = False)
     got = fl._upload_candidates([module], "cuda")
     assert any(t is module.weight for t in got) and any(t is module.bias for t in got)
-    # not a wrapper subclass: never staged twice
     assert fl._subclass_candidates([module], {id(t) for t in got}) == []
     monkeypatch.setenv(fl.FAST_UPLOAD_GGUF_ENV, "0")
     got = fl._upload_candidates([module], "cuda")
@@ -569,7 +568,6 @@ def test_a_staged_gguf_hit_is_what_ggufparameter_to_returns():
     assert tuple(out.quant_shape) == quant_shape == tuple(stock.quant_shape)
     assert out.data_ptr() == dst.data_ptr() and tuple(out.shape) == shape
     assert torch.equal(out.as_tensor(), src.as_tensor())
-    # Module.to re-points .data: the parameter object, its class and quant type survive
     assert module.weight is src and type(module.weight) is cls and module.weight.quant_type == q8
     assert module.weight.data_ptr() == dst.data_ptr()
 
@@ -579,7 +577,6 @@ def test_fast_upload_stages_gguf_and_both_switches_keep_the_stock_path(monkeypat
     import core.inference.host_pinning as hp
 
     _gguf_module(torch)  # imports diffusers before torch.cuda is faked
-    # the whole fast_upload flow on CPU: a fake ring (byte copies) stands in for the pinned CUDA upload
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(hp, "host_pinning_allowed", lambda device = None: True)
@@ -603,7 +600,6 @@ def test_fast_upload_stages_gguf_and_both_switches_keep_the_stock_path(monkeypat
         module, cls, q8 = _gguf_module(torch)
         before = module.weight
         with fl.fast_upload([module], "cuda") as staged:
-            # only a staged GGUF weight may be moved here: the stock .to needs a real card
             hit = staged == 2
             out = module.weight.to("cuda") if hit else None
         if hit:

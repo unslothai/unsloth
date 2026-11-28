@@ -416,7 +416,7 @@ def start_load_prefetch(
 
 
 def _gguf_parameter_class() -> Optional[type]:
-    """diffusers' GGUFParameter when GGUF is loaded (and not switched off); a plain .data holder of packed bytes."""
+    """diffusers' GGUFParameter class, or None when GGUF is unavailable or switched off."""
     if not _switch_on(FAST_UPLOAD_GGUF_ENV):
         return None
     module = sys.modules.get("diffusers.quantizers.gguf.utils")
