@@ -14,6 +14,8 @@ import pytest
 from core.inference.llama_cpp import LlamaCppBackend
 
 _VISIBLE_DEVICE_MASKS = ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+# Taken before the autouse pin replaces it, so the reader itself stays testable.
+_REAL_CARVEOUT_READER = LlamaCppBackend._linux_apu_carveout_mib
 
 
 @pytest.fixture(autouse = True)
@@ -21,6 +23,8 @@ def _no_inherited_gpu_mask(monkeypatch):
     """Clear inherited GPU masks per test: a shell mask remaps ordinal 0 off the fake host."""
     for _m in _VISIBLE_DEVICE_MASKS:
         monkeypatch.delenv(_m, raising = False)
+    # Pin the carve-out: on a real Linux APU runner the sysfs reading would move the cap.
+    monkeypatch.setattr(LlamaCppBackend, "_linux_apu_carveout_mib", staticmethod(lambda: None))
 
 
 def _fake_torch(
@@ -276,6 +280,77 @@ class TestTheApuBudgetIsCappedByHostRam:
 
     def test_a_discrete_card_is_never_capped(self, monkeypatch):
         assert self._probe(monkeypatch, "gfx1100", 100_000, 12_000) == [(0, 100_000, 100_000)]
+
+
+class TestALinuxCarveOutIsCountedAboveHostRam:
+    """A Linux BIOS carve-out is not in MemAvailable, yet HIP allocates from it; the cap must add it
+    back or a 32 GB RAM / 96 GB VRAM Strix Halo is sized at its RAM."""
+
+    @staticmethod
+    def _probe(monkeypatch, hip_free_mib, avail_mib, carveout_mib):
+        monkeypatch.setattr(
+            LlamaCppBackend, "_linux_apu_carveout_mib", staticmethod(lambda: carveout_mib)
+        )
+        return TestTheApuBudgetIsCappedByHostRam._probe(
+            monkeypatch, "gfx1151", hip_free_mib, avail_mib
+        )
+
+    def test_a_96_gib_carve_out_is_usable(self, monkeypatch):
+        # 32/96 split: HIP sees ~95 GiB, the OS has ~28 GiB available.
+        assert self._probe(monkeypatch, 97_280, 28_672, 98_304) == [(0, 97_280 - 1024, 0)]
+
+    def test_a_512_mib_carve_out_is_unchanged(self, monkeypatch):
+        # Measured on a DevLab gfx1151 (512 MiB carve-out, 100 GiB GTT): Studio counted 99 GiB.
+        assert self._probe(monkeypatch, 102_400, 124_916, 512) == [(0, 102_400 - 1024, 0)]
+
+    def test_no_carve_out_reading_keeps_the_host_ram_cap(self, monkeypatch):
+        assert self._probe(monkeypatch, 97_280, 28_672, None) == [(0, 28_672 - 1024, 0)]
+
+
+class TestTheCarveOutReader:
+    @staticmethod
+    def _read(
+        monkeypatch,
+        records,
+        *,
+        platform = "linux",
+        wsl = False,
+    ):
+        import utils.hardware.hardware as hw
+
+        monkeypatch.setattr("core.inference.llama_cpp.sys.platform", platform)
+        monkeypatch.setattr("core.inference.llama_cpp._is_wsl", lambda: wsl)
+        monkeypatch.setattr(hw, "_linux_drm_sysfs_records", lambda **k: records)
+        return _REAL_CARVEOUT_READER()
+
+    def test_one_amd_card(self, monkeypatch):
+        assert self._read(monkeypatch, [{"vendor": "amd", "memory_total_gb": 96.0}]) == 98_304
+
+    def test_an_intel_card_beside_it_is_ignored(self, monkeypatch):
+        records = [
+            {"vendor": "intel", "memory_total_gb": None},
+            {"vendor": "amd", "memory_total_gb": 0.5},
+        ]
+        assert self._read(monkeypatch, records) == 512
+
+    @pytest.mark.parametrize(
+        "records",
+        [
+            None,
+            [],
+            [{"vendor": "amd", "memory_total_gb": None}],
+            [{"vendor": "amd", "memory_total_gb": 0.5}, {"vendor": "amd", "memory_total_gb": 16.0}],
+        ],
+    )
+    def test_no_single_answer_is_none(self, monkeypatch, records):
+        assert self._read(monkeypatch, records) is None
+
+    @pytest.mark.parametrize(
+        ("platform", "wsl"), [("win32", False), ("darwin", False), ("linux", True)]
+    )
+    def test_off_bare_metal_linux_is_none(self, monkeypatch, platform, wsl):
+        records = [{"vendor": "amd", "memory_total_gb": 96.0}]
+        assert self._read(monkeypatch, records, platform = platform, wsl = wsl) is None
 
 
 class TestRadeonWheelsWithoutAnArchName:
