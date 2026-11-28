@@ -11,6 +11,7 @@ export type ClientPreferences = {
   browser: Record<string, unknown> | null;
   chat: Record<string, unknown> | null;
   plusMenu: Record<string, unknown> | null;
+  sidebar?: Record<string, unknown> | null;
   material: Record<string, unknown> | null;
   timeFormat: string | null;
   spellcheck: boolean | null;
@@ -18,7 +19,7 @@ export type ClientPreferences = {
 
 export type ClientPreferencesChanges = Partial<
   Omit<ClientPreferences, "saved" | "updatedAt">
->;
+> & { sidebarBase?: Record<string, unknown> };
 
 export type ChatBackgroundRecord = {
   saved: boolean;

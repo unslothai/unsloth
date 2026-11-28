@@ -1180,6 +1180,7 @@ export const de = {
       removeFromSection: "Aus Abschnitt entfernen",
       removeFrom: "Aus {name} entfernen",
       empty: "Chats oder Projekte hierher ziehen",
+      newSubsection: "Neuer Unterabschnitt",
       sectionOptions: "Abschnittsoptionen",
       newChatInSection: "Neuer Chat in {name}",
       deleted: "Abschnitt „{name}“ gelöscht",

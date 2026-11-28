@@ -57,7 +57,7 @@ function lineYAbove(header: Element): number {
 
 function headedSiblingAfter(element: Element | undefined): Element | null {
   for (let next = element?.nextElementSibling; next; next = next.nextElementSibling) {
-    if (next instanceof HTMLElement && next.offsetHeight > 0 && next.querySelector(HEADER_SELECTOR)) {
+    if (next instanceof HTMLElement && next.getAttribute("data-section-parent") === element?.getAttribute("data-section-parent") && next.offsetHeight > 0 && next.querySelector(HEADER_SELECTOR)) {
       return next;
     }
   }
@@ -76,7 +76,7 @@ export function sectionKeyLanding(
   const list = event.currentTarget.parentElement;
   if (!list) return null;
   const drawn = [...list.querySelectorAll<HTMLElement>(`:scope > [${SECTION_ATTR}]`)]
-    .filter((element) => element.offsetHeight > 0)
+    .filter((element) => element.offsetHeight > 0 && element.dataset.sectionParent === event.currentTarget.dataset.sectionParent)
     .map((element) => element.getAttribute(SECTION_ATTR));
   const up = event.key === "ArrowUp";
   const at = drawn.indexOf(key);
@@ -129,7 +129,7 @@ export function useSectionDrag(
 
     const drawnBlocks = () =>
       [...list.querySelectorAll<HTMLElement>(`:scope > [${SECTION_ATTR}]`)].filter(
-        (element) => element.offsetHeight > 0,
+        (element) => element.offsetHeight > 0 && element.dataset.sectionParent === block.dataset.sectionParent,
       );
 
     const lift = () => {

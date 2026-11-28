@@ -1288,6 +1288,7 @@ export const uk = {
       removeFromSection: "Вилучити з розділу",
       removeFrom: "Вилучити з «{name}»",
       empty: "Перетягніть сюди чати або проєкти",
+      newSubsection: "Новий підрозділ",
       sectionOptions: "Параметри розділу",
       newChatInSection: "Новий чат у «{name}»",
       deleted: "Розділ «{name}» видалено",

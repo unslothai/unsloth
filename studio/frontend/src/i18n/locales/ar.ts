@@ -1176,6 +1176,7 @@ export const ar = {
       removeFromSection: "إزالة من القسم",
       removeFrom: "إزالة من {name}",
       empty: "اسحب المحادثات أو المشاريع إلى هنا",
+      newSubsection: "قسم فرعي جديد",
       sectionOptions: "خيارات القسم",
       newChatInSection: "محادثة جديدة في {name}",
       deleted: "تم حذف القسم «{name}»",

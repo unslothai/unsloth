@@ -1180,6 +1180,7 @@ export const hi = {
       removeFromSection: "सेक्शन से हटाएँ",
       removeFrom: "{name} से हटाएँ",
       empty: "चैट या प्रोजेक्ट यहाँ खींचें",
+      newSubsection: "नया उपखंड",
       sectionOptions: "सेक्शन विकल्प",
       newChatInSection: "{name} में नई चैट",
       deleted: "सेक्शन “{name}” हटाया गया",

@@ -1176,6 +1176,7 @@ export const ko = {
       removeFromSection: "섹션에서 제거",
       removeFrom: "{name}에서 제거",
       empty: "채팅이나 프로젝트를 여기로 드래그하세요",
+      newSubsection: "새 하위 섹션",
       sectionOptions: "섹션 옵션",
       newChatInSection: "{name}에 새 채팅",
       deleted: "“{name}” 섹션 삭제됨",

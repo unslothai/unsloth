@@ -305,3 +305,72 @@ def test_client_preferences_keep_window_material(client):
 def test_client_preferences_reject_bad_window_material(client, bad):
     response = client.put("/api/settings/client-preferences", json = {"material": bad})
     assert response.status_code == 422
+
+
+def test_sidebar_sync_keeps_other_browsers_edits_and_excludes_transient_state(client):
+    path = "/api/settings/client-preferences"
+    root = {"id": "r", "name": "First", "sort": "manual"}
+    base = {"customSections": [root], "sectionByChatId": {"one": "r"}, "sectionOrder": ["r"]}
+    assert client.put(path, json = {"sidebar": base}).status_code == 200
+    child = {"id": "c", "parentId": "r", "name": "Child", "sort": "updated"}
+    a = {**base, "customSections": [root, child], "sectionOrder": ["r", "c"]}
+    client.put(path, json = {"sidebar": a, "sidebarBase": base})
+    b = {**base, "customSections": [{**root, "name": "Renamed"}], "sectionByChatId": {"two": "r"}}
+    result = client.put(
+        path,
+        json = {"sidebar": {**b, "pendingNewChatSection": {"nonce": "local"}}, "sidebarBase": base},
+    )
+    assert result.status_code == 200
+    sidebar = result.json()["sidebar"]
+    assert [(s["id"], s["name"]) for s in sidebar["customSections"]] == [
+        ("r", "Renamed"),
+        ("c", "Child"),
+    ]
+    assert sidebar["customSections"][1]["parentId"] == "r"
+    assert sidebar["sectionOrder"] == ["r", "c"]
+    assert sidebar["sectionByChatId"] == {"two": "r"}
+    assert "pendingNewChatSection" not in sidebar
+    assert "sidebarBase" not in client.get(path).json()
+
+
+def test_sidebar_stale_rename_does_not_restore_a_removed_parent(client):
+    path = "/api/settings/client-preferences"
+    parent = {"id": "p", "name": "Parent", "sort": "manual"}
+    child = {"id": "c", "name": "Child", "sort": "manual"}
+    nested = {**child, "parentId": "p"}
+    base = {"customSections": [parent, nested], "sectionOrder": ["p", "c"]}
+    client.put(path, json = {"sidebar": base}).raise_for_status()
+    client.put(
+        path,
+        json = {
+            "sidebar": {"customSections": [child], "sectionOrder": ["c"]},
+            "sidebarBase": base,
+        },
+    ).raise_for_status()
+    later = {**base, "customSections": [parent, {**nested, "name": "Renamed"}]}
+    response = client.put(path, json = {"sidebar": later, "sidebarBase": base})
+    response.raise_for_status()
+    sidebar = response.json()["sidebar"]
+    assert [(s["id"], s["name"], s["parentId"]) for s in sidebar["customSections"]] == [
+        ("c", "Renamed", None)
+    ]
+    assert sidebar["sectionOrder"] == ["c"]
+
+
+def test_sidebar_filing_into_a_concurrently_deleted_section_keeps_the_new_child(client):
+    path = "/api/settings/client-preferences"
+    parent = {"id": "p", "name": "Parent", "sort": "manual"}
+    base = {"customSections": [parent]}
+    client.put(path, json = {"sidebar": base}).raise_for_status()
+    client.put(
+        path, json = {"sidebar": {"customSections": []}, "sidebarBase": base}
+    ).raise_for_status()
+    stale = {
+        "customSections": [parent, {**parent, "name": "Child", "id": "c", "parentId": "p"}],
+        "sectionByChatId": {"thread": "p"},
+    }
+    result = client.put(path, json = {"sidebar": stale, "sidebarBase": base})
+    result.raise_for_status()
+    sidebar = result.json()["sidebar"]
+    assert [(s["id"], s["parentId"]) for s in sidebar["customSections"]] == [("c", None)]
+    assert sidebar["sectionByChatId"] == {}

@@ -1283,6 +1283,7 @@ export const cs = {
       removeFromSection: "Odebrat ze sekce",
       removeFrom: "Odebrat z: {name}",
       empty: "Přetáhněte sem chaty nebo projekty",
+      newSubsection: "Nová podsekce",
       sectionOptions: "Možnosti sekce",
       newChatInSection: "Nový chat v: {name}",
       deleted: "Sekce „{name}“ byla smazána",

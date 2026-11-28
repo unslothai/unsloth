@@ -1294,6 +1294,7 @@ export const nl = {
       removeFromSection: "Verwijderen uit sectie",
       removeFrom: "Verwijderen uit {name}",
       empty: "Sleep chats of projecten hierheen",
+      newSubsection: "Nieuwe subsectie",
       sectionOptions: "Sectieopties",
       newChatInSection: "Nieuwe chat in {name}",
       deleted: "Sectie “{name}” verwijderd",

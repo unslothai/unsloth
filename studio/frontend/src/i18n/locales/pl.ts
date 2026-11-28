@@ -1289,6 +1289,7 @@ export const pl = {
       removeFromSection: "Usuń z sekcji",
       removeFrom: "Usuń z: {name}",
       empty: "Przeciągnij tutaj czaty lub projekty",
+      newSubsection: "Nowa podsekcja",
       sectionOptions: "Opcje sekcji",
       newChatInSection: "Nowy czat w: {name}",
       deleted: "Usunięto sekcję „{name}”",

@@ -1049,6 +1049,7 @@ export const it = {
       removeFromSection: "Rimuovi dalla sezione",
       removeFrom: "Rimuovi da {name}",
       empty: "Trascina qui chat o progetti",
+      newSubsection: "Nuova sottosezione",
       sectionOptions: "Opzioni della sezione",
       newChatInSection: "Nuova chat in {name}",
       deleted: "Sezione «{name}» eliminata",

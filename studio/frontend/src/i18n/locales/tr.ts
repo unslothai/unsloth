@@ -1277,6 +1277,7 @@ export const tr = {
       removeFromSection: "Bölümden kaldır",
       removeFrom: "Şuradan kaldır: {name}",
       empty: "Sohbetleri veya projeleri buraya sürükleyin",
+      newSubsection: "Yeni alt bölüm",
       sectionOptions: "Bölüm seçenekleri",
       newChatInSection: "{name} içinde yeni sohbet",
       deleted: "“{name}” bölümü silindi",

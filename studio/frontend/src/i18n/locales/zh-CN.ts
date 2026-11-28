@@ -1174,6 +1174,7 @@ export const zhCN = {
       removeFromSection: "从分区中移除",
       removeFrom: "从{name}中移除",
       empty: "将对话或项目拖到此处",
+      newSubsection: "新建子分组",
       sectionOptions: "分区选项",
       newChatInSection: "在 {name} 中新建聊天",
       deleted: "已删除分区“{name}”",

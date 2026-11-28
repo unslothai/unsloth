@@ -1281,6 +1281,7 @@ export const vi = {
       removeFromSection: "Xóa khỏi mục",
       removeFrom: "Xóa khỏi {name}",
       empty: "Kéo cuộc trò chuyện hoặc dự án vào đây",
+      newSubsection: "Mục con mới",
       sectionOptions: "Tùy chọn mục",
       newChatInSection: "Cuộc trò chuyện mới trong {name}",
       deleted: "Đã xóa mục “{name}”",

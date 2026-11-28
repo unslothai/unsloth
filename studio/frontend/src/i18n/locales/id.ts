@@ -1280,6 +1280,7 @@ export const id = {
       removeFromSection: "Keluarkan dari bagian",
       removeFrom: "Keluarkan dari {name}",
       empty: "Seret chat atau proyek ke sini",
+      newSubsection: "Subbagian baru",
       sectionOptions: "Opsi bagian",
       newChatInSection: "Chat baru di {name}",
       deleted: "Bagian “{name}” dihapus",
