@@ -197,7 +197,7 @@ def _first_non_blank_line(path: Path) -> Optional[bytes]:
             if not line:
                 return None
             if len(line) > FIRST_LINE_MAX_BYTES and not line.endswith(b"\n"):
-                return line.lstrip()[:1] or None  # just enough to tell an array from a row
+                return line.lstrip()[:1] or None
             if line.strip():
                 return line.strip()
 
@@ -206,8 +206,7 @@ def _count_json_rows(path: Path) -> Optional[int]:
     import json
 
     size = path.stat().st_size
-    # Both readings are bounded: the array parse by JSON_ARRAY_MAX_BYTES, the line count by
-    # LINE_SCAN_MAX_BYTES. Reject anything past both before reading a byte.
+    # Past both caps: reject before reading a byte.
     if size > max(JSON_ARRAY_MAX_BYTES, LINE_SCAN_MAX_BYTES):
         return None
     first = _first_non_blank_line(path)
@@ -221,8 +220,7 @@ def _count_json_rows(path: Path) -> Optional[int]:
         if isinstance(payload, list) and all(isinstance(row, dict) for row in payload):
             return len(payload)
         return None
-    # JSON Lines saved as .json: count lines only when the first line is a whole object on its own
-    # (a pretty-printed object spans lines and would be miscounted).
+    # JSONL saved as .json: only if the first line is a whole object (pretty-printed would miscount).
     try:
         if not isinstance(json.loads(first), dict):
             return None
@@ -251,18 +249,60 @@ def _count_csv_rows(path: Path) -> Optional[int]:
     return rows
 
 
+# Check-format recounts the same file on every request; answers (None too) are kept per file version, read errors are not.
+_LOCAL_ROWS_CACHE_MAX = 32
+_local_rows_cache: "OrderedDict[tuple, Optional[int]]" = OrderedDict()
+_local_rows_lock = threading.Lock()
+
+
+def _local_rows_key(path: Path) -> Optional[tuple]:
+    try:
+        stat = path.stat()
+        resolved = str(path.resolve())
+    except Exception:
+        return None
+    caps = (LINE_SCAN_MAX_BYTES, CSV_PARSE_MAX_BYTES, JSON_ARRAY_MAX_BYTES, FIRST_LINE_MAX_BYTES)
+    # ctime_ns too (POSIX): a same-size rewrite whose mtime is set back still moves it.
+    return (
+        resolved,
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+        stat.st_ctime_ns,
+        caps,
+    )
+
+
 def count_local_file_rows(path: Path) -> Optional[int]:
     """Exact row count of one uploaded JSON / JSONL / CSV file when it is cheap; None otherwise."""
+    key = _local_rows_key(path)
+    if key is not None:
+        with _local_rows_lock:
+            if key in _local_rows_cache:
+                _local_rows_cache.move_to_end(key)
+                return _local_rows_cache[key]
     try:
-        suffix = path.suffix.lower()
-        if suffix == ".jsonl":
-            rows = _count_jsonl_lines(path)
-        elif suffix == ".json":
-            rows = _count_json_rows(path)
-        elif suffix == ".csv":
-            rows = _count_csv_rows(path)
-        else:
-            return None
+        rows = _count_local_file_rows(path)
     except Exception:
+        return None
+    if key is not None:
+        with _local_rows_lock:
+            _local_rows_cache[key] = rows
+            _local_rows_cache.move_to_end(key)
+            while len(_local_rows_cache) > _LOCAL_ROWS_CACHE_MAX:
+                _local_rows_cache.popitem(last = False)
+    return rows
+
+
+def _count_local_file_rows(path: Path) -> Optional[int]:
+    suffix = path.suffix.lower()
+    if suffix == ".jsonl":
+        rows = _count_jsonl_lines(path)
+    elif suffix == ".json":
+        rows = _count_json_rows(path)
+    elif suffix == ".csv":
+        rows = _count_csv_rows(path)
+    else:
         return None
     return rows if rows and rows > 0 else None

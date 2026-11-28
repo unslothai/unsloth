@@ -7,9 +7,11 @@ CSV file (bounded scan): exact or None, never an error and never a long wait."""
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import httpx
+
 import pytest
 from datasets import Dataset
 
@@ -138,7 +140,6 @@ def test_hub_rows_cache_hit_skips_request(hub):
     assert row_counts.start_hub_split_rows("org/ds", None, "train", None)() == 1000
     assert row_counts.start_hub_split_rows("org/ds", None, "train", "other")() == 1000
     assert len(hub["calls"]) == 1
-    # A different split or config is its own entry.
     assert row_counts.start_hub_split_rows("org/ds", "default", "train", None)() == 1000
     assert len(hub["calls"]) == 2
 
@@ -289,7 +290,6 @@ def test_local_json_over_the_cap_is_never_read_whole(tmp_path, monkeypatch):
     assert row_counts.count_local_file_rows(big) is None
     assert reads and all(0 < limit <= 65 for limit in reads)
 
-    # Past every cap: rejected from the size alone.
     monkeypatch.setattr(row_counts, "LINE_SCAN_MAX_BYTES", 1000)
     reads.clear()
     assert row_counts.count_local_file_rows(big) is None
@@ -303,3 +303,103 @@ def test_local_json_lines_with_a_huge_first_row_give_none(tmp_path, monkeypatch)
         json.dumps({"text": "y" * 200}) + "\n" + json.dumps({"text": "z"}) + "\n", encoding = "utf-8"
     )
     assert row_counts.count_local_file_rows(path) is None
+
+
+@pytest.fixture
+def parse_calls(monkeypatch):
+    """Count real parses behind the memo, starting from an empty memo."""
+    row_counts._local_rows_cache.clear()
+    calls = []
+    real = row_counts._count_local_file_rows
+
+    def counting(path):
+        calls.append(path)
+        return real(path)
+
+    monkeypatch.setattr(row_counts, "_count_local_file_rows", counting)
+    yield calls
+    row_counts._local_rows_cache.clear()
+
+
+def test_local_count_memo_matches_uncached_and_skips_reparse(tmp_path, parse_calls):
+    rows = [{"text": f"row {i}"} for i in range(21)]
+    files = [
+        _write(tmp_path / "d.jsonl", "\n".join(json.dumps(r) for r in rows)),
+        _write(tmp_path / "a.json", json.dumps(rows)),
+        _write(tmp_path / "d.csv", "text\n" + "\n".join(f"r{i}" for i in range(21))),
+    ]
+    for path in files:
+        uncached = row_counts._count_local_file_rows(path)
+        parse_calls.clear()
+        assert row_counts.count_local_file_rows(path) == uncached == 21
+        assert row_counts.count_local_file_rows(path) == 21
+        assert len(parse_calls) == 1
+
+
+def test_local_count_memo_recounts_an_edited_file(tmp_path, parse_calls):
+    import os
+
+    path = _write(tmp_path / "d.jsonl", '{"t":1}\n' * 4)
+    assert row_counts.count_local_file_rows(path) == 4
+    _write(path, '{"t":1}\n' * 6)
+    assert row_counts.count_local_file_rows(path) == 6
+    stat = path.stat()
+    _write(path, '{"t":1}\n' * 5 + " " * 7 + "\n")
+    os.utime(path, ns = (stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+    assert path.stat().st_size == stat.st_size
+    assert row_counts.count_local_file_rows(path) == 5
+    assert len(parse_calls) == 3
+
+
+def test_local_count_memo_keeps_none_and_skips_missing(tmp_path, parse_calls):
+    pretty = _write(tmp_path / "p.json", json.dumps({"text": ["a", "b"]}, indent = 2))
+    assert row_counts.count_local_file_rows(pretty) is None
+    assert row_counts.count_local_file_rows(pretty) is None
+    assert len(parse_calls) == 1
+    missing = tmp_path / "missing.jsonl"
+    assert row_counts.count_local_file_rows(missing) is None
+    assert row_counts.count_local_file_rows(missing) is None
+    assert len(parse_calls) == 3
+    assert len(row_counts._local_rows_cache) == 1
+
+
+def test_local_count_memo_is_bounded(tmp_path, parse_calls, monkeypatch):
+    monkeypatch.setattr(row_counts, "_LOCAL_ROWS_CACHE_MAX", 3)
+    paths = [_write(tmp_path / f"d{i}.jsonl", '{"text": "x"}\n' * (i + 1)) for i in range(5)]
+    for index, path in enumerate(paths):
+        assert row_counts.count_local_file_rows(path) == index + 1
+    assert len(row_counts._local_rows_cache) == 3
+    # The oldest was evicted and is parsed again; the newest is still a hit.
+    parse_calls.clear()
+    assert row_counts.count_local_file_rows(paths[4]) == 5
+    assert row_counts.count_local_file_rows(paths[0]) == 1
+    assert parse_calls == [paths[0]]
+
+
+def test_local_count_memo_retries_after_a_read_error(tmp_path, parse_calls, monkeypatch):
+    path = _write(tmp_path / "d.jsonl", '{"t":1}\n' * 7)
+    real = row_counts._count_jsonl_lines
+    failures = [OSError(5, "Input/output error")]
+
+    def flaky(p):
+        if failures:
+            raise failures.pop()
+        return real(p)
+
+    monkeypatch.setattr(row_counts, "_count_jsonl_lines", flaky)
+    assert row_counts.count_local_file_rows(path) is None
+    assert row_counts.count_local_file_rows(path) == 7
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason = "st_ctime is the creation time on Windows")
+def test_local_count_memo_recounts_when_mtime_is_set_back(tmp_path, parse_calls):
+    import os
+
+    path = _write(tmp_path / "d.jsonl", '{"t":1}\n' * 4)
+    before = path.stat()
+    assert row_counts.count_local_file_rows(path) == 4
+    with open(path, "r+", encoding = "utf-8") as handle:
+        handle.write('{"t":1}\n' * 3 + " " * 7 + "\n")
+    os.utime(path, ns = (before.st_atime_ns, before.st_mtime_ns))
+    assert path.stat().st_size == before.st_size and path.stat().st_mtime_ns == before.st_mtime_ns
+    assert row_counts.count_local_file_rows(path) == 3
