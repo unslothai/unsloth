@@ -6,6 +6,9 @@
 import pytest
 import torch
 
+# GPU CI selects `-m "gpu or slow"`: unmarked, this file never ran there.
+pytestmark = pytest.mark.gpu
+
 if not torch.cuda.is_available():
     pytest.skip("needs a CUDA GPU", allow_module_level = True)
 pytest.importorskip("triton")
