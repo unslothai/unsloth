@@ -27,7 +27,11 @@ def _case(rank, world):
     try:
         import bitsandbytes as bnb
     except Exception as e:
-        return {"skip": repr(e)}
+        return {"skip": f"bitsandbytes is not importable: {e!r}"}
+    from unsloth.models.fsdp2_bnb_optim import bnb_steps_cpu_tensors
+
+    if not bnb_steps_cpu_tensors():
+        return {"skip": "this bitsandbytes does not step CPU tensors"}
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.tensor import Shard, distribute_tensor
 
@@ -115,7 +119,7 @@ def test_tp_bitsandbytes_checkpoint_resumes_into_torch_adamw():
             for r in range(world)
         ]
     if "skip" in results[0]:
-        pytest.skip(reason = f"bitsandbytes is not importable: {results[0]['skip']}")
+        pytest.skip(reason = results[0]["skip"])
     for res in results:
         assert "error" not in res, res.get("error")
         assert res == {"dtensor": True, "exp_avg": True, "exp_avg_sq": True, "stepped": True}, res

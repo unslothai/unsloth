@@ -17,7 +17,10 @@ from test_tp_native_oracle import tpn  # noqa: E402
 @pytest.mark.parametrize("bits", [8, 32])
 def test_bitsandbytes_adamw_state_resumes_into_torch_adamw(bits):
     bnb = pytest.importorskip("bitsandbytes")
-    from unsloth.models.fsdp2_bnb_optim import _dequantize
+    from unsloth.models.fsdp2_bnb_optim import _dequantize, bnb_steps_cpu_tensors
+
+    if not bnb_steps_cpu_tensors():
+        pytest.skip("this bitsandbytes does not step CPU tensors")
 
     torch.manual_seed(0)
     n = 256 * 3 + 17

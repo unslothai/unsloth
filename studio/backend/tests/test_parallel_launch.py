@@ -270,6 +270,7 @@ def test_sharded_full_finetune_steps_with_torch_adamw(
     monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
     monkeypatch.setenv("UNSLOTH_PARALLEL", layout)
     monkeypatch.delenv(parallel_launch.CHILD_ENV, raising = False)
+    monkeypatch.setattr(training_worker, "_bfloat16_weights", lambda: True)
     events = queue.Queue()
     config = {"training_type": training_type, "optim": optim}
     assert training_worker._optimizer_for_run(config, events) == expected
@@ -277,3 +278,14 @@ def test_sharded_full_finetune_steps_with_torch_adamw(
     assert bool(warned) is (expected != optim)
     monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "1")
     assert training_worker._optimizer_for_run(config, events) == optim
+
+
+def test_float32_full_finetune_keeps_its_optimizer(monkeypatch):
+    # Without bfloat16 (T4, V100) the full finetune trains float32 weights: no rounding to lose, no switch.
+    from core.training import worker as training_worker
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
+    monkeypatch.setenv("UNSLOTH_PARALLEL", "dp=2,fsdp=1")
+    monkeypatch.setattr(training_worker, "_bfloat16_weights", lambda: False)
+    config = {"training_type": "Full Finetuning", "optim": "adamw_8bit"}
+    assert training_worker._optimizer_for_run(config, queue.Queue()) == "adamw_8bit"

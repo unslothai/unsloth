@@ -123,6 +123,7 @@ def _optimizer_for_run(config: dict, event_queue: Any = None) -> str:
         and bnb_adamw(optim)
         and parallel_launch.is_multi_process()
         and layout_shards_weights(os.environ.get("UNSLOTH_PARALLEL"), parallel_launch.world_size())
+        and _bfloat16_weights()
     ):
         return optim
     message = (
@@ -133,6 +134,16 @@ def _optimizer_for_run(config: dict, event_queue: Any = None) -> str:
     if event_queue is not None and parallel_launch.is_main_rank():
         event_queue.put({"type": "warning", "message": message, "ts": time.time()})
     return "adamw_torch"
+
+
+def _bfloat16_weights() -> bool:
+    """A full finetune trains bfloat16 weights here; without bfloat16 (T4, V100) Unsloth upcasts them to float32,
+    which needs no rounding."""
+    try:
+        from unsloth import is_bfloat16_supported
+        return bool(is_bfloat16_supported())
+    except Exception:  # noqa: BLE001 -- unknown: keep the switch, it trains either way
+        return True
 
 
 def _data_parallel_world_size(config: Optional[dict] = None) -> int:
