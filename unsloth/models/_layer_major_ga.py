@@ -59,6 +59,10 @@ try:
     )
 except Exception:  # unsloth_zoo whose windows cannot follow standard accumulation's random draws
     rng_snapshot = None
+try:
+    from unsloth_zoo.block_swap_layer_major import COMPILED_IN_WINDOW, compile_epoch
+except Exception:  # unsloth_zoo whose windows do not watch torch.compile
+    compile_epoch = None
 
 _TLS = threading.local()
 # With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (after measured copy stalls, when the held layer inputs fit beside the
@@ -269,6 +273,45 @@ def _compiled_in_layers(layers):
         ) and not _unsloth_compiled_patch(module):
             return True
     return False
+
+
+def _compiled_code(layers):
+    """Whether the decoder layers run torch.compile'd code (Unsloth's block compile, its compiled patches)."""
+    for module in layers.modules():
+        if getattr(module, "_compiled_call_impl", None) is not None:
+            return True
+        if "unsloth_compiled" in (getattr(type(module), "__module__", "") or ""):
+            return True
+        for owner in (module, type(module)):
+            forward = getattr(owner, "forward", None)
+            if hasattr(forward, "_torchdynamo_orig_callable"):
+                return True
+    return False
+
+
+def _compile_settled(trainer, layers):
+    """A window may run only once torch.compile has settled: Dynamo picks a graph from the first shapes and grad mode
+    it sees, so a window that compiles could pick other graphs (and kernels) than standard accumulation for the same
+    call. Settled = the previous step (standard or window) compiled nothing; before any step, = no compiled code in
+    the decoder layers (or no torch.compile in the process)."""
+    state = trainer.__dict__.get("_unsloth_layer_major_compile")
+    if state is not None and state.get("settled") is not None:
+        return state["settled"]
+    return compile_epoch is None or compile_epoch() is None or not _compiled_code(layers)
+
+
+def _compile_step_begin(trainer):
+    """At each step's start: settled when nothing compiled since the previous step's start."""
+    if compile_epoch is None:
+        return
+    state = trainer.__dict__.setdefault(
+        "_unsloth_layer_major_compile", {"epoch": None, "settled": None, "steps": 0}
+    )
+    epoch = compile_epoch()
+    if state["steps"]:
+        state["settled"] = epoch == state["epoch"]
+    state["epoch"] = epoch
+    state["steps"] += 1
 
 
 def _compiled(module):
@@ -1044,6 +1087,14 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
             if message is not None:
                 _say_once(trainer, "rng-learn", message)
             layers = swapper = None
+    if layers is not None and not _compile_settled(trainer, layers):
+        _say_once(
+            trainer,
+            "compile",
+            "Unsloth: offload_layers runs micro-batches one after another while torch.compile is still building "
+            "graphs; layer-major windows start after a step that compiles nothing.",
+        )
+        layers = swapper = None
     agree = None
     if ddp is not None:
         group, device = ddp.process_group, _collective_device(ddp.process_group)
@@ -1092,6 +1143,12 @@ def _layer_major_step(trainer, model, inputs, num_items_in_batch, args, kwargs):
         _restore_buffers(buffers)
         if why.startswith("another layer-major window"):
             return None  # transient: another trainer in this process holds the window
+        if compile_epoch is not None and why.startswith(COMPILED_IN_WINDOW):
+            # Not a protocol break: this step's standard retry compiles in standard order, later steps can window.
+            trainer.__dict__.setdefault(
+                "_unsloth_layer_major_compile", {"epoch": None, "settled": None, "steps": 0}
+            )["settled"] = False
+            return None
         if why.startswith("random draws"):
             # The plan was wrong for this step (data-dependent draws, or a shape seen with other draws): this step's
             # standard retry is recorded and corrects it; twice turns windows off.
@@ -1162,6 +1219,7 @@ def patch_layer_major_gradient_accumulation(Trainer):
     @functools.wraps(get_batch_samples)
     def _get_batch_samples(self, *args, **kwargs):
         out = get_batch_samples(self, *args, **kwargs)
+        _compile_step_begin(self)
         if "_unsloth_layer_major_rng" in self.__dict__:
             _rng_flush(
                 self
