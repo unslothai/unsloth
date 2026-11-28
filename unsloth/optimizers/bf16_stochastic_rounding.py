@@ -669,10 +669,14 @@ def _store_state(optimizer, state, p, seed):
 
 
 def _wrap_bitsandbytes(optimizer, tracked, seed):
-    original = optimizer.update_step
+    previous = vars(optimizer).get("update_step")
 
     def update_step(self, group, p, gindex, pindex):
-        if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
+        # Resolve the class method per call: accelerate's FSDP2 swaps the class after this wrap
+        # (fsdp2_bnb_optim.localize_bnb_optimizer), and only the swapped class steps DTensor shards.
+        original = previous if previous is not None else type(self).update_step.__get__(self)
+        # A DTensor is never tracked here (a freed weight's id can be reused by its shard).
+        if id(p) not in tracked or _is_dtensor(p) or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
         if _bnb_fused_step(self, group, p, gindex, pindex, seed):
             return None
