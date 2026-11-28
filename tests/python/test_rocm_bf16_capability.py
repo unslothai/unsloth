@@ -95,6 +95,7 @@ def _fake_torch(
     base_bf16 = True,
     count_raises = False,
     props_raises_on = (),
+    current = None,
 ):
     def device_count():
         if count_raises:
@@ -110,15 +111,20 @@ def _fake_torch(
     def is_bf16_supported(including_emulation = True):
         return base_bf16
 
+    cuda = types.SimpleNamespace(
+        device_count = device_count,
+        get_device_properties = get_device_properties,
+        is_bf16_supported = is_bf16_supported,
+        is_available = lambda: True,
+        get_device_capability = lambda *a, **k: (9, 0),
+    )
+    # current=None leaves current_device out, as an unreadable current device.
+    if current is not None:
+        cuda.current_device = lambda: cuda._current
+        cuda._current = current
     return types.SimpleNamespace(
         version = types.SimpleNamespace(hip = "6.2.4", cuda = None),
-        cuda = types.SimpleNamespace(
-            device_count = device_count,
-            get_device_properties = get_device_properties,
-            is_bf16_supported = is_bf16_supported,
-            is_available = lambda: True,
-            get_device_capability = lambda *a, **k: (9, 0),
-        ),
+        cuda = cuda,
         xpu = types.SimpleNamespace(is_bf16_supported = lambda: True),
     )
 
@@ -215,8 +221,10 @@ def test_patched_probe_accepts_every_call_form(monkeypatch, archs, expected, arg
         (["gfx1100", "gfx1101"], True),
     ],
 )
-def test_mixed_host_disables_bf16_process_wide(monkeypatch, archs, expected):
-    """SUPPORTS_BFLOAT16 is one module constant, so a mixed host cannot be judged per card."""
+def test_mixed_host_without_a_readable_current_device_judges_every_card(
+    monkeypatch, archs, expected
+):
+    """No current device to judge, so one gfx10 anywhere must still disable bf16 (#7922)."""
     namespace = _run_chain(monkeypatch, _fake_torch(archs), "hip")
     assert namespace["SUPPORTS_BFLOAT16"] is expected
 
@@ -281,3 +289,93 @@ def test_the_chain_turns_triton_buffer_ops_off_only_for_a_visible_gfx101x(
     """#11615 put the RDNA1 buffer-op workaround inside this chain; RDNA2 (gfx103x) must not match."""
     namespace = _run_chain(monkeypatch, _fake_torch(archs), device_type)
     assert len(namespace["_workarounds"]) == (1 if applied else 0)
+
+
+_R9700_HOST = ["gfx1201", "gfx1201", "gfx1036"]  # two RDNA4 cards plus a Ryzen gfx10 iGPU
+
+
+@pytest.mark.parametrize(
+    "archs,current,world_size,expected",
+    [
+        (_R9700_HOST, 0, None, True),
+        (_R9700_HOST, 1, None, True),
+        (_R9700_HOST, 2, None, False),
+        (_R9700_HOST, 0, "2", False),
+        (["gfx1030", "gfx1036"], 0, None, False),
+        (["gfx1030", "gfx1036"], 1, None, False),
+    ],
+)
+def test_one_process_judges_the_card_in_use(monkeypatch, archs, current, world_size, expected):
+    """An unused gfx10 iGPU must not cost the RDNA4 card bf16 (#18403); a distributed launch keeps
+    every visible card so ranks agree, and a current gfx10 still loses it (#7922)."""
+    if world_size is None:
+        monkeypatch.delenv("WORLD_SIZE", raising = False)
+    else:
+        monkeypatch.setenv("WORLD_SIZE", world_size)
+    fake = _fake_torch(archs, current = current)
+    namespace = _run_chain(monkeypatch, fake, "hip")
+    assert namespace["SUPPORTS_BFLOAT16"] is expected
+    assert fake.cuda.is_bf16_supported() is expected
+
+
+def test_the_patched_probe_follows_set_device_after_import(monkeypatch):
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    fake = _fake_torch(_R9700_HOST, current = 0)
+    _run_chain(monkeypatch, fake, "hip")
+    assert fake.cuda.is_bf16_supported() is True
+    fake.cuda._current = 2
+    assert fake.cuda.is_bf16_supported() is False
+    fake.cuda._current = 1
+    assert fake.cuda.is_bf16_supported() is True
+
+
+def _model_utils_is_bfloat16_supported(namespace):
+    tree = ast.parse(MODEL_UTILS.read_text(encoding = "utf-8"))
+    fn = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "is_bfloat16_supported"
+    )
+    exec(compile(ast.Module(body = [fn], type_ignores = []), str(MODEL_UTILS), "exec"), namespace)
+    return namespace["is_bfloat16_supported"]
+
+
+def test_is_bfloat16_supported_follows_set_device_on_hip(monkeypatch):
+    """The import-time constant alone would keep the first card's answer after a set_device."""
+    monkeypatch.delenv("WORLD_SIZE", raising = False)
+    fake = _fake_torch(_R9700_HOST, current = 0)
+    chain = _run_chain(monkeypatch, fake, "hip")
+    is_bf16 = _model_utils_is_bfloat16_supported(
+        {
+            "torch": fake,
+            "DEVICE_TYPE": "hip",
+            "SUPPORTS_BFLOAT16": chain["SUPPORTS_BFLOAT16"],
+            "_BF16_BY_DEVICE": None,
+            "zoo_shares_xpu_bf16": lambda: False,
+            "xpu_supports_native_bf16": lambda *a, **k: True,
+        }
+    )
+    assert is_bf16() is True
+    fake.cuda._current = 2
+    assert is_bf16() is False
+
+
+class _FakeQKV:
+    def __init__(self, index, dtype):
+        self.dtype = dtype
+        self.device = types.SimpleNamespace(index = index)
+
+    def to(self, dtype):
+        return dtype
+
+
+@pytest.mark.parametrize("index, expected", [(0, "bfloat16"), (2, "float16"), (None, "bfloat16")])
+def test_fp32_attention_downcast_keeps_fp16_on_a_gfx10_card(monkeypatch, index, expected):
+    """Import on an RDNA4 card leaves SUPPORTS_BFLOAT16 True; a tensor on the gfx10 iGPU must still get fp16 (#7922)."""
+    torch = pytest.importorskip("torch")
+    ad = pytest.importorskip("unsloth.utils.attention_dispatch")
+    monkeypatch.setattr(ad, "SUPPORTS_BFLOAT16", True)
+    monkeypatch.setattr(ad, "_BF16_LACKING_DEVICES", frozenset({2}))
+    monkeypatch.setattr(torch, "is_autocast_enabled", lambda *a, **k: False)
+    q = _FakeQKV(index, torch.float32)
+    assert ad._downcast_fp32_qkv(q, q, q) == (getattr(torch, expected),) * 3

@@ -2762,8 +2762,9 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 def _train_with_reset(*train_args, **train_kwargs):
                     try:
                         _unsloth_reset_stray_compile_cache(self)
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        if type(e).__name__ == "UnsupportedBf16PlacementError":
+                            raise
                     try:
                         return _orig_train(*train_args, **train_kwargs)
                     finally:

@@ -68,6 +68,7 @@ __all__ = [
     "apply_unsloth_gradient_checkpointing",
     "_unsloth_install_pretrain_detector",
     "_unsloth_reset_stray_compile_cache",
+    "UnsupportedBf16PlacementError",
     "patch_compiled_autograd",
     "process_vision_info",
     "unsloth_compile_transformers",
@@ -178,6 +179,7 @@ from ..device_type import (
     apply_gfx101x_triton_workaround,
     apply_pre_volta_compile_workaround,
     arch_breaks_compile,
+    arch_lacks_bf16,
     cuda_bf16_capability,
     distributed_launch,
     gfx101x_triton_workaround_applied,
@@ -452,6 +454,8 @@ def _unsloth_reset_stray_compile_cache(self):
     # The model may have moved (.to(), Trainer placement) since the load-time check.
     try:
         check_mixed_gpu_placement(model, live = True)
+    except UnsupportedBf16PlacementError:
+        raise
     except Exception:
         pass
     # The detector hook can sit on any wrapper in the chain, and the probe may have run on a different one than self.model, so walk the chain.
@@ -2341,6 +2345,10 @@ def _bf16_weights_on(model, indices):
     return None
 
 
+class UnsupportedBf16PlacementError(RuntimeError):
+    """bf16 weights on a gfx10 card: train-start hooks re-raise it instead of swallowing it."""
+
+
 def check_mixed_gpu_placement(
     model,
     dtype = None,
@@ -2349,10 +2357,12 @@ def check_mixed_gpu_placement(
     """bf16 and the compile switches answer for the current device; check where the load really
     put the weights. A card that cannot compile turns Dynamo off before the first forward, and
     bf16 weights on a card without bf16 get a warning. A sole current-device placement is checked
-    too: the current device may have changed since import. One-GPU hosts never walk anything; the
-    capability reads hit the per-device cache. live: called when training starts, after a later
-    .to() or Trainer placement, so the parameters are read too (see _placed_gpu_indices)."""
-    if DEVICE_TYPE not in ("cuda", "hip") or DEVICE_COUNT <= 1:
+    too: the current device may have changed since import. One-GPU hosts walk nothing, except on
+    HIP, where a lone gfx10 still gets the bf16 check; the capability reads hit the per-device
+    cache. live: called when training starts, after a later .to() or Trainer placement, so the
+    parameters are read too (see _placed_gpu_indices)."""
+    single = DEVICE_COUNT <= 1
+    if DEVICE_TYPE not in ("cuda", "hip") or (single and DEVICE_TYPE != "hip"):
         return
     indices = sorted(_placed_gpu_indices(model, live = live))
     if not indices:
@@ -2366,14 +2376,15 @@ def check_mixed_gpu_placement(
 
     try:
         if DEVICE_TYPE == "hip":
-            no_compile = [
-                i
-                for i in indices
-                if arch_breaks_compile(
-                    getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
-                )
-            ]
-            no_bf16 = []
+            # Per card: one unreadable card must not hide a gfx10 beside it (#7922).
+            archs = {}
+            for i in indices:
+                try:
+                    archs[i] = getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")
+                except Exception:
+                    archs[i] = ""
+            no_compile = [i for i in indices if arch_breaks_compile(archs[i])]
+            no_bf16 = [i for i in indices if arch_lacks_bf16(archs[i])]
         else:
             caps = {i: tuple(torch.cuda.get_device_capability(i)) for i in indices}
             no_compile = [i for i in indices if caps[i][0] < 7]
@@ -2382,13 +2393,25 @@ def check_mixed_gpu_placement(
         return
     import torch._dynamo as torch_dynamo
 
-    if no_compile and not torch_dynamo.config.disable and apply_pre_volta_compile_workaround(0):
+    if (
+        no_compile
+        and not single
+        and not torch_dynamo.config.disable
+        and apply_pre_volta_compile_workaround(0)
+    ):
         print(
             f"Unsloth: the model has layers on {', '.join(map(_name, no_compile))}, which cannot run "
             "torch.compile, so training runs without it."
         )
     if no_bf16 and dtype is None and live:
         dtype = _bf16_weights_on(model, set(no_bf16))
+    if no_bf16 and dtype == torch.bfloat16 and DEVICE_TYPE == "hip":
+        # gfx10 has no bf16 dot: Triton ends the process with no Python error (#7922), so stop here.
+        raise UnsupportedBf16PlacementError(
+            f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
+            "no bfloat16 and crashes in Triton. Load with dtype = torch.float16, or hide that GPU "
+            "with HIP_VISIBLE_DEVICES."
+        )
     if no_bf16 and dtype == torch.bfloat16:
         print(
             f"Unsloth: the model has bfloat16 layers on {', '.join(map(_name, no_bf16))}, which has "
@@ -4850,6 +4873,8 @@ def _cache_device_capability(get_device_capability):
 SUPPORTS_BFLOAT16 = False
 # {device index: bf16} on a one-process host whose NVIDIA cards differ, else None (SUPPORTS_BFLOAT16 holds).
 _BF16_BY_DEVICE = None
+# HIP device indices whose arch lacks bf16, so a cast there stays fp16 after a set_device (#7922).
+_BF16_LACKING_DEVICES = frozenset()
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
 
@@ -4925,6 +4950,17 @@ elif DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
+    _lacking = set()
+    for _bf16_i in range(DEVICE_COUNT):
+        try:
+            if arch_lacks_bf16(
+                getattr(torch.cuda.get_device_properties(_bf16_i), "gcnArchName", "")
+            ):
+                _lacking.add(_bf16_i)
+        except Exception:
+            pass
+    _BF16_LACKING_DEVICES = frozenset(_lacking)
+    del _lacking
     if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
         # Studio's diffusion-only Triton flash-attn: keep LLM attention on SDPA.
         import transformers.utils.import_utils
@@ -5936,6 +5972,9 @@ def is_bfloat16_supported():
     # unsloth_zoo probe sees it. Cheap (device properties only).
     if DEVICE_TYPE == "xpu" and zoo_shares_xpu_bf16():
         return xpu_supports_native_bf16()
+    # HIP: _gpu_init's patched probe judges the current card.
+    if DEVICE_TYPE == "hip":
+        return torch.cuda.is_bf16_supported()
     if _BF16_BY_DEVICE is None:
         return SUPPORTS_BFLOAT16
     try:

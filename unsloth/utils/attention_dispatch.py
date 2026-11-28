@@ -31,6 +31,7 @@ from packaging.version import Version
 from ..device_type import DEVICE_TYPE
 from ..import_fixes import _unmask_rows_attending_to_nothing
 from ..models._utils import *
+from ..models._utils import _BF16_LACKING_DEVICES
 from ..context_parallel import get_cp_manager
 from .ulysses import ulysses_attention
 from .rocm_sdpa_check import rocm_sdpa_verdict  # noqa: F401  (re-exported)
@@ -1666,7 +1667,8 @@ def _downcast_fp32_qkv(Q, K, V):
     else:
         dtype = next((d for d in (Q.dtype, K.dtype, V.dtype) if d != torch.float32), None)
     if dtype not in (torch.float16, torch.bfloat16):
-        dtype = torch.bfloat16 if SUPPORTS_BFLOAT16 else torch.float16
+        bf16 = SUPPORTS_BFLOAT16 and Q.device.index not in _BF16_LACKING_DEVICES
+        dtype = torch.bfloat16 if bf16 else torch.float16
     return Q.to(dtype), K.to(dtype), V.to(dtype)
 
 

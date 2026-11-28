@@ -342,6 +342,7 @@ try:
         cuda_bf16_capability,
         cuda_order_mismatch_names,
         distributed_launch,
+        hip_current_arch,
         hip_visible_archs,
         xpu_supports_native_bf16,
         zoo_shares_xpu_bf16,
@@ -650,18 +651,17 @@ elif DEVICE_TYPE == "cuda":
         del _order_hint
     del _mixed_names
 elif DEVICE_TYPE == "hip":
-    old_is_bf16_supported = torch.cuda.is_bf16_supported
+    _hip_torch_bf16 = torch.cuda.is_bf16_supported()
 
-    # SUPPORTS_BFLOAT16 is process-wide, so one gfx10 in the visible set must disable it for all.
-    SUPPORTS_BFLOAT16 = (
-        not any(arch_lacks_bf16(arch) for arch in hip_visible_archs()) and old_is_bf16_supported()
-    )
-
+    # The current card, so an unused gfx10 iGPU costs nothing and set_device is followed. Every
+    # visible card when distributed (ranks agree) or the current one is unreadable (#7922).
     def is_bf16_supported(*args, **kwargs):
-        return SUPPORTS_BFLOAT16
+        arch = "" if distributed_launch() else hip_current_arch()
+        archs = [arch] if arch else hip_visible_archs()
+        return not any(arch_lacks_bf16(a) for a in archs) and _hip_torch_bf16
 
+    SUPPORTS_BFLOAT16 = is_bf16_supported()
     torch.cuda.is_bf16_supported = is_bf16_supported
-    del old_is_bf16_supported
 elif DEVICE_TYPE == "xpu":
     # Don't patch torch.xpu.is_bf16_supported: Studio reads its strict answer.
     SUPPORTS_BFLOAT16 = (
