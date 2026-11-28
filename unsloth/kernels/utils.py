@@ -1518,6 +1518,28 @@ from .int4_packed import (
     int4_matmul as _int4_matmul,
 )
 
+if DEVICE_TYPE in ("cuda", "hip") and HAS_CUDA_STREAM and getattr(bnb, "__unsloth_shim__", False):
+    # Unsloth's bitsandbytes stand-in has no native library: the paths that would call bitsandbytes'
+    # ctypes kernels (UNSLOTH_BNB_TRITON=0, pre-Volta GPUs, a failed Triton compile) use its
+    # dequantize_4bit, which is Triton where it can run and torch otherwise.
+    def _fast_dequantize_ctypes(
+        W,
+        quant_state,
+        out = None,
+        use_global_buffer = False,
+    ):
+        return bnb_functional.dequantize_4bit(W, quant_state, out = out)
+
+    def _fast_gemv_ctypes(
+        X,
+        W,
+        quant_state,
+        out = None,
+    ):
+        W = bnb_functional.dequantize_4bit(W.reshape(-1, 1), quant_state).to(X.dtype)
+        return torch_matmul(X, W.t(), out = out)
+
+
 _fast_dequantize_bnb = fast_dequantize
 _fast_gemv_bnb = fast_gemv
 

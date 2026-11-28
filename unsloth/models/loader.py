@@ -22,6 +22,7 @@ from ._utils import (
     DISABLE_SDPA_MODEL_NAMES,
 )
 from ._custom_dtype import register_custom_dtype
+from ..bnb_shim import loader_guard as bnb_shim_loader_guard
 from .granite import FastGraniteModel
 from .llama import FastLlamaModel, logger, _vllm_will_load_weights, restore_transformers_family
 from .mistral import FastMistralModel
@@ -1450,6 +1451,7 @@ class FastLanguageModel(FastLlamaModel):
                 load_in_4bit = False
 
         # Fail before any weights load.
+        fast_inference = bnb_shim_loader_guard(load_in_4bit, load_in_8bit, fast_inference)
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
@@ -2501,6 +2503,7 @@ class FastModel(FastBaseModel):
                 load_in_4bit = False
 
         # Fail before any weights load.
+        fast_inference = bnb_shim_loader_guard(load_in_4bit, load_in_8bit, fast_inference)
         check_tiling_available(unsloth_tiled_mlp)
         # Login to allow private models. Before normalization: dtype is also derived below from a 4bit config's compute dtype, which is not a request for the whole model.
         user_float32 = _requested_float32(dtype)
