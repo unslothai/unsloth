@@ -1223,7 +1223,7 @@ def test_both_loaders_size_the_bound_for_the_world():
 
     for loader in ("run_training_process", "_run_mlx_training"):
         assert "_data_parallel_world_size" in calls[loader]
-    assert worker_src.count("world_size = _data_parallel_world_size()") == 2
+    assert worker_src.count("world_size = _data_parallel_world_size(config)") == 2
     # World size belongs to this launch; never read it from a config shipped across a spawn.
     assert 'config.get("world_size")' not in worker_src
 
@@ -1259,6 +1259,8 @@ def test_data_parallel_world_size_counts_ranks_and_devices(monkeypatch):
     # non-distributed multi-GPU runs get DataParallel, scaling the batch by visible devices.
     monkeypatch.setitem(sys.modules, "torch", _torch(4))
     assert training_worker._data_parallel_world_size() == 4
+    # A layer split trains one copy over every visible GPU (Trainer sets n_gpu to 1 for a split model).
+    assert training_worker._data_parallel_world_size({"parallel": {"mode": "layer_split"}}) == 1
 
     # A torchrun rank pins n_gpu to 1: take the larger, never the product.
     monkeypatch.setenv("WORLD_SIZE", "8")

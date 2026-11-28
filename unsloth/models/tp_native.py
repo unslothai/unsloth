@@ -6861,12 +6861,28 @@ def _load_optimizer_local_state(optimizer, saved):
         )
     param_of = dict(zip(saved_ids, params))
     wrap = {tuple(x) for x in saved["dtensor"]}
-    state = {}
+    param_groups = saved["param_groups"]
+    # A bitsandbytes Adam checkpoint resumed by torch Adam / AdamW (Studio steps sharded full finetunes with torch
+    # AdamW): its moments become exp_avg / exp_avg_sq, 8-bit codes dequantized on this rank's shard.
+    to_torch_adam = isinstance(inner, (torch.optim.Adam, torch.optim.AdamW))
+    state, converted_any = {}, False
     for index, entry in saved["state"].items():
         p = param_of[index]
+        origin = {}
+        from .portable_resume import _BNB_WRAPPED, _TORCH_ADAM_KEYS, _normalize_entry
+
+        if to_torch_adam and ("state1" in entry or _BNB_WRAPPED in entry):
+            converted = _normalize_entry(entry)
+            if converted is None:
+                raise RuntimeError(
+                    "Unsloth: tensor parallel resume: the checkpoint's optimizer state cannot be read by torch "
+                    "AdamW (a bitsandbytes optimizer with one moment)."
+                )
+            origin = {torch_key: bnb_key for bnb_key, torch_key in _TORCH_ADAM_KEYS.items()}
+            entry = converted
         out = {}
         for key, value in entry.items():
-            if (index, key) in wrap:
+            if (index, origin.get(key, key)) in wrap:
                 local = p._local_tensor
                 value = DTensor.from_local(
                     value.to(local.device),
@@ -6878,7 +6894,14 @@ def _load_optimizer_local_state(optimizer, saved):
                 )
             out[key] = value
         state[index] = out
-    inner.load_state_dict({"state": state, "param_groups": saved["param_groups"]})
+        converted_any = converted_any or bool(origin)
+    if converted_any:
+        from .fsdp2_bnb_optim import _align_param_group_keys
+
+        # bitsandbytes' group keys (optim_bits, ...) out, torch AdamW's (foreach, fused, ...) in.
+        param_groups = [dict(group) for group in param_groups]
+        _align_param_group_keys(inner, {"param_groups": param_groups})
+    inner.load_state_dict({"state": state, "param_groups": param_groups})
 
 
 def _release_inference_replica(*models):
