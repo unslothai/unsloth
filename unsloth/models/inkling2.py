@@ -492,182 +492,185 @@ def save_inkling2_merged_16bit(
         )
         _refuse_private_push_to_public_repo(final_directory, private, api = api)
         save_directory = tempfile.mkdtemp(prefix = "unsloth_inkling2_merge_")
-    os.makedirs(save_directory, exist_ok = True)
-    if os.path.samefile(save_directory, source):
-        raise RuntimeError(
-            "Unsloth: the merged Inkling 2 export would overwrite the checkpoint it reads; pick another directory."
-        )
+    try:
+        os.makedirs(save_directory, exist_ok = True)
+        if os.path.samefile(save_directory, source):
+            raise RuntimeError(
+                "Unsloth: the merged Inkling 2 export would overwrite the checkpoint it reads; pick another directory."
+            )
 
-    handles = {}
+        handles = {}
 
-    def tensor(key):
-        filename = weight_map[key]
-        if filename not in handles:
-            handles[filename] = safe_open(os.path.join(source, filename), "pt", device = "cpu")
-        return handles[filename].get_tensor(key)
+        def tensor(key):
+            filename = weight_map[key]
+            if filename not in handles:
+                handles[filename] = safe_open(os.path.join(source, filename), "pt", device = "cpu")
+            return handles[filename].get_tensor(key)
 
-    def hf_name(key):
-        renamed, pattern = rename_source_key(key, renamings, converters)
-        return renamed, pattern_to_converter.get(pattern)
+        def hf_name(key):
+            renamed, pattern = rename_source_key(key, renamings, converters)
+            return renamed, pattern_to_converter.get(pattern)
 
-    dequant = Inkling2LoopDequantizeExperts()
-    patterns = ["weight", "weight_scale", "weight_amax", "weight_outer_scale_denominator"]
+        dequant = Inkling2LoopDequantizeExperts()
+        patterns = ["weight", "weight_scale", "weight_amax", "weight_outer_scale_denominator"]
 
-    def merged_experts(key):
-        name, converter = hf_name(key)
-        found = {
-            p: tensor(key + p[len("weight") :])
-            for p in patterns
-            if key + p[len("weight") :] in weight_map
-        }
-        W = dequant.convert(found, patterns, ["out"], model = None)["out"].to(expert_dtype)
-        delta = deltas.get(name)
-        if delta is None:
+        def merged_experts(key):
+            name, converter = hf_name(key)
+            found = {
+                p: tensor(key + p[len("weight") :])
+                for p in patterns
+                if key + p[len("weight") :] in weight_map
+            }
+            W = dequant.convert(found, patterns, ["out"], model = None)["out"].to(expert_dtype)
+            delta = deltas.get(name)
+            if delta is None:
+                return W
+            used.add(name)
+            interleaved = converter is not None and any(
+                isinstance(op, Interleave) for op in converter.operations
+            )
+            step = 8
+            for start in range(0, W.shape[0], step):
+                experts = slice(start, start + step)
+                d = delta(experts)
+                block = W[experts]
+                if (
+                    interleaved
+                ):  # the checkpoint interleaves gate / up rows, transformers stores them halved
+                    block = Interleave(dim = 1).convert({"x": block}, ["x"], ["x"])["x"]
+                if tuple(d.shape) != tuple(block.shape):
+                    raise RuntimeError(
+                        f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(block.shape)}."
+                    )
+                block = (block.float() + d).to(expert_dtype)
+                if interleaved:
+                    block = Interleave(dim = 1, inverse = True).convert({"x": block}, ["x"], ["x"])["x"]
+                W[experts] = block
             return W
-        used.add(name)
-        interleaved = converter is not None and any(
-            isinstance(op, Interleave) for op in converter.operations
-        )
-        step = 8
-        for start in range(0, W.shape[0], step):
-            experts = slice(start, start + step)
-            d = delta(experts)
-            block = W[experts]
-            if (
-                interleaved
-            ):  # the checkpoint interleaves gate / up rows, transformers stores them halved
-                block = Interleave(dim = 1).convert({"x": block}, ["x"], ["x"])["x"]
-            if tuple(d.shape) != tuple(block.shape):
-                raise RuntimeError(
-                    f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(block.shape)}."
-                )
-            block = (block.float() + d).to(expert_dtype)
-            if interleaved:
-                block = Interleave(dim = 1, inverse = True).convert({"x": block}, ["x"], ["x"])["x"]
-            W[experts] = block
-        return W
 
-    companions = {
-        key + suffix
-        for key in weight_map
-        if _EXPERT_KEY.search(key)
-        for suffix in _EXPERT_COMPANIONS
-        if key + suffix in weight_map
-    }
-    shard_limit = 4 * 1024**3
-    shards, current, current_size = [], {}, 0
+        companions = {
+            key + suffix
+            for key in weight_map
+            if _EXPERT_KEY.search(key)
+            for suffix in _EXPERT_COMPANIONS
+            if key + suffix in weight_map
+        }
+        shard_limit = 4 * 1024**3
+        shards, current, current_size = [], {}, 0
 
-    def flush():
-        nonlocal current, current_size
-        if not current:
-            return
-        filename = f"model-{len(shards) + 1:05d}.safetensors"
-        save_file(current, os.path.join(save_directory, filename), metadata = {"format": "pt"})
-        shards.append((filename, list(current)))
-        current, current_size = {}, 0
-        gc.collect()
+        def flush():
+            nonlocal current, current_size
+            if not current:
+                return
+            filename = f"model-{len(shards) + 1:05d}.safetensors"
+            save_file(current, os.path.join(save_directory, filename), metadata = {"format": "pt"})
+            shards.append((filename, list(current)))
+            current, current_size = {}, 0
+            gc.collect()
 
-    from unsloth.models._utils import lora_relative_to_original_base
+        from unsloth.models._utils import lora_relative_to_original_base
 
-    # Residual LoRA inits trained on a base with their initial adapter subtracted; the writer rereads the
-    # original checkpoint, so measure every delta against it.
-    with lora_relative_to_original_base(model):
-        for key in sorted(weight_map, key = lambda k: (weight_map[k], k)):
-            if key in companions:
-                continue
-            if _EXPERT_KEY.search(key):
-                W = merged_experts(key)
-            else:
-                W = tensor(key)
-                name, _ = hf_name(key)
-                if name in biases:
-                    live = biases[name].detach().cpu()
-                    if tuple(live.shape) != tuple(W.shape):
-                        raise RuntimeError(
-                            f"Unsloth: trained bias {tuple(live.shape)} does not fit {name} {tuple(W.shape)}."
-                        )
-                    W = live.to(out_dtype(W))
-                    used.add(name)
-                delta = deltas.get(name)
-                if delta is not None:
-                    d = delta()
-                    if tuple(d.shape) != tuple(W.shape):
-                        raise RuntimeError(
-                            f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
-                        )
-                    W = (W.float() + d).to(out_dtype(W))
-                    used.add(name)
-                if name in tokens:
-                    W = W.to(out_dtype(W))
-                    for index, rows in tokens[name]:
-                        if rows.shape[1:] != W.shape[1:] or int(index.max()) >= W.shape[0]:
+        # Residual LoRA inits trained on a base with their initial adapter subtracted; the writer rereads the
+        # original checkpoint, so measure every delta against it.
+        with lora_relative_to_original_base(model):
+            for key in sorted(weight_map, key = lambda k: (weight_map[k], k)):
+                if key in companions:
+                    continue
+                if _EXPERT_KEY.search(key):
+                    W = merged_experts(key)
+                else:
+                    W = tensor(key)
+                    name, _ = hf_name(key)
+                    if name in biases:
+                        live = biases[name].detach().cpu()
+                        if tuple(live.shape) != tuple(W.shape):
                             raise RuntimeError(
-                                f"Unsloth: trainable tokens {tuple(rows.shape)} do not fit {name} {tuple(W.shape)}."
+                                f"Unsloth: trained bias {tuple(live.shape)} does not fit {name} {tuple(W.shape)}."
                             )
-                        W = W.index_copy(0, index, rows.to(W.dtype))
-                    used.add(name)
-                W = W.to(out_dtype(W))
-            current[key] = W.contiguous()
-            current_size += W.numel() * W.element_size()
-            if current_size >= shard_limit:
-                flush()
-    flush()
-    handles.clear()
+                        W = live.to(out_dtype(W))
+                        used.add(name)
+                    delta = deltas.get(name)
+                    if delta is not None:
+                        d = delta()
+                        if tuple(d.shape) != tuple(W.shape):
+                            raise RuntimeError(
+                                f"Unsloth: LoRA delta {tuple(d.shape)} does not fit {name} {tuple(W.shape)}."
+                            )
+                        W = (W.float() + d).to(out_dtype(W))
+                        used.add(name)
+                    if name in tokens:
+                        W = W.to(out_dtype(W))
+                        for index, rows in tokens[name]:
+                            if rows.shape[1:] != W.shape[1:] or int(index.max()) >= W.shape[0]:
+                                raise RuntimeError(
+                                    f"Unsloth: trainable tokens {tuple(rows.shape)} do not fit {name} {tuple(W.shape)}."
+                                )
+                            W = W.index_copy(0, index, rows.to(W.dtype))
+                        used.add(name)
+                    W = W.to(out_dtype(W))
+                current[key] = W.contiguous()
+                current_size += W.numel() * W.element_size()
+                if current_size >= shard_limit:
+                    flush()
+        flush()
+        handles.clear()
 
-    missing = sorted((set(deltas) | set(biases) | set(tokens)) - used)
-    if missing:
-        raise RuntimeError(
-            f"Unsloth: {len(missing)} trained weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
+        missing = sorted((set(deltas) | set(biases) | set(tokens)) - used)
+        if missing:
+            raise RuntimeError(
+                f"Unsloth: {len(missing)} trained weights have no tensor in the Inkling 2 checkpoint, e.g. {missing[:3]}."
+            )
+
+        total = len(shards)
+        new_map = {}
+        for i, (filename, keys) in enumerate(shards, start = 1):
+            final = f"model-{i:05d}-of-{total:05d}.safetensors"
+            os.replace(os.path.join(save_directory, filename), os.path.join(save_directory, final))
+            new_map.update({k: final for k in keys})
+        index_file = os.path.join(save_directory, "model.safetensors.index.json")
+        with open(index_file + ".tmp", "w", encoding = "utf-8") as f:
+            json.dump({"metadata": {}, "weight_map": new_map}, f, indent = 2)
+        os.replace(index_file + ".tmp", index_file)
+        _remove_stale_inkling2_weights(save_directory, set(new_map.values()))
+
+        with open(os.path.join(source, "config.json"), encoding = "utf-8") as f:
+            config = json.load(f)
+        for cfg in (config, config.get("text_config") or {}):
+            cfg.pop("quantization_config", None)
+            if float32:
+                for field in ("dtype", "torch_dtype"):
+                    if field in cfg:
+                        cfg[field] = "float32"
+        with open(os.path.join(save_directory, "config.json"), "w", encoding = "utf-8") as f:
+            json.dump(config, f, indent = 2)
+        for filename in os.listdir(source):
+            if filename in ("config.json", "hf_quant_config.json", "model.safetensors.index.json"):
+                continue
+            if filename.endswith((".json", ".jinja")):
+                shutil.copy(os.path.join(source, filename), os.path.join(save_directory, filename))
+        if tokenizer is not None:
+            tokenizer.save_pretrained(save_directory)
+        print(
+            f"Unsloth: Merged {len(used)} LoRA weights; saved Inkling 2 in {'float32' if float32 else '16-bit'} to '{save_directory}'."
         )
 
-    total = len(shards)
-    new_map = {}
-    for i, (filename, keys) in enumerate(shards, start = 1):
-        final = f"model-{i:05d}-of-{total:05d}.safetensors"
-        os.replace(os.path.join(save_directory, filename), os.path.join(save_directory, final))
-        new_map.update({k: final for k in keys})
-    index_file = os.path.join(save_directory, "model.safetensors.index.json")
-    with open(index_file + ".tmp", "w", encoding = "utf-8") as f:
-        json.dump({"metadata": {}, "weight_map": new_map}, f, indent = 2)
-    os.replace(index_file + ".tmp", index_file)
-    _remove_stale_inkling2_weights(save_directory, set(new_map.values()))
-
-    with open(os.path.join(source, "config.json"), encoding = "utf-8") as f:
-        config = json.load(f)
-    for cfg in (config, config.get("text_config") or {}):
-        cfg.pop("quantization_config", None)
-        if float32:
-            for field in ("dtype", "torch_dtype"):
-                if field in cfg:
-                    cfg[field] = "float32"
-    with open(os.path.join(save_directory, "config.json"), "w", encoding = "utf-8") as f:
-        json.dump(config, f, indent = 2)
-    for filename in os.listdir(source):
-        if filename in ("config.json", "hf_quant_config.json", "model.safetensors.index.json"):
-            continue
-        if filename.endswith((".json", ".jinja")):
-            shutil.copy(os.path.join(source, filename), os.path.join(save_directory, filename))
-    if tokenizer is not None:
-        tokenizer.save_pretrained(save_directory)
-    print(
-        f"Unsloth: Merged {len(used)} LoRA weights; saved Inkling 2 in {'float32' if float32 else '16-bit'} to '{save_directory}'."
-    )
-
-    if push_to_hub:
-        # The upload only adds files, so an existing repo keeps an older model.safetensors or LoRA adapter that would
-        # shadow the merged shards on reload: delete them in the same commit, as the local save does.
-        stale = sorted(
-            name
-            for name in api.list_repo_files(final_directory)
-            if name not in new_map.values() and _STALE_WEIGHT_FILE.fullmatch(name)
-        )
-        api.upload_folder(
-            folder_path = save_directory,
-            repo_id = final_directory,
-            delete_patterns = stale or None,
-        )
-        shutil.rmtree(save_directory, ignore_errors = True)
-        print(f"Unsloth: Uploaded the merged model to https://huggingface.co/{final_directory}")
+        if push_to_hub:
+            # The upload only adds files, so an existing repo keeps an older model.safetensors or LoRA adapter that would
+            # shadow the merged shards on reload: delete them in the same commit, as the local save does.
+            stale = sorted(
+                name
+                for name in api.list_repo_files(final_directory)
+                if name not in new_map.values() and _STALE_WEIGHT_FILE.fullmatch(name)
+            )
+            api.upload_folder(
+                folder_path = save_directory,
+                repo_id = final_directory,
+                delete_patterns = stale or None,
+            )
+            print(f"Unsloth: Uploaded the merged model to https://huggingface.co/{final_directory}")
+    finally:
+        if push_to_hub:
+            shutil.rmtree(save_directory, ignore_errors = True)
 
 
 INKLING2_TP_REASON = (
