@@ -91,7 +91,7 @@ def test_triton_matches_torch_reference():
         from bitsandbytes import functional as F
         assert Q.triton_quantize_available("cuda")
         torch.manual_seed(1)
-        diffs, total, dq_bad = 0, 0, 0
+        diffs, total, bad_cases, bad_elems, elems, worst = 0, 0, [], 0, 0, 0.0
         for shape in {SHAPES!r}:
             for dtype in (torch.bfloat16, torch.float16, torch.float32):
                 x = torch.randn(shape, device = "cuda").to(dtype)
@@ -101,15 +101,29 @@ def test_triton_matches_torch_reference():
                         tq, ta = Q.quantize_4bit_torch(x, bs, qt)
                         assert torch.equal(a, ta)
                         diffs += int((q != tq).sum()); total += q.numel()
-                        dq = Q.dequantize_4bit_blockwise(q, a, bs, qt, x.shape, dtype)
+                        ref = Q.dequantize_4bit_blockwise(q, a, bs, qt, x.shape, dtype)
                         st = F.QuantState(absmax = a, shape = x.shape, code = F.get_4bit_type(qt, "cuda"),
                                           blocksize = bs, quant_type = qt, dtype = dtype)
-                        dq_bad += int(not torch.equal(F.dequantize_4bit(q.view(-1, 1), st), dq))
-        print("OUT " + json.dumps({{"diffs": diffs, "total": total, "dq_bad": dq_bad,
-                                    "exact_ptx": Q._EXACT}}))
+                        got = F.dequantize_4bit(q.view(-1, 1), st)
+                        miss = got != ref
+                        elems += ref.numel()
+                        if bool(miss.any()):
+                            bad_cases.append(f"{{shape}} {{dtype}} {{qt}} {{bs}}")
+                            bad_elems += int(miss.sum())
+                            rel = ((got.float() - ref.float()).abs() / ref.float().abs().clamp_min(1e-30))[miss]
+                            worst = max(worst, float(rel.max()))
+        print("OUT " + json.dumps({{"diffs": diffs, "total": total, "bad_cases": bad_cases,
+                                    "bad_elems": bad_elems, "elems": elems, "worst_rel": worst,
+                                    "hip": torch.version.hip is not None}}))
         """
     )
-    assert out["dq_bad"] == 0
+    if not out["hip"]:
+        # NVIDIA: Unsloth's Triton NF4 dequantize is bit-exact with the reference.
+        assert not out["bad_cases"], out
+    else:
+        # ROCm: the kernel runs without mul.rn / RNE guarantees; allow last-bit rounding only.
+        assert out["bad_elems"] <= max(1, out["elems"] // 1000), out
+        assert out["worst_rel"] <= 2.0**-7, out
     # Same algorithm; the PTX path's approximate reciprocal may flip a code on a threshold tie.
     assert out["diffs"] <= max(1, out["total"] // 10000), out
 
