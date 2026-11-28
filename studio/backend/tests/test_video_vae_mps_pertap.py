@@ -438,8 +438,10 @@ def test_new_torch_shape_rule_and_size_guard(on_cpu, monkeypatch):
         assert P.pertap_calls(narrow) == 0  # native on >= 2.14
         wide(torch.randn(1, P.WIDE_CHANNELS, 3, 4, 4))
         assert P.pertap_calls(wide) == 1  # 1024ch small frame: per-tap still wins there
-        wide(torch.randn(1, P.WIDE_CHANNELS, 3, 80, 80))
-        assert P.pertap_calls(wide) == 1  # big frames: native
+        wide(torch.randn(1, P.WIDE_CHANNELS, 3, 64, 104))
+        assert P.pertap_calls(wide) == 2  # 64x104 (6656 px): per-tap 1.74x on 2.14.1
+        wide(torch.randn(1, P.WIDE_CHANNELS, 3, 92, 92))
+        assert P.pertap_calls(wide) == 2  # past 8192 px: native
         monkeypatch.setattr(P, "SIZE_GUARD_BYTES", 8 * 4 * 6 * 6 * 4 - 1)
         narrow(torch.randn(1, 8, 4, 6, 6))
         assert P.pertap_calls(narrow) == 1  # over the size guard: chunked per-tap on any torch

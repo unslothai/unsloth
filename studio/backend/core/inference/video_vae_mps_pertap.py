@@ -28,10 +28,10 @@ from typing import Any, Optional
 PERTAP_ENV = "UNSLOTH_VIDEO_VAE_MPS_PERTAP"
 # torch from which MPS Conv3d is native-speed (measured on 2.14.1, M5 Max).
 FAST_NATIVE_TORCH = (2, 14)
-# torch >= 2.14 shape rule: per-tap still won 1.35x at 1024ch over 32x52 frames; at 512ch / 64x104 it was a tie and at
-# 256ch / 128x208 native was 1.63x faster.
+# torch >= 2.14 shape rule (M5 Max, 2.14.1): at 1024ch per-tap won 1.11-1.74x up to 64x104 frames (2048ch 1.77x);
+# at 512ch it was a tie and at 256ch / 128x208 native was 1.63x faster. Larger frames at 1024ch were not measured.
 WIDE_CHANNELS = 1024
-WIDE_MAX_HW = 64 * 64
+WIDE_MAX_HW = 8192
 # Any call with an input or output tensor over this takes the chunked per-tap path (panic guard, any torch).
 SIZE_GUARD_BYTES = 2**30
 # Per-op tensor bound inside the per-tap path: frame chunk, Conv2d output and fp32 accumulator.
