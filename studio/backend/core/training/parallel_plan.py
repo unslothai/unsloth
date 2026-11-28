@@ -803,6 +803,11 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits "
                 "each GPU."
             )
+        per_gpu = _estimate_row(model, n or 1)
+        if mode == LAYER_SPLIT and not n:
+            per_gpu["layer_split"] = (
+                None  # unpinned: the start-time selection picks the cards, so no count yet
+            )
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,
@@ -812,7 +817,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             "launcher": "multi_process" if multi else "single_process",
             "distributed_backend": host.get("distributed_backend") if multi else None,
             "reason": reason,
-            "estimate": {"required_gb": need, "per_gpu_gb": _estimate_row(model, n or 1)},
+            "estimate": {"required_gb": need, "per_gpu_gb": per_gpu},
             "is_moe": bool(model.get("is_moe")),
             "warnings": warnings,
             "notes": notes,

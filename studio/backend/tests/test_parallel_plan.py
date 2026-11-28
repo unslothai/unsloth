@@ -614,7 +614,10 @@ def test_fsdp2_is_sized_for_torch_adamw_and_layer_split_for_the_selected_optimiz
     host = _host(2, gpus = [{**_t4(i), "total_gb": 24.0, "free_gb": 19.0} for i in range(2)])
     plan = pp.plan({"parallel_mode": "auto"}, host, model)
     assert plan["mode"] == "layer_split", plan["reason"]
-    row = pp._estimate_row(model, 2)
+    # Unpinned, the start-time selection picks the cards: no per-GPU figure until the count is known.
+    assert plan["estimate"]["per_gpu_gb"]["layer_split"] is None
+    pinned = pp.plan({"parallel_mode": "layer_split", "gpu_ids": [0, 1]}, host, model)
+    row = pinned["estimate"]["per_gpu_gb"]
     assert (row["fsdp2"], row["layer_split"]) == (20.2, 16.4)
 
 
