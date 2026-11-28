@@ -15,8 +15,8 @@ learned from a standard step of its shape, the window starts every micro-batch w
 checks it (see the random draws section below).
 
 "auto" by default (_DEFAULT_MODE). UNSLOTH_OFFLOAD_LAYER_MAJOR: "1" runs a window whenever eligible, for any
-decoder; "auto" (or unset) only for the standard dense decoders in _AUTO_LAYERS (each proven bitwise against standard
-accumulation), after two steps whose swap copies stalled the GPU for more than 5% of the swapped layers' time (on after
+decoder; "auto" (or unset) for any decoder that passes the structural checks (_structural_blocker), after two steps
+whose swap copies stalled the GPU for more than 5% of the swapped layers' time (on after
 them with UNSLOTH_OFFLOAD_STATS = 0, which removes the stall measurement), and only while the held layer inputs fit on the
 card beside the standard step's peak measured in the second step; "0": never. Every refusal below applies to
 both. Without an active block swap nothing here runs.
@@ -61,8 +61,8 @@ except Exception:  # unsloth_zoo whose windows cannot follow standard accumulati
     rng_snapshot = None
 
 _TLS = threading.local()
-# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (the allowlisted decoders below, after measured copy stalls, when the
-# held layer inputs fit beside the standard step's measured peak); "0" turns windows off, "1" runs them whenever eligible.
+# With UNSLOTH_OFFLOAD_LAYER_MAJOR unset: "auto" (after measured copy stalls, when the held layer inputs fit beside the
+# standard step's measured peak); "0" turns windows off, "1" runs them whenever eligible.
 _DEFAULT_MODE = "auto"
 # Packages whose module forward hooks are trusted to be deterministic and order-independent across micro-batches
 # (input-grad hooks, block swap, gradient checkpointing owners, transformers' own hooks). A hook from anywhere else (a
@@ -79,17 +79,6 @@ _DROPOUT_KEYS = (
     "embd_pdrop",
 )
 _MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
-# auto engages only for these decoder layers (class name: the model_type it must come with), each covered by a
-# bitwise test against standard accumulation (CPU and B200 BlockSwap RAM / disk, and the Unsloth end-to-end run).
-# Any other decoder runs the standard way unless UNSLOTH_OFFLOAD_LAYER_MAJOR = 1.
-_AUTO_LAYERS = {
-    "LlamaDecoderLayer": ("llama",),
-    "Qwen2DecoderLayer": ("qwen2",),
-    "Qwen3DecoderLayer": ("qwen3",),
-    "MistralDecoderLayer": ("mistral",),
-    "Gemma2DecoderLayer": ("gemma2",),
-    "Gemma3DecoderLayer": ("gemma3_text",),
-}
 
 
 def _engine_rng():
@@ -295,22 +284,63 @@ def _compiled_around(model, layers):
     return False
 
 
-def _auto_layers_ok(model, layers):
-    """(ok, class name): whether every decoder layer is one auto engages for."""
-    config = getattr(model, "config", None)
-    model_type = getattr(config, "model_type", None)
+def _hidden_first(cls):
+    """Whether a decoder layer class's forward takes the hidden states first (positionally or as hidden_states): the
+    window passes every other argument through unchanged and swaps only that one."""
+    forward = getattr(cls, "forward", None)
+    try:
+        params = list(inspect.signature(forward).parameters.values())[1:]
+    except (TypeError, ValueError):
+        return False
+    if any(p.name == "hidden_states" for p in params):
+        return True
+    return bool(params) and params[0].kind in (
+        inspect.Parameter.POSITIONAL_ONLY,
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.VAR_POSITIONAL,
+    )
+
+
+def _structural_blocker(model, layers):
+    """Why the decoder stack itself cannot run layer by layer, or None. Checked for every decoder (no class list):
+    the window needs each layer to map the hidden states to the next layer's hidden states with no state passed
+    from one layer to another. Everything else (cache, mapping, hidden-state changes between layers, non-hidden
+    inputs needing gradients, output recorders) is checked on every call by unsloth_zoo's window."""
+    if not isinstance(layers, torch.nn.ModuleList) or not len(layers):
+        return "the block swap is not on a decoder layer list"
+    config = _text_config(model)
+    shared = getattr(config, "num_kv_shared_layers", 0)
+    if isinstance(shared, int) and shared > 0:
+        return f"decoder layers share key / value states (num_kv_shared_layers = {shared})"
+    for layer in layers:
+        for module in layer.modules():
+            if getattr(module, "is_kv_shared_layer", False) is True:
+                return "decoder layers share key / value states (KV sharing)"
     for cls in {type(layer) for layer in layers}:
-        allowed = _AUTO_LAYERS.get(cls.__name__)
-        module = getattr(cls, "__module__", "") or ""
-        if (
-            allowed is None
-            or model_type not in allowed
-            or not (
-                module.startswith("transformers.models.") or "unsloth_compiled_module" in module
+        if not _hidden_first(cls):
+            return f"{cls.__name__}.forward does not take the hidden states first"
+    return None
+
+
+_VISUAL_KEYS = ("pixel_values", "pixel_values_videos")
+
+
+def _between_layers_blocker(model, samples):
+    """Per step: work the model does on the hidden states between two decoder layers for these micro-batches.
+    Qwen3-VL style deepstack adds visual features after the first decoder layers whenever a micro-batch has images
+    or video (text-only micro-batches do not), and the window hands each layer exactly the previous layer's output."""
+    if not any(
+        isinstance(s, Mapping) and any(isinstance(s.get(k), torch.Tensor) for k in _VISUAL_KEYS)
+        for s in samples
+    ):
+        return None
+    for module in model.modules():
+        if callable(getattr(type(module), "_deepstack_process", None)):
+            return (
+                f"{type(module).__name__} adds visual features to the hidden states between decoder layers "
+                "(deepstack) for micro-batches with images or video"
             )
-        ):
-            return False, cls.__name__
-    return True, None
+    return None
 
 
 def _hook_package(fn):
@@ -536,6 +566,9 @@ def layer_major_ineligible(
         return "UNSLOTH_TOKEN_BUDGET"
     if not _trainer_ok(trainer):
         return f"{type(trainer).__name__} overrides training_step or compute_loss"
+    why = _structural_blocker(model, layers)
+    if why is not None:
+        return why
     config = _text_config(model)
     for key in _MOE_KEYS:
         value = getattr(config, key, 0)
@@ -915,21 +948,19 @@ def _plan(trainer, model, ddp, samples, mode):
     why = layer_major_ineligible(trainer, model, layers, swapper, ddp = ddp)
     if why is not None:
         return None, "why", f"Unsloth: offload_layers runs micro-batches one after another: {why}."
-    if mode == "auto":
-        ok, name = _auto_layers_ok(model, layers)
-        if not ok:
-            return (
-                None,
-                "opt-in",
-                f"Unsloth: offload_layers layer-major gradient accumulation is opt-in for {name}: set "
-                "UNSLOTH_OFFLOAD_LAYER_MAJOR=1 to run its micro-batches layer by layer.",
-            )
     blocker = _window_blocker(trainer, model, layers)
     if blocker is not None:
         return (
             None,
             "blocker",
             f"Unsloth: offload_layers runs micro-batches one after another: {blocker}.",
+        )
+    between = _between_layers_blocker(model, samples)
+    if between is not None:
+        return (
+            None,
+            "between",
+            f"Unsloth: offload_layers runs micro-batches one after another: {between}.",
         )
     if mode == "auto" and not _auto_ready(trainer, swapper, model):
         return None, None, None

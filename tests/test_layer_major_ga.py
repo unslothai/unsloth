@@ -954,43 +954,33 @@ def test_standalone_training_steps_keep_no_prefetched_batch(ga, tmp_path, monkey
     _LAST.clear()
 
 
-@pytest.mark.parametrize("mode, want", [("auto", 0), ("1", 2)])
-def test_decoders_outside_the_auto_list_need_an_explicit_opt_in(
-    ga, tmp_path, monkeypatch, capsys, mode, want
+@pytest.mark.parametrize("mode", ["auto", "1"])
+def test_decoders_outside_the_old_auto_list_engage_by_structure(
+    ga, tmp_path, monkeypatch, capsys, mode
 ):
+    """No class allowlist: Olmo (never on the old auto list) runs windows under auto after its measured steps, as
+    under 1, bitwise, with no opt-in line."""
     mod, engine = ga
     if not hasattr(transformers, "OlmoForCausalLM"):
         pytest.skip("no Olmo in this transformers")
-    base = _train(mod, tmp_path, monkeypatch, "0", arch = "Olmo")
+    base = _train(mod, tmp_path, monkeypatch, "0", arch = "Olmo", steps = 4)
     capsys.readouterr()
     engine.layer_major_stats(reset = True)
-    run = _train(
-        mod, tmp_path, monkeypatch, mode, arch = "Olmo", steps = 2 if mode == "1" else 4, stall = 50.0
-    )
+    run = _train(mod, tmp_path, monkeypatch, mode, arch = "Olmo", steps = 4, stall = 50.0)
     out = capsys.readouterr().out
-    assert _windows(engine) == want
-    if mode == "auto":
-        assert out.count("opt-in for OlmoDecoderLayer") == 1
-    else:
-        assert "opt-in" not in out
-        _same(base, run)
+    assert _windows(engine) == (2 if mode == "auto" else 4)
+    assert "opt-in" not in out
+    _same(base, run)
 
 
-def test_auto_list_covers_the_dense_families(ga):
+def test_dense_families_pass_the_structural_checks(ga):
     mod, engine = ga
-    for arch, name in (
-        ("Llama", "LlamaDecoderLayer"),
-        ("Qwen2", "Qwen2DecoderLayer"),
-        ("Mistral", "MistralDecoderLayer"),
-    ):
+    assert not hasattr(mod, "_AUTO_LAYERS") and not hasattr(mod, "_auto_layers_ok")
+    for arch in ("Llama", "Qwen2", "Mistral", "Olmo"):
+        if not hasattr(transformers, f"{arch}ForCausalLM"):
+            continue
         model = _model(arch = arch)
-        layers = model.get_base_model().model.layers
-        assert mod._auto_layers_ok(model, layers) == (True, None), arch
-    model = _model(arch = "Olmo")
-    assert mod._auto_layers_ok(model, model.get_base_model().model.layers) == (
-        False,
-        "OlmoDecoderLayer",
-    )
+        assert mod._structural_blocker(model, model.get_base_model().model.layers) is None, arch
 
 
 # ---------------------------------------------------------------- round 3 review fixes (each fails without its fix)
