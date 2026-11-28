@@ -3613,10 +3613,10 @@ def native_save_optimizer(
     from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
 
     writer_rank = mesh_writer_rank(model)
-    export = contextlib.nullcontext()
-    if writer_rank == 0:
-        from .fsdp2_bnb_optim import full_cpu_state_export
-        export = full_cpu_state_export(optimizer)
+    from .fsdp2_bnb_optim import full_cpu_state_export
+
+    # A sub-mesh writer too: else every rank holds all of its float32 moments on the device at once.
+    export = full_cpu_state_export(optimizer, writer_rank)
     with export, _host_state_gatherable(optimizer):
         state = get_optimizer_state_dict(
             model,
