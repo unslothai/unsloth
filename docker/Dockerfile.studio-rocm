@@ -141,7 +141,15 @@ COPY studio_home.sh /usr/local/bin/unsloth-studio-home
 # kernels) into the Studio venv that the base deliberately leaves out.
 #
 # fetch+checkout FETCH_HEAD, not `clone --branch`: CI passes a commit SHA.
-RUN set -eux \
+# The uv cache is a BuildKit cache mount, so a rebuild after a new commit (which always misses this layer: the ref is
+# pinned) reuses the ~15 GB of wheels instead of downloading them again. It never lands in a layer, so the venvs are
+# unchanged; UV_LINK_MODE=copy because the mount is another filesystem than the venvs. The cache path is only handed to
+# install.sh; the marker it records is reset to the image's UV_CACHE_DIR below, as without the mount.
+# npm's cache (~/.npm, from the frontend's npm ci) gets its own mount: it is reused the same way, and it no longer
+# ends up in the image (the cleanup below removes /root/.cache but not /root/.npm, about 217 MB).
+RUN --mount=type=cache,id=unsloth-studio-rocm-uv,target=/var/cache/unsloth-studio-uv,sharing=locked \
+    --mount=type=cache,id=unsloth-studio-rocm-npm,target=/root/.npm,sharing=locked \
+    set -eux \
  && . /etc/unsloth-rocm-build \
  && mkdir -p "${UNSLOTH_STUDIO_HOME}" \
  && git init -q "${UNSLOTH_STUDIO_HOME}/src" \
@@ -157,7 +165,10 @@ RUN set -eux \
     UNSLOTH_SKIP_WHISPER_INSTALL=1 \
     UNSLOTH_PYTHON=3.12 \
     UNSLOTH_ALLOW_CPU=1 \
+    UV_CACHE_DIR=/var/cache/unsloth-studio-uv \
+    UV_LINK_MODE=copy \
     bash install.sh --local \
+ && if [ -f "${UNSLOTH_STUDIO_HOME}/cache/uv-cache-dir" ]; then printf '%s\n' "${UV_CACHE_DIR}" > "${UNSLOTH_STUDIO_HOME}/cache/uv-cache-dir"; fi \
     # Assert the ROCm leaf, not the exact version: Studio's installer pins
     # torch>=2.11,<2.12 while the base resolves whatever the ROCm index serves
     # (2.12.1 today), so equality is unreachable here. The CUDA image can demand it
