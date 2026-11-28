@@ -309,6 +309,7 @@ export {
   cancelPreStreamRunForThreadIds,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
+  isPreStreamRunReservationActive,
   preStreamRunThreadIdsForAdapter,
   preStreamRunThreadIdsForRuntime,
   releasePreStreamRunForThreadIds,

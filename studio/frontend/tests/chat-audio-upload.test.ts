@@ -380,8 +380,10 @@ test("Main cancels an upload only after a queue or normal send is accepted", () 
     threadSource.indexOf("const queuePastedTextPrompt", queueStart),
   );
   const accepted = queue.indexOf("cancelAudioUpload();");
+  const start = queue.indexOf("startPromptQueue(");
   assert.ok(accepted > queue.indexOf(".then((target) =>"));
-  assert.ok(accepted < queue.indexOf("startPromptQueue(", accepted));
+  assert.ok(start >= 0 && accepted > start);
+  assert.ok(queue.indexOf("started.kind === \"quote-invalid\"", start) > start);
   assert.ok(queue.indexOf("onAborted?.()", accepted) > accepted);
 
   const sendStart = threadSource.indexOf(
@@ -394,7 +396,7 @@ test("Main cancels an upload only after a queue or normal send is accepted", () 
   const refused = send.indexOf("if (!reservationToken)");
   const cancel = send.indexOf("cancelAudioUpload();", refused);
   assert.ok(refused >= 0 && cancel > refused);
-  assert.ok(cancel < send.indexOf("aui.composer().send();", cancel));
+  assert.ok(cancel < send.indexOf("aui.composer().send()", cancel));
 
   const submitStart = threadSource.indexOf("const handleSubmit = useCallback");
   const submit = threadSource.slice(

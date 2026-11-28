@@ -25,6 +25,8 @@ export type PromptQueueUIItem = {
   runId: string;
   prompt: string;
   attachmentNames?: string[];
+  quoteCount: number;
+  canReleaseQuotes: boolean;
   position: number;
   total: number;
   status: PromptQueueUIItemStatus;

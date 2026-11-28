@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  isMessageHeld,
+  subscribeMessageHolds,
+} from "./message-window-hold";
+
 // Detach the stable portal target so React retains message state, refs and handlers.
 export const REACH = 2000;
 const FIND_FLAG = "data-find-bar-open";
@@ -19,6 +24,7 @@ class MessageWindowController {
   private rows = new Map<Element, Row>();
   private observer: IntersectionObserver;
   private flags: MutationObserver;
+  private stopHoldWatch: () => void;
   private media = window.matchMedia("print");
   private printing = this.media.matches;
   private pointerHeld = false;
@@ -37,6 +43,11 @@ class MessageWindowController {
       { root: viewport, rootMargin: `${REACH}px 0px` });
     this.flags = new MutationObserver(this.refresh);
     this.flags.observe(document.documentElement, { attributes: true, attributeFilter: [FIND_FLAG] });
+    this.stopHoldWatch = subscribeMessageHolds((viewport) => {
+      if (viewport === this.viewport) {
+        this.refresh();
+      }
+    });
     document.addEventListener("selectionchange", this.refresh);
     document.addEventListener("keydown", this.onKeyDown, true);
     viewport.addEventListener("pointerdown", this.onPointerDown, true);
@@ -138,6 +149,26 @@ class MessageWindowController {
     });
   };
 
+  /** Restores one parked body synchronously without letting update() park it again. */
+  revealMessage(messageId: string): boolean {
+    let found: Row | undefined;
+    for (const row of this.rows.values()) {
+      if (row.root.getAttribute("data-message-id") === messageId) {
+        found = row;
+        break;
+      }
+    }
+    if (found === undefined || (found.saved === null && found.frozen === null)) {
+      return false;
+    }
+    this.keepAnchor(() => {
+      const restored = this.restore(found, false);
+      const released = this.releaseHeight(found);
+      return restored || released;
+    });
+    return true;
+  }
+
   private held() {
     const selection = document.getSelection();
     return this.printing || document.documentElement.hasAttribute(FIND_FLAG)
@@ -163,8 +194,12 @@ class MessageWindowController {
         first.before = rect.top;
       }
       const margin = row.saved ? reach : REACH;
-      // Hysteresis avoids repeated swaps on small drag reversals.
-      if (rect.bottom >= bounds.top - margin && rect.top <= bounds.bottom + margin
+      const messageId = row.root.getAttribute("data-message-id") ?? "";
+      const held =
+        messageId.length > 0 && isMessageHeld(this.viewport, messageId);
+      // Held rows go into wanted, reconnecting a parked/frozen body even when
+      // the source is still far outside the viewport.
+      if (held || rect.bottom >= bounds.top - margin && rect.top <= bounds.bottom + margin
         || row.root.contains(document.activeElement)) {
         wanted.add(row);
         continue;
@@ -261,6 +296,7 @@ class MessageWindowController {
   private dispose() {
     this.observer.disconnect();
     this.flags.disconnect();
+    this.stopHoldWatch();
     cancelAnimationFrame(this.frame);
     document.removeEventListener("selectionchange", this.refresh);
     document.removeEventListener("keydown", this.onKeyDown, true);
@@ -277,6 +313,14 @@ class MessageWindowController {
     this.viewport.removeAttribute("data-windowed-messages");
     controllers.delete(this.viewport);
   }
+}
+
+/** Restores a parked message body before navigation indexes its text. Synchronous. */
+export function restoreMessageWindowBody(
+  viewport: HTMLElement,
+  messageId: string,
+): boolean {
+  return controllers.get(viewport)?.revealMessage(messageId) ?? false;
 }
 
 export function observeMessageWindow(

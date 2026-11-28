@@ -6,8 +6,12 @@ import type {
   CompleteAttachment,
   PendingAttachment,
 } from "@assistant-ui/react";
+import { quoteContextTransport } from "../../../components/assistant-ui/message-quote-context.ts";
+import type { QuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
+import { getQuoteDispatch } from "../../../components/assistant-ui/message-quote-dispatch.ts";
 import { cachedTextAttachment } from "../text-attachment-accept.ts";
 import { attachmentContentText, isPastedTextFile } from "./pasted-text.ts";
+import { QUEUE_APPEND_TOKEN_KEY } from "./queue-append-lifecycle.ts";
 
 import { annotationsContentText, annotationsOfFile } from "./document-annotations.ts";
 
@@ -15,7 +19,48 @@ export type QueuedPrompt = {
   prompt: string;
   attachments?: CompleteAttachment[];
   attachmentFiles?: File[];
+  quoteDispatch?: QuoteDispatch;
 };
+
+/** Returns a normalized copy carrying exactly one queue-owned quote snapshot. */
+export function attachQueuedQuoteDispatch(
+  item: string | QueuedPrompt,
+  dispatch: QuoteDispatch,
+): QueuedPrompt {
+  return { ...normalizeQueuedPrompt(item), quoteDispatch: dispatch };
+}
+
+/** Clears the item handle before ownership transfers to a release/accept path. */
+export function takeQueuedQuoteDispatch(
+  item: QueuedPrompt,
+): QuoteDispatch | undefined {
+  const dispatch = item.quoteDispatch;
+  if (dispatch === undefined) {
+    return undefined;
+  }
+  item.quoteDispatch = undefined;
+  return dispatch;
+}
+
+export function queuedPromptQuoteCount(item: QueuedPrompt): number {
+  return item.quoteDispatch?.envelope.quotes.length ?? 0;
+}
+
+/**
+ * Metadata is emitted only while the live dispatch still exists. A manual
+ * release can land while attachments are being prepared; the message then
+ * sends without quote context instead of carrying a stale envelope.
+ */
+export function queuedPromptQuoteInfo(item: QueuedPrompt) {
+  const dispatch = item.quoteDispatch;
+  if (dispatch === undefined) {
+    return undefined;
+  }
+  if (getQuoteDispatch(dispatch.contextId) === null) {
+    return undefined;
+  }
+  return quoteContextTransport(dispatch.envelope);
+}
 
 export async function prepareQueuedPromptFiles(
   item: QueuedPrompt,
@@ -129,11 +174,19 @@ export function queuedPromptHasContent(item: QueuedPrompt): boolean {
   return item.prompt.trim().length > 0 || Boolean(item.attachments?.length);
 }
 
-export function queuedPromptMessage(item: QueuedPrompt) {
+export function queuedPromptMessage(item: QueuedPrompt, appendToken?: string) {
+  const quote = queuedPromptQuoteInfo(item);
+  const custom = {
+    ...(quote === undefined ? {} : { quote }),
+    ...(appendToken === undefined
+      ? {}
+      : { [QUEUE_APPEND_TOKEN_KEY]: appendToken }),
+  };
   return {
     role: "user" as const,
     content: item.prompt ? [{ type: "text" as const, text: item.prompt }] : [],
     attachments: item.attachments ?? [],
+    ...(Object.keys(custom).length === 0 ? {} : { metadata: { custom } }),
     createdAt: new Date(),
   };
 }

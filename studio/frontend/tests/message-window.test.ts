@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
 import ts from "@typescript/typescript6";
+import {
+  holdMessage,
+  isMessageHeld,
+} from "../src/components/assistant-ui/message-window-hold.ts";
+import * as messageWindowHold from "../src/components/assistant-ui/message-window-hold.ts";
 
 const source = readFileSync(new URL("../src/components/assistant-ui/message-window-controller.ts", import.meta.url), "utf8");
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } });
@@ -53,6 +58,7 @@ class ElementFake extends Events {
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   removeAttribute(name: string) { this.attributes.delete(name); }
   hasAttribute(name: string) { return this.attributes.has(name); }
+  getAttribute(name: string) { return this.attributes.get(name) ?? null; }
 }
 
 function world() {
@@ -69,9 +75,14 @@ function world() {
   let mutation: () => void = () => {};
   let observers = 0, disconnected = 0, frameId = 0;
   const frames = new Map<number, () => void>();
-  const exports: { observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake, adjust?: (deltaPx: number) => void) => () => void } = {};
+  const exports: {
+    observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake, adjust?: (deltaPx: number) => void) => () => void;
+    restoreMessageWindowBody?: (viewport: ElementFake, messageId: string) => boolean;
+  } = {};
   vm.runInNewContext(outputText, {
     exports, window: win, document: doc,
+    require: (specifier: string) =>
+      specifier === "./message-window-hold" ? messageWindowHold : undefined,
     requestAnimationFrame: (callback: () => void) => { frames.set(++frameId, callback); return frameId; },
     cancelAnimationFrame: (id: number) => frames.delete(id),
     IntersectionObserver: class {
@@ -84,8 +95,9 @@ function world() {
     },
   });
   const flush = () => { while (frames.size) { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback()); } };
-  const add = (adjust?: (deltaPx: number) => void) => {
+  const add = (adjust?: (deltaPx: number) => void, messageId = "") => {
     const root = new ElementFake(), holder = new ElementFake(), content = new ElementFake(), child = new ElementFake();
+    if (messageId) root.setAttribute("data-message-id", messageId);
     root.viewport = viewport; viewport.append(root); root.append(holder); holder.append(content); content.append(child);
     root.style.setProperty("height", "200px", "important");
     const cleanup = exports.observeMessageWindow!(root, holder, content, adjust);
@@ -93,12 +105,105 @@ function world() {
   };
   return {
     add, viewport, doc, win, html, media, flush,
+    restore: (messageId: string) => exports.restoreMessageWindowBody!(viewport, messageId),
     near: (root: ElementFake, near: boolean, top = near ? 0 : -5000) => { root.top = top; intersections([{ target: root, isIntersecting: near }]); flush(); },
     select: (value: boolean) => { selected = value; doc.fire("selectionchange"); flush(); },
     find: (value: boolean) => { if (value) html.setAttribute("data-find-bar-open", ""); else html.removeAttribute("data-find-bar-open"); mutation(); flush(); },
     observers: () => observers, disconnected: () => disconnected,
   };
 }
+
+test("source navigation reconnects only the requested parked body", () => {
+  const w = world();
+  const first = w.add(undefined, "message-1");
+  const second = w.add(undefined, "message-2");
+  w.near(first.root, false);
+  w.near(second.root, false);
+  assert.equal(first.parked(), true);
+  assert.equal(second.parked(), true);
+  assert.equal(w.restore("message-1"), true);
+  assert.equal(first.parked(), false);
+  assert.equal(first.content.parent, first.holder);
+  assert.equal(second.parked(), true, "an unrelated parked body stays parked");
+  assert.equal(w.restore("message-1"), false, "restoring twice is a no-op");
+  assert.equal(w.restore("missing"), false);
+  first.cleanup();
+  second.cleanup();
+});
+
+test("a held source stays mounted across controller updates and releases cleanly", () => {
+  const w = world();
+  const source = w.add(undefined, "source");
+  const other = w.add(undefined, "other");
+  w.near(source.root, false);
+  w.near(other.root, false);
+  assert.equal(source.parked(), true);
+  assert.equal(other.parked(), true);
+
+  const holdViewport = w.viewport as unknown as HTMLElement;
+  const release = holdMessage(holdViewport, "source");
+  w.flush();
+  assert.equal(isMessageHeld(holdViewport, "source"), true);
+  assert.equal(source.parked(), false, "acquiring the hold restores a parked body");
+  assert.equal(source.content.parent, source.holder);
+  assert.equal(other.parked(), true, "only the target message is held");
+
+  // The controller runs again while the source is still far outside reach.
+  w.near(source.root, false, -7000);
+  w.near(other.root, false, -7000);
+  w.flush();
+  assert.equal(source.parked(), false, "the held row is included in wanted");
+  assert.equal(other.parked(), true);
+
+  release();
+  release(); // idempotent cleanup must not release another holder's claim
+  w.flush();
+  assert.equal(isMessageHeld(holdViewport, "source"), false);
+  w.near(source.root, false, -7000);
+  w.flush();
+  assert.equal(source.parked(), true, "normal windowing resumes after release");
+  source.cleanup();
+  other.cleanup();
+});
+
+test("a navigation hold keeps a restored source readable across the next window update", () => {
+  const w = world();
+  const adjustments: number[] = [];
+  const adjust = (delta: number) => adjustments.push(delta);
+  const source = w.add(adjust, "assistant-1");
+  const unrelated = w.add(adjust, "assistant-2");
+  w.near(source.root, false);
+  w.near(unrelated.root, false);
+  assert.equal(source.parked(), true);
+
+  const viewport = w.viewport as unknown as HTMLElement;
+  const release = holdMessage(viewport, "assistant-1");
+  assert.equal(w.restore("assistant-1"), true);
+  assert.equal(source.content.parent, source.holder, "the lookup sees the body");
+
+  // This is the update that used to re-park the source between restore() and
+  // assistantContentForRow(). It must leave both the held body and its child.
+  w.near(source.root, false, -7000);
+  w.near(unrelated.root, false, -7000);
+  w.flush();
+  assert.equal(source.parked(), false);
+  assert.equal(source.content.parent, source.holder);
+  assert.equal(source.content.children[0], source.child);
+  assert.equal(unrelated.parked(), true, "unrelated rows can still park");
+  assert.deepEqual(
+    adjustments,
+    [],
+    "restoring a far-offscreen held source must not nudge the quote scroll target",
+  );
+
+  release();
+  w.flush();
+  w.near(source.root, false, -7000);
+  w.flush();
+  assert.equal(source.parked(), true, "the hold is released after navigation");
+  source.cleanup();
+  unrelated.cleanup();
+});
 
 test("distant bodies keep their height and reconnect the same nodes and inline styles", () => {
   const w = world(), row = w.add();

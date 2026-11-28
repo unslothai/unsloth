@@ -21,6 +21,10 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
+import {
+  heldMessageIds,
+  subscribeMessageHolds,
+} from "@/components/assistant-ui/message-window-hold";
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
 import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
@@ -436,7 +440,13 @@ function keepPinned(
     if (index === undefined || (index >= next.start && index < next.end)) continue;
     if (dialog || index === tail || isPinned(child, selection)) pins.push(index);
   }
-  return withPins(next, pins, lookup.metas.length);
+  // Quote navigation holds only its target row, not the whole thread.
+  for (const messageId of heldMessageIds(viewport)) {
+    const index = lookup.index.get(messageId);
+    if (index !== undefined) pins.push(index);
+  }
+  const uniquePins = [...new Set(pins)].sort((a, b) => a - b);
+  return withPins(next, uniquePins, lookup.metas.length);
 }
 
 /** WAI-ARIA ordinals for a windowed list. Written here, not by the rows: the total changes on
@@ -784,6 +794,16 @@ function useThreadWindow(
   useLayoutEffect(() => {
     stepRef.current = step;
   }, [step]);
+
+  useEffect(
+    () =>
+      subscribeMessageHolds((viewport) => {
+        if (viewport === viewportRef.current) {
+          schedule();
+        }
+      }),
+    [schedule, viewportRef],
+  );
 
   // Declared before the commit effect below, which reads what this resets.
   // biome-ignore lint/correctness/useExhaustiveDependencies: resetKey is the thread these belong to

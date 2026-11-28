@@ -5,12 +5,21 @@ import { MemoryToolUI } from "./tool-ui-memory";
 import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
 import {
+  abandonQueueAppend,
+  createQueueAppendToken,
+  failQueueAppend,
+  waitForQueueAppend,
+} from "@/features/chat/utils/queue-append-lifecycle";
+import {
+  attachQueuedQuoteDispatch,
   canQueueTextAttachment,
   normalizeQueuedPrompt,
   prepareQueuedPromptFiles,
   queuedPromptHasContent,
   queuedPromptMessage,
+  queuedPromptQuoteCount,
   snapshotQueuedTextPrompt,
+  takeQueuedQuoteDispatch,
   type QueuedPrompt,
 } from "@/features/chat/utils/queued-text-attachments";
 import { getAuthSessionEpoch } from "@/features/auth";
@@ -29,6 +38,12 @@ import {
 } from "@/components/assistant-ui/generated-image-overlay-context";
 import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
+import {
+  type ComposerSendAccessor,
+  type ComposerSendAttempt,
+  ComposerAttachmentPreparationError,
+  observeComposerSend,
+} from "@/components/assistant-ui/composer-send-lifecycle";
 import {
   compactionDividerRows,
   compactionToolCallDividers,
@@ -58,6 +73,27 @@ import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
 import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
 import { observeDistantRow } from "@/components/assistant-ui/distant-rows";
 import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
+import { MessageQuoteCollection } from "@/components/assistant-ui/message-quote-collection";
+import { MessageSelectionLayer } from "@/components/assistant-ui/message-selection-layer";
+import {
+  type QuoteDispatch,
+  type QuoteDispatchOutcome,
+  canReleaseQueuedQuoteDispatch,
+  getQuoteDispatch,
+  markQuoteDispatchSendFailed,
+  markQuoteDispatchSendSettled,
+  markQuoteDispatchSendStarted,
+  quoteInfoForDispatch,
+  releaseQuoteDispatch,
+  reserveQuoteDispatch,
+  resetQuoteDispatchForRetry,
+  subscribeQuoteDispatchOutcome,
+} from "@/components/assistant-ui/message-quote-dispatch";
+import { parseQuoteContext } from "@/components/assistant-ui/message-quote-context";
+import {
+  createEphemeralQuoteThreadId,
+  resolveQuoteCollectionKey,
+} from "@/components/assistant-ui/message-quote-store";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
@@ -348,6 +384,7 @@ import {
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   hasPreStreamRunReservation,
+  isPreStreamRunReservationActive,
   localPromptQueueModelBoundary,
   notifyPromptQueueRunFailed,
   planLocalPromptQueueStop,
@@ -582,7 +619,10 @@ type PromptQueueTarget = {
   getQueueProjectId: () => string | null;
   getRunningThreadIds: () => string[];
   isRunning: () => boolean;
-  append: (prompt: QueuedPrompt) => void | Promise<void>;
+  append: (
+    prompt: QueuedPrompt,
+    onCompletion?: (completion: Promise<void> | null) => void,
+  ) => void | Promise<void>;
   complete: () => void;
   cancel: () => void;
   cancelActiveRun: () => void;
@@ -603,6 +643,11 @@ type PromptQueueItem = QueuedPrompt & {
   target: PromptQueueTarget;
   dispatched: boolean;
   dispatchRetries: number;
+  appendAttempt: number;
+  /** In-memory correlation token for the current history append, never persisted. */
+  appendToken: string | null;
+  quoteOutcome: QuoteDispatchOutcome | null;
+  unsubscribeQuoteOutcome: (() => void) | null;
   blockedByModelFailure?: boolean;
 };
 
@@ -669,6 +714,9 @@ function clearPromptQueueRetryTimer(run: PromptQueueRun) {
 function deletePromptQueueRun(run: PromptQueueRun) {
   run.generation += 1;
   clearPromptQueueRetryTimer(run);
+  while (run.items.length > 0) {
+    dropQueueItem(run, run.items[0]);
+  }
   promptQueueActiveRunIds.delete(run.id);
   promptQueueDispatchingRunIds.delete(run.id);
   promptQueueRuns.delete(run.id);
@@ -695,6 +743,9 @@ function resetPromptQueues() {
   for (const run of promptQueueRuns.values()) {
     run.generation += 1;
     clearPromptQueueRetryTimer(run);
+    for (const item of [...run.items]) {
+      discardQueuedPromptItem(item);
+    }
   }
   promptQueueRuns.clear();
   promptQueueActiveRunIds.clear();
@@ -712,17 +763,212 @@ function requestPromptQueuePumpIfReady(delay = 0) {
   }
 }
 
-function handleQueuedPromptAppendFailure(
+type QueuedQuoteReleaseResult =
+  | "released"
+  | "cleared-stale"
+  | "nothing"
+  | "refused";
+
+function unsubscribeQueuedItemQuoteOutcome(item: PromptQueueItem): void {
+  item.unsubscribeQuoteOutcome?.();
+  item.unsubscribeQuoteOutcome = null;
+}
+
+function subscribeQueuedItemQuoteOutcome(item: PromptQueueItem): void {
+  unsubscribeQueuedItemQuoteOutcome(item);
+  item.quoteOutcome = null;
+  const dispatch = item.quoteDispatch;
+  if (dispatch === undefined) {
+    return;
+  }
+  item.unsubscribeQuoteOutcome = subscribeQuoteDispatchOutcome(
+    dispatch.contextId,
+    (outcome) => {
+      item.quoteOutcome = outcome;
+    },
+  );
+}
+
+/**
+ * Removes a queue item's quote ownership. A live pending/writing dispatch is
+ * refused and stays recoverable in the quote pill.
+ */
+function releaseAndForgetPromptQueueItem(
+  item: PromptQueueItem,
+): QueuedQuoteReleaseResult {
+  const handle = item.quoteDispatch;
+  if (handle === undefined) {
+    unsubscribeQueuedItemQuoteOutcome(item);
+    return "nothing";
+  }
+  const dispatch = getQuoteDispatch(handle.contextId);
+  if (
+    dispatch === null ||
+    dispatch.origin !== "queue"
+  ) {
+    takeQueuedQuoteDispatch(item);
+    unsubscribeQueuedItemQuoteOutcome(item);
+    return "cleared-stale";
+  }
+  if (!canReleaseQueuedQuoteDispatch(dispatch)) {
+    return "refused";
+  }
+  takeQueuedQuoteDispatch(item);
+  unsubscribeQueuedItemQuoteOutcome(item);
+  releaseQuoteDispatch(dispatch.contextId);
+  return "released";
+}
+
+function forgetPromptQueueItemQuotes(
+  item: PromptQueueItem,
+): QueuedQuoteReleaseResult {
+  const result = releaseAndForgetPromptQueueItem(item);
+  if (result === "refused") {
+    // The row is gone; a refused pending/writing dispatch transfers to the
+    // quote pill. The discarded item no longer needs its outcome listener.
+    unsubscribeQueuedItemQuoteOutcome(item);
+  }
+  return result;
+}
+
+function abandonQueuedAppend(item: PromptQueueItem): void {
+  const token = item.appendToken;
+  item.appendToken = null;
+  if (token !== null) {
+    abandonQueueAppend(token);
+  }
+}
+
+function discardQueuedPromptItem(
+  item: PromptQueueItem,
+): QueuedQuoteReleaseResult {
+  abandonQueuedAppend(item);
+  return forgetPromptQueueItemQuotes(item);
+}
+
+function dropQueueItem(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+): QueuedQuoteReleaseResult {
+  const index = run.items.indexOf(item);
+  if (index >= 0) {
+    run.items.splice(index, 1);
+  }
+  // Discarding the queue row transfers a refused pending/writing dispatch to
+  // Milestone C: it stays visible and releasable in the quote pill.
+  return discardQueuedPromptItem(item);
+}
+
+function isCurrentQueuedAppendAttempt(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  attempt: number,
+  generation: number,
+): boolean {
+  return (
+    promptQueueRuns.get(run.id) === run &&
+    generation === run.generation &&
+    item.appendAttempt === attempt &&
+    getActivePromptQueueItem(run) === item
+  );
+}
+
+type BeginQueuedAppendAttempt =
+  | { kind: "started"; attempt: number; quotes: boolean }
+  | { kind: "accepted" }
+  | { kind: "already-pending" }
+  | { kind: "failed" }
+  | { kind: "settled" }
+  | { kind: "unknown" };
+
+/**
+ * Validates before incrementing the attempt counter. A duplicate invocation
+ * while an attempt is pending must not make that attempt's callback stale.
+ */
+function beginQueuedAppendAttempt(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+): BeginQueuedAppendAttempt {
+  if (
+    !isActivePromptQueueItem(run, item, run.generation) ||
+    item.dispatched
+  ) {
+    return { kind: "already-pending" };
+  }
+
+  const handle = item.quoteDispatch;
+  if (handle === undefined) {
+    item.appendAttempt += 1;
+    return { kind: "started", attempt: item.appendAttempt, quotes: false };
+  }
+
+  const dispatch = getQuoteDispatch(handle.contextId);
+  if (dispatch === null) {
+    if (item.quoteOutcome === "accepted") {
+      return { kind: "accepted" };
+    }
+    if (item.quoteOutcome === "released") {
+      takeQueuedQuoteDispatch(item);
+      unsubscribeQueuedItemQuoteOutcome(item);
+      item.quoteOutcome = null;
+      item.appendAttempt += 1;
+      return { kind: "started", attempt: item.appendAttempt, quotes: false };
+    }
+    return { kind: "unknown" };
+  }
+
+  if (dispatch.origin !== "queue") {
+    return { kind: "unknown" };
+  }
+
+  switch (dispatch.sendState) {
+    case "not-started":
+      item.appendAttempt += 1;
+      return { kind: "started", attempt: item.appendAttempt, quotes: true };
+    case "pending":
+      return { kind: "already-pending" };
+    case "failed":
+      return { kind: "failed" };
+    case "settled":
+      return { kind: "settled" };
+  }
+}
+
+function pauseUnknownQueuedQuoteOutcome(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+): void {
+  takeQueuedQuoteDispatch(item);
+  unsubscribeQueuedItemQuoteOutcome(item);
+  item.appendToken = null;
+  item.quoteOutcome = null;
+  item.dispatched = false;
+  item.blockedByModelFailure = true;
+  promptQueueActiveRunIds.delete(run.id);
+  syncPromptQueueUI();
+}
+
+function retireAcceptedQueuedAppend(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+): void {
+  takeQueuedQuoteDispatch(item);
+  unsubscribeQueuedItemQuoteOutcome(item);
+  item.appendToken = null;
+  item.quoteOutcome = null;
+  item.dispatched = true;
+  if (getActivePromptQueueItem(run) !== item) {
+    return;
+  }
+  promptQueueActiveRunIds.delete(run.id);
+  advancePromptQueue(run);
+}
+
+function scheduleQueuedQuoteRetry(
   run: PromptQueueRun,
   item: PromptQueueItem,
   error: unknown,
-) {
-  if (!isActivePromptQueueItem(run, item, run.generation)) {
-    return;
-  }
-  item.dispatched = false;
-  promptQueueActiveRunIds.delete(run.id);
-  syncPromptQueueUI();
+): void {
   item.dispatchRetries += 1;
   if (item.dispatchRetries > PROMPT_QUEUE_MAX_DISPATCH_RETRIES) {
     console.error("Prompt queue dispatch failed permanently:", error);
@@ -737,6 +983,84 @@ function handleQueuedPromptAppendFailure(
   }
   item.target.complete();
   scheduleQueuedPromptDispatch(run, item, PROMPT_QUEUE_DISPATCH_RETRY_MS);
+}
+
+function handleQueuedPromptAppendFailure(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  error: unknown,
+  attempt: number,
+  generation: number,
+) {
+  if (!isCurrentQueuedAppendAttempt(run, item, attempt, generation)) {
+    return;
+  }
+
+  item.appendToken = null;
+  const handle = item.quoteDispatch;
+  const dispatch =
+    handle === undefined ? null : getQuoteDispatch(handle.contextId);
+
+  // Missing live dispatch: only the authoritative terminal outcome decides.
+  if (handle !== undefined && dispatch === null) {
+    if (item.quoteOutcome === "accepted") {
+      retireAcceptedQueuedAppend(run, item);
+      return;
+    }
+    if (item.quoteOutcome === "released") {
+      takeQueuedQuoteDispatch(item);
+      unsubscribeQueuedItemQuoteOutcome(item);
+      item.quoteOutcome = null;
+      item.dispatched = false;
+      promptQueueActiveRunIds.delete(run.id);
+      syncPromptQueueUI();
+      scheduleQueuedQuoteRetry(run, item, error);
+      return;
+    }
+    pauseUnknownQueuedQuoteOutcome(run, item);
+    return;
+  }
+
+  // A settled send is not acceptance. Keep the dispatch for C or the pill's
+  // explicit manual release. When history is also not-started, ordinary queue
+  // cleanup refuses it (canReleaseQueuedQuoteDispatch); only the pill can
+  // recover that state.
+  if (dispatch !== null && dispatch.sendState === "settled") {
+    syncPromptQueueUI();
+    return;
+  }
+
+  // History failed: C is releasing anyway; mirror it here so the retry can
+  // proceed without quote metadata. This is intentional and idempotent.
+  if (dispatch !== null && dispatch.historyState === "failed") {
+    takeQueuedQuoteDispatch(item);
+    unsubscribeQueuedItemQuoteOutcome(item);
+    item.quoteOutcome = null;
+    releaseQuoteDispatch(dispatch.contextId);
+    item.dispatched = false;
+    promptQueueActiveRunIds.delete(run.id);
+    syncPromptQueueUI();
+    scheduleQueuedQuoteRetry(run, item, error);
+    return;
+  }
+
+  // History owns pending/settled outcomes.
+  if (dispatch !== null && dispatch.historyState !== "not-started") {
+    syncPromptQueueUI();
+    return;
+  }
+
+  item.dispatched = false;
+  promptQueueActiveRunIds.delete(run.id);
+
+  if (dispatch !== null) {
+    markQuoteDispatchSendFailed(dispatch.contextId);
+    resetQuoteDispatchForRetry(dispatch.contextId);
+  }
+  // Keep mark-failed and reset adjacent: the transient failed state must not
+  // paint as a live send before it becomes queued again.
+  syncPromptQueueUI();
+  scheduleQueuedQuoteRetry(run, item, error);
 }
 
 function consumePromptQueueDeepResearch(
@@ -757,23 +1081,127 @@ function consumePromptQueueDeepResearch(
   }
 }
 
+function observeQueuedAppendCompletion(
+  run: PromptQueueRun,
+  item: PromptQueueItem,
+  attempt: number,
+  generation: number,
+  completion: Promise<void> | null,
+): void {
+  if (completion === null) {
+    return;
+  }
+  void completion.then(
+    () => {
+      if (!isCurrentQueuedAppendAttempt(run, item, attempt, generation)) {
+        return;
+      }
+      item.appendToken = null;
+      const dispatch = item.quoteDispatch;
+      if (dispatch !== undefined) {
+        markQuoteDispatchSendSettled(dispatch.contextId);
+      }
+    },
+    (error) => {
+      if (!isCurrentQueuedAppendAttempt(run, item, attempt, generation)) {
+        return;
+      }
+      item.appendToken = null;
+      const dispatch = item.quoteDispatch;
+      if (dispatch !== undefined) {
+        // The observer only records failure. handleQueuedPromptAppendFailure
+        // is the sole retry/permanent classifier.
+        markQuoteDispatchSendFailed(dispatch.contextId);
+      }
+      handleQueuedPromptAppendFailure(
+        run,
+        item,
+        error,
+        attempt,
+        generation,
+      );
+    },
+  );
+}
+
 function appendQueuedPrompt(run: PromptQueueRun, item: PromptQueueItem) {
+  if (!isActivePromptQueueItem(run, item, run.generation)) {
+    return;
+  }
+  const begin = beginQueuedAppendAttempt(run, item);
+  switch (begin.kind) {
+    case "accepted":
+      retireAcceptedQueuedAppend(run, item);
+      return;
+    case "unknown":
+      pauseUnknownQueuedQuoteOutcome(run, item);
+      return;
+    case "already-pending":
+    case "failed":
+    case "settled":
+      syncPromptQueueUI();
+      return;
+    case "started":
+      break;
+  }
+
+  const attempt = begin.attempt;
+  const generation = run.generation;
+  if (begin.quotes) {
+    const dispatch = item.quoteDispatch;
+    if (dispatch !== undefined) {
+      markQuoteDispatchSendStarted(dispatch.contextId);
+    } else {
+      // A manual release raced the attempt; send without the stale envelope.
+      takeQueuedQuoteDispatch(item);
+      unsubscribeQueuedItemQuoteOutcome(item);
+    }
+  }
+
   item.dispatched = true;
   promptQueueActiveRunIds.add(run.id);
   syncPromptQueueUI();
+
+  let invocationSeen = false;
+  const onCompletion = (completion: Promise<void> | null) => {
+    invocationSeen = true;
+    observeQueuedAppendCompletion(
+      run,
+      item,
+      attempt,
+      generation,
+      completion,
+    );
+  };
+
   try {
-    const result = item.target.append(item);
+    const result = item.target.append(item, onCompletion);
     if (result && typeof result.catch === "function") {
-      void result
-        .then(() => consumePromptQueueDeepResearch(run, item))
-        .catch((error) => {
-          handleQueuedPromptAppendFailure(run, item, error);
-        });
-    } else {
-      consumePromptQueueDeepResearch(run, item);
+      void result.catch((error) => {
+        // Contract: target.append resolves after invocation. A rejection here
+        // is pre-invocation; a post-invocation throw is converted by the
+        // target into an observed completion rejection.
+        if (!invocationSeen) {
+          handleQueuedPromptAppendFailure(
+            run,
+            item,
+            error,
+            attempt,
+            generation,
+          );
+        }
+      });
     }
   } catch (error) {
-    handleQueuedPromptAppendFailure(run, item, error);
+    if (!invocationSeen) {
+      handleQueuedPromptAppendFailure(
+        run,
+        item,
+        error,
+        attempt,
+        generation,
+      );
+    }
   }
   schedulePromptQueueTargetStatePoll(run);
 }
@@ -989,13 +1417,21 @@ async function dispatchQueuedPrompt(
 }
 
 function createQueuedPrompt(prompt: QueuedPrompt, target: PromptQueueTarget) {
-  return {
+  const item: PromptQueueItem = {
     id: createPromptQueueItemId(),
     ...prompt,
     target,
     dispatched: false,
     dispatchRetries: 0,
+    appendAttempt: 0,
+    appendToken: null,
+    quoteOutcome: null,
+    unsubscribeQuoteOutcome: null,
   };
+  if (item.quoteDispatch !== undefined) {
+    subscribeQueuedItemQuoteOutcome(item);
+  }
+  return item;
 }
 
 function getPromptQueueTargetIds(target: PromptQueueTarget) {
@@ -1115,11 +1551,17 @@ function getPromptQueueUIItemsForRun(run: PromptQueueRun) {
     if (index < activeItemIndex || item.dispatched) {
       continue;
     }
+    const quoteDispatch =
+      item.quoteDispatch === undefined
+        ? null
+        : getQuoteDispatch(item.quoteDispatch.contextId);
     items.push({
       id: item.id,
       runId: run.id,
       prompt: item.prompt,
       attachmentNames: item.attachments?.map((attachment) => attachment.name),
+      quoteCount: queuedPromptQuoteCount(item),
+      canReleaseQuotes: canReleaseQueuedQuoteDispatch(quoteDispatch),
       position: index + 1,
       total,
       status: getPromptQueueItemStatus(run, index, activeItemIndex),
@@ -1208,7 +1650,7 @@ function removePromptQueueItem(itemId: string) {
   }
 
   const wasActive = itemIndex === Math.max(run.index, 0);
-  run.items.splice(itemIndex, 1);
+  dropQueueItem(run, item);
   if (run.items.length === 0) {
     deletePromptQueueRun(run);
     return true;
@@ -1235,6 +1677,21 @@ function removePromptQueueItem(itemId: string) {
     }
   }
   return true;
+}
+
+function releasePromptQueueQuotes(itemId: string): boolean {
+  const match = findPromptQueueRunByItemId(itemId);
+  if (!match) {
+    return false;
+  }
+  const result = releaseAndForgetPromptQueueItem(match.item);
+  if (result === "released" || result === "cleared-stale") {
+    syncPromptQueueUI();
+    return true;
+  }
+  // A refused release must still refresh the row/menu against live state.
+  syncPromptQueueUI();
+  return false;
 }
 
 /** Both must still be pending; the insert index is read off the pre-splice array. */
@@ -1389,7 +1846,15 @@ function handlePromptQueueRunState(
   const isRunning = isPromptQueueRunTargetRunning(run, runningByThreadId);
   const wasRunning = run.prevStoreRunning;
   run.prevStoreRunning = isRunning;
-  if (!wasRunning || isRunning) {
+  if (isRunning) {
+    // Success-gated: a failed append never reaches this run-start edge.
+    const activeItem = getActivePromptQueueItem(run);
+    if (activeItem?.dispatched) {
+      consumePromptQueueDeepResearch(run, activeItem);
+    }
+    return;
+  }
+  if (!wasRunning) {
     return;
   }
   if (run.paused) {
@@ -1480,15 +1945,24 @@ function steerPromptQueueItem(itemId: string) {
   return true;
 }
 
+type StartPromptQueueResult =
+  | { kind: "started" }
+  | { kind: "refused" }
+  | { kind: "quote-invalid" };
+
 function startPromptQueue(
   items: Array<string | QueuedPrompt>,
   target: PromptQueueTarget,
   waitForCurrentRun = false,
   behavior: ComposerFollowUpBehavior = "queue",
-) {
+  quoteThreadId: string | null = null,
+): StartPromptQueueResult {
   const filtered = items.map(normalizeQueuedPrompt).filter(queuedPromptHasContent);
   if (filtered.length === 0) {
-    return;
+    return { kind: "refused" };
+  }
+  if (quoteThreadId !== null && filtered.length !== 1) {
+    return { kind: "quote-invalid" };
   }
 
   const steering = behavior === "steer";
@@ -1496,34 +1970,97 @@ function startPromptQueue(
   if (steering && targetIds.length === 0) {
     throw new Error("The chat is no longer available for steering.");
   }
+
+  let reservedDispatch: QuoteDispatch | null = null;
+  if (quoteThreadId !== null) {
+    const reserved = reserveQuoteDispatch(quoteThreadId, "queue");
+    if (reserved.kind === "invalid") {
+      return { kind: "quote-invalid" };
+    }
+    if (reserved.kind === "reserved") {
+      reservedDispatch = reserved.dispatch;
+    }
+  }
+
+  const makeItems = (): PromptQueueItem[] =>
+    filtered.map((prompt, index) =>
+      createQueuedPrompt(
+        index === 0 && reservedDispatch !== null
+          ? attachQueuedQuoteDispatch(prompt, reservedDispatch)
+          : prompt,
+        target,
+      ),
+    );
+
+  const rollback = (
+    created: PromptQueueItem[],
+  ): { inFlight: boolean; retained: Set<PromptQueueItem> } => {
+    let inFlight = false;
+    const retained = new Set<PromptQueueItem>();
+    for (const item of created) {
+      if (releaseAndForgetPromptQueueItem(item) === "refused") {
+        inFlight = true;
+        retained.add(item);
+      }
+    }
+    if (reservedDispatch !== null) {
+      const live = getQuoteDispatch(reservedDispatch.contextId);
+      if (live !== null) {
+        if (canReleaseQueuedQuoteDispatch(live)) {
+          releaseQuoteDispatch(live.contextId);
+        } else {
+          inFlight = true;
+        }
+      }
+    }
+    return { inFlight, retained };
+  };
+
   const existingRun = findPromptQueueRunByTarget(target);
   if (existingRun) {
     if (existingRun.deepResearchConsumed) {
       target.consumeDeepResearch();
     }
-    const newItems = filtered.map((prompt) => createQueuedPrompt(prompt, target));
-    if (steering) {
-      existingRun.items.splice(
-        steeringInsertionIndex(existingRun.items, existingRun.index),
-        0,
-        ...newItems,
+    const newItems = makeItems();
+    const insertAt = steering
+      ? steeringInsertionIndex(existingRun.items, existingRun.index)
+      : existingRun.items.length;
+    try {
+      existingRun.items.splice(insertAt, 0, ...newItems);
+      if (steering) {
+        steerPromptQueueTarget(target);
+      } else {
+        syncPromptQueueUI();
+        requestPromptQueuePump();
+      }
+      return { kind: "started" };
+    } catch (error) {
+      const { inFlight, retained } = rollback(newItems);
+      existingRun.items = existingRun.items.filter(
+        (item) => !newItems.includes(item) || retained.has(item),
       );
-      steerPromptQueueTarget(target);
-      return;
+      syncPromptQueueUI();
+      if (inFlight) {
+        // Defensive only: the pump is timer-based and cannot dispatch inside
+        // this synchronous block. Preserve a genuinely in-flight item.
+        console.error(
+          "Prompt queue dispatched synchronously during creation",
+          error,
+        );
+        return { kind: "started" };
+      }
+      throw error;
     }
-    existingRun.items.push(...newItems);
-    syncPromptQueueUI();
-    requestPromptQueuePump();
-    return;
   }
 
   const runningByThreadId = useChatRuntimeStore.getState().runningByThreadId;
   const shouldWaitForCurrentRun =
     (waitForCurrentRun || steering) &&
     isPromptQueueTargetRunning(target, runningByThreadId);
+  const newItems = makeItems();
   const run: PromptQueueRun = {
     id: createPromptQueueRunId(),
-    items: filtered.map((prompt) => createQueuedPrompt(prompt, target)),
+    items: newItems,
     index: shouldWaitForCurrentRun ? -1 : 0,
     generation: 0,
     prevStoreRunning: shouldWaitForCurrentRun,
@@ -1532,22 +2069,42 @@ function startPromptQueue(
     retryTimer: null,
     deepResearchConsumed: false,
   };
-  promptQueueRuns.set(run.id, run);
-  promptQueueRunOrder.push(run.id);
-  syncPromptQueueUI();
-  ensurePromptQueueSubscription();
-  if (steering) {
-    steerPromptQueueTarget(target);
-    return;
-  }
-  if (shouldWaitForCurrentRun) {
-    handlePromptQueueRunState(
-      run,
-      useChatRuntimeStore.getState().runningByThreadId,
-    );
-    schedulePromptQueueTargetStatePoll(run);
-  } else {
-    requestPromptQueuePump(50);
+  try {
+    promptQueueRuns.set(run.id, run);
+    promptQueueRunOrder.push(run.id);
+    syncPromptQueueUI();
+    ensurePromptQueueSubscription();
+    if (steering) {
+      steerPromptQueueTarget(target);
+      return { kind: "started" };
+    }
+    if (shouldWaitForCurrentRun) {
+      handlePromptQueueRunState(
+        run,
+        useChatRuntimeStore.getState().runningByThreadId,
+      );
+      schedulePromptQueueTargetStatePoll(run);
+    } else {
+      requestPromptQueuePump(50);
+    }
+    return { kind: "started" };
+  } catch (error) {
+    const { inFlight, retained } = rollback(newItems);
+    if (inFlight) {
+      run.items = newItems.filter((item) => retained.has(item));
+      console.error(
+        "Prompt queue dispatched synchronously during creation",
+        error,
+      );
+      return { kind: "started" };
+    }
+    promptQueueRuns.delete(run.id);
+    const orderIndex = promptQueueRunOrder.indexOf(run.id);
+    if (orderIndex >= 0) {
+      promptQueueRunOrder.splice(orderIndex, 1);
+    }
+    syncPromptQueueUI();
+    throw error;
   }
 }
 
@@ -1577,6 +2134,12 @@ function pausePromptQueueRun(threadIds?: string[]) {
     if (plan.retainedItemIndexes.length === 0) {
       deletePromptQueueRun(run);
     } else {
+      const retained = new Set(plan.retainedItemIndexes);
+      for (const [index, dropped] of run.items.entries()) {
+        if (!retained.has(index)) {
+          discardQueuedPromptItem(dropped);
+        }
+      }
       run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
       // From 0 this rewinds onto an item already passed, replaying it out of order.
       const resumeFrom = plan.retainedItemIndexes.findIndex(
@@ -1687,6 +2250,12 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     return;
   }
 
+  const retained = new Set(plan.retainedItemIndexes);
+  for (const [index, dropped] of run.items.entries()) {
+    if (!retained.has(index)) {
+      discardQueuedPromptItem(dropped);
+    }
+  }
   const heldItems = plan.heldItemIndexes.map((index) => run.items[index]);
   run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
   for (const item of heldItems) {
@@ -1753,7 +2322,7 @@ function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun) {
   }
 
   activeItem.target.complete();
-  run.items.splice(activeIndex, 1);
+  dropQueueItem(run, activeItem);
   if (!getActivePromptQueueItem(run)) {
     deletePromptQueueRun(run);
     return true;
@@ -1898,6 +2467,27 @@ const THREAD_COMPOSER_VARS = [
 ] as const;
 // After a run start, composer shrinks apply immediately: the run-start pin owns the bottom.
 const RUN_SHRINK_WINDOW_MS = 1000;
+
+type SendReservedComposerOptions = {
+  readonly attachQuotes?: boolean;
+  readonly alsoGuard?: readonly string[];
+};
+
+type QuoteInfoLike = {
+  readonly messageId: string;
+  readonly text: string;
+};
+
+function quoteInfoFromMetadata(value: unknown): QuoteInfoLike | undefined {
+  if (typeof value !== "object" || value === null) {
+    return undefined;
+  }
+  const quote = value as { messageId?: unknown; text?: unknown };
+  return typeof quote.messageId === "string" &&
+    typeof quote.text === "string"
+    ? { messageId: quote.messageId, text: quote.text }
+    : undefined;
+}
 
 // Picked from role and edit state, not a `components` map; see thread-message-slot.ts.
 const ThreadMessage: FC = () => {
@@ -2192,6 +2782,15 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  // The runtime item id survives unsaved-to-saved initialization, so quotes
+  // never move buckets when the backend thread id appears. The per-Thread
+  // fallback is never an empty string.
+  const [ephemeralQuoteThreadId] = useState(createEphemeralQuoteThreadId);
+  const quoteThreadId = resolveQuoteCollectionKey(
+    runtimeThreadId,
+    threadId,
+    ephemeralQuoteThreadId,
+  );
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2428,7 +3027,11 @@ export const Thread: FC<{
             <AuiIf
               condition={({ thread }) => thread.isEmpty && !thread.isLoading}
             >
-              <ThreadWelcome hideComposer={hideComposer} threadId={threadId} />
+              <ThreadWelcome
+                hideComposer={hideComposer}
+                threadId={threadId}
+                quoteThreadId={quoteThreadId}
+              />
             </AuiIf>
           )}
 
@@ -2518,6 +3121,16 @@ export const Thread: FC<{
             hideComposer={hideComposer}
             bottomOffsetPx={footerBottomPx}
           />
+          <MessageSelectionLayer
+            threadId={quoteThreadId}
+            viewportEl={viewportEl}
+            enabled={!hideComposer}
+          />
+          <MessageQuoteCollection
+            threadId={quoteThreadId}
+            viewportEl={viewportEl}
+            enabled={!hideComposer}
+          />
 
           {!hideComposer && (
             <AuiIf
@@ -2527,6 +3140,7 @@ export const Thread: FC<{
             >
               <ThreadComposerDock
                 disabled={isComposerAttachPending}
+                quoteThreadId={quoteThreadId}
                 threadId={threadId}
                 onHeightChange={setComposerHeight}
               />
@@ -2665,8 +3279,9 @@ const childWithClass = (
 const ThreadComposerDock: FC<{
   disabled?: boolean;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   onHeightChange?: (height: number | null) => void;
-}> = ({ disabled, threadId, onHeightChange }) => {
+}> = ({ disabled, threadId, quoteThreadId, onHeightChange }) => {
   const { overlay } = useGeneratedImageOverlay();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadListItemId = useAuiState(
@@ -2822,6 +3437,7 @@ const ThreadComposerDock: FC<{
           <ComposerAnimated
             disabled={disabled}
             threadId={threadId}
+            quoteThreadId={quoteThreadId}
             menuSide="top"
           />
         </div>
@@ -2906,7 +3522,8 @@ function buildWelcome(hour: number, name: string): Welcome {
 const ThreadWelcome: FC<{
   hideComposer?: boolean;
   threadId?: string | null;
-}> = ({ hideComposer, threadId }) => {
+  quoteThreadId?: string | null;
+}> = ({ hideComposer, threadId, quoteThreadId }) => {
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const displayName = useUserProfileStore((s) => s.displayName);
   const nickname = useUserProfileStore((s) => s.nickname);
@@ -3031,7 +3648,12 @@ const ThreadWelcome: FC<{
               <div className="flex flex-col pb-[calc(22px*var(--ui-space-scale,1))]">{greetingRow}</div>
             </div>
             <div className="aui-thread-welcome-message relative flex w-full flex-col">
-              {!hideComposer && <ComposerAnimated threadId={threadId} />}
+              {!hideComposer && (
+                <ComposerAnimated
+                  threadId={threadId}
+                  quoteThreadId={quoteThreadId}
+                />
+              )}
               {/* Out of flow, so the composer stays centred by its own box. */}
               {!hideComposer && !incognito && (
                 <ModelPickerAnnouncement className="absolute inset-x-0 top-full mt-[calc(28px*var(--ui-space-scale,1))]" />
@@ -3072,15 +3694,17 @@ const ComposerAnimated: FC<{
   disabled?: boolean;
   placeholder?: string;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   menuSide?: "top" | "bottom";
   disableQueue?: boolean;
-}> = ({ disabled, threadId, menuSide, disableQueue }) => {
+}> = ({ disabled, threadId, quoteThreadId, menuSide, disableQueue }) => {
   return (
     <div className="unsloth-composer-shell relative mx-auto min-w-0 w-full max-w-[var(--custom-chat-shell-max-width,var(--thread-content-max-width,46rem))]">
       <div className="relative z-10 w-full">
         <Composer
           disabled={disabled}
           threadId={threadId}
+          quoteThreadId={quoteThreadId}
           menuSide={menuSide}
           disableQueue={disableQueue}
         />
@@ -3128,9 +3752,10 @@ const Composer: FC<{
   disabled?: boolean;
   placeholder?: string;
   threadId?: string | null;
+  quoteThreadId?: string | null;
   menuSide?: "top" | "bottom";
   disableQueue?: boolean;
-}> = ({ disabled, threadId, menuSide, disableQueue }) => {
+}> = ({ disabled, threadId, quoteThreadId, menuSide, disableQueue }) => {
   const aui = useAui();
   const isDictating = useAuiState((s) => s.composer.dictation != null);
   const pageDragging = useContext(PageDragContext);
@@ -4236,6 +4861,7 @@ const Composer: FC<{
     [promptQueueThreadIds, referenceThreadId],
   );
   const preStreamRunReservationRef = useRef<symbol | null>(null);
+  const composerSendObserverRef = useRef<ComposerSendAttempt | null>(null);
   // Wakes a parked attachment when a preflight releases without ever streaming.
   const preStreamRunActive = useSyncExternalStore(
     subscribePreStreamRunReservations,
@@ -4836,7 +5462,7 @@ const Composer: FC<{
       isRunning: () =>
         hasPreStreamRunReservation(getQueueThreadIds()) ||
         Boolean(getThreadRuntime()?.getState().isRunning),
-      append: async (prompt) => {
+      append: async (prompt, onCompletion) => {
         const epoch = appendEpoch;
         const thread = getThreadRuntime();
         if (!thread) {
@@ -4945,17 +5571,25 @@ const Composer: FC<{
           ) {
             return;
           }
-          const appendResult = thread.append(
-            queuedPromptMessage(readyPrompt),
-          ) as unknown;
-          freshThreadAppendAccepted = true;
-          // thread.append accepts synchronously; later provider failures must not dispatch a duplicate
-          if (
-            appendResult &&
-            typeof (appendResult as Promise<void>).catch === "function"
-          ) {
-            void (appendResult as Promise<void>).catch(() => undefined);
+          // ThreadRuntimeImpl.append() returns void and the core drops the
+          // history Promise. Correlate through metadata.custom and settle when
+          // our own history adapter actually reaches the write.
+          const appendToken = createQueueAppendToken();
+          const completion = waitForQueueAppend(appendToken);
+          const queuedItem = prompt as PromptQueueItem;
+          queuedItem.appendToken = appendToken;
+          try {
+            thread.append(queuedPromptMessage(readyPrompt, appendToken));
+          } catch (error) {
+            // Invocation threw synchronously: convert it into an observed
+            // completion rejection. target.append must resolve, not reject,
+            // or the pre-invocation catch and observer would both classify.
+            failQueueAppend(appendToken, error);
+            onCompletion?.(completion);
+            return;
           }
+          freshThreadAppendAccepted = true;
+          onCompletion?.(completion);
         } catch (error) {
           // retry setup failures unless stop or Clear all invalidated this queue
           removeFreshThreadPersistedAfterAbort();
@@ -5045,6 +5679,7 @@ const Composer: FC<{
         temporary: boolean;
       },
       behavior: ComposerFollowUpBehavior = "queue",
+      attachQuotes = false,
     ) => {
       const reservationKey = JSON.stringify([referenceThreadId, items]);
       // replace only invalid reservations so one attempt owns each prompt
@@ -5095,13 +5730,26 @@ const Composer: FC<{
             promptQueueStartPendingRef.current.get(reservationKey) ===
               reservation
           ) {
-            cancelAudioUpload();
-            startPromptQueue(
+            const started = startPromptQueue(
               items,
               target,
               reservation.waitForCurrentRun,
               reservation.behavior,
+              attachQuotes ? quoteThreadId : null,
             );
+            if (started.kind === "quote-invalid") {
+              // Snapshot happens at item creation, so nothing was queued and
+              // the composer draft is still intact.
+              toast.error("Could not attach the selected quotes", {
+                description: "Nothing was sent. Your quote collection was kept.",
+              });
+              return;
+            }
+            if (started.kind === "refused") {
+              onAborted?.();
+              return;
+            }
+            cancelAudioUpload();
             onStarted?.();
           } else if (
             promptQueueStartPendingRef.current.get(reservationKey) ===
@@ -5132,6 +5780,7 @@ const Composer: FC<{
       cancelAudioUpload,
       createPromptQueueTarget,
       pendingQueueStartIsStale,
+      quoteThreadId,
       referenceThreadId,
     ],
   );
@@ -5174,6 +5823,7 @@ const Composer: FC<{
           },
           undefined,
           behavior,
+          true,
         );
         return true;
       }
@@ -5227,6 +5877,7 @@ const Composer: FC<{
           },
           capturedAt,
           behavior,
+          true,
         );
       };
 
@@ -5322,6 +5973,7 @@ const Composer: FC<{
         undefined,
         undefined,
         behavior,
+        true,
       );
     },
     [armJustSent, aui, clearStoredDraft, startHydratedPromptQueue],
@@ -5455,68 +6107,261 @@ const Composer: FC<{
   );
 
   // alsoGuard: prior composer text, so a late write of what the user typed is refused too.
-  const sendReservedComposer = useCallback((...alsoGuard: string[]) => {
-    const assistantRuntime =
-      aui.threads().__internal_getAssistantRuntime?.();
-    let reservationToken: symbol | null = null;
-    reservationToken = reservePreStreamRun(preStreamThreadIds, {
-      usesLocalModel:
-        parseExternalModelId(
-          useChatRuntimeStore.getState().params.checkpoint,
-        ) === null,
-      cancel: (reservedThreadIds) => {
-        if (preStreamRunReservationRef.current === reservationToken) {
-          preStreamRunReservationRef.current = null;
-        }
-        for (const reservedThreadId of reservedThreadIds) {
-          try {
-            assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+  const sendReservedComposer = useCallback(
+    (options: SendReservedComposerOptions = {}) => {
+      const assistantRuntime =
+        aui.threads().__internal_getAssistantRuntime?.();
+      let attachQuotes = options.attachQuotes === true;
+      const alsoGuard = options.alsoGuard ?? [];
+      let dispatch: QuoteDispatch | null = null;
+
+      if (attachQuotes) {
+        const existingQuote = aui.composer().getState().quote;
+        if (existingQuote !== undefined) {
+          const parsed = parseQuoteContext(existingQuote);
+          if (parsed.kind === "invalid") {
+            toast.error("The composer quote is invalid", {
+              description: "Nothing was sent. Your quote collection was kept.",
+            });
             return;
-          } catch {
-            // Thread hydration can retire an alias; try the next captured id.
+          }
+          if (parsed.kind === "valid") {
+            if (getQuoteDispatch(parsed.envelope.contextId) !== null) {
+              toast.error("Those quotes are already being sent");
+              return;
+            }
+            // A stale valid envelope from an interrupted attempt belongs to us.
+            aui.composer().setQuote(undefined);
+          } else {
+            // Never overwrite another feature's quote. Send it normally and keep
+            // our collection available for the next message.
+            attachQuotes = false;
           }
         }
-      },
-    });
-    if (!reservationToken) {
-      toast.error("Wait for the current response to finish");
-      return;
-    }
-    preStreamRunReservationRef.current = reservationToken;
-    try {
-      // Only after reservation succeeds: a refused send keeps the in-flight transcript.
-      cancelAudioUpload();
-      const sentText = aui.composer().getState().text;
-      // Stamp before send() awaits attachments; see utils/chat-thread-creation-claim.ts.
-      const chatStateAtSend = useChatRuntimeStore.getState();
-      claimThreadCreation(preStreamThreadIds, {
-        projectId: projectScope,
-        incognito: chatStateAtSend.incognito,
-        modelId: chatStateAtSend.params.checkpoint ?? "",
-        modelGgufVariant: chatStateAtSend.activeGgufVariant,
-        createdAt: Date.now(),
-      });
-      aui.composer().send();
-      // Empty texts are dropped, so an attachment-only send still clears.
-      armJustSent(sentText, ...alsoGuard);
-    } catch (error) {
-      if (releasePreStreamRunReservation(reservationToken)) {
-        notifyPromptQueueRunFailed(referenceThreadId);
       }
-      preStreamRunReservationRef.current = null;
-      toast.error("Could not prepare attachments", {
-        description:
-          error instanceof Error ? error.message : "Please retry the send.",
+
+      let reservationToken: symbol | null = null;
+      reservationToken = reservePreStreamRun(preStreamThreadIds, {
+        usesLocalModel:
+          parseExternalModelId(
+            useChatRuntimeStore.getState().params.checkpoint,
+          ) === null,
+        cancel: (reservedThreadIds) => {
+          if (preStreamRunReservationRef.current === reservationToken) {
+            preStreamRunReservationRef.current = null;
+          }
+          for (const reservedThreadId of reservedThreadIds) {
+            try {
+              assistantRuntime?.threads.getById(reservedThreadId).cancelRun();
+              return;
+            } catch {
+              // Thread hydration can retire an alias; try the next captured id.
+            }
+          }
+        },
       });
-    }
-  }, [
-    aui,
-    armJustSent,
-    cancelAudioUpload,
-    preStreamThreadIds,
-    projectScope,
-    referenceThreadId,
-  ]);
+      if (!reservationToken) {
+        toast.error("Wait for the current response to finish");
+        return;
+      }
+      preStreamRunReservationRef.current = reservationToken;
+
+      const releaseDispatch = () => {
+        if (dispatch === null) {
+          return;
+        }
+        releaseQuoteDispatch(dispatch.contextId);
+        dispatch = null;
+      };
+      const clearOurQuote = (contextId: string) => {
+        const current = aui.composer().getState().quote;
+        const parsed = parseQuoteContext(current);
+        if (
+          parsed.kind === "valid" &&
+          parsed.envelope.contextId === contextId
+        ) {
+          aui.composer().setQuote(undefined);
+        }
+      };
+      let sendFailed = false;
+      let sendObserver: ComposerSendAttempt | null = null;
+      const failSend = (error: unknown, releaseReservation = true) => {
+        if (sendFailed) {
+          return;
+        }
+        sendFailed = true;
+        const attempt = sendObserver;
+        const detached = attempt?.isDetached() === true;
+        sendObserver = null;
+        attempt?.stop();
+        if (composerSendObserverRef.current === attempt) {
+          composerSendObserverRef.current = null;
+        }
+        if (dispatch !== null) {
+          const contextId = dispatch.contextId;
+          markQuoteDispatchSendFailed(contextId);
+          releaseDispatch();
+          if (!detached) {
+            clearOurQuote(contextId);
+          }
+        }
+        if (
+          releaseReservation &&
+          releasePreStreamRunReservation(reservationToken)
+        ) {
+          notifyPromptQueueRunFailed(referenceThreadId);
+        }
+        if (releaseReservation) {
+          preStreamRunReservationRef.current = null;
+        }
+        if (!detached) {
+          toast.error(
+            error instanceof ComposerAttachmentPreparationError
+              ? "Could not prepare attachments"
+              : "Could not send message",
+            {
+              description:
+                error instanceof Error ? error.message : "Please retry the send.",
+            },
+          );
+        }
+      };
+
+      try {
+        if (attachQuotes && quoteThreadId) {
+          const prepared = reserveQuoteDispatch(quoteThreadId);
+          if (prepared.kind === "invalid") {
+            if (releasePreStreamRunReservation(reservationToken)) {
+              notifyPromptQueueRunFailed(referenceThreadId);
+            }
+            preStreamRunReservationRef.current = null;
+            toast.error("Could not attach the selected quotes", {
+              description: "Nothing was sent. Your quote collection was kept.",
+            });
+            return;
+          }
+          if (prepared.kind === "reserved") {
+            dispatch = prepared.dispatch;
+            aui.composer().setQuote(quoteInfoForDispatch(dispatch));
+          }
+        }
+
+        // Only after reservation succeeds: a refused send keeps the in-flight transcript.
+        cancelAudioUpload();
+        const sentText = aui.composer().getState().text;
+        // Stamp before send() awaits attachments; see utils/chat-thread-creation-claim.ts.
+        const chatStateAtSend = useChatRuntimeStore.getState();
+        claimThreadCreation(preStreamThreadIds, {
+          projectId: projectScope,
+          incognito: chatStateAtSend.incognito,
+          modelId: chatStateAtSend.params.checkpoint ?? "",
+          modelGgufVariant: chatStateAtSend.activeGgufVariant,
+          createdAt: Date.now(),
+        });
+        if (dispatch !== null) {
+          markQuoteDispatchSendStarted(
+            (dispatch as QuoteDispatch).contextId,
+          );
+        }
+        // A new reservation means any previous observer's reservation is no
+        // longer current. Reclaim only that stale owner; never stop an attempt
+        // that still owns the reservation we just acquired.
+        const previousObserver = composerSendObserverRef.current;
+        if (
+          previousObserver !== null &&
+          !isPreStreamRunReservationActive(previousObserver.token)
+        ) {
+          previousObserver.stop();
+          if (composerSendObserverRef.current === previousObserver) {
+            composerSendObserverRef.current = null;
+          }
+        }
+        const registration = observeComposerSend(
+          aui.composer(),
+          preStreamThreadIds,
+          reservationToken,
+          {
+            onSent: () => {
+              if (composerSendObserverRef.current === sendObserver) {
+                composerSendObserverRef.current = null;
+              }
+              sendObserver = null;
+              if (dispatch !== null) {
+                markQuoteDispatchSendSettled(
+                  (dispatch as QuoteDispatch).contextId,
+                );
+              }
+            },
+            onFailed: failSend,
+          },
+          {
+            expectedContextId:
+              dispatch === null
+                ? null
+                : (dispatch as QuoteDispatch).contextId,
+          },
+        );
+        if (registration.kind === "busy") {
+          failSend(
+            new Error("A composer send is already in flight."),
+            registration.activeToken !== reservationToken,
+          );
+          return;
+        }
+        if (registration.kind === "ignored") {
+          failSend(new Error("The composer has nothing to send."));
+          return;
+        }
+        if (registration.kind === "unavailable") {
+          // Without the runtime we cannot observe the send, report attachment
+          // failure, or read fresh quote state. Fail closed instead of sending
+          // an unobserved message with reservations held.
+          failSend(new Error("The composer runtime is unavailable."));
+          return;
+        }
+        if (registration.kind === "observing") {
+          sendObserver = registration.attempt;
+          composerSendObserverRef.current = sendObserver;
+        }
+        // Public ComposerRuntimeImpl.send() returns void. The installed core
+        // reports success through the send event and failure through the
+        // attachment adapter; never inspect this return value.
+        aui.composer().send();
+        if (dispatch !== null) {
+          // The accessor's memoized state is one tap macrotask stale after
+          // send() clears the quote. Use the runtime's synchronous state.
+          const composerRuntime = (
+            aui.composer() as ComposerSendAccessor
+          ).__internal_getRuntime?.();
+          if (
+            composerRuntime === undefined ||
+            typeof composerRuntime.getState !== "function"
+          ) {
+            failSend(new Error("The composer runtime became unavailable."));
+            return;
+          }
+          if (composerRuntime.getState().quote !== undefined) {
+            // The composer ignored the send; the quote was not consumed.
+            failSend(new Error("The composer ignored the send."));
+            return;
+          }
+        }
+        // Empty texts are dropped, so an attachment-only send still clears.
+        armJustSent(sentText, ...alsoGuard);
+      } catch (error) {
+        failSend(error);
+      }
+    },
+    [
+      aui,
+      armJustSent,
+      cancelAudioUpload,
+      preStreamThreadIds,
+      projectScope,
+      quoteThreadId,
+      referenceThreadId,
+    ],
+  );
 
   const interceptSend = useCallback(
     (event: { preventDefault: () => void }) => {
@@ -5640,7 +6485,7 @@ const Composer: FC<{
       clearStoredDraft();
       // keep this synchronous so stale run state cannot drop the send after dismissing the toast.
       // eslint-disable-next-line react-hooks/set-state-in-effect -- see above
-      sendReservedComposer();
+      sendReservedComposer({ attachQuotes: true });
     }
   }, [
     pendingSend,
@@ -5674,6 +6519,8 @@ const Composer: FC<{
 
   useEffect(
     () => () => {
+      composerSendObserverRef.current?.detach();
+      composerSendObserverRef.current = null;
       pendingSendRef.current = false;
       pendingFollowUpBehaviorRef.current = "queue";
       if (waitToastRef.current !== null) toast.dismiss(waitToastRef.current);
@@ -6134,19 +6981,22 @@ const Composer: FC<{
         closeOverlay();
         event.preventDefault();
         // The wrapper replaced what the user typed, so guard that text as well.
-        sendReservedComposer(visibleBeforeWrap, trimmed);
+        sendReservedComposer({
+          attachQuotes: false,
+          alsoGuard: [visibleBeforeWrap, trimmed],
+        });
         return;
       }
 
       if (hasAttachments || hasPendingAudio) {
         event.preventDefault();
         clearStoredDraft();
-        sendReservedComposer();
+        sendReservedComposer({ attachQuotes: true });
         return;
       }
       event.preventDefault();
       clearStoredDraft();
-      sendReservedComposer();
+      sendReservedComposer({ attachQuotes: true });
     },
     [
       aui,
@@ -7652,6 +8502,7 @@ const PromptQueueStack: FC<{ queueThreadIds: string[] }> = ({
       onRemove={removePromptQueueItem}
       onMove={movePromptQueueItem}
       onSteer={steerPromptQueueItem}
+      onReleaseQuotes={releasePromptQueueQuotes}
       onResume={() => resumePromptQueueRun(queueThreadIds)}
     />
   );
@@ -9476,13 +10327,23 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const sourceQuoteValue = useAuiState(
+    ({ message }) => message.metadata?.custom?.quote,
+  );
+  const sendEdit = useCallback(() => {
+    // Always replace, including with undefined. assistant-ui creates a fresh
+    // edit composer per session, but clearing unconditionally prevents a quote
+    // from ever leaking between edit sessions if that lifecycle changes.
+    aui.composer().setQuote(quoteInfoFromMetadata(sourceQuoteValue));
+    aui.composer().send({ startRun: true });
+  }, [aui, sourceQuoteValue]);
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
       return;
     }
     resendAfterCancelRef.current = false;
-    aui.composer().send({ startRun: true });
+    sendEdit();
   });
 
   // ComposerPrimitive.Root's Enter handler sends without startRun, dropping an unchanged edit.
@@ -9493,8 +10354,8 @@ const EditComposer: FC = () => {
       aui.thread().cancelRun();
       return;
     }
-    aui.composer().send({ startRun: true });
-  }, [aui, isComposingRef]);
+    sendEdit();
+  }, [aui, isComposingRef, sendEdit]);
 
   return (
     // Top gap and type match UserMessage, so the text stays near the prompt's line.

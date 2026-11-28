@@ -21,6 +21,8 @@ function liftAdapterFunction(opener: string): string {
 const serializeJs = ts.transpileModule(
   [
     "function modelVisibleMessage(message) { return message; }",
+    "function appendQuoteContextToText(text) { return text; }",
+    "function quoteValueForMessage() { return undefined; }",
     "function serializeAssistantReplayMessages() { throw new Error('not under test'); }",
     liftAdapterFunction("function collectTextParts("),
     liftAdapterFunction("function collectImageParts("),

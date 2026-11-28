@@ -19,6 +19,7 @@ import {
   modelVisibleMessage,
   toolOnlyImages,
 } from "./mcp-image";
+import { appendQuoteContextToText } from "@/components/assistant-ui/message-quote-context";
 import { llamaServerLoadFields } from "../lib/load-request";
 import {
   clearedServerTuningState,
@@ -132,6 +133,7 @@ import {
 } from "../search-images/search-images";
 import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
+import { deepResearchUserMessageRecord } from "../utils/deep-research-user-message";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
   providerCompactionConnectionKey,
@@ -1769,6 +1771,14 @@ function prependSystemPrompt<T extends { role: string; content: unknown }>(
   messages.unshift({ role: "system", content: text } as T);
 }
 
+function quoteValueForMessage(message: RunMessage): unknown {
+  return (
+    message as {
+      metadata?: { custom?: Record<string, unknown> };
+    }
+  ).metadata?.custom?.quote;
+}
+
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1793,7 +1803,11 @@ function toOpenAIMessages(
       : serialized;
   }
 
-  const textContent = collectTextParts(message).join("\n");
+  const baseText = collectTextParts(message).join("\n");
+  const textContent =
+    message.role === "user"
+      ? appendQuoteContextToText(baseText, quoteValueForMessage(message))
+      : baseText;
   const imageParts = collectImageParts(message);
   return [
     {
@@ -5026,21 +5040,29 @@ export function createOpenAIStreamAdapter(
           const storedUserMessage = (
             await listStoredChatMessages(resolvedThreadId)
           ).find((message) => message.id === userMessage.id);
-          await saveStoredChatMessage({
-            id: userMessage.id,
-            threadId: resolvedThreadId,
-            // A stored null is an edited root; `??` would reparent it.
-            parentId:
-              storedUserMessage && storedUserMessage.parentId !== undefined
-                ? storedUserMessage.parentId
-                : userMessageParentId,
-            role: "user",
-            content: userMessage.content,
-            ...(userMessage.attachments?.length
-              ? { attachments: userMessage.attachments }
-              : {}),
-            createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
-          });
+          await saveStoredChatMessage(
+            deepResearchUserMessageRecord({
+              id: userMessage.id,
+              threadId: resolvedThreadId,
+              // A stored null is an edited root; `??` would reparent it.
+              parentId:
+                storedUserMessage && storedUserMessage.parentId !== undefined
+                  ? storedUserMessage.parentId
+                  : userMessageParentId,
+              content: userMessage.content,
+              ...(userMessage.attachments?.length
+                ? { attachments: userMessage.attachments }
+                : {}),
+              createdAt: userMessage.createdAt?.getTime?.() ?? Date.now(),
+              storedMetadata: storedUserMessage?.metadata,
+              // Never use `userMessage.metadata` directly: live custom is nested.
+              liveMetadata: (
+                userMessage as {
+                  metadata?: { custom?: Record<string, unknown> };
+                }
+              ).metadata?.custom,
+            }),
+          );
           const createdRun = await createResearchRun({
             threadId: resolvedThreadId,
             userMessageId: userMessage.id,
