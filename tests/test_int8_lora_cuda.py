@@ -292,3 +292,21 @@ def test_arch_configurations_are_bit_identical(monkeypatch, M, N, K, dtype):
     for arch in ("sm80", "sm89"):
         for a, b in zip(outs["own"], outs[arch]):
             assert _same(a, b), arch
+
+
+def test_one_pass_kernels_stay_within_two_variants(monkeypatch):
+    """Every Qwen3 / Llama projection width compiles at most 2 variants of each one-pass quantization kernel."""
+    if not hasattr(IL._int8_rowq1_kernel, "device_caches"):
+        pytest.skip("this Triton keeps no per-device compile cache")
+    monkeypatch.setitem(IL._ARCH, torch.cuda.current_device(), IL._arch_for((8, 9)))
+    widths = [1024, 2048, 2560, 3072, 4096, 5120, 6144, 8192, 9728, 12288, 14336]
+    before = {
+        k: len(k.device_caches[torch.cuda.current_device()][0])
+        for k in (IL._int8_rowq1_kernel, IL._int8_rotq1_kernel)
+    }
+    for n in widths:
+        x = torch.randn((64, n), device = "cuda", dtype = torch.bfloat16)
+        IL.quantize_rows_scaled(x, torch.ones(n, device = "cuda"))
+        IL.quantize_rotated_rows(x)
+    for k, n0 in before.items():
+        assert len(k.device_caches[torch.cuda.current_device()][0]) - n0 <= 2, k.__name__

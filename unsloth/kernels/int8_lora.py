@@ -86,6 +86,13 @@ _ROTQ_ROWS = 16
 # A100 keeps two-pass rotated x (one-pass was up to 1.7x slower there).
 _ONE_PASS_MAX = 16384
 _ROTQ1_BUDGET = 128  # rows x 128-blocks held per program by the one-pass rotated quantization
+
+
+def _one_pass_block(n) -> Optional[int]:
+    # Two row widths only (<= 2 compiled variants per call site across a model's projections), None = two-pass.
+    return 4096 if n <= 4096 else (_ONE_PASS_MAX if n <= _ONE_PASS_MAX else None)
+
+
 # Triton >= 3.8's sm_8x prefetch pass splits 8-bit dots and the tiles spill (0.2x bf16 on A100); skipping it for
 # these kernels gives 1.5x bf16 on A100 / 1.7x on L4, bit-identical. Older Triton keeps it (3.2 is faster with it).
 _SKIP_PREFETCH = os.environ.get("UNSLOTH_INT8_LORA_SKIP_PREFETCH", "1") != "0"
@@ -482,9 +489,10 @@ def quantize_rotated_rows(x: torch.Tensor):
     q = torch.empty((M, K), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
     h = _hadamard_pm1(x.device, x.dtype)
-    nb = max(16, triton.next_power_of_2(K // GROUP))
-    if nb * GROUP <= _ONE_PASS_MAX and _arch(x.device).rotq_one_pass:
-        rows = max(1, _ROTQ1_BUDGET // nb)
+    width = _one_pass_block(K)
+    if width is not None and _arch(x.device).rotq_one_pass:
+        nb = width // GROUP
+        rows = _ROTQ1_BUDGET // nb
         with _device_ctx(x):
             _launch(
                 _int8_rotq1_kernel,
@@ -521,9 +529,9 @@ def quantize_rows_scaled(x: torch.Tensor, col_scale: torch.Tensor):
         x = x.contiguous()
     q = torch.empty((M, N), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
-    block = triton.next_power_of_2(N)
-    if block <= _ONE_PASS_MAX and _arch(x.device).rowq_one_pass:
-        rows = max(1, _ONE_PASS_MAX // block)
+    block = _one_pass_block(N)
+    if block is not None and _arch(x.device).rowq_one_pass:
+        rows = _ONE_PASS_MAX // block
         with _device_ctx(x):
             _launch(
                 _int8_rowq1_kernel,
