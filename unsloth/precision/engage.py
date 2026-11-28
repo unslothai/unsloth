@@ -89,6 +89,8 @@ LOWP_GEMM_CUSTOM_OPS = (
     "unsloth::fp8_lora_dgrad",
     "unsloth::fp8_lora_first",
     "unsloth::fp8_lora_accum",
+    "unsloth::int8_lora_mm",
+    "unsloth::int8_lora_dgrad",
     "unsloth_zoo::mxfp4_ogs_moe",
     "fbgemm::f8f8bf16",
     "fbgemm::f8f8bf16_tensorwise",

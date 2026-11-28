@@ -934,6 +934,9 @@ def eligible_base(module) -> Optional[str]:
             return why
     if module.in_features % GROUP:
         return f"in_features {module.in_features} is not a multiple of {GROUP}"
+    if module.out_features < GROUP:
+        # Gated DeltaNet in_proj_a / in_proj_b (16 outputs) feed exponentials; an int8 tile would be mostly padding.
+        return f"out_features {module.out_features} is below {GROUP}"
     return None
 
 

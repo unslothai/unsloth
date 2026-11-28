@@ -473,7 +473,10 @@ def _parallel_layout_requested() -> bool:
 
 
 def _loaded_base_kind(model):
-    """'quantized', 'float32' or None (a 16-bit base) from the loaded model's Linear weights."""
+    """'quantized', 'float32' or None (a 16-bit base) from ALL the loaded model's Linear weights: any quantized
+    Linear makes the base quantized (a bnb 4-bit model keeps 16-bit towers / heads, which may come first), else
+    any 16-bit Linear makes it 16 bit (an fp32 router or head beside it does not), else float32."""
+    seen_16bit = seen_fp32 = False
     for module in model.modules():
         if not isinstance(module, torch.nn.Linear):
             continue
@@ -485,10 +488,15 @@ def _loaded_base_kind(model):
             or getattr(weight, "quant_state", None) is not None
         ):
             return "quantized"
-        if weight.dtype not in (torch.bfloat16, torch.float16):
-            return "float32" if weight.dtype == torch.float32 else "quantized"
+        if weight.dtype in (torch.bfloat16, torch.float16):
+            seen_16bit = True
+        elif weight.dtype == torch.float32:
+            seen_fp32 = True
+        else:
+            return "quantized"
+    if seen_16bit:
         return None
-    return None
+    return "float32" if seen_fp32 else None
 
 
 def int8_lora_from_env(
@@ -1080,6 +1088,35 @@ def restore_fp8_lora_for_inference(model):
     owner.__dict__["_unsloth_fp8_lora_bases"] = ()
 
 
+def _frozen_base_lora_forward():
+    from ..kernels import fast_lora
+    return fast_lora.frozen_base_lora_forward if fast_lora.frozen_base_fused_enabled() else None
+
+
+def _int8_tower_skips(model):
+    """Module name components the int8 base leaves in 16 bit: what NF4 keeps 16 bit (vision / audio towers,
+    projectors, mamba mixers, per-architecture extras). The int8 base was only measured on text decoder layers.
+    UNSLOTH_INT8_LORA_TOWERS=1 converts them too."""
+    import os
+
+    if os.environ.get("UNSLOTH_INT8_LORA_TOWERS", "0") == "1":
+        return ()
+    try:
+        from .onthefly_quant import _architecture_skips, _skip_names
+
+        config = getattr(model, "config", None)
+        inner = getattr(getattr(model, "base_model", None), "model", None)
+        config = getattr(inner, "config", None) or config
+        return tuple(_skip_names()) + tuple(_architecture_skips(config))
+    except Exception:
+        return ("vision_tower", "visual", "audio_tower", "multi_modal_projector", "merger", "mamba")
+
+
+def _name_in(name, keys):
+    dotted = "." + name + "."
+    return any(("." + key + ".") in dotted for key in keys)
+
+
 def _model_hidden_size(model):
     seen = set()
     stack = [model]
@@ -1129,6 +1166,7 @@ def enable_fp8_lora(
             _record_engagement(model, recipe, 0, detail = {"skipped": "hidden size"})
             _require_engagement(recipe, 0, f"hidden size {hidden} below {kernels.MIN_HIDDEN}")
             return []
+    tower_skips = _int8_tower_skips(model) if int8 else ()
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
@@ -1141,6 +1179,9 @@ def enable_fp8_lora(
             continue
         if is_hp(base, name + ".base_layer") or is_hp(module, name):
             skipped[name] = "high precision layer"
+            continue
+        if tower_skips and _name_in(name, tower_skips):
+            skipped[name] = "vision / audio tower, projector or a layer NF4 keeps in 16 bit"
             continue
         why = kernels.eligible_base(base)
         if why is None and not allow_cpu:
@@ -1160,6 +1201,12 @@ def enable_fp8_lora(
         reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
         attach = kernels.attach_int8_lora_base if int8 else kernels.attach_fp8_lora_base
         state = attach(base, offload = offload and not reads_raw)
+        fused = _frozen_base_lora_forward()
+        if fused is not None:
+            # unsloth_zoo's compiled PEFT forward (FastModel) runs this fused op instead of base_layer(x) + LoRA.
+            base.__dict__["_unsloth_fused_lora_forward"] = fused
+        else:
+            base.__dict__.pop("_unsloth_fused_lora_forward", None)
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)

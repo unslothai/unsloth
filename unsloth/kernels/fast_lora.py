@@ -1712,6 +1712,54 @@ def apply_lora_o(self, X):
     return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS, dropout_p and dropout_p[0], bias)
 
 
+FROZEN_BASE_FUSED_STATS = {"fused": 0}
+
+
+def frozen_base_fused_enabled():
+    # Read at attach time (enable_fp8_lora), not import: UNSLOTH_FROZEN_BASE_FUSED=0 installs nothing.
+    return os.environ.get("UNSLOTH_FROZEN_BASE_FUSED", "1") != "0"
+
+
+def frozen_base_lora_forward(proj, x, args, kwargs):
+    """PEFT lora.Linear forward for a base on the fp8 / int8 frozen-base GEMMs: the same fused LoRA_W op
+    FastLanguageModel's projections run (base GEMM with the LoRA term in its epilogue, fused input gradient).
+    unsloth_zoo's compiled PEFT forward calls it first; None means it cannot run here and PEFT's forward runs."""
+    if args or kwargs:
+        return None
+    if not TRACE_LORA_FUNCTIONS and _is_compiling():
+        # Before torch 2.11 LoRA_W runs Dynamo-disabled (_apply): a graph break the unfused path does not have.
+        return None
+    if getattr(proj.base_layer, "_unsloth_fp8_lora", None) is None:
+        return None
+    if (
+        _has_multiple_active_adapters(proj)
+        or _has_active_dora_adapter(proj)
+        or _has_activation_fake_quantizer(proj)
+    ):
+        return None
+    extras = _lora_dropout_and_bias((proj,), x)
+    if extras is None:
+        return None
+    dropout_p, (bias,) = extras
+    W, W_quant, A, B, S = get_lora_parameters(proj)
+    if W_quant is None or x.dtype != W.dtype:
+        return None
+    shape = x.shape
+    X = (
+        x if x.dim() == 3 else x.reshape(1, -1, shape[-1])
+    )  # LoRA_W's backward reads (batch, seq, hidden)
+    if not _is_compiling():
+        FROZEN_BASE_FUSED_STATS["fused"] += 1
+    if dropout_p is None and bias is None:
+        out = _apply(LoRA_W, X, W, W_quant, A, B, S)
+    else:
+        out = _apply(LoRA_W, X, W, W_quant, A, B, S, dropout_p and dropout_p[0], bias)
+    base_bias = proj.base_layer.bias
+    if base_bias is not None:
+        out = out + base_bias.to(out.dtype)
+    return out if x.dim() == 3 else out.reshape(*shape[:-1], out.shape[-1])
+
+
 IDENTITY_DROPOUT = torch.nn.Identity
 
 

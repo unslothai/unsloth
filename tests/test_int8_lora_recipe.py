@@ -146,8 +146,12 @@ def test_refuses_without_triton(monkeypatch):
 def test_eligibility_needs_rotation_block():
     import unsloth.kernels.int8_lora as IL
 
-    ok = torch.nn.Linear(256, 64, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    ok = torch.nn.Linear(256, 128, bias = False, dtype = torch.bfloat16).requires_grad_(False)
     assert IL.eligible_base(ok) is None
+    narrow = torch.nn.Linear(256, 16, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    assert "below 128" in IL.eligible_base(
+        narrow
+    )  # Gated DeltaNet in_proj_a / in_proj_b stay 16 bit
     odd = torch.nn.Linear(272, 64, bias = False, dtype = torch.bfloat16).requires_grad_(False)
     assert "multiple of 128" in IL.eligible_base(odd)
     trainable = torch.nn.Linear(256, 64, bias = False, dtype = torch.bfloat16)
@@ -166,14 +170,12 @@ def test_weight_quantization_round_trip_cpu():
 
 def _tiny_lora_model(hidden):
     from peft import LoraConfig, get_peft_model
-
-    class Cfg:
-        hidden_size = hidden
+    from transformers import PretrainedConfig
 
     class Tiny(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = Cfg()
+            self.config = PretrainedConfig(hidden_size = hidden)  # newer peft reads config.get(...)
             self.q_proj = torch.nn.Linear(hidden, hidden, bias = False, dtype = torch.bfloat16)
 
         def forward(self, x):

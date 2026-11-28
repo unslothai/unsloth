@@ -59,7 +59,7 @@ def test_flags_resolve(l4, l8, fp8, want):
 
 
 @pytest.mark.parametrize(
-    "l4, l8", [("int4", False), ("4bit", False), (False, "int8"), (False, "yes")]
+    "l4, l8", [("int4", False), ("4bit", False), (False, "int4"), (False, "yes")]
 )
 def test_unknown_strings_raise_instead_of_enabling_bitsandbytes(l4, l8):
     with pytest.raises(ValueError):

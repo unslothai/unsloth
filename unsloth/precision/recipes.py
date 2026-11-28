@@ -697,7 +697,7 @@ _add(
         grad_scaler = "per_dtype",  # fp16 activations need loss scaling, as for fp8 LoRA
         input_dtypes = ("bf16", "fp16"),
         compile = "opaque",
-        backend = "unsloth.kernels.int8_lora (UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
+        backend = "unsloth.kernels.int8_lora (load_in_8bit = 'int8', UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
         gates = {
             "sm75": Gate(
                 "refused",
