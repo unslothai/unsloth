@@ -6697,6 +6697,9 @@ def _two_edits_in_one_turn():
 def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeypatch):
     """Compaction rebuilds the messages, so a call after it must not append to a stale message dict."""
 
+    from core.inference.context_window import message_source
+
+    source_messages = []
     payloads: list[dict] = []
     backend = _make_backend(
         monkeypatch,
@@ -6718,6 +6721,9 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
             messages = [{"role": "user", "content": "Write the game"}],
             tools = [{"type": "function", "function": {"name": "edit_file"}}],
             max_tool_iterations = 4,
+            on_conversation_grew = lambda messages: source_messages.extend(
+                message_source(m) for m in messages if m.get("tool_calls")
+            ),
         )
     )
 
@@ -6733,6 +6739,8 @@ def test_a_second_call_in_a_compacted_turn_is_still_visible_to_the_model(monkeyp
     assert answered, "no tool result reached the model at all"
     assert answered <= announced, f"results with no visible call: {answered - announced}"
     assert _BIG_BODY not in json.dumps(sent)
+    assert [c["id"] for c in source_messages[-1]["tool_calls"]] == ["call_big", "call_small"]
+    assert _BIG_BODY in json.dumps(source_messages[-1])
 
 
 def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
@@ -7964,3 +7972,84 @@ def test_first_context_fit_retries_whole_document_in_prompt_order(
     if isinstance(tool_choice, dict):
         assert [t["function"]["name"] for t in payloads[0]["tools"]] == ["search_knowledge_base"]
     assert bool(truncation.get("checkpoint_started")) is (policy == "checkpoint" and not sticky)
+
+
+def test_whole_document_retry_replaces_an_argument_compacted_search_call(monkeypatch):
+    """Argument compaction replays the excerpt search call as a copy; the retry must still replace it."""
+    from core.inference import tools
+    from core.inference.context_window import _CompactedToolMessage
+
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "OK"}), _done()]])
+    backend._effective_context_length = 1000
+    monkeypatch.setattr(
+        backend,
+        "count_chat_tokens",
+        lambda messages, *_a, **_kw: sum(len(str(m.get("content", ""))) for m in messages),
+    )
+    monkeypatch.setattr(llama_cpp, "_can_reset_epoch", lambda *_a, **_kw: True)
+    monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda _thread_id: False)
+    monkeypatch.setattr(
+        llama_cpp,
+        "_archive_and_recall",
+        lambda conversation, *_a, **_kw: dict(conversation = conversation, counts = {}, recalled = False),
+    )
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(
+        llama_cpp, "_sticky_compaction_details", lambda *_a, **_kw: (0, True, False)
+    )
+    monkeypatch.setattr(llama_cpp, "_conversation_recall_reserve", lambda _thread_id: 0)
+
+    def inject(
+        messages,
+        scope,
+        *,
+        whole_document_only = False,
+    ):
+        built = tools.build_synthetic_search_exchange(
+            tool_name = "search_knowledge_base",
+            call_prefix = "rag_auto_",
+            status_label = "search_knowledge_base",
+            query = "Summarize the document",
+            text = "Complete document" if whole_document_only else "Partial passage",
+            sources = None,
+        )
+        return {**built, "whole_document": whole_document_only}
+
+    monkeypatch.setattr(tools, "build_rag_autoinject", inject)
+    fit = llama_cpp._fit_with_instruction_pins
+
+    def fit_and_compact_search_call(*args, **kwargs):
+        # Stands in for pre-eviction argument compaction of a long query.
+        fitted, truncation = fit(*args, **kwargs)
+        return [
+            _CompactedToolMessage(m, m["tool_calls"])
+            if any(str(c.get("id", "")).startswith("rag_auto_") for c in m.get("tool_calls") or ())
+            else m
+            for m in fitted
+        ], truncation
+
+    monkeypatch.setattr(llama_cpp, "_fit_with_instruction_pins", fit_and_compact_search_call)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [
+                {"role": "system", "content": "Be brief."},
+                {"role": "user", "content": "ancient " * 250},
+                {"role": "assistant", "content": "Prior answer"},
+                {"role": "user", "content": "Summarize the document"},
+            ],
+            tools = [{"type": "function", "function": {"name": "search_knowledge_base"}}],
+            context_overflow = "truncate_oldest",
+            context_policy = "checkpoint",
+            compaction_headroom_ratio = 0.25,
+            thread_id = "t2",
+            max_tokens = 80,
+            max_tool_iterations = 2,
+            rag_scope = {"thread_id": "t1", "context_length": 1000, "whole_doc": True},
+        )
+    )
+
+    sent = payloads[0]["messages"]
+    calls = [c["id"] for m in sent for c in m.get("tool_calls") or ()]
+    answered = [m["tool_call_id"] for m in sent if m["role"] == "tool"]
+    assert calls == answered and len(calls) == 1
+    assert [m["content"] for m in sent if m["role"] == "tool"] == ["Complete document"]

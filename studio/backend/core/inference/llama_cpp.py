@@ -80,6 +80,8 @@ from core.inference.context_window import (
     estimate_messages_tokens_conservative,
     estimate_messages_tokens_dense,
     evicted_messages,
+    message_source,
+    message_source_id,
     fit_rolling_context,
     image_dimensions,
     messages_with_priced_images,
@@ -430,18 +432,46 @@ def _fit_with_instruction_pins(
         )
     except Exception:  # noqa: BLE001 -- a protection heuristic must never break a chat
         pins = set()
-    fitted, truncation = _fit_context(
-        messages, protected_message_ids = (anchors | pins) or None, **kwargs
-    )
-    # Only a refusal returning the ORIGINAL messages was already failing; a rescue is servable.
+    original = messages
     if (
         not kwargs.get("replay_only")
-        and pins
-        and truncation
-        and not truncation.get("fits")
-        and not int(truncation.get("dropped_messages") or 0)
+        and (kwargs.get("context_length") or 0) > 1
+        and kwargs.get("count_tokens") is not None
     ):
-        return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+        target = prompt_budget(kwargs.get("context_length") or 0, kwargs.get("max_tokens"))
+        try:
+            compacted, count = compact_completed_tool_arguments(
+                messages,
+                preserve_failed = True,
+                protected_message_ids = anchors | pins,
+            )
+            if count:
+                before_tokens = kwargs["count_tokens"](messages)
+                if before_tokens > target and kwargs["count_tokens"](compacted) < before_tokens:
+                    messages = compacted
+        except Exception:
+            logger.debug("Pre-eviction argument compaction failed", exc_info = True)
+
+    def refused(truncation):
+        return bool(
+            truncation
+            and not truncation.get("fits")
+            and not int(truncation.get("dropped_messages") or 0)
+        )
+
+    def fit(messages):
+        fitted, truncation = _fit_context(
+            messages, protected_message_ids = (anchors | pins) or None, **kwargs
+        )
+        # Only a refusal returning the ORIGINAL messages was already failing; a rescue is servable.
+        if not kwargs.get("replay_only") and pins and refused(truncation):
+            return _fit_context(messages, protected_message_ids = anchors or None, **kwargs)
+        return fitted, truncation
+
+    fitted, truncation = fit(messages)
+    if messages is not original and refused(truncation):
+        # The eviction rescue judges the uncompacted prompt against n_ctx; compaction must not hide it.
+        return fit(original)
     return fitted, truncation
 
 
@@ -1661,12 +1691,12 @@ def _branch_boundary(conversation: list[dict], branch: Optional[list[dict]]) -> 
         default = max(0, len(messages) - 1),
     )
     messages = messages[:cutoff]
-    live = {id(message) for message in conversation}
+    live = {message_source_id(message) for message in conversation}
     count = 0
     for message in messages:
         if message.get("role") in ("system", "developer"):
             continue
-        if id(message) not in live:
+        if message_source_id(message) not in live:
             count += 1
     return count
 
@@ -1729,13 +1759,13 @@ def _branch_non_system(branch: Optional[list[dict]]) -> list[dict]:
 def _branch_boundary_anchor(conversation: list[dict], branch: Optional[list[dict]]) -> str:
     """Text, not id or index, taken after the last eviction (first survivor may be a pin). Only moves the boundary shallower; a stale anchor never evicts live turns."""
     messages = _branch_non_system(branch)
-    live = {id(message) for message in conversation}
+    live = {message_source_id(message) for message in conversation}
     last_dropped = max(
-        (index for index, message in enumerate(messages) if id(message) not in live),
+        (index for index, message in enumerate(messages) if message_source_id(message) not in live),
         default = -1,
     )
     for message in messages[last_dropped + 1 :]:
-        if id(message) in live:
+        if message_source_id(message) in live:
             return _anchor_text(message)
     return ""
 
@@ -2289,7 +2319,9 @@ def _archive_and_recall(
         if not conversation_archive.enabled():
             return result
 
-        gone = evicted_messages(before, conversation)
+        before = [message_source(m) for m in before]
+        archive_live = [message_source(m) for m in conversation]
+        gone = evicted_messages(before, archive_live)
         if background:
             # llama.cpp only: its streams gate the idle-gap worker (`inference_running`).
             conversation_archive.note_branch(thread_id, before, cancel_check)
@@ -2300,8 +2332,8 @@ def _archive_and_recall(
             conversation_archive.archive_turns(
                 thread_id,
                 gone,
-                live = conversation,
-                branch = branch_messages or conversation,
+                live = archive_live,
+                branch = branch_messages or archive_live,
                 cancel_check = cancel_check,
             )
             if gone
@@ -41022,7 +41054,8 @@ class LlamaCppBackend:
         _live_branch_ids: set[int] = {id(message) for message in conversation}
 
         def _extend_live_branch(current: list[dict]) -> list[dict]:
-            for message in current:
+            for replay in current:
+                message = message_source(replay)
                 if id(message) not in _live_branch_ids:
                     _live_branch_ids.add(id(message))
                     _live_branch.append(message)
@@ -41409,9 +41442,10 @@ class LlamaCppBackend:
             """Evicts older turns from a continuation one eviction short, using the plain fit only, not the full preflight (which would archive and recall again)."""
             if context_overflow != "truncate_oldest" or not self._effective_context_length:
                 return None
+            _candidate = list(candidate)
             try:
                 _fitted, _truncation = _fit_with_instruction_pins(
-                    list(candidate),
+                    _candidate,
                     context_length = self._effective_context_length,
                     # Room the continuation needs, not the caller's cap (a small cap overstates room).
                     max_tokens = max(
@@ -41435,7 +41469,9 @@ class LlamaCppBackend:
             except Exception:
                 logger.debug("continuation eviction: fit failed", exc_info = True)
                 return None
-            if not _truncation or not _truncation.get("dropped_messages"):
+            if not _truncation:
+                return _fitted if _fitted is not _candidate else None
+            if not _truncation.get("dropped_messages"):
                 return None
             logger.info(
                 "Continuation did not fit; evicted %s older message(s) to try to keep it",
@@ -41695,13 +41731,14 @@ class LlamaCppBackend:
                         and not _has_unpriced_media(conversation)
                     ):
                         try:
+                            # By source: argument compaction replays the search call as a copy.
                             old_ids = {id(message) for message in (_auto or {}).get("messages", ())}
-                            live_ids = {id(message) for message in conversation}
+                            live_ids = {message_source_id(message) for message in conversation}
                             if not (_auto and _auto.get("whole_document") and old_ids <= live_ids):
                                 base = [
                                     message
                                     for message in conversation
-                                    if id(message) not in old_ids
+                                    if message_source_id(message) not in old_ids
                                 ]
                                 refreshed = build_rag_autoinject(
                                     base, rag_scope, whole_document_only = True
@@ -41716,7 +41753,7 @@ class LlamaCppBackend:
                                         (
                                             i
                                             for i, message in enumerate(base)
-                                            if id(message) in mcp_ids
+                                            if message_source_id(message) in mcp_ids
                                         ),
                                         len(base),
                                     )
@@ -43416,11 +43453,14 @@ class LlamaCppBackend:
                             assistant_msg,
                             continue_final_message = _merge_into_partial,
                         )
+                        assistant_msg = conversation[-1]
                         assistant_appended = True
                     else:
-                        assistant_msg.setdefault("tool_calls", []).append(
-                            decision.as_assistant_tool_call()
-                        )
+                        call = decision.as_assistant_tool_call()
+                        assistant_msg.setdefault("tool_calls", []).append(call)
+                        source = message_source(assistant_msg)
+                        if source is not assistant_msg:
+                            source.setdefault("tool_calls", []).append(call)
 
                     # Bypass wins here too, so a direct internal caller with both
                     # flags never prompts. "auto" pauses only high-risk calls; "off"
@@ -44143,6 +44183,12 @@ class LlamaCppBackend:
                                 (_tc or {}).get("id") == decision.tool_call_id
                                 for _tc in (_msg.get("tool_calls") or [])
                             ):
+                                assistant_msg = _msg
+                                break
+                    else:
+                        # The result-budget rescue inside _invoke_tool may have replaced this turn.
+                        for _msg in reversed(conversation):
+                            if message_source(_msg) is message_source(assistant_msg):
                                 assistant_msg = _msg
                                 break
 

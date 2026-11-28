@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
@@ -811,3 +813,61 @@ def test_a_continuation_is_sized_by_what_is_left_of_the_cap(monkeypatch):
     assert len(payloads) == 2, "the answer was not continued"
     assert payloads[1]["max_tokens"] == 100, "the payload did not get the remainder"
     assert 100 in targets, f"every sizing decision still used the whole cap: {sorted(set(targets))}"
+
+
+@pytest.mark.parametrize("final_pass", [False, True])
+def test_a_continuation_can_fit_by_compacting_completed_arguments(monkeypatch, final_pass):
+    payloads = []
+    partial = "\n".join(f"Finding {i}: condition {i} applies." for i in range(80))
+    backend = _make_backend(
+        monkeypatch,
+        [
+            [_sse({"content": partial}), _usage(20), _finish("length"), _done()],
+            [_sse({"content": "\nAll findings reported."}), _usage(10), _finish("stop"), _done()],
+        ],
+        payloads,
+    )
+
+    def count(messages, *_args, **_kwargs):
+        return 200 + sum(len(json.dumps(m)) // 4 for m in messages)
+
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
+    code = "# inspect records\n" * 600
+    messages = [
+        {"role": "user", "content": "Analyze the document."},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "inspect",
+                    "type": "function",
+                    "function": {"name": "python", "arguments": json.dumps({"code": code})},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "inspect", "content": "EX-01: verified condition."},
+        {"role": "user", "content": "Report all findings."},
+    ]
+    before = copy.deepcopy(messages)
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = messages,
+            tools = [_WEB_SEARCH_TOOL],
+            enable_thinking = False,
+            max_tool_iterations = 0 if final_pass else 3,
+            max_tokens = 512,
+            context_overflow = "truncate_oldest",
+        )
+    )
+
+    assert len(payloads) == 2, "a fitting compacted continuation was discarded"
+    assert (
+        code
+        in json.loads(payloads[0]["messages"][1]["tool_calls"][0]["function"]["arguments"])["code"]
+    )
+    assert code not in json.dumps(payloads[1]["messages"])
+    assert messages[2] in payloads[1]["messages"]
+    assert payloads[1]["messages"][-1]["content"] == partial
+    assert "All findings reported." in "".join(_texts(events, "content"))
+    assert not any(e.get("type") == "context_truncated" for e in events)
+    assert messages == before
