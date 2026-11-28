@@ -732,6 +732,28 @@ def _int8_params(model):
     return found
 
 
+def _integer_coded_params(model):
+    """Frozen integer-coded weights no shard context takes: unsloth_zoo's packed expert stacks (NVFP4,
+    MXFP8, block FP8, MXFP4, GGUF; uint8 codes with their block scales held as attributes) and a GGUF
+    linear's packed blocks. fully_shard cannot shard them (its sharded nn.Parameter asks an integer
+    tensor for requires_grad), and a gathered plain tensor would drop the subclass and its scales, so
+    they stay replicated, like the 8-bit weights. bitsandbytes 4-bit (bnb_qlora context) and 8-bit
+    (_int8_params) weights are left to their own handling."""
+    found = {
+        p
+        for p in model.parameters()
+        if not (p.is_floating_point() or p.is_complex())
+        and not _is_params4bit(p)
+        and not _is_int8_param(p)
+    }
+    if found:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(found)} frozen packed (integer-coded) weights replicated: "
+            "FSDP2 cannot shard them or keep their block scales."
+        )
+    return found
+
+
 def _placed_cuda_device(model, tensors, device):
     """A model already (partly) on CUDA shards onto this rank's GPU, cuda:LOCAL_RANK, not wherever its
     first weight sits: device_map = {"": 0} on every rank would put every rank's mesh on GPU 0 (NCCL
@@ -1890,6 +1912,11 @@ def _place_replicated(params, device):
                 f"{p.device}, not {device}. Load the model onto each rank's device first."
             )
         p.data = p.data.to(device)
+        if not (p.is_floating_point() or p.is_complex()):
+            # A packed stack's block scales ride as tensor attributes: they move with its codes.
+            for key, value in list(p.__dict__.items()):
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    setattr(p, key, value.to(device))
         moved += 1
     return moved
 
@@ -2179,6 +2206,14 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 "Upgrade torch, or load the model in 4-bit or 16-bit."
             )
         ignored.update(int8)
+        packed = _integer_coded_params(model)
+        if packed and not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: native FSDP2 keeps packed (NVFP4 / MXFP8 / MXFP4 / GGUF) weights replicated, "
+                f"which needs torch with fully_shard(ignored_params) (2.7+); this is torch {torch.__version__}. "
+                "Upgrade torch, or load the model in 16-bit or bitsandbytes 4-bit."
+            )
+        ignored.update(packed)
         ignored.update(
             tables
         )  # frozen lookup tables: whole on every rank, never sharded / gathered / reduced
