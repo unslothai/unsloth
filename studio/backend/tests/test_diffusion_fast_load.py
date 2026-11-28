@@ -5,6 +5,7 @@
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -630,14 +631,16 @@ def test_load_prefetch_reads_a_gguf_denoiser_last_instead_of_the_dense_one(tmp_p
         denoiser_path = str(denoiser),
         text_encoders_replaced = {"text_encoder_2"},
     )
-    assert [p.split("/snap/")[-1] for p in seen.pop("paths")] == [
+    assert [Path(p).as_posix().split("/snap/")[-1] for p in seen.pop("paths")] == [
         "text_encoder/model.safetensors",
         "vae/diffusion_pytorch_model.safetensors",
-        str(denoiser),
+        denoiser.as_posix(),
     ]
     # a denoiser path that is not a file still skips the dense shards it replaces
     fl.start_load_prefetch(object(), str(snap), denoiser_path = str(tmp_path / "missing.gguf"))
-    assert not any("transformer/" in p or p.endswith(".gguf") for p in seen["paths"])
+    assert not any(
+        "transformer/" in Path(p).as_posix() or p.endswith(".gguf") for p in seen["paths"]
+    )
 
 
 def test_the_gguf_branch_starts_the_prefetch_and_stops_it_after_the_assembly():
