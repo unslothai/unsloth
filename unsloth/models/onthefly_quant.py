@@ -268,7 +268,72 @@ def _int8_auto_reason(arguments, extra):
             return "tensor / pipeline / expert parallel"
     except Exception:
         pass
-    return _int8_auto_device_reason() or _int8_auto_config_reason(arguments, extra)
+    return (
+        _int8_auto_device_reason()
+        or _int8_auto_config_reason(arguments, extra)
+        or _int8_auto_memory_reason(arguments, extra)
+    )
+
+
+# The int8 base quantizes at get_peft_model, so the load itself stages the whole model in 16 bit on the GPU.
+_AUTO_16BIT_FREE_FRACTION = 0.85
+
+
+def _checkpoint_16bit_bytes(arguments, extra):
+    """Bytes of the checkpoint's weights in 16 bit, from safetensors metadata (local files, the HF cache or the
+    Hub), else None."""
+    import glob
+    import json
+
+    name = arguments["model_name"]
+    revision = arguments.get("revision", None)
+    if os.path.isdir(name):
+        index = os.path.join(name, "model.safetensors.index.json")
+        if os.path.isfile(index):
+            with open(index, encoding = "utf-8") as f:
+                total = json.load(f).get("metadata", {}).get("total_size")
+            return int(total) if total else None
+        files = glob.glob(os.path.join(name, "*.safetensors"))
+        return sum(os.path.getsize(f) for f in files) or None
+    try:
+        from huggingface_hub import get_safetensors_metadata
+        meta = get_safetensors_metadata(name, revision = revision, token = arguments.get("token", None))
+        return 2 * sum(meta.parameter_count.values())
+    except Exception:
+        pass
+    try:
+        from huggingface_hub import try_to_load_from_cache
+
+        cache_dir = extra.get("cache_dir", None)
+        index = try_to_load_from_cache(
+            name, "model.safetensors.index.json", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(index, str):
+            with open(index, encoding = "utf-8") as f:
+                total = json.load(f).get("metadata", {}).get("total_size")
+            return int(total) if total else None
+        single = try_to_load_from_cache(
+            name, "model.safetensors", cache_dir = cache_dir, revision = revision
+        )
+        if isinstance(single, str):
+            return os.path.getsize(single)
+    except Exception:
+        pass
+    return None
+
+
+def _int8_auto_memory_reason(arguments, extra):
+    """bitsandbytes quantizes while loading; the int8 base needs the 16-bit model on the GPU first."""
+    size = _checkpoint_16bit_bytes(arguments, extra)
+    if size is None:
+        return "the checkpoint size is unknown"
+    try:
+        free, _ = torch.cuda.mem_get_info()
+    except Exception:
+        return "free GPU memory is unknown"
+    if size > _AUTO_16BIT_FREE_FRACTION * free:
+        return f"the 16-bit load ({size / 2**30:.1f} GB) does not fit in free GPU memory ({free / 2**30:.1f} GB)"
+    return None
 
 
 def resolve_int8_8bit(

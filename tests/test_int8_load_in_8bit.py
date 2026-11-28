@@ -44,6 +44,7 @@ def int8_gpu(monkeypatch):
     """An RTX 50 / RTX PRO 6000 class GPU and a 16-bit checkpoint wide enough for the int8 base."""
     monkeypatch.setattr(oq, "_int8_auto_device_reason", lambda: None)
     monkeypatch.setattr(oq, "_int8_auto_config_reason", lambda arguments, extra: None)
+    monkeypatch.setattr(oq, "_int8_auto_memory_reason", lambda arguments, extra: None)
     monkeypatch.delenv(oq.AUTO_8BIT_ENV, raising = False)
     monkeypatch.setattr(oq, "_AUTO_NOTICE", [])
 
@@ -238,8 +239,14 @@ def test_config_probe_forwards_offline_and_cache_options(monkeypatch):
         calls.append((dict(kwargs), os.environ.get("HF_HUB_OFFLINE")))
         raise OSError("offline")
 
+    from unsloth.models import loader_utils
+
     monkeypatch.setattr(transformers.AutoConfig, "from_pretrained", fake)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    # Only the call's own flag decides here, whatever HF_HUB_OFFLINE the test runner was started with.
+    monkeypatch.setattr(
+        loader_utils, "_get_effective_local_files_only", lambda kw: bool(kw.get("local_files_only"))
+    )
     extra = {
         "local_files_only": True,
         "cache_dir": "/c",
@@ -317,3 +324,21 @@ def test_rocm_int_mm_matches_reference():
     out = torch._int_mm(a, b)
     assert out.dtype == torch.int32
     assert torch.equal(out.cpu(), (a.cpu().long() @ b.cpu().long()).int())
+
+
+def test_memory_rule_keeps_bitsandbytes_when_the_16bit_load_does_not_fit(tmp_path, monkeypatch):
+    (tmp_path / "model.safetensors.index.json").write_text(
+        json.dumps({"metadata": {"total_size": 20 * 2**30}})
+    )
+    arguments = {"model_name": str(tmp_path)}
+    assert oq._checkpoint_16bit_bytes(arguments, {}) == 20 * 2**30
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (16 * 2**30, 32 * 2**30))
+    assert "does not fit" in oq._int8_auto_memory_reason(arguments, {})
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (30 * 2**30, 32 * 2**30))
+    assert oq._int8_auto_memory_reason(arguments, {}) is None
+    (tmp_path / "model.safetensors.index.json").unlink()
+    (tmp_path / "model.safetensors").write_bytes(b"0" * 1024)
+    assert oq._checkpoint_16bit_bytes(arguments, {}) == 1024
+    assert "unknown" in oq._int8_auto_memory_reason(
+        {"model_name": str(tmp_path / "missing")}, {"local_files_only": True}
+    )
