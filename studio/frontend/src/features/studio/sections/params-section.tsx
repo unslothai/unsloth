@@ -16,6 +16,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import { CONTEXT_LENGTHS } from "@/config/training";
 import {
   useDrafterCapability,
@@ -24,6 +25,7 @@ import {
 } from "@/features/training";
 import {
   llmStepGuidance,
+  rowsAfterAutomaticEvalHoldout,
   runDataParallelSize,
   trainedRowCount,
 } from "@/features/training/lib/step-guidance";
@@ -55,6 +57,7 @@ export function ParamsSection({
   mode?: "simple" | "advanced";
 }): ReactElement {
   const t = useT();
+  const isMlx = usePlatformStore((state) => state.appleSilicon);
   // Simple mode hides the section, but a drafter turned on earlier still needs its capability.
   const drafterEnabled = useTrainingConfigStore((state) => state.drafterEnabled);
   useDrafterCapability(drafterEnabled);
@@ -73,6 +76,13 @@ export function ParamsSection({
       gradientAccumulation: state.gradientAccumulation,
       packing: state.packing,
       datasetTotalRows: state.datasetTotalRows,
+      datasetSource: state.datasetSource,
+      datasetFormat: state.datasetFormat,
+      isAudioModel: state.isAudioModel,
+      isVisionModel: state.isVisionModel,
+      isDatasetAudio: state.isDatasetAudio,
+      uploadedEvalFile: state.uploadedEvalFile,
+      evalSteps: state.evalSteps,
       datasetSliceStart: state.datasetSliceStart,
       datasetSliceEnd: state.datasetSliceEnd,
       setProjectName: state.setProjectName,
@@ -152,14 +162,22 @@ export function ParamsSection({
         s.planRequestKey === s.wantedPlanKey,
     }),
   );
+  const slicedRows = trainedRowCount(
+    store.datasetTotalRows,
+    store.datasetSliceStart,
+    store.datasetSliceEnd,
+  );
+  const trainingRows =
+    slicedRows !== null &&
+    store.datasetSource === "upload" &&
+    !store.uploadedEvalFile &&
+    store.evalSteps > 0
+      ? rowsAfterAutomaticEvalHoldout(slicedRows, store, isMlx)
+      : slicedRows;
   const stepGuidance = store.isDecision
     ? null
     : llmStepGuidance(
-        trainedRowCount(
-          store.datasetTotalRows,
-          store.datasetSliceStart,
-          store.datasetSliceEnd,
-        ),
+        trainingRows,
         store.batchSize,
         store.gradientAccumulation,
         dataParallelSize,

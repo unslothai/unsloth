@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TrainingConfigState } from "../types/config.ts";
 import type { ParallelMode } from "../types/parallel.ts";
 import { showsGpuSection } from "./parallel-plan.ts";
+import { isRawTextDatasetFormat } from "./training-methods.ts";
 
 // Fewer steps than this barely moves a LoRA, so tiny sets get a few passes instead of one.
 export const MIN_SUGGESTED_STEPS = 30;
@@ -41,6 +43,27 @@ export function trainedRowCount(
   );
   const rows = endExclusive - start;
   return rows > 0 ? rows : null;
+}
+
+/** Mirrors split_dataset_for_evaluation in core/training/eval_dataset.py. */
+export function rowsAfterAutomaticEvalHoldout(
+  rows: number,
+  config: Pick<
+    TrainingConfigState,
+    "isAudioModel" | "isVisionModel" | "isDatasetAudio" | "trainingMethod" | "datasetFormat"
+  >,
+  isMlx: boolean,
+): number {
+  // Raw text can drop blank rows before deciding whether any holdout is possible.
+  // The preview only knows the unfiltered count, so keep the existing estimate.
+  if (config.trainingMethod === "cpt" || isRawTextDatasetFormat(config.datasetFormat)) return rows;
+  const standaloneAudio = config.isAudioModel && !config.isVisionModel;
+  const torchAudioVlm = !isMlx && config.isAudioModel && config.isDatasetAudio;
+  if (rows < 32 || standaloneAudio || torchAudioVlm) return rows;
+  return rows - Math.min(
+    Math.floor(rows / 2),
+    Math.max(16, Math.min(128, Math.floor(0.05 * rows))),
+  );
 }
 
 type PlanLayout = {

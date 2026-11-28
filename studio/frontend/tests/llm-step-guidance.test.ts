@@ -10,6 +10,7 @@ import {
   MIN_SUGGESTED_STEPS,
   llmStepGuidance,
   planDataParallelSize,
+  rowsAfterAutomaticEvalHoldout,
   runDataParallelSize,
   trainedRowCount,
 } from "../src/features/training/lib/step-guidance.ts";
@@ -64,6 +65,33 @@ test("the trained rows follow the inclusive train slice", () => {
   assert.equal(trainedRowCount(0), null);
 });
 
+test("an automatic eval holdout shrinks the one-pass recommendation", () => {
+  const text = {
+    isAudioModel: false,
+    isVisionModel: false,
+    isDatasetAudio: false,
+    trainingMethod: "lora",
+    datasetFormat: "auto",
+  } as const;
+  const audio = { ...text, isAudioModel: true, isDatasetAudio: true };
+  const audioVlm = { ...audio, isVisionModel: true };
+  assert.equal(
+    llmStepGuidance(rowsAfterAutomaticEvalHoldout(48, text, false), 1, 1)?.suggestedSteps,
+    32,
+  );
+  assert.equal(
+    llmStepGuidance(rowsAfterAutomaticEvalHoldout(48, audio, false), 1, 1)?.suggestedSteps,
+    48,
+  );
+  assert.equal(rowsAfterAutomaticEvalHoldout(48, audioVlm, false), 48);
+  assert.equal(rowsAfterAutomaticEvalHoldout(48, audioVlm, true), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(48, { ...audioVlm, isDatasetAudio: false }, false), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(32, { ...text, datasetFormat: "raw" }, false), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(32, { ...text, trainingMethod: "cpt" }, false), 32);
+  assert.equal(rowsAfterAutomaticEvalHoldout(1, text, false), 1);
+  assert.equal(rowsAfterAutomaticEvalHoldout(20_000, text, false), 19_872);
+});
+
 test("the stored default is untouched: guidance only", () => {
   assert.equal(DEFAULT_HYPERPARAMS.maxSteps, 60);
   const hook = readSrc(
@@ -87,7 +115,8 @@ test("the row count comes from the dataset check and is never persisted", () => 
 test("the Max Steps field shows the hint and applies it only on click", () => {
   const params = readSrc("features/studio/sections/params-section.tsx");
   assert.match(params, /data-testid="llm-step-guidance"/);
-  assert.match(params, /llmStepGuidance\(\s*trainedRowCount\(/);
+  assert.match(params, /store.evalSteps > 0\s*\? rowsAfterAutomaticEvalHoldout\(slicedRows, store, isMlx\)/);
+  assert.match(params, /llmStepGuidance\(\s*trainingRows,/);
   assert.match(
     params,
     /onClick=\{\(\) =>\s*store\.setMaxSteps\(stepGuidance\.suggestedSteps\)/,
