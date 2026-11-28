@@ -24,6 +24,7 @@ def sr(monkeypatch):
     monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
     monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED", raising = False)
     monkeypatch.delenv("UNSLOTH_BF16_SR_FUSED_BNB", raising = False)
+    monkeypatch.delenv("UNSLOTH_BF16_SR_MULTI_TENSOR", raising = False)
     path = Path(__file__).resolve().parents[1] / "unsloth/optimizers/bf16_stochastic_rounding.py"
     spec = importlib.util.spec_from_file_location("_test_bf16_sr_fused", path)
     module = importlib.util.module_from_spec(spec)
@@ -337,10 +338,11 @@ def test_bitsandbytes_rounds_in_one_pass(sr, monkeypatch):
     assert abs(kept["one"] - 1) < 0.05 and abs(kept["two"] - 1) < 0.05, kept
 
 
-def test_launch_failure_after_the_probe_falls_back(sr, capsys):
+def test_launch_failure_after_the_probe_falls_back(sr, capsys, monkeypatch):
     """A launch that fails after the device probe passed (a specialisation the probe never compiled) must not end
     training: the weights it did not reach take the float32 route with a correct step count, and so does every
     later step on that device."""
+    monkeypatch.setenv("UNSLOTH_BF16_SR_MULTI_TENSOR", "0")  # counts one launch per weight
     g = torch.Generator().manual_seed(0)
     params = [
         torch.nn.Parameter((torch.randn(64, 48, generator = g) * 0.05).to(torch.bfloat16).cuda())
