@@ -153,6 +153,35 @@ def _triton_failed(error):
     return True
 
 
+def _torch_moments_to_32bit(entry):
+    """A checkpoint from torch Adam / AdamW (what the stand-in ran before it kept 8-bit state, or
+    any torch run): its moments become this optimizer's 32-bit state, same update rule from there."""
+    if not isinstance(entry, dict) or "state1" in entry:
+        return
+    m, v = entry.get("exp_avg"), entry.get("exp_avg_sq")
+    if not (torch.is_tensor(m) and torch.is_tensor(v)):
+        return
+    for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+        entry.pop(key, None)
+    entry["state1"] = m.float().contiguous()
+    entry["state2"] = v.float().contiguous()
+    step = entry.get("step", 0)
+    entry["step"] = int(step.item() if torch.is_tensor(step) else step)
+
+
+def _flat_state(t, p):
+    """State shaped like p in memory order: bitsandbytes' kernels index state buffers flat, so a
+    non-contiguous buffer (zeros_like of a transposed weight in a bitsandbytes checkpoint) is read
+    in storage order, never permuted."""
+    if t.is_contiguous():
+        return t
+    n = t.numel()
+    storage = t.untyped_storage()
+    if t.storage_offset() == 0 and storage.nbytes() == n * t.element_size():
+        return torch.empty(0, dtype = t.dtype, device = t.device).set_(storage, 0, tuple(p.shape))
+    return t.contiguous()
+
+
 class Optimizer8bit(torch.optim.Optimizer):
     _FSDP_WRAPPED_QUANT_STATE_KEY = "__bnb_optimizer_quant_state__"
 
@@ -264,6 +293,7 @@ class Optimizer8bit(torch.optim.Optimizer):
         for k, v in state_dict["state"].items():
             if k in id_map:
                 param = id_map[k]
+                _torch_moments_to_32bit(v)
                 state[param] = cast(param, v)
                 self._load_step(param, state[param])
             else:
@@ -316,6 +346,9 @@ class Optimizer8bit(torch.optim.Optimizer):
                         self.mng.index2config[(gindex, pindex)] = self.mng.pid2config[id(p)]
                         found = True
 
+    # Eager, like bitsandbytes' ctypes step: a compiled caller graph-breaks here once instead of
+    # recompiling on every Python int step count. Traced code reaches the kernels as opaque ops.
+    @torch._disable_dynamo
     @torch.no_grad()
     def step(self, closure = None):
         loss = None
@@ -369,8 +402,9 @@ class Optimizer8bit(torch.optim.Optimizer):
         p,
         dtype = torch.float32,
     ):
-        # Paged or not: ordinary memory on the parameter's device.
-        return torch.zeros_like(p, dtype = dtype, device = p.device)
+        # Paged or not: ordinary memory on the parameter's device, contiguous whatever p's strides
+        # (the kernels index state flat, as bitsandbytes' do).
+        return torch.zeros(p.shape, dtype = dtype, device = p.device)
 
     def prefetch_state(self, p):
         return None
@@ -514,6 +548,9 @@ class Optimizer2State(Optimizer8bit):
         p.grad = p.grad.contiguous()
         state = self.state[p]
         grad = p.grad
+        for key in ("state1", "state2"):
+            if not state[key].is_contiguous():
+                state[key] = _flat_state(state[key], p)
         config = self.get_config(gindex, pindex, group)
         if p.dtype not in (torch.float32, torch.float16, torch.bfloat16) or grad.dtype != p.dtype:
             raise ValueError(

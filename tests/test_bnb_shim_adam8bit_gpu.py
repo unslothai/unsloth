@@ -183,13 +183,14 @@ from unsloth.kernels import adam8bit_blockwise as K
 dev = "cuda"
 out = {}
 def ulps(a, b, prev):
-    # |a - b| beyond 1e-5 of the step (fast-math vs IEEE float32 rounding of the update itself),
-    # in units of b's spacing in the weight dtype
+    # |a - b| beyond 5e-4 of the step, in units of b's spacing in the weight dtype. The step itself
+    # differs that much early on: bitsandbytes' fast-math powf (ex2.approx / lg2.approx) in
+    # 1 - beta2**t loses about 1e-4 relative to the cancellation, which the kernels reproduce.
     ity = torch.int32 if a.dtype == torch.float32 else torch.int16
     mag = b.abs()
     up = (mag.view(ity) + 1).view(a.dtype)
     spacing = (up.float() - mag.float()).clamp_min(torch.finfo(a.dtype).tiny)
-    excess = ((a.float() - b.float()).abs() - 1e-5 * (b.float() - prev.float()).abs()).clamp_min(0)
+    excess = ((a.float() - b.float()).abs() - 5e-4 * (b.float() - prev.float()).abs()).clamp_min(0)
     return (excess / spacing).max().item()
 code1 = bnb.functional.create_dynamic_map(signed = True).to(dev)
 code2 = bnb.functional.create_dynamic_map(signed = False).to(dev)
@@ -235,7 +236,7 @@ print("OUT " + json.dumps(out))
 def test_triton_matches_torch_path_and_float64_oracle():
     out = run(KERNEL_VS_TORCH)
     for case, w in out.items():
-        # fast-math vs IEEE float32: the step agrees to 1e-5 of itself and the weight, rounded twice
+        # fast-math vs IEEE float32: the step agrees to 5e-4 of itself and the weight, rounded twice
         # (step, then decay), is at most two representable values further; codes one step
         assert w["p_ulps"] <= 2 and w["oracle_ulps"] <= 2, (case, w)
         assert w["code"] <= 1 and w["absmax"] <= 1e-5, (case, w)

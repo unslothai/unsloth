@@ -323,6 +323,21 @@ def test_optimizers_keep_8bit_state_and_int8_refuses():
             except (RuntimeError, ValueError) as err:
                 errors[label] = str(err)
         bnb.optim.AdamW([p], percentile_clipping = 100, block_wise = True)  # older defaults accepted
+        # a transposed (non-contiguous) weight steps with contiguous 8-bit state
+        tp = torch.nn.Parameter(torch.randn(64, 64).t())
+        tp.grad = torch.randn(64, 64).t()
+        o3 = bnb.optim.AdamW8bit([tp])
+        o3.step()
+        transposed = [str(o3.state[tp]["state1"].dtype), o3.state[tp]["state1"].is_contiguous()]
+        # a checkpoint of the previous stand-in (torch AdamW moments) resumes as 32-bit state
+        w = torch.nn.Parameter(torch.randn(5000))
+        w.grad = torch.randn(5000)
+        old = torch.optim.AdamW([w], lr = 1e-3)
+        old.step()
+        new = bnb.optim.AdamW8bit([w], lr = 1e-3)
+        new.load_state_dict(old.state_dict())
+        new.step()
+        migrated = [str(new.state[w]["state1"].dtype), new.state[w]["step"], "exp_avg" in new.state[w]]
         sgd = bnb.optim.SGD8bit([torch.nn.Parameter(torch.ones(4))], lr = 0.1)
         try:
             sgd.load_state_dict({"state": {0: {"state1": torch.zeros(4, dtype = torch.uint8)}},
@@ -345,6 +360,7 @@ def test_optimizers_keep_8bit_state_and_int8_refuses():
             "notices": printed.getvalue().count("runs torch.optim"), "sgd_notice": printed.getvalue().count("SGD8bit"),
             "fp16_moved": float((h.detach().float() - 1).abs().max()), "resumed_same": same,
             "errors": errors, "group_sizes": group_sizes, "sgd_resume": sgd_resume,
+            "transposed": transposed, "migrated": migrated,
             "manager": type(bnb.optim.GlobalOptimManager.get_instance()).__name__,
         }))
         """
@@ -365,6 +381,8 @@ def test_optimizers_keep_8bit_state_and_int8_refuses():
     assert "amsgrad" in out["errors"]["amsgrad"] and "bitsandbytes" in out["errors"]["clipping"]
     assert "load_in_8bit" in out["errors"]["int8"] and "bitsandbytes" in out["errors"]["lion"]
     assert "8-bit state" in out["sgd_resume"]
+    assert out["transposed"] == ["torch.uint8", True]
+    assert out["migrated"] == ["torch.float32", 2, False]
     assert out["manager"] == "GlobalOptimManager"
 
 
