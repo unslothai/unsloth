@@ -17692,6 +17692,8 @@ class VideoBackend:
                     device = state.device,
                     publish = _publish_preview,
                     total_steps = steps,
+                    # Only while a visible page polls this render's progress for its preview.
+                    watch = "video",
                 )
                 render_call = (
                     ltx25_render_call

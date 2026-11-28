@@ -55638,7 +55638,10 @@ async def diffusion_load_progress(
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
-async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_generate_progress(
+    current_subject: str = Depends(get_current_subject), preview: bool = Query(False)
+):
+    """``preview``: a visible page shows the running render's live preview, so the denoise loop keeps producing it."""
     external = _external_image_run_active()
 
     def _hidden():
@@ -55663,6 +55666,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
+    if preview is True:  # a direct call gets the Query default object
+        from core.inference.diffusion_preview import note_preview_watch
+        note_preview_watch("image")
     log_media_generation_progress("image", progress)
     if not progress["active"]:
         from core.inference.flux3_prompt_upsampler import progress as upsampler_progress
