@@ -1050,6 +1050,7 @@ export const ptBR = {
       customizeProfileMenu: "Personalizar menu do perfil",
       newBadge: "Novo",
       export: "Exportar",
+      pinned: "Fixadas",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
       noChats: "Nenhum chat",
@@ -1132,6 +1133,10 @@ export const ptBR = {
       deleteProjectsFilesDescription:
         "A pasta do espaço de trabalho de cada projeto é removida do disco.",
       countSelected: "{count} selecionadas",
+      selectChats: "Selecionar conversas",
+      selectAllChats: "Selecionar todas as conversas",
+      deselectAllChats: "Desmarcar todas as conversas",
+      clearSelection: "Limpar seleção",
       pinChats: "Fixar conversas",
       unpinChats: "Desafixar conversas",
       archiveChats: "Arquivar conversas",

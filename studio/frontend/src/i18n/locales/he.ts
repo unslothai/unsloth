@@ -1084,6 +1084,7 @@ export const he = {
       customizeProfileMenu: "התאמה אישית של תפריט הפרופיל",
       newBadge: "חדש",
       export: "ייצוא",
+      pinned: "מוצמדים",
       recents: "אחרונים",
       noChatsYet: "אין עדיין צ'אטים",
       noChats: "אין צ'אטים",
@@ -1166,6 +1167,10 @@ export const he = {
       deleteProjectsFilesDescription:
         "תיקיית סביבת העבודה של כל פרויקט תוסר מהדיסק.",
       countSelected: "{count} נבחרו",
+      selectChats: "בחירת צ'אטים",
+      selectAllChats: "בחירת כל הצ'אטים",
+      deselectAllChats: "ביטול בחירת כל הצ'אטים",
+      clearSelection: "ניקוי הבחירה",
       pinChats: "הצמד צ'אטים",
       unpinChats: "בטל הצמדת צ'אטים",
       archiveChats: "העבר צ'אטים לארכיון",

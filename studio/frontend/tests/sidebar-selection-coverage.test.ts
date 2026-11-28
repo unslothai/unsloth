@@ -25,7 +25,7 @@ test("folder rows select too, and open their own bulk menu", async () => {
   const source = APP_SIDEBAR;
   assert.match(
     source,
-    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*\)/,
+    /handleProjectSelectionClick\(\n\s*event,\n\s*project\.id,\n\s*order\.selectionIds \?\? order\.orderedIds,\n\s*order\.section,\n\s*\)/,
   );
   assert.match(source, /selectProjectForContextMenu\(project\.id\)/);
   assert.match(source, /\{renderProjectContextMenu\(project\)\}/);

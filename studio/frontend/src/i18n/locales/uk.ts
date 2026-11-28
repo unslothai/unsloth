@@ -1156,6 +1156,7 @@ export const uk = {
       customizeProfileMenu: "Налаштувати меню профілю",
       newBadge: "Нове",
       export: "Експорт",
+      pinned: "Закріплені",
       recents: "Нещодавні",
       noChatsYet: "Поки що немає чатів",
       noChats: "Немає чатів",
@@ -1239,6 +1240,10 @@ export const uk = {
       deleteProjectsFilesDescription:
         "Папку робочої області кожного проєкту буде вилучено з диска.",
       countSelected: "Вибрано: {count}",
+      selectChats: "Вибрати чати",
+      selectAllChats: "Вибрати всі чати",
+      deselectAllChats: "Зняти вибір з усіх чатів",
+      clearSelection: "Очистити вибір",
       pinChats: "Закріпити чати",
       unpinChats: "Відкріпити чати",
       archiveChats: "Архівувати чати",

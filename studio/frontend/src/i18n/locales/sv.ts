@@ -1101,6 +1101,7 @@ export const sv = {
       customizeProfileMenu: "Anpassa profilmenyn",
       newBadge: "Ny",
       export: "Exportera",
+      pinned: "Fästa",
       recents: "Senaste",
       noChatsYet: "Inga chattar ännu",
       noChats: "Inga chattar",
@@ -1183,6 +1184,10 @@ export const sv = {
       deleteProjectsFilesDescription:
         "Varje projekts arbetsytemapp tas bort från disken.",
       countSelected: "{count} markerade",
+      selectChats: "Välj chattar",
+      selectAllChats: "Välj alla chattar",
+      deselectAllChats: "Avmarkera alla chattar",
+      clearSelection: "Rensa markering",
       pinChats: "Fäst chattar",
       unpinChats: "Lossa chattar",
       archiveChats: "Arkivera chattar",
