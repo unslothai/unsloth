@@ -138,11 +138,8 @@ _REFUSED_PIPELINE_LOAD_FLAGS = (
 
 
 def _gguf_packed_asked(values):
-    """gguf_packed_requested's rule, without popping: the kwarg, else UNSLOTH_GGUF_PACKED, with a gguf_file."""
-    value = values.get("gguf_packed")
-    if value is None:
-        value = os.environ.get("UNSLOTH_GGUF_PACKED", "0").strip().lower() in ("1", "true", "yes")
-    return bool(value) and bool(values.get("gguf_file"))
+    """The loader's rule (check_gguf_packed_request): `gguf_packed = True` together with a gguf_file."""
+    return bool(values.get("gguf_packed")) and bool(values.get("gguf_file"))
 
 
 def _bound(fn, args, kwargs):

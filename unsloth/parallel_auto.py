@@ -261,9 +261,7 @@ def _gguf_route(call):
     """A gguf_file load is not sized from safetensors (a repo may hold other files beside the GGUF): native FSDP2,
     which shards the dequantized weights and keeps gguf_packed = True blocks replicated; DDP when this torch's
     FSDP2 would refuse those blocks."""
-    packed = call.get("gguf_packed")
-    if packed is None:
-        packed = os.environ.get("UNSLOTH_GGUF_PACKED", "0").strip().lower() in ("1", "true", "yes")
+    packed = bool(call.get("gguf_packed"))  # the loader's rule: the kwarg only
     if packed and not _fsdp2_keeps_packed():
         raise _Route(DDP, _packed_refused_why("gguf_packed = True blocks"))
     raise _Route(

@@ -165,6 +165,14 @@ def test_tp_env_refuses_a_gguf_packed_load_before_loading(tp_layout, via_env):
         monkeypatch.setenv("UNSLOTH_GGUF_PACKED", "1")
     else:
         kwargs["gguf_packed"] = True
+    if via_env:
+        # The loader keeps a GGUF packed only for the keyword; the variable alone loads it dense, which works
+        # (past the refusal; this test has no process group for the tensor parallel setup that follows).
+        try:
+            tp_env.tensor_parallel_env_load(from_pretrained)("org/model-GGUF", **kwargs)
+        except Exception as error:
+            assert "gguf_packed" not in str(error), error
+        return
     with pytest.raises(NotImplementedError) as info:
         tp_env.tensor_parallel_env_load(from_pretrained)("org/model-GGUF", **kwargs)
     message = str(info.value)
