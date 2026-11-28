@@ -377,17 +377,21 @@ def _ollama_model_info_from_manifest(
             updated_at = tag_file.stat().st_mtime
         except OSError:
             updated_at = None
-        return ollama_mlx.model_info(
-            repo_name = repo_name,
-            tag = tag,
-            checkpoint = str(
-                _ollama_mlx_checkpoint_path(ollama_dir, rel, f"ollama/{repo_name}:{tag}")
-            ),
-            tag_file = tag_file,
-            config = cfg,
-            layers = layers,
-            updated_at = updated_at,
-        )
+        try:
+            return ollama_mlx.model_info(
+                repo_name = repo_name,
+                tag = tag,
+                checkpoint = str(
+                    _ollama_mlx_checkpoint_path(ollama_dir, rel, f"ollama/{repo_name}:{tag}")
+                ),
+                tag_file = tag_file,
+                config = cfg,
+                layers = layers,
+                updated_at = updated_at,
+            )
+        except (TypeError, AttributeError) as e:
+            # A field of the wrong JSON type skips this tag, not every tag in the Ollama root.
+            return invalid_manifest(f"MLX manifest field has the wrong type: {e}")
 
     unsupported_layers = _unsupported_ollama_layer_media_types(layers)
     if unsupported_layers:
