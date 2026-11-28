@@ -294,6 +294,46 @@ def _adam32bit_kernel(
 
 tag_compile_cache(__file__)
 
+# Compiled kernels by specialization: one step launches a kernel per weight (hundreds per step for
+# LoRA adapters), so later launches skip JITFunction's argument binding and specialization.
+_LAUNCHERS = {}
+_FAST_LAUNCH = None  # None: untried, True: works, False: this Triton's CompiledKernel differs
+
+
+def _spec(arg):
+    # what Triton specializes on: tensor dtype + 16 byte alignment; int width (do_not_specialize ints)
+    if torch.is_tensor(arg):
+        return (arg.dtype, arg.data_ptr() % 16 == 0)
+    if isinstance(arg, int):
+        return (int, -(1 << 31) <= arg < (1 << 31))
+    return (type(arg),)
+
+
+def _run(kernel, grid, args, **constexprs):
+    global _FAST_LAUNCH
+    if _FAST_LAUNCH is not False:
+        key = (
+            kernel,
+            torch.cuda.current_device(),
+            tuple(constexprs.items()),
+            tuple(map(_spec, args)),
+        )
+        compiled = _LAUNCHERS.get(key)
+        if compiled is None:
+            compiled = _LAUNCHERS[key] = kernel.warmup(
+                *args, grid = grid, **constexprs, enable_fp_fusion = True
+            )
+        try:
+            compiled[tuple(grid) + (1,) * (3 - len(grid))](*args)  # CompiledKernel takes a 3-D grid
+            _FAST_LAUNCH = True
+            return
+        except TypeError:
+            if _FAST_LAUNCH:
+                raise
+            _FAST_LAUNCH = False
+    kernel[grid](*args, **constexprs, enable_fp_fusion = True)
+
+
 # Where nvcc fused s2 = s2 * beta2 + (1 - beta2) * g * g in the 8-bit kernel, per weight dtype:
 # float32 folds the g * g product into the fma, half / bfloat16 the s2 * beta2 one.
 _S2_PRODUCT_FMA = {torch.float32: True, torch.float16: False, torch.bfloat16: False}
@@ -341,31 +381,34 @@ def adam_8bit_blockwise_step(
     if s2_product_fma is None:
         s2_product_fma = _S2_PRODUCT_FMA[p.dtype]
     with torch.cuda.device(p.device):
-        _adam8bit_blockwise_kernel[(-(blocks // -_ROWS),)](
-            p,
-            g,
-            state1,
-            state2,
-            qmap1,
-            qmap2,
-            absmax1,
-            absmax2,
-            n,
-            blocks,
-            step,
-            lr,
-            float(beta1),
-            float(beta2),
-            float(eps),
-            float(weight_decay),
-            float(gnorm_scale),
+        _run(
+            _adam8bit_blockwise_kernel,
+            (-(blocks // -_ROWS),),
+            (
+                p,
+                g,
+                state1,
+                state2,
+                qmap1,
+                qmap2,
+                absmax1,
+                absmax2,
+                n,
+                blocks,
+                step,
+                lr,
+                float(beta1),
+                float(beta2),
+                float(eps),
+                float(weight_decay),
+                float(gnorm_scale),
+            ),
             HAS_DECAY = float(weight_decay) > 0.0,
             S2_PRODUCT_FMA = bool(s2_product_fma),
             CAPTURABLE = capturable,
             ROWS = _ROWS,
             BLOCK = BLOCKSIZE,
             EXACT = _EXACT,
-            enable_fp_fusion = True,
         )
 
 
@@ -392,24 +435,27 @@ def adam_32bit_step(
         step = step if torch.is_tensor(step) else torch.tensor(step, device = p.device)
         lr = lr if torch.is_tensor(lr) else torch.tensor(lr, dtype = torch.float32, device = p.device)
     with torch.cuda.device(p.device):
-        _adam32bit_kernel[(-(n // -_ELEMS_32),)](
-            p,
-            g,
-            state1,
-            state2,
-            n,
-            step,
-            lr,
-            float(beta1),
-            float(beta2),
-            float(eps),
-            float(weight_decay),
-            float(gnorm_scale),
+        _run(
+            _adam32bit_kernel,
+            (-(n // -_ELEMS_32),),
+            (
+                p,
+                g,
+                state1,
+                state2,
+                n,
+                step,
+                lr,
+                float(beta1),
+                float(beta2),
+                float(eps),
+                float(weight_decay),
+                float(gnorm_scale),
+            ),
             HAS_DECAY = float(weight_decay) > 0.0,
             CAPTURABLE = capturable,
             BLOCK = _ELEMS_32,
             EXACT = _EXACT,
-            enable_fp_fusion = True,
         )
 
 
