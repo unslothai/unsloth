@@ -1879,6 +1879,7 @@ export const vi = {
       levelHigh: "Cao",
       levelLow: "Thấp",
       levelHighShort: "Thêm lớp cô lập hệ điều hành cho Python và Terminal",
+      editorMcpWarning: "{name} MCP chạy mã với quyền của ứng dụng bên ngoài sandbox của Unsloth, ngay cả khi chọn mức sandbox Cao. Mã này có thể truy cập các tệp bên ngoài dự án của bạn.",
       levelLowShort: "Chỉ phần mềm. Mã rủi ro sẽ hỏi trước",
       levelFullAccessNote:
         "Toàn quyền truy cập sẽ tắt sandbox. Cài đặt này sẽ áp dụng lại khi bạn chọn mức khác.",
@@ -2379,7 +2380,7 @@ export const vi = {
         details: {
           ask: "Hỏi trước mỗi lệnh gọi công cụ, bao gồm mã terminal và Python, tìm kiếm web, chỉnh sửa tệp và công cụ MCP. Các công cụ do nhà cung cấp bên ngoài chạy sẽ không bị tạm dừng.",
           auto: "Tự chạy các lệnh gọi công cụ thông thường và chỉ hỏi khi một thao tác có vẻ rủi ro, chẳng hạn đọc thông tin xác thực, nâng quyền hoặc chạy lệnh có tính phá hủy.",
-          off: "Chạy mọi lệnh gọi công cụ mà không hỏi. Mã Python và terminal vẫn chạy trong sandbox, giới hạn những tệp mà chúng có thể truy cập trên máy tính của bạn. Nếu không có sandbox hệ điều hành hoạt động, các lệnh gọi rủi ro sẽ hỏi trước.",
+          off: "Các công cụ MCP đang bật dùng quyền của máy chủ và có thể chạy mà không cần hỏi. Python và Terminal dùng mức sandbox đã chọn. Các lệnh gọi có rủi ro đến hai công cụ này vẫn cần được phê duyệt khi hệ điều hành không có tính năng cô lập hoặc khi chọn mức sandbox Thấp.",
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
       },

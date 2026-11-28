@@ -1874,6 +1874,7 @@ export const id = {
       levelHigh: "Tinggi",
       levelLow: "Rendah",
       levelHighShort: "Menambahkan isolasi OS ke Python dan Terminal",
+      editorMcpWarning: "{name} MCP menjalankan kode dengan izin aplikasi di luar sandbox Unsloth, meski tingkat sandbox Tinggi aktif. Kode itu dapat mengakses berkas di luar proyek Anda.",
       levelLowShort:
         "Hanya perangkat lunak. Kode berisiko meminta izin terlebih dahulu",
       levelFullAccessNote:
@@ -2374,7 +2375,7 @@ export const id = {
         details: {
           ask: "Meminta izin sebelum setiap panggilan alat, termasuk kode terminal dan Python, pencarian web, pengeditan file, dan alat MCP. Alat yang dijalankan oleh penyedia eksternal tidak dijeda.",
           auto: "Menjalankan panggilan alat rutin secara mandiri dan hanya meminta izin saat suatu tindakan terlihat berisiko, seperti membaca kredensial, menaikkan hak akses, atau menjalankan perintah yang merusak.",
-          off: "Menjalankan setiap panggilan alat tanpa meminta izin. Kode Python dan terminal tetap berjalan di sandbox, yang membatasi file yang dapat dijangkau di komputer Anda. Tanpa sandbox OS yang berfungsi, panggilan berisiko akan meminta izin terlebih dahulu.",
+          off: "Alat MCP yang diaktifkan menggunakan izin server dan dapat berjalan tanpa meminta persetujuan. Python dan Terminal menggunakan tingkat sandbox yang dipilih. Panggilan berisiko ke alat tersebut tetap meminta persetujuan jika isolasi OS tidak tersedia atau tingkat sandbox Rendah dipilih.",
           full: "Menjalankan setiap panggilan alat tanpa meminta izin dan menonaktifkan sandbox kode, sehingga kode Python dan terminal dapat membaca dan mengubah file apa pun yang dapat diakses akun Anda.",
         },
       },

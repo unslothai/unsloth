@@ -1721,6 +1721,7 @@ export const es = {
       levelHigh: "Alto",
       levelLow: "Bajo",
       levelHighShort: "Python y Terminal también se ejecutan en la sandbox del sistema",
+      editorMcpWarning: "{name} MCP ejecuta código con los permisos de la app fuera del entorno aislado de Unsloth, incluso con el nivel de aislamiento alto. El código puede acceder a archivos fuera de tu proyecto.",
       levelLowShort: "Solo sandbox de software. El código riesgoso pregunta antes",
       levelFullAccessNote: "Acceso total desactiva el sandbox. Este ajuste vuelve a aplicarse cuando elijas otro nivel.",
       learnMore: "Más información",
@@ -2468,7 +2469,7 @@ export const es = {
           auto:
             "Ejecuta por sí solo las llamadas habituales y solo pregunta cuando una acción parece arriesgada, como leer credenciales, elevar privilegios o ejecutar comandos destructivos.",
           off:
-            "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu equipo puede acceder. Sin un sandbox del sistema que funcione, las llamadas arriesgadas preguntan primero.",
+            "Las herramientas MCP habilitadas usan los permisos del servidor y pueden ejecutarse sin pedir aprobación. Python y el terminal usan el nivel de aislamiento seleccionado. Las llamadas de riesgo a estas herramientas siguen requiriendo aprobación si el aislamiento del sistema operativo no está disponible o si se selecciona el nivel bajo.",
           full:
             "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
