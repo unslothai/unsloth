@@ -375,3 +375,31 @@ def test_local_count_memo_is_bounded(tmp_path, parse_calls, monkeypatch):
     assert row_counts.count_local_file_rows(paths[4]) == 5
     assert row_counts.count_local_file_rows(paths[0]) == 1
     assert parse_calls == [paths[0]]
+
+
+def test_local_count_memo_retries_after_a_read_error(tmp_path, parse_calls, monkeypatch):
+    path = _write(tmp_path / "d.jsonl", '{"t":1}\n' * 7)
+    real = row_counts._count_jsonl_lines
+    failures = [OSError(5, "Input/output error")]
+
+    def flaky(p):
+        if failures:
+            raise failures.pop()
+        return real(p)
+
+    monkeypatch.setattr(row_counts, "_count_jsonl_lines", flaky)
+    assert row_counts.count_local_file_rows(path) is None
+    assert row_counts.count_local_file_rows(path) == 7
+
+
+def test_local_count_memo_recounts_when_mtime_is_set_back(tmp_path, parse_calls):
+    import os
+
+    path = _write(tmp_path / "d.jsonl", '{"t":1}\n' * 4)
+    before = path.stat()
+    assert row_counts.count_local_file_rows(path) == 4
+    with open(path, "r+", encoding = "utf-8") as handle:
+        handle.write('{"t":1}\n' * 3 + " " * 7 + "\n")
+    os.utime(path, ns = (before.st_atime_ns, before.st_mtime_ns))
+    assert path.stat().st_size == before.st_size and path.stat().st_mtime_ns == before.st_mtime_ns
+    assert row_counts.count_local_file_rows(path) == 3
