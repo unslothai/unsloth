@@ -44,7 +44,10 @@ BATCH_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
 # Families Auto may batch (on the Low VRAM placement, ``streamed_load``); the rest batch only under
 # UNSLOTH_VIDEO_BATCH=force. LTX-2.5 under Low VRAM, two stages, eager (A100-80, 768x512x49): 39.6 s per clip one
 # at a time, 21.7 batched by 2, 12.7 by 4, and both sizes pass the paired quality gate against the solo renders
-# (72 clips by 2, 24 by 4). The one-stage recipe's batch of 2 did not pass it, so it stays serial.
+# (72 clips by 2, 24 by 4). One stage, same placement: 29.5 s per clip one at a time, 16.8 batched by 2 (1.77x),
+# 10.3 by 4 (2.89x); against a bf16 eager reference with fp32 attention, the paired upper bound of batched minus
+# solo LPIPS is 0.0085 by 2 and 0.0080 by 4 over 72 clips each (audio 0.0029 / 0.0086), and a clip's frames and
+# audio are bit-identical when only its neighbour changes.
 AUTO_FAMILIES = WAN_FAMILIES | {LTX25_FAMILY}
 # Batch sizes Auto may run, per family: the sizes whose quality gate passed. Another size renders its clips one at
 # a time (force runs any size).
@@ -113,9 +116,6 @@ def load_decline_reason(state: Any) -> Optional[str]:
     if chosen == "auto" and fam.name not in AUTO_FAMILIES:
         # Not yet shown to batch at no quality cost on a measured-faster placement: serial unless forced.
         return "this family batches only when forced (UNSLOTH_VIDEO_BATCH=force)"
-    if chosen == "auto" and fam.name == LTX25_FAMILY and not _ltx25_two_stage():
-        # Measured: the one-stage recipe's batch of 2 drifted past the quality gate's margin.
-        return "the one-stage LTX-2.5 recipe batches only when forced"
     if getattr(state, "transformer_cache", None):
         # A step cache decides on the whole batch's residual, so one clip could change another's skips.
         return "a step cache is on"
@@ -152,14 +152,6 @@ def load_decline_reason(state: Any) -> Optional[str]:
         # Measured: a denoiser kept on the card is compute bound, so a batch is no faster than serial.
         return "only a Low VRAM load is measured faster batched"
     return None
-
-
-def _ltx25_two_stage() -> bool:
-    try:
-        from .video_ltx25 import two_stage_enabled
-    except Exception:  # noqa: BLE001 -- no LTX-2.5 module: nothing to batch there
-        return False
-    return bool(two_stage_enabled())
 
 
 def auto_size_decline(state: Any, rows: int) -> Optional[str]:
