@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import * as ragTypes from "../src/features/rag/types/rag.ts";
 
 // Every KB list reader keeps its own copy, so every create, rename and delete must announce itself.
 
@@ -30,6 +31,7 @@ function load(responses: Response[]) {
       "@/lib/format-fastapi-error": { formatFastApiDetail: () => null },
       "@/lib/open-stream-response": {},
       "@/lib/sse-json-events": {},
+      "../types/rag": ragTypes,
       "./rag-availability": {
         noteRagAvailability() {},
         noteRagResponse() {},

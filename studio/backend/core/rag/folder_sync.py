@@ -54,7 +54,7 @@ _folder_cancels: set = set()
 _folder_cancels_lock = threading.Lock()
 _UNLINK_BUSY_TIMEOUT_MS = 30_000
 _retirement_schema_lock = threading.Lock()
-_TERMINAL = {"completed", "failed"}
+_TERMINAL = {"completed", "failed", "cancelled"}
 _MAX_FOLDER_DEPTH = 64
 _MAX_NAMED_FAILURES = 3
 _MAX_WITHHELD_PATHS = 500
@@ -684,8 +684,8 @@ def delete_folder(folder_id: str, *, remove_index: bool = True) -> bool:
                 (int(remove_index), _now(), folder_id),
             )
             conn.execute(
-                "UPDATE linked_folder_sync_jobs SET status='failed', stage='error', "
-                "error='Linked folder was removed', completed_at=? "
+                "UPDATE linked_folder_sync_jobs SET status='cancelled', stage='cancelled', "
+                "error=NULL, successor_kind=NULL, completed_at=? "
                 "WHERE folder_id=? AND status IN ('pending','running')",
                 (_now(), folder_id),
             )
@@ -1053,7 +1053,7 @@ def _prune_terminal_jobs(conn) -> None:
     limit = max(0, config.FOLDER_JOB_HISTORY_LIMIT)
     conn.execute(
         "DELETE FROM linked_folder_sync_jobs WHERE id IN ("
-        "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
+        "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed','cancelled') "
         "AND successor_kind IS NULL "
         "ORDER BY completed_at DESC, created_at DESC LIMIT -1 OFFSET ?)",
         (limit,),
@@ -1577,6 +1577,37 @@ def _ingest_folder_document(
     _worker_state.stop_event = stop_event
     document_id = None
     ingestion_job = None
+    try:
+        _check_running()
+        document_id, ingestion_job = ingestion.start_ingestion(
+            folder["scope"],
+            folder["scope_id"] if folder["scope_type"] == "knowledge_base" else None,
+            None,
+            relative_path,
+            snapshot,
+            project_id = folder["scope_id"] if folder["scope_type"] == "project" else None,
+            model_name = embedding_model,
+            content_hash = content_hash,
+            dedupe = False,
+            linked_folder_id = folder["id"],
+            linked_relative_path = relative_path,
+            background = False,
+            reuse_identical = not rebuild,
+        )
+        result = ingestion.get_job_status(ingestion_job)
+        if result is None:
+            raise RuntimeError("Ingestion job disappeared")
+        if result["status"] == "cancelled":
+            raise _SyncCancelled
+        if result["status"] != "completed":
+            raise RuntimeError(result.get("error") or "Ingestion failed")
+        _check_running()
+        return _IngestionResult(document_id, ingestion_job)
+    except Exception as exc:  # noqa: BLE001 - the coordinator classifies it
+        if is_cancel_requested(folder["id"]):
+            # The unlink cut the ingest short; that is not a file failure.
+            return _IngestionResult(document_id, ingestion_job, _SyncCancelled())
+        return _IngestionResult(document_id, ingestion_job, exc)
     with rag_db.reuse_connections():
         try:
             wait_while_chat_busy()
@@ -2102,9 +2133,10 @@ def _stop_job(job_id: str) -> None:
         return
     _set_job(
         job_id,
-        status = "failed",
-        stage = "error",
-        error = "Indexing was stopped",
+        status = "cancelled",
+        stage = "cancelled",
+        error = None,
+        successor_kind = None,
         completed_at = _now(),
     )
     with closing(rag_db.get_connection()) as conn:
@@ -2127,7 +2159,7 @@ def _queue_successor(job_id: str) -> None:
             "SELECT folder_id, successor_kind, status FROM linked_folder_sync_jobs WHERE id=?",
             (job_id,),
         ).fetchone()
-        if job and job["successor_kind"] and job["status"] not in ("pending", "running"):
+        if job and job["successor_kind"] and job["status"] in ("completed", "failed"):
             active = conn.execute(
                 "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
                 "AND status IN ('pending','running') ORDER BY created_at LIMIT 1",
