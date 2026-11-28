@@ -453,19 +453,22 @@ def release_buffer_cache(mx: Any) -> None:
 
 
 def int8_prefill_mode() -> tuple[str, Optional[str]]:
-    """(``auto`` | ``on`` | ``off``, the raw env value) for ``UNSLOTH_DIFFUSION_MLX_INT8_PREFILL``."""
+    """(``auto`` | ``on`` | ``off``, the raw env value) for ``UNSLOTH_DIFFUSION_MLX_INT8_PREFILL``. Unset is off: int8
+    activations redraw fine detail (Z-Image on an M5 Max, 24 prompts: LPIPS 0.061, upper bound 0.080) for 1.09x."""
     raw = os.environ.get(INT8_PREFILL_ENV)
     value = (raw or "").strip().lower()
-    if value in ("", "auto"):
+    if value == "":
+        return "off", raw
+    if value == "auto":
         return "auto", raw
     if value in ("1", "on", "true", "yes"):
         return "on", raw
     if value in ("0", "off", "false", "no"):
         return "off", raw
     logger.warning(
-        "mlx_diffusion.int8_prefill: %s=%r is not auto|1|0; using auto", INT8_PREFILL_ENV, raw
+        "mlx_diffusion.int8_prefill: %s=%r is not auto|1|0; leaving it off", INT8_PREFILL_ENV, raw
     )
-    return "auto", raw
+    return "off", raw
 
 
 def _int8_prefill_zoo() -> tuple[Any, str]:

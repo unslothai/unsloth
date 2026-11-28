@@ -2334,7 +2334,7 @@ def int8_env(env, monkeypatch):
     runtime = Int8FakeRuntime(zoo)
     backend.runtime_factory = lambda: runtime
     monkeypatch.setattr(mb, "_int8_prefill_zoo", lambda: (zoo, ""))
-    monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
     return backend, runtime, zoo
 
 
@@ -2354,7 +2354,7 @@ def test_int8_prefill_auto_engages_evals_and_preverifies_inside_the_scope(int8_e
     assert runtime.preverifies == [dict(training = False, active = 1)]
     assert "mlx_int8_prefill" in st["speed_optims"]
     assert st["resolved"]["mlx_int8_prefill"]["value"] is True
-    assert st["resolved"]["mlx_int8_prefill"]["source"] == "auto"
+    assert st["resolved"]["mlx_int8_prefill"]["source"] == "explicit"
     backend.generate(prompt = "p", steps = 2, seed = 1, batch_size = 2)
     # Every render runs inside the scope, with int8_prefill on, in eval mode.
     assert [g["active"] for g in runtime.seen_in_generate] == [1, 1]
@@ -2363,6 +2363,20 @@ def test_int8_prefill_auto_engages_evals_and_preverifies_inside_the_scope(int8_e
     assert zoo.entered[-1] == (model.transformer, True)
     assert zoo.active == 0
     assert all(img.get("int8_prefill") is True for img in backend.last_timings["images"])
+
+
+def test_int8_prefill_is_off_unless_asked(int8_env, monkeypatch):
+    # Lossy at the image level (LPIPS 0.061 on 24 Z-Image prompts for 1.09x), so an unset env stays on the stock path.
+    backend, runtime, zoo = int8_env
+    monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is False and info["mode"] == "off"
+    assert runtime.preverifies == [] and zoo.entered == []
+    assert backend._state.model.transformer.training is True
+    assert "mlx_int8_prefill" not in st["speed_optims"]
+    backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert runtime.seen_in_generate[-1]["active"] == 0
 
 
 @pytest.mark.parametrize("value", ["0", "off", "false"])
@@ -2412,7 +2426,7 @@ def test_a_zoo_without_the_api_or_a_failed_import_is_off_with_a_reason(env, monk
     import types
 
     backend, runtime, _calls = env
-    monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
     # Old zoo: nax_quantized_linear without int8_prefill.
     old = types.ModuleType("unsloth_zoo.mlx.inference")
     old.nax_quantized_linear = lambda model: None
@@ -2501,14 +2515,14 @@ def test_int8_prefill_keeps_routing_with_loras(int8_env, monkeypatch):
 
 def test_int8_prefill_mode_parsing(monkeypatch):
     for raw, mode in [
-        (None, "auto"),
-        ("", "auto"),
+        (None, "off"),
+        ("", "off"),
         ("auto", "auto"),
         ("1", "on"),
         ("on", "on"),
         ("0", "off"),
         ("OFF", "off"),
-        ("bogus", "auto"),
+        ("bogus", "off"),
     ]:
         if raw is None:
             monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
@@ -2519,7 +2533,7 @@ def test_int8_prefill_mode_parsing(monkeypatch):
 
 def test_the_base_fake_runtime_without_the_hook_loads_stock(env, monkeypatch):
     backend, runtime, _calls = env
-    monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
     monkeypatch.setattr(mb, "_int8_prefill_zoo", lambda: (FakeZoo(), ""))
     assert _load(backend)["phase"] == "ready"
     info, _st = _int8_status(backend)
