@@ -43,6 +43,10 @@ _PREQUANTIZED_HINT = (
     "Load it without fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD (the full model on every rank), or "
     "load a 16-bit or pre-quantized bnb-4bit checkpoint."
 )
+_GGUF_HINT = (
+    "Drop fsdp2_sharded_loading / UNSLOTH_FSDP2_SHARDED_LOAD: native FSDP2 then shards the model after a full "
+    "load (gguf_packed = True blocks stay replicated on every rank)."
+)
 # A 4-bit chunk is a byte range: equal for every float storage FSDP2 may view the packed bytes in (up to
 # 4-byte float32) when the packed size divides by this many bytes per rank.
 _PACKED_UNIT = 4
@@ -236,6 +240,7 @@ def _fsdp2_loading(mesh, auto = False):
         "label": "native FSDP2",
         "quantized_hint": _QUANTIZED_HINT,
         "prequantized_hint": _PREQUANTIZED_HINT,
+        "gguf_hint": _GGUF_HINT,
         "mesh_hint": "Unsloth: native FSDP2 sharded loading takes a 1-D mesh (HSDP / 2-D meshes load in full).",
         "auto": auto,
         "quantize_on_load": _load_quantizing,
