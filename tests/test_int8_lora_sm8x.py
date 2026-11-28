@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The rotated int8 LoRA GEMMs on sm_8x (A100, L4): compiled without Triton's prefetch pass. CPU only: the kernels
-are compiled for an sm_80 target offline, nothing is launched."""
+"""int8 LoRA GEMMs on sm_8x compile without Triton's prefetch pass (CPU only: offline sm_80 compile)."""
 
 import re
 
@@ -58,7 +57,6 @@ def _compile_sm80(kernel, constexprs, warps, stages):
     types = _TYPES[kernel.__name__]
     sig = dict(zip(names, types))
     sig.update({name: "constexpr" for name in constexprs})
-    # What a real launch specializes: 16-byte aligned pointers, sizes and strides % 16 (M is not specialized).
     attrs = {(names.index(n),): [["tt.divisibility", 16]] for n in names[: len(types)] if n != "M"}
     try:
         src = ASTSource(fn = kernel, signature = sig, constexprs = constexprs, attrs = attrs)
@@ -104,9 +102,7 @@ def _cases(arch):
 @pytest.mark.parametrize("cap", [(8, 0), (8, 9)], ids = ["sm80", "sm89"])
 @pytest.mark.parametrize("case", [0, 1], ids = ["fwd", "dgrad"])
 def test_sm8x_int8_dots_are_not_split_by_prefetch(monkeypatch, case, cap):
-    """Triton >= 3.8 splits 8-bit dots in its sm_8x prefetch pass, which pushed these tiles into register spills
-    (0.2x bf16 on A100). The launch configuration compiles them with the pass skipped: one shared-memory load per
-    operand per K step, as on every other arch."""
+    """With prefetch skipped on sm_8x: one shared-memory load per operand per K step."""
     monkeypatch.setenv("TRITON_ALWAYS_COMPILE", "1")  # judge fresh compiles, never a cached cubin
     monkeypatch.setattr(IL, "_SKIP_PREFETCH", True)
     arch = IL._arch_for(cap)

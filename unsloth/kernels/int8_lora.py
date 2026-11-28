@@ -75,27 +75,19 @@ _SHARE_XQ = os.environ.get("UNSLOTH_INT8_LORA_SHARE_XQ", "1") != "0"
 # Keep the transposed int8 weight for the input gradient (+1 byte per weight) instead of transposing per call.
 _CACHE_T = os.environ.get("UNSLOTH_INT8_LORA_CACHE_T", "0") == "1"
 _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
-# Tile (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on an RTX 5090 and an RTX PRO 6000, and on
-# A100 / L4 once the prefetch pass is skipped (below).
+# (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on 5090 / PRO 6000, and A100 / L4 without prefetch.
 _TILE = (128, 128, 64, 8, 4, 4)
-# Input gradient (BLOCK_M, BLOCK_R reduction step, GROUP_M, warps, stages), output block = GROUP: fastest of 8 on an
-# RTX PRO 6000 and on an L4 (8 warps for the un-rotation dots in the epilogue).
+# Input gradient (BLOCK_M, BLOCK_R, GROUP_M, warps, stages): fastest of 8 on PRO 6000 and L4.
 _DGRAD_TILE = (128, 128, 8, 8, 3)
-# A100 without the prefetch pass: fastest of 8, 1.10x the tile above (geomean, 0.98-1.23x) at Qwen3 1.7B-8B shapes.
+# A100: 1.10x the tile above (geomean, Qwen3 1.7B-8B shapes).
 _DGRAD_TILE_SM80 = (64, 128, 8, 4, 3)
 _ROTQ_ROWS = 16
-# One read of the input per row (rotated activations: L4; dY: sm_8x) for rows up to this many elements, instead
-# of an amax pass and a quantization pass. L4: 1.1-1.7x the two-pass rotated quantization, sm_8x: 2.2x (A100) the
-# two-pass dY quantization; A100 keeps the two-pass rotated one (the one-pass kernel measured up to 1.7x slower).
+# One-pass quantization up to this row length (measured): rotated x on L4 (1.1-1.7x), dY on sm_8x (2.2x on A100);
+# A100 keeps two-pass rotated x (one-pass was up to 1.7x slower there).
 _ONE_PASS_MAX = 16384
 _ROTQ1_BUDGET = 128  # rows x 128-blocks held per program by the one-pass rotated quantization
-# Triton 3.8 started splitting 8-bit dots in its sm_8x prefetch pass: the pass moves the first K slice of the next
-# iteration's operands from shared memory into registers ahead of the loop body. With the int32 accumulator and
-# the pipelined int8 tiles that is past the register file: ptxas spills (900 bytes per thread on the 128 x 128 x 64
-# tile, some wider tiles collapse to 32 registers with ~9 KB of spills) and the GEMM runs at 0.2x bf16 on A100.
-# These kernels compile without that one pass on sm_8x (other kernels keep it): 1.5x bf16 on A100 and 1.7x on L4
-# for the same tile, bit-identical. Older Triton does not split them (3.5 - 3.7: the pass leaves the loop as is;
-# 3.2: it helps), so they keep it.
+# Triton >= 3.8's sm_8x prefetch pass splits 8-bit dots and the tiles spill (0.2x bf16 on A100); skipping it for
+# these kernels gives 1.5x bf16 on A100 / 1.7x on L4, bit-identical. Older Triton keeps it (3.2 is faster with it).
 _SKIP_PREFETCH = os.environ.get("UNSLOTH_INT8_LORA_SKIP_PREFETCH", "1") != "0"
 
 
@@ -187,8 +179,7 @@ def _install_prefetch_skip() -> bool:
 
 @contextlib.contextmanager
 def _no_prefetch(active):
-    # Compilation happens inside the launch on a cache miss; the PREFETCH_OFF constexpr keeps those
-    # compiles under their own cache key, so a cached stock compile is never reused here or the reverse.
+    # PREFETCH_OFF gives these compiles their own Triton cache key, so stock and no-prefetch never mix.
     if not active:
         yield
         return
@@ -286,8 +277,7 @@ if triton is not None:
         ROWS: tl.constexpr,  # rows per program
         NB: tl.constexpr,  # next power of two >= K / G (>= 16): the row is held as NB blocks of G
     ):
-        # Same codes and scales as _int8_rotq_kernel with one read of x: ROWS rows as a [ROWS * NB, G] tile, one dot
-        # with H, the row amax, then the codes.
+        # Same codes and scales as _int8_rotq_kernel, one read of x.
         r = tl.arange(0, ROWS)
         b = tl.arange(0, NB)
         g = tl.arange(0, G)

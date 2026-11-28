@@ -267,8 +267,7 @@ def _same(a, b):
     "M,N,K", [(2048, 3072, 4096), (1000, 1000, 1024), (512, 20480, 512), (300, 512, 20480)]
 )
 def test_arch_configurations_are_bit_identical(monkeypatch, M, N, K, dtype):
-    """The sm_80 and sm_89 configurations (input-gradient tile, one-pass quantizations, no prefetch pass) compute
-    the same bits as this GPU's own, on whichever GPU runs this (N or K = 20480 keeps the two-pass kernels)."""
+    """sm_80 / sm_89 configurations match this GPU's bits (N or K = 20480 keeps the two-pass kernels)."""
     x, w, dy = _inputs(M, N, K, dtype, seed = 5)
     x[5, 9] = float("nan")
     dy[3, 7] = float("nan")
