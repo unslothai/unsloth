@@ -1377,3 +1377,27 @@ def test_instance_training_step_overrides_keep_no_prefetched_batch(ga, tmp_path,
     assert refs and len(alive) == 2 and alive[1] == alive[0], alive
     assert "_unsloth_layer_major_batch" not in _LAST[0].__dict__
     _LAST.clear()
+
+
+def test_windows_wait_until_torch_compile_has_settled(ga, tmp_path, monkeypatch, capsys):
+    """Compiled decoder code: Dynamo picks graphs by the order of first calls, so windows start only after a step
+    that compiled nothing (here: step 1 has no history, step 2 compiled), and the run stays bitwise."""
+    mod, engine = ga
+    if getattr(mod, "compile_epoch", None) is None:
+        pytest.skip("unsloth_zoo without compile watching")
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", steps = 4)
+
+    def epoch():
+        trainer = _LAST[0] if _LAST else None
+        step = trainer.state.global_step if trainer is not None else 0
+        return (min(step, 1),)  # graphs built during step 1, nothing after
+
+    monkeypatch.setattr(mod, "compile_epoch", epoch)
+    monkeypatch.setattr(mod, "_compiled_code", lambda layers: True)
+    engine.layer_major_stats(reset = True)
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", steps = 4)
+    assert _windows(engine) == 2
+    assert "while torch.compile is still building graphs" in capsys.readouterr().out
+    assert l0 == l1
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
