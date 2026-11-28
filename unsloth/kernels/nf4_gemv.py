@@ -13,6 +13,7 @@ import torch
 import triton
 import triton.language as tl
 
+from ..rocm_build import is_rocm_torch
 from .nf4 import _HAS_MUL_RN, _HAS_TL_GATHER, _mul, _nf4_lut
 from .triton_launch import launch, relaunch, tag_compile_cache
 
@@ -289,6 +290,19 @@ def _capability(index):
     return torch.cuda.get_device_capability(index)
 
 
+_ROCM = is_rocm_torch(torch)
+
+
+def _rows_per_program(M):
+    """Rows one program takes. Above 4 (UNSLOTH_GEMV_MAX_ROWS) the largest of 4, 3, 2 dividing M; on ROCm one
+    row per program above 4: gfx1151 (Triton 3.6) gets two 3-row groups of a 4096 x 14336 weight wrong."""
+    if M <= 4:
+        return max(M, 1)
+    if _ROCM:
+        return 1
+    return next(r for r in (4, 3, 2, 1) if M % r == 0)
+
+
 def _launch(
     kernels,
     X,
@@ -320,8 +334,7 @@ def _launch(
         # (mark_dynamic raised, dynamic=True compiled a graph per M). One row per program keeps M runtime.
         m_rows = 1
     else:
-        # Above 4 rows (UNSLOTH_GEMV_MAX_ROWS) each program takes the largest of 4, 3, 2 dividing M.
-        m_rows = max(M, 1) if M <= 4 else next(r for r in (4, 3, 2, 1) if M % r == 0)
+        m_rows = _rows_per_program(M)
     m_groups = M // m_rows
     args = (
         X,

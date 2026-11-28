@@ -137,6 +137,11 @@ _REFUSED_PIPELINE_LOAD_FLAGS = (
 )
 
 
+def _gguf_packed_asked(values):
+    """The loader's rule (check_gguf_packed_request): `gguf_packed = True` together with a gguf_file."""
+    return bool(values.get("gguf_packed")) and bool(values.get("gguf_file"))
+
+
 def _bound(fn, args, kwargs):
     try:
         signature = inspect.signature(fn)
@@ -216,6 +221,14 @@ def tensor_parallel_env_load(fn):
             layout.pp > 1
         ):  # tensor parallel alone trains these; pipeline parallel v1 trains LoRA adapters
             refused += [what_ for key, what_ in _REFUSED_PIPELINE_LOAD_FLAGS if values.get(key)]
+        if layout.tp > 1 and _gguf_packed_asked(values):
+            # Before the load: tensor parallel shards dense weights only (apply_tensor_parallel refuses them too).
+            refused.append(
+                "packed GGUF weights (gguf_packed = True; load the gguf_file without gguf_packed to dequantize it "
+                "to 16-bit for tensor parallel"
+                + (", or set UNSLOTH_TP_SIZE=1 and keep UNSLOTH_PP_SIZE" if layout.pp > 1 else "")
+                + ")"
+            )
         if refused:
             raise NotImplementedError(
                 f"Unsloth: {layout.env_vars} ({what}) does not support "

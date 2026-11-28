@@ -7,7 +7,9 @@ Decided once per process (first Unsloth `from_pretrained`, else first Trainer) b
 the ranks agree with one collective. Fits = weights + DDP training state + _ACTIVATION_SHARE of the GPU <= capacity.
 Conservative by construction: only loads modelled exactly through the loader's own helpers are sized; anything
 else (quantization_config, fp8, vLLM, FORCE_FLOAT32 / CUSTOM_DTYPE, unknown dtype, subfolder, unreadable
-config / header) declines to FSDP2, the launcher default, with the reason in the rank 0 line.
+config / header) declines to FSDP2, the launcher default, with the reason in the rank 0 line. A gguf_file load
+is not sized either: FSDP2, or DDP when this torch's FSDP2 would refuse its gguf_packed blocks (no
+fully_shard(ignored_params)); a built model with packed weights on such a torch takes DDP too.
 """
 
 from __future__ import annotations
@@ -227,6 +229,52 @@ def _gather(entry):
     return out
 
 
+class _Route(Exception):
+    """Raised by an estimate whose load is not sized but has one route that works: `choice` with `why`."""
+
+    def __init__(self, choice, why):
+        super().__init__(why)
+        self.choice, self.why = choice, why
+
+
+def _fsdp2_keeps_packed():
+    """Native FSDP2 keeps packed (integer-coded) weights replicated through fully_shard(ignored_params), torch
+    2.7+; without it shard_model refuses them, so auto must not pick FSDP2 for such a model."""
+    try:
+        import inspect
+
+        from torch.distributed.fsdp import fully_shard
+        return "ignored_params" in inspect.signature(fully_shard).parameters
+    except Exception:
+        return False
+
+
+def _packed_refused_why(what):
+    import torch
+    return (
+        f"native FSDP2 on torch {torch.__version__} cannot keep {what} replicated (needs fully_shard("
+        "ignored_params), torch 2.7+), so DDP is the route that runs"
+    )
+
+
+def _gguf_route(call):
+    """A gguf_file load is not sized from safetensors (a repo may hold other files beside the GGUF): native FSDP2,
+    which shards the dequantized weights and keeps gguf_packed = True blocks replicated; DDP when this torch's
+    FSDP2 would refuse those blocks."""
+    packed = bool(call.get("gguf_packed"))  # the loader's rule: the kwarg only
+    if packed and not _fsdp2_keeps_packed():
+        raise _Route(DDP, _packed_refused_why("gguf_packed = True blocks"))
+    raise _Route(
+        FSDP2,
+        "a gguf_file load is not sized (its size is in the GGUF, not a safetensors index), so native FSDP2, "
+        + (
+            "which keeps the gguf_packed = True blocks replicated"
+            if packed
+            else "which shards it after the load"
+        ),
+    )
+
+
 def _gib(n):
     return f"{n / _GiB:.2f} GiB" if n >= _GiB / 10 else f"{n / 1024**2:.1f} MiB"
 
@@ -251,6 +299,8 @@ def _resolve(estimate, install_trainer_init):
             state = state,
             margin = need - weights - state,
         )
+    except _Route as route:
+        entry = dict(fits = route.choice == DDP, why = route.why, route = route.choice)
     except Exception as exc:
         entry = dict(fits = False, why = f"could not size the model ({type(exc).__name__}: {exc})")
     entries = _gather(entry)
@@ -273,6 +323,9 @@ def _resolve(estimate, install_trainer_init):
 def _describe(choice, entries):
     head = f"Unsloth: {FLAG}=auto picked {'DDP (UNSLOTH_FSDP2=0)' if choice == DDP else 'native FSDP2 (UNSLOTH_FSDP2=1)'}"
     first = entries[0]
+    routed = next((e for e in entries if e.get("route")), None)
+    if choice == DDP and routed is not None:
+        return f"{head}: {routed['why']}."
     if choice == DDP:
         tight = min(entries, key = lambda e: e["capacity"] - e["need"])
         return (
@@ -280,6 +333,8 @@ def _describe(choice, entries):
             f"margin {_gib(first['margin'])} fits on every rank ({len(entries)} ranks, tightest has "
             f"{_gib(tight['capacity'])}). Set {FLAG}=\"fsdp=1\" to force FSDP2."
         )
+    if routed is not None and all(e.get("why") == routed["why"] for e in entries):
+        return f"{head}: {routed['why']}. Set {FLAG}=\"fsdp=0\" to force DDP."  # one reason, not one per rank
     reasons = []
     for rank, e in enumerate(entries):
         if e.get("fits"):
@@ -527,6 +582,8 @@ def resolve_for_load(loader, args, kwargs):
         name = call.get("model_name") or call.get("pretrained_model_name_or_path")
         if not isinstance(name, str):
             raise ValueError(f"model_name {name!r} is not a checkpoint name or path")
+        if call.get("gguf_file"):
+            _gguf_route(call)
         if call.get("quantization_config") is not None or call.get("load_in_fp8") not in (
             None,
             False,
@@ -651,6 +708,12 @@ def resolve_for_trainer(model, training_args = None):
         return _STATE["choice"]
 
     def estimate():
+        packed = any(
+            not (p.is_floating_point() or p.is_complex()) and type(p).__name__ != "Params4bit"
+            for p in model.parameters()
+        )
+        if packed and not _fsdp2_keeps_packed():
+            raise _Route(DDP, _packed_refused_why("its packed (integer-coded) weights"))
         seen, weights, trainable, on_cuda = set(), 0, 0, 0
         for p in list(model.parameters()) + list(model.buffers()):
             if id(p) in seen:
