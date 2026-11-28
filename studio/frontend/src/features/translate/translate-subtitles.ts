@@ -31,7 +31,10 @@ const TIMING = new RegExp(`^[ \\t]*${TIME}[ \\t]*-->[ \\t]*${TIME}`);
 const VTT_HEADER = /^WEBVTT(?:[ \t]|\r?\n|$)/;
 
 /** Null for anything that is not a whole SRT or WebVTT file; a clipped last SRT block is kept as is. */
-export function parseSubtitles(source: string): SubtitleDocument | null {
+export function parseSubtitles(file: string): SubtitleDocument | null {
+  // A CR-only file comes back with LF, which the page shows as line breaks. A file with
+  // any LF is read as is: "\r\r\n" in a CRLF file is a stray CR, not a blank line.
+  const source = file.includes("\n") ? file : file.replace(/\r/g, "\n");
   const lead = /^\s*/.exec(source)?.[0] ?? "";
   const body = source.slice(lead.length);
   const trail = /\s*$/.exec(body)?.[0] ?? "";
