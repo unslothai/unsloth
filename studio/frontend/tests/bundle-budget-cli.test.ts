@@ -60,10 +60,10 @@ function fixture(
   return root;
 }
 
-function runIn(root: string, scriptDir = root) {
+function runIn(root: string, scriptDir = root, args: string[] = []) {
   const r = spawnSync(
     process.execPath,
-    [...TS_FLAGS, join(scriptDir, "scripts", "check-bundle-budget.ts")],
+    [...TS_FLAGS, join(scriptDir, "scripts", "check-bundle-budget.ts"), ...args],
     { encoding: "utf8" },
   );
   return { code: r.status, out: r.stdout ?? "", err: r.stderr ?? "" };
@@ -163,4 +163,20 @@ test("React-preview runtime code on the startup path exits 1 and names the chunk
     err.includes("assets/react-bbb.js contains __vite_ssr_import__"),
     err,
   );
+});
+
+test("--bytes prints both totals exactly, so a small raise can be measured", () => {
+  const root = fixture();
+  const plain = runIn(root);
+  const exact = runIn(root, root, ["--bytes"]);
+  assert.equal(exact.code, 0);
+  assert.doesNotMatch(plain.out, /startup transfer=/);
+  const measured = exact.out.match(/startup transfer=(\d+) raw=(\d+)/);
+  assert.ok(measured, exact.out + exact.err);
+  const [, transfer, raw] = measured;
+  // Bytes, not the rounded KB beside them: 0.1 KB cannot show a 20-byte change.
+  assert.ok(Number(transfer) > 0 && Number(raw) > 0);
+  // The flag reports, it does not change the verdict.
+  assert.match(exact.out, MEASURED_TWO);
+  assert.equal(plain.code, exact.code);
 });
