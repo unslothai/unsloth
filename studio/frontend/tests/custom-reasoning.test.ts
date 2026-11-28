@@ -352,3 +352,16 @@ test("detected effort levels are the rungs every reporting model shares", () => 
   assert.equal(detect([entry("plain", null), entry("e", [])], []), undefined);
   assert.equal(detect([entry("a", ["low"]), entry("b", ["max"])], []), undefined);
 });
+
+test("a background detection keeps levels the user set while it ran", () => {
+  const apply = reasoning.withDetectedEffortLevels;
+  const unset = { enabled: true, style: "reasoning_effort" };
+  const edited = { ...unset, effort_levels: ["xhigh", "max"] };
+  assert.deepEqual(apply(unset, ["low", "max"], true), { ...unset, effort_levels: ["low", "max"] });
+  assert.equal(apply(edited, ["low"], true), edited);
+  // An explicit Detect click is a request to replace them.
+  assert.deepEqual(apply(edited, ["low"], false), { ...unset, effort_levels: ["low"] });
+  const thinking = { enabled: true, style: "thinking" };
+  assert.equal(apply(thinking, ["low"], false), thinking);
+  assert.equal(apply(null, ["low"], false), null);
+});

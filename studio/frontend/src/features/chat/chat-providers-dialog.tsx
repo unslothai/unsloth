@@ -103,6 +103,7 @@ import {
   customReasoningStyleTakesEffort,
   detectedCustomEffortLevels,
   normalizeCustomReasoningConfig,
+  withDetectedEffortLevels,
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
 import { resolveProviderCredentialEdit } from "./provider-credential-edit";
@@ -1022,6 +1023,7 @@ export function ChatProvidersSettings({
     silent = false,
     modelIds = selectedModelIds,
   }: { silent?: boolean; modelIds?: readonly string[] } = {}): Promise<void> {
+    const configured = [...new Set([...modelIds, ...parseManualModelIds(manualModelIds)])];
     if (!showCustomReasoning) return;
     if (
       editingProvider?.hasApiKey &&
@@ -1047,7 +1049,7 @@ export function ChatProvidersSettings({
         extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
       });
       if (request !== formCheckRequestRef.current) return;
-      const levels = detectedCustomEffortLevels(capabilities, modelIds);
+      const levels = detectedCustomEffortLevels(capabilities, configured);
       if (!levels) {
         if (!silent) {
           toast.info("This endpoint does not report its effort levels.", {
@@ -1056,11 +1058,7 @@ export function ChatProvidersSettings({
         }
         return;
       }
-      setReasoningConfig((current) =>
-        current && customReasoningStyleTakesEffort(current.style)
-          ? { ...current, effort_levels: levels }
-          : current,
-      );
+      setReasoningConfig((current) => withDetectedEffortLevels(current, levels, silent));
       if (!silent) toast.success(`Effort levels detected: ${levels.join(", ")}`);
     } catch (error) {
       if (!silent) {

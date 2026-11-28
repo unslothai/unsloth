@@ -84,6 +84,17 @@ export function detectedCustomEffortLevels(
   return shared.length > 0 ? shared : undefined;
 }
 
+/** A background result never replaces levels the user set while it was in flight. */
+export function withDetectedEffortLevels(
+  current: CustomReasoningConfig | null,
+  levels: CustomReasoningEffortLevel[],
+  silent: boolean,
+): CustomReasoningConfig | null {
+  if (!current || !customReasoningStyleTakesEffort(current.style)) return current;
+  if (silent && current.effort_levels !== undefined) return current;
+  return { ...current, effort_levels: levels };
+}
+
 /** Cached or legacy malformed contracts fail closed. */
 export function normalizeCustomReasoningConfig(
   value: unknown,
