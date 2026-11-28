@@ -1291,10 +1291,53 @@ def _can_repeat_step(trainer):
     return not any(any(k in klass.__name__ for k in _GENERATING) for klass in cls.__mro__)
 
 
+_BUFFER_COPY_BYTES = 256 << 20
+
+
+def _snapshot_buffers(model):
+    """(module, name, buffer, version, copy) for every buffer: a forward can update buffers in place (BatchNorm's
+    running statistics) or rebind them. Inference tensors are skipped: they cannot be updated in place. Copies are kept up to _BUFFER_COPY_BYTES in total (LLM buffers are a few
+    MB: rotary frequencies, masks)."""
+    out, budget = [], _BUFFER_COPY_BYTES
+    if model is None:
+        return out
+    for module in model.modules():
+        for name, buffer in list(module._buffers.items()):
+            if buffer is None:
+                continue
+            try:
+                version = buffer._version
+            except Exception:
+                version = None
+            nbytes = buffer.numel() * buffer.element_size()
+            copy = None
+            if version is not None and nbytes <= budget:
+                copy = buffer.detach().clone()
+                budget -= nbytes
+            out.append((module, name, buffer, version, copy))
+    return out
+
+
+def _restore_buffers(saved):
+    """Put every buffer back as it was. False when one changed in place without a copy to restore it from."""
+    complete = True
+    for module, name, buffer, version, copy in saved:
+        if module._buffers.get(name) is not buffer:
+            module._buffers[name] = buffer
+        if copy is not None:
+            # Always: batch_norm updates its running statistics inside the kernel, without bumping _version.
+            with torch.no_grad():
+                buffer.copy_(copy)
+        elif version is not None and buffer._version != version:
+            complete = False
+    return complete
+
+
 @contextlib.contextmanager
 def _repeatable(trainer, model):
     """Run a training step that must leave no trace: the same random state afterwards (dropout draws the same
-    masks in the real pass) and the trainer's counters and logged metrics unchanged."""
+    masks in the real pass), the model's buffers (running statistics) and the trainer's counters and logged
+    metrics unchanged. Yields a list that holds False after the pass when a buffer could not be restored."""
     devices = (
         sorted({p.device.index or 0 for p in model.parameters() if p.device.type == "cuda"})
         if model is not None
@@ -1303,6 +1346,8 @@ def _repeatable(trainer, model):
     cpu = torch.random.get_rng_state()
     cuda = [(d, torch.cuda.get_rng_state(d)) for d in devices]
     numbers = {k: v for k, v in trainer.__dict__.items() if type(v) in (int, float)}
+    buffers = _snapshot_buffers(model)
+    restored = [True]
     metrics = trainer.__dict__.get("_metrics")
     # TRL's {mode: defaultdict(list)}: the dicts themselves are kept (and their types), only their contents restored.
     saved = None
@@ -1314,11 +1359,13 @@ def _repeatable(trainer, model):
             for k, v in metrics.items()
         }
     try:
-        yield
+        yield restored
     finally:
         torch.random.set_rng_state(cpu)
         for d, state in cuda:
             torch.cuda.set_rng_state(state, d)
+        restored[0] = _restore_buffers(buffers)
+        del buffers
         for k, v in numbers.items():
             trainer.__dict__[k] = v
         if saved is not None:
@@ -1377,11 +1424,21 @@ def _arm_training_step(trainer, wrapper):
             # it measures the exact global norm, steps nothing and frees each gradient as it arrives.
             owner = trainer_ref()
             model = args[0] if args else kwargs.get("model")
-            with _repeatable(owner, model), opt.measuring():
+            with _repeatable(owner, model) as restored, opt.measuring():
                 type(owner).training_step(
                     owner,
                     *(args[:1] + tuple(_fresh_views(a) for a in args[1:])),
                     **{k: v if k == "model" else _fresh_views(v) for k, v in kwargs.items()},
+                )
+            if not restored[0]:
+                # A buffer larger than the copy budget changed in the forward: it now holds two updates for this
+                # batch. Do not measure again; later steps estimate the norm.
+                opt.calibrate = False
+                if opt.clip == "exact":
+                    opt.clip = "estimate"
+                print(
+                    "Unsloth: the model's forward updates a large buffer in place, so max_grad_norm is no longer "
+                    "measured with a second pass; it uses the estimated global norm."
                 )
         with opt.armed():
             return original(*args, **kwargs)

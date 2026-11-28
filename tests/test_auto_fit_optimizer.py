@@ -462,6 +462,60 @@ def test_trainers_that_generate_inside_the_step_are_not_repeated(
     assert "generates its inputs" in capsys.readouterr().out
 
 
+class _NormNet(torch.nn.Module):
+    """A forward that updates buffers in place (BatchNorm running statistics)."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(6, 8)
+        self.norm = torch.nn.BatchNorm1d(8)
+        self.b = torch.nn.Linear(8, 1)
+
+    def forward(self, x, labels):
+        return {
+            "loss": (self.b(torch.relu(self.norm(self.a(x)))).squeeze(-1) - labels).square().mean()
+        }
+
+
+def test_measuring_pass_restores_buffers_the_forward_updates(af, sr, monkeypatch, tmp_path):
+    """BatchNorm's running statistics see each batch once, as in the standard step, not once per pass."""
+    from datasets import Dataset
+    from transformers import Trainer, TrainingArguments
+
+    g = torch.Generator().manual_seed(2)
+    rows = [{"x": torch.randn(6, generator = g).tolist(), "labels": float(i % 3)} for i in range(16)]
+    results = {}
+    for mode in ("0", "in_backward"):
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_OPTIMIZER", mode)
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_CLIP", "exact")
+        model = _NormNet()
+        args = TrainingArguments(
+            output_dir = str(tmp_path),
+            per_device_train_batch_size = 4,
+            max_steps = 3,
+            learning_rate = 1e-2,
+            max_grad_norm = 0.01,
+            report_to = [],
+            use_cpu = True,
+            save_strategy = "no",
+            seed = 0,
+            dataloader_num_workers = 0,
+            disable_tqdm = True,
+        )
+        trainer = Trainer(model = model, args = args, train_dataset = Dataset.from_list(rows))
+        af.install_auto_fit_optimizer(trainer)
+        trainer.train()
+        if mode != "0":
+            assert trainer._unsloth_in_backward_optimizer.measured_steps == 3
+        results[mode] = model
+    standard, head = results["0"], results["in_backward"]
+    assert int(head.norm.num_batches_tracked) == int(standard.norm.num_batches_tracked) == 3
+    assert torch.allclose(head.norm.running_mean, standard.norm.running_mean, atol = 1e-6)
+    assert torch.allclose(head.norm.running_var, standard.norm.running_var, atol = 1e-6)
+    assert _max_diff(standard, head) < 1e-5
+
+
 def _lora_model():
     from peft import LoraConfig, get_peft_model
 
