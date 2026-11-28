@@ -18989,6 +18989,48 @@ class LlamaCppBackend:
             weights.append(int(width * (swa_cells if is_swa else full_cells)))
         return weights if any(weights) else []
 
+    def _kv_gpu_share(self, gpu_layers: int, n_ctx: int, **shape) -> Optional[float]:
+        """Share of the KV cache -ngl ``gpu_layers`` puts on the GPU, or None when unweighable.
+        llama.cpp offloads weight layers at or past n_weight_layers + 1 - ngl (i_gpu_start), and a
+        loop slot's cache sits with the physical layer it reuses; weighted as _kv_layer_weights."""
+        n_slots = self._n_layers or 0
+        if n_slots <= 0:
+            return None
+        try:
+            weights = self._kv_layer_weights(n_ctx, **shape)
+        except Exception:  # noqa: BLE001 -- unweighable header: the caller's fallback
+            weights = []
+        if len(weights) != n_slots or sum(weights) <= 0:
+            # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
+            heads = getattr(self, "_n_kv_heads_by_layer", None)
+            if not (isinstance(heads, (list, tuple)) and len(heads) == n_slots):
+                return None
+            weights = [max(0, int(h or 0)) for h in heads]
+            shared = int(getattr(self, "_shared_kv_layers", None) or 0)
+            if 0 < shared < n_slots:
+                weights[n_slots - shared :] = [0] * shared
+            if sum(weights) <= 0:
+                return None
+        n_phys = self.n_weight_layers or n_slots
+        phys = list(range(n_slots))
+        start, end = getattr(self, "_loop_start", None), getattr(self, "_loop_end", None)
+        if n_phys < n_slots and start is not None and end and 0 <= start < end <= n_phys:
+            span, extra = end - start, n_slots - n_phys
+            if getattr(self, "_architecture", None) in _LOOP_VISIT_ARCHS:
+                # Visit order: prelude and first pass, the repeated passes, then the coda.
+                phys = [
+                    i if i < end else start + (i - end) % span if i < end + extra else i - extra
+                    for i in range(n_slots)
+                ]
+            else:
+                # Slot order: physical layers, then one slot per repeated visit (layer_phys).
+                phys = [i if i < n_phys else start + (i - n_phys) % span for i in range(n_slots)]
+        elif n_phys != n_slots:
+            return None
+        first_gpu = max(0, n_phys + 1 - max(0, int(gpu_layers)))
+        on_gpu = sum(w for w, p in zip(weights, phys) if p >= first_gpu)
+        return on_gpu / sum(weights)
+
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
         if self._n_kv_heads_by_layer is not None and layer_idx < len(self._n_kv_heads_by_layer):
             return self._n_kv_heads_by_layer[layer_idx]
