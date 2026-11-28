@@ -438,6 +438,48 @@ def _writers_in_turn(
             )
 
 
+# fsdp2_qlora.ShardedAbsmax entries ({holder name: entry} in a module's __dict__) and holder suffix.
+_ABSMAX_KEY = "_unsloth_fsdp2_absmax"
+_ABSMAX_SUFFIX = "_unsloth_absmax"
+
+
+def _is_absmax_holder(name, param):
+    """A 4-bit weight's sharded absmax (fsdp2_qlora): saved through its QuantState, never itself."""
+    return getattr(param, _ABSMAX_KEY, None) is not None or name.rsplit(".", 1)[-1].endswith(
+        _ABSMAX_SUFFIX
+    )
+
+
+@contextlib.contextmanager
+def _full_absmax(
+    model,
+    enabled = True,
+    device = None,
+    keep = True,
+):
+    """Every rank: each QuantState whose absmax FSDP2 shards holds it whole for the duration, so
+    saves and loads see bitsandbytes' layout; scales a load rewrote go back into the shards.
+    `device` stages them (a CPU-offloaded export); `keep = False` (a rank that writes nothing) only
+    takes part in the gathers."""
+    entries = []
+    if enabled and isinstance(model, torch.nn.Module):
+        seen = set()
+        for module in model.modules():
+            for entry in (module.__dict__.get(_ABSMAX_KEY) or {}).values():
+                if id(entry) not in seen and entry.is_sharded():
+                    seen.add(id(entry))
+                    entries.append(entry)
+    done = []
+    try:
+        for entry in entries:
+            entry.materialize(device = device, keep = keep)
+            done.append(entry)
+        yield len(done)
+    finally:
+        for entry in reversed(done):
+            entry.release()
+
+
 def _gather_full(param, DTensor):
     """Full tensor on all ranks; packed 4-bit bytes travel as uint8 so NaN patterns survive."""
     local = param.to_local()
@@ -572,12 +614,23 @@ def fsdp2_gathered(
     seen = set()
     pushed = False
     failure = None
+    scales = contextlib.ExitStack()
     try:
+        # Sharded 4-bit absmax: whole in its QuantState while rank 0 writes (not for adapter-only
+        # saves); on the CPU when the packed weights go there, held by the writer only.
+        scales.enter_context(
+            _full_absmax(
+                model,
+                enabled = not trainable_only or include is not None,
+                device = "cpu" if offload_4bit and offload_to_cpu is True else None,
+                keep = writer,
+            )
+        )
         for name, param in model.named_parameters():
             if id(param) in seen:
                 continue
             seen.add(id(param))
-            if not isinstance(param, DTensor):
+            if not isinstance(param, DTensor) or _is_absmax_holder(name, param):
                 continue
             if (
                 trainable_only
@@ -626,6 +679,7 @@ def fsdp2_gathered(
             for module, name in owners[key]:
                 module._parameters[name] = old
         replaced.clear()
+        scales.close()
         if dist is not None:
             _wait_for_writer(dist, writer, writer_rank, failed = failure)
 
@@ -786,7 +840,7 @@ def _gathered_host_bytes(
     total = 0
     seen = set()
     for name, param in model.named_parameters():
-        if id(param) in seen or not isinstance(param, DTensor):
+        if id(param) in seen or not isinstance(param, DTensor) or _is_absmax_holder(name, param):
             continue
         seen.add(id(param))
         if trainable_only and not param.requires_grad and not (include and include(name, param)):
@@ -1277,6 +1331,29 @@ def install_dcp_bnb_state_dict():
     def _wrap(fn, name):
         def _body(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
+            model = args[0] if args else kwargs.get("model")
+            # Sharded 4-bit absmax: whole while the QuantState entries are written or restored (model
+            # state only: optimizer-only calls never touch the QuantState).
+            needs_scales = not adapter_only and "optimizer" not in name
+            options = kwargs.get("options", None)
+            offload = bool(getattr(options, "cpu_offload", False))
+            # A full, CPU-offloaded state dict lands on rank 0 only: the others just take part.
+            keep = not (
+                name.startswith("get_")
+                and offload
+                and bool(getattr(options, "full_state_dict", False))
+                and _dist() is not None
+                and _dist().get_rank() != 0
+            )
+            with _full_absmax(
+                model,
+                enabled = needs_scales,
+                device = "cpu" if offload else None,
+                keep = keep,
+            ):
+                return _dcp_body(adapter_only, *args, **kwargs)
+
+        def _dcp_body(adapter_only, *args, **kwargs):
             full_4bit = not adapter_only and _has_sharded_4bit(args, kwargs)
             if not (adapter_only or full_4bit):
                 if name.startswith("set_") and _has_native_replicated_4bit(args, kwargs):

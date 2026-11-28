@@ -3,7 +3,9 @@
 
 """QLoRA under FSDP2: packed 4-bit bytes stored as float dtype to shard, QuantState kept; mixed
 precision never casts them (foreach copy rewrites NaN bit patterns on CUDA); float storage only
-when patchable."""
+when patchable. Each weight's absmax (one scale per block, about 1/32 of the packed bytes) is sharded
+with it as a frozen sibling parameter and gathered in the same all-gather (`ShardedAbsmax`); the
+QuantState layout, its code / offset / nested scales and the checkpoint keys stay bitsandbytes'."""
 
 __all__ = [
     "is_params4bit",
@@ -16,10 +18,19 @@ __all__ = [
     "nonfloat_param_guard",
     "prepare_fsdp2_qlora",
     "fsdp2_qlora_wrap",
+    "ShardedAbsmax",
+    "absmax_shard_span",
+    "register_absmax_shards",
+    "finish_absmax_shards",
+    "absmax_shards",
+    "full_absmax",
 ]
 
 import contextlib
+import copy
 import inspect
+import math
+import os
 import sys
 
 import torch
@@ -404,6 +415,380 @@ def _attach_quant_meta(tensor, meta):
             pass
 
 
+# A 4-bit weight's absmax held as an FSDP2 parameter: module attribute `<weight name>` + this suffix.
+_ABSMAX_SUFFIX = "_unsloth_absmax"
+# ShardedAbsmax of a holder parameter (and its sharded DTensor); {holder name: ShardedAbsmax} in a module's __dict__.
+_ABSMAX_KEY = "_unsloth_fsdp2_absmax"
+
+
+def _absmax_sharding_enabled():
+    value = os.environ.get("UNSLOTH_FSDP2_SHARD_ABSMAX", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def _dtensor_cls():
+    try:
+        from torch.distributed.tensor import DTensor
+    except ImportError:
+        try:
+            from torch.distributed._tensor import DTensor
+        except ImportError:
+            return None
+    return DTensor
+
+
+def _local_offset(dtensor):
+    """Global dim-0 offset of this rank's local shard of a 1-D DTensor (holders split evenly)."""
+    compute = None
+    for path in ("torch.distributed.tensor._utils", "torch.distributed._tensor._utils"):
+        try:
+            compute = getattr(
+                __import__(path, fromlist = ["compute_local_shape_and_global_offset"]),
+                "compute_local_shape_and_global_offset",
+                None,
+            )
+        except ImportError:
+            compute = None
+        if compute is not None:
+            break
+    if compute is not None:
+        try:
+            _, offset = compute(dtensor.shape, dtensor.device_mesh, dtensor.placements)
+            return int(offset[0]) if len(offset) else 0
+        except Exception:
+            pass
+    return _even_local_offset(dtensor)
+
+
+def _even_local_offset(dtensor):
+    """`_local_offset` without torch's private helper: even dim-0 shards, one per coordinate of each
+    mesh dim that shards dim 0."""
+    mesh = dtensor.device_mesh
+    coordinate = mesh.get_coordinate() or [0] * mesh.ndim
+    local = dtensor.to_local().shape[0]
+    offset, span = 0, local
+    for dim in reversed(range(len(dtensor.placements))):
+        placement = dtensor.placements[dim]
+        if getattr(placement, "dim", None) == 0 and placement.is_shard():
+            offset += coordinate[dim] * span
+            span *= mesh.size(dim)
+    return offset
+
+
+def absmax_shard_span(param, world_size):
+    """Weight elements per shard boundary unit when `param`'s absmax can be sharded over `world_size`
+    ranks with every shard self-contained (its packed bytes, its whole absmax blocks and, with double
+    quantization, whole groups of nested scales), else None (the absmax then stays replicated).
+    `param` must be a float-stored Params4bit with a real (not meta, not stand-in) 1-D absmax."""
+    quant_state = getattr(param, "quant_state", None)
+    if quant_state is None or not world_size or world_size <= 1:
+        return None
+    if not is_params4bit(param) or not param.is_floating_point():
+        return None
+    absmax = getattr(quant_state, "absmax", None)
+    shape = getattr(quant_state, "shape", None)
+    blocksize = getattr(quant_state, "blocksize", None)
+    if not isinstance(absmax, torch.Tensor) or shape is None or not blocksize:
+        return None
+    if absmax.device.type == "meta" or absmax.dim() != 1 or not absmax.is_contiguous():
+        return None
+    needed = (absmax.storage_offset() + absmax.numel()) * absmax.element_size()
+    if absmax.untyped_storage().nbytes() < needed:
+        return None  # sharded loading's zero-stride stand-in, or freed storage
+    try:
+        n = math.prod(int(d) for d in shape)
+    except (TypeError, ValueError):
+        return None
+    span = int(blocksize)
+    state2 = getattr(quant_state, "state2", None)
+    if state2 is not None:
+        nested = getattr(state2, "blocksize", None)
+        if not nested:
+            return None
+        span *= int(nested)
+    if n <= 0 or n % (world_size * span) or absmax.numel() * int(blocksize) != n:
+        return None
+    if (absmax.numel() * absmax.element_size()) % (world_size * param.element_size()):
+        return None
+    return span
+
+
+class ShardedAbsmax:
+    """The absmax of one bitsandbytes 4-bit weight, sharded by FSDP2 as the frozen parameter `name`
+    of `module` (the scales' bytes in the packed weight's float storage dtype, so they take the same
+    uncast byte all-gather as the packed bytes, in the same collective). Two QuantStates share every
+    field but `absmax`: the gathered weight's (`quant_state`, the one bitsandbytes / Unsloth
+    dequantize with) holds a view of the gathered scales while the unit is unsharded; the sharded
+    weight's (`shard_state`) holds this rank's slice, the absmax of exactly its packed bytes.
+    `materialize` gives both the whole absmax for a save or load. `code`, `offset` and the nested
+    state are not split (they are small)."""
+
+    def __init__(self, module, name, weight_name, quant_state, absmax):
+        self.module = module
+        self.name = name
+        self.weight_name = weight_name
+        self.quant_state = quant_state
+        self.shard_state = None
+        self.dtype = absmax.dtype
+        self.shape = tuple(absmax.shape)
+        self.device = absmax.device
+        self.fsdp_param = None
+        self.live = None
+        self.full = None
+        self.depth = 0
+        self.handles = []
+
+    def as_scales(self, tensor):
+        return tensor.detach().reshape(-1).view(torch.uint8).view(self.dtype).reshape(self.shape)
+
+    def holder(self):
+        fsdp_param = self.fsdp_param
+        if fsdp_param is not None and getattr(fsdp_param, "sharded_param", None) is not None:
+            return fsdp_param.sharded_param
+        return self.module._parameters.get(self.name)
+
+    def is_sharded(self):
+        DTensor = _dtensor_cls()
+        return DTensor is not None and isinstance(self.holder(), DTensor)
+
+    def local_scales(self):
+        """This rank's slice of the absmax (1-D, in the absmax dtype), a view of the FSDP2 shard."""
+        holder = self.holder()
+        local = holder.to_local() if hasattr(holder, "to_local") else holder
+        return local.detach().reshape(-1).view(torch.uint8).view(self.dtype)
+
+    def placeholder(self):
+        empty = torch.empty(self.shape, dtype = self.dtype, device = self.device)
+        empty.untyped_storage().resize_(0)
+        return empty
+
+    def on_unsharded(self, unsharded):
+        if unsharded is None:
+            return
+        self.live = self.as_scales(unsharded)
+        if self.full is None:
+            self.quant_state.absmax = self.live
+            if self.shard_state is not None:
+                self.shard_state.absmax = self.local_scales()
+
+    def attach_shard_state(self):
+        """After fully_shard: the sharded weight gets its own QuantState with this rank's absmax, so
+        code that reads `weight.quant_state` between steps sees real scales; the gathered weight keeps
+        `quant_state`, whose absmax waits for the first all-gather."""
+        weight = self.module._parameters.get(self.weight_name)
+        DTensor = _dtensor_cls()
+        if DTensor is not None and isinstance(weight, DTensor):
+            if getattr(weight, "quant_state", None) is self.quant_state:
+                self.shard_state = copy.copy(self.quant_state)
+                self.shard_state.absmax = self.local_scales()
+                weight.quant_state = self.shard_state
+        self.quant_state.absmax = self.live if self.live is not None else self.placeholder()
+
+    def gather(self):
+        """The whole absmax on every rank (a collective over the holder's mesh), bytes unchanged."""
+        holder = self.holder()
+        DTensor = _dtensor_cls()
+        if DTensor is None or not isinstance(holder, DTensor):
+            return self.as_scales(holder)
+        local = holder.to_local()
+        mesh = holder.device_mesh
+        if local.device.type == "cpu" and mesh.device_type != "cpu":
+            # CPUOffloadPolicy keeps shards on the host; NCCL gathers device tensors.
+            backend = getattr(torch, mesh.device_type)
+            local = local.to(torch.device(mesh.device_type, backend.current_device()))
+        as_bytes = local.detach().reshape(-1).view(torch.uint8)
+        nbytes = holder.numel() * holder.element_size()
+        full = DTensor.from_local(
+            as_bytes,
+            mesh,
+            holder.placements,
+            shape = torch.Size((nbytes,)),
+            stride = (1,),
+        ).full_tensor()
+        return full.view(self.dtype).reshape(self.shape)
+
+    def write_back(self, full):
+        """Copy this rank's slice of a whole absmax (a load restored it) into the local shard."""
+        holder = self.holder()
+        DTensor = _dtensor_cls()
+        source = full.detach().reshape(-1).view(torch.uint8)
+        with torch.no_grad():
+            if DTensor is None or not isinstance(holder, DTensor):
+                target = holder.detach().reshape(-1).view(torch.uint8)
+                if target.data_ptr() != source.data_ptr():
+                    target.copy_(source.to(target.device))
+                return
+            local = holder.to_local().detach().reshape(-1).view(torch.uint8)
+            start = _local_offset(holder) * holder.element_size()
+            local.copy_(source[start : start + local.numel()].to(local.device))
+            live = self.live
+            if live is not None and live.untyped_storage().nbytes() > 0:
+                live.copy_(full.to(live.device))
+
+    def _states(self):
+        return [s for s in (self.quant_state, self.shard_state) if s is not None]
+
+    def materialize(
+        self,
+        device = None,
+        keep = True,
+    ):
+        """Every rank (a collective): both QuantStates hold the whole absmax, on `device` (default the
+        gathering device), until the matching `release`. `keep = False` only takes part in the gather
+        (a rank that writes nothing) and holds nothing."""
+        if self.full is None and (self.depth == 0 or keep):
+            full = self.gather()
+            if device is not None:
+                full = full.to(device)
+            if keep:
+                self.full = full
+                for state in self._states():
+                    state.absmax = full
+            del full
+        self.depth += 1
+
+    def release(self):
+        self.depth -= 1
+        if self.depth > 0 or self.full is None:
+            self.depth = max(self.depth, 0)
+            return
+        full, self.full = self.full, None
+        for state in self._states():
+            current = getattr(state, "absmax", None)
+            if (
+                isinstance(current, torch.Tensor)
+                and current is not full
+                and current.shape == full.shape
+                and current.dtype == full.dtype
+            ):
+                full = current  # replaced (not updated in place) while whole
+                break
+        try:
+            self.write_back(full)
+        finally:
+            self.quant_state.absmax = self.live if self.live is not None else self.placeholder()
+            if self.shard_state is not None:
+                self.shard_state.absmax = self.local_scales()
+
+    def _drop_from_state_dict(self, module, state_dict, prefix, local_metadata):
+        # bitsandbytes writes the absmax itself as `<weight>.absmax`; the holder is no checkpoint key.
+        state_dict.pop(prefix + self.name, None)
+
+    def _not_missing(self, module, incompatible_keys):
+        missing = incompatible_keys.missing_keys
+        missing[:] = [k for k in missing if k != self.name and not k.endswith("." + self.name)]
+
+    def unregister(self):
+        """Back to a replicated absmax (FSDP2 did not take the holder): the QuantState owns the scales."""
+        holder = self.module._parameters.pop(self.name, None)
+        if holder is not None:
+            self.quant_state.absmax = self.as_scales(holder)
+        for handle in self.handles:
+            handle.remove()
+        self.handles = []
+        entries = self.module.__dict__.get(_ABSMAX_KEY) or {}
+        entries.pop(self.name, None)
+        if not entries:
+            self.module.__dict__.pop(_ABSMAX_KEY, None)
+
+
+def absmax_shards(model):
+    """Every ShardedAbsmax under `model`, in module order (the same on every rank)."""
+    out = []
+    seen = set()
+    for module in model.modules():
+        for entry in (module.__dict__.get(_ABSMAX_KEY) or {}).values():
+            if id(entry) not in seen:
+                seen.add(id(entry))
+                out.append(entry)
+    return out
+
+
+def register_absmax_shards(model, world_size):
+    """Before fully_shard: give every float-stored Params4bit whose absmax splits into self-contained
+    shards (`absmax_shard_span`) a frozen holder parameter with the absmax bytes, so FSDP2 shards and
+    gathers the scales with the packed bytes. Weights shared by several modules or QuantStates keep
+    a replicated absmax. Returns the ShardedAbsmax entries."""
+    users = {}
+    for module in model.modules():
+        for param in module._parameters.values():
+            if param is not None:
+                users[id(param)] = users.get(id(param), 0) + 1
+                state = getattr(param, "quant_state", None)
+                if state is not None:
+                    # Distinct weights sharing one QuantState (any of them, in any unit) keep it whole.
+                    users[id(state)] = users.get(id(state), 0) + 1
+    entries = []
+    states = set()
+    for module in list(model.modules()):
+        for name, param in list(module._parameters.items()):
+            if param is None or not is_params4bit(param):
+                continue
+            if absmax_shard_span(param, world_size) is None:
+                continue
+            quant_state = param.quant_state
+            if users.get(id(param), 0) > 1 or id(quant_state) in states:
+                continue
+            if users.get(id(quant_state), 0) > users.get(id(param), 0):
+                continue
+            holder_name = name + _ABSMAX_SUFFIX
+            if holder_name in module._parameters or holder_name in module.__dict__:
+                continue
+            absmax = quant_state.absmax
+            entry = ShardedAbsmax(module, holder_name, name, quant_state, absmax)
+            try:
+                data = absmax.detach().reshape(-1).view(torch.uint8).view(param.dtype)
+            except RuntimeError:
+                continue
+            holder = torch.nn.Parameter(data, requires_grad = False)
+            setattr(holder, _ABSMAX_KEY, entry)
+            module.register_parameter(holder_name, holder)
+            states.add(id(quant_state))
+            quant_state.absmax = entry.as_scales(holder)
+            entry.handles = [
+                module._register_state_dict_hook(entry._drop_from_state_dict),
+                module.register_load_state_dict_post_hook(entry._not_missing),
+            ]
+            module.__dict__.setdefault(_ABSMAX_KEY, {})[holder_name] = entry
+            entries.append(entry)
+    return entries
+
+
+def finish_absmax_shards(entries):
+    """After fully_shard: drop the whole absmax FSDP2 sharded (`ShardedAbsmax.attach_shard_state`);
+    holders it left unmanaged (ignored_params, replicated layouts) are removed again. Returns the
+    number sharded."""
+    sharded = 0
+    for entry in entries:
+        if entry.fsdp_param is not None and entry.is_sharded():
+            entry.attach_shard_state()
+            sharded += 1
+        else:
+            entry.unregister()
+    return sharded
+
+
+@contextlib.contextmanager
+def full_absmax(
+    model,
+    enabled = True,
+    device = None,
+    keep = True,
+):
+    """Every rank: whole absmax in each sharded QuantState for the duration (saves, loads); a load
+    that rewrites them in place is copied back into the shards on exit."""
+    entries = [e for e in absmax_shards(model) if e.is_sharded()] if enabled else []
+    done = []
+    try:
+        for entry in entries:
+            entry.materialize(device = device, keep = keep)
+            done.append(entry)
+        yield len(done)
+    finally:
+        for entry in reversed(done):
+            entry.release()
+
+
 def _check_fsdp_param_anchors(FSDPParam):
     """The FSDPParam surface the wrappers rely on, in torch 2.6 .. 2.14. A string per missing anchor."""
     missing = []
@@ -468,7 +853,10 @@ def _missing_fsdp2_anchors():
 
 
 def _is_packed_fsdp_param(fsdp_param):
-    return getattr(fsdp_param, "_unsloth_quant_meta", None) is not None
+    return (
+        getattr(fsdp_param, "_unsloth_quant_meta", None) is not None
+        or getattr(fsdp_param, "_unsloth_absmax", None) is not None
+    )
 
 
 # Set by _get_param_all_gather_inputs, read by the _get_all_gather_input_metadatas call right after it
@@ -499,12 +887,17 @@ def patch_fsdp2_params4bit():
 
     def _init_sharded_param(self, param, *args, **kwargs):
         meta = _quant_meta(param)
+        absmax = getattr(param, _ABSMAX_KEY, None)
         out = original_init_sharded_param(self, param, *args, **kwargs)
         if meta is not None:
             self._unsloth_quant_meta = meta
             self._unsloth_param_cls = type(param)
             self._unsloth_param_module = getattr(param, "module", None)
             _attach_quant_meta(getattr(self, "sharded_param", None), meta)
+        if isinstance(absmax, ShardedAbsmax):
+            self._unsloth_absmax = absmax
+            absmax.fsdp_param = self
+            _attach_quant_meta(getattr(self, "sharded_param", None), {_ABSMAX_KEY: absmax})
         return out
 
     def init_unsharded_param(self, *args, **kwargs):
@@ -528,6 +921,10 @@ def patch_fsdp2_params4bit():
                     setattr(unsharded, _GATHERED_MARK, True)
                 except Exception:
                     pass
+        absmax = getattr(self, "_unsloth_absmax", None)
+        if absmax is not None:
+            # The gathered scales: the QuantState reads them until the unit reshards.
+            absmax.on_unsharded(getattr(self, "_unsharded_param", None))
         return out
 
     def init_dtype_attrs(self, mp_policy, *args, **kwargs):
@@ -538,8 +935,10 @@ def patch_fsdp2_params4bit():
         # tensor subclasses with their own all-gather hooks (torchao NF4Tensor) to those hooks.
         sharded = getattr(self, "sharded_param", None)
         local = getattr(sharded, "_local_tensor", sharded)
-        packed = getattr(self, "_unsloth_quant_meta", None) is not None or (
-            sharded is not None and not sharded.is_floating_point()
+        packed = (
+            getattr(self, "_unsloth_quant_meta", None) is not None
+            or getattr(self, "_unsloth_absmax", None) is not None
+            or (sharded is not None and not sharded.is_floating_point())
         )
         if packed and not hasattr(local, "fsdp_pre_all_gather"):
             self.param_dtype = None
@@ -652,18 +1051,23 @@ def fsdp2_qlora_wrap(
     prepare_fn = None,
     native = False,
     dtype = None,
+    shard_absmax = True,
+    world_size = None,
 ):
     """Around an FSDP2 wrap (accelerate's `fsdp2_prepare_model` is `prepare_fn`, or Unsloth's own
     fully_shard calls with `native = True`): prepare the 4-bit weights, and let uint8 ones still left
     shard on torch < 2.12. Yields the `prepare_fsdp2_qlora` info, or None for a model without
     bitsandbytes 4-bit weights (nothing is touched then). `dtype` is the float storage (default: the
-    weights' compute dtype)."""
+    weights' compute dtype). With float storage, `shard_absmax` (UNSLOTH_FSDP2_SHARD_ABSMAX=0 turns it
+    off) shards each weight's absmax with it when it splits evenly over `world_size` ranks (default
+    the process group's size); info["absmax_sharded"] counts them after the wrap."""
     if not any(is_params4bit(p) for p in model.parameters()):
         yield None
         return
     survives = float_storage_survives_wrap(prepare_fn, native = native)
     info = prepare_fsdp2_qlora(model, dtype = dtype, float_storage = survives)
     info["reverted"] = 0
+    info["absmax_sharded"] = 0
     if not survives or not info["patched"]:
         # Float storage here comes only from the caller's own BitsAndBytesConfig. An unpatched FSDP2
         # all-gather, accelerate < 1.13's `model.to(torch.float32)` or torch < 2.8's one dtype per unit
@@ -678,10 +1082,21 @@ def fsdp2_qlora_wrap(
     info["storage"] = sorted(
         {str(p.dtype).replace("torch.", "") for p in model.parameters() if is_params4bit(p)}
     )
+    absmax = []
+    if shard_absmax and survives and info["patched"] and _absmax_sharding_enabled():
+        if world_size is None:
+            dist = torch.distributed
+            world_size = (
+                dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+            )
+        absmax = register_absmax_shards(model, world_size)
     nonfloat = any(not (p.is_floating_point() or p.is_complex()) for p in model.parameters())
-    with contextlib.ExitStack() as stack:
-        if nonfloat:
-            stack.enter_context(nonfloat_param_guard(model))
-            if _fsdp2_checks_frozen_dtypes():
-                stack.enter_context(nonfloat_frozen_unmanaged())
-        yield info
+    try:
+        with contextlib.ExitStack() as stack:
+            if nonfloat:
+                stack.enter_context(nonfloat_param_guard(model))
+                if _fsdp2_checks_frozen_dtypes():
+                    stack.enter_context(nonfloat_frozen_unmanaged())
+            yield info
+    finally:
+        info["absmax_sharded"] = finish_absmax_shards(absmax)

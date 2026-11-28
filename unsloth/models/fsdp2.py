@@ -502,8 +502,12 @@ def install_fsdp2_prepare_hook():
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         from .fsdp2_qlora import fsdp2_qlora_wrap
 
+        plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+        # cpu_ram_efficient_loading reloads the state dict into meta-sharded parameters, which has no
+        # entry for an absmax holder: keep the absmax replicated there.
+        shard_absmax = not getattr(plugin, "cpu_ram_efficient_loading", False)
         # uint8 storage first: float-packed 4-bit weights would count as frozen 16-bit weights.
-        with fsdp2_qlora_wrap(model, original) as qlora:
+        with fsdp2_qlora_wrap(model, original, shard_absmax = shard_absmax) as qlora:
             fill_fsdp2_mixed_precision(accelerator)
             unify_trainable_dtypes(accelerator, model)
             unify_frozen_dtypes(accelerator, model)
@@ -512,6 +516,8 @@ def install_fsdp2_prepare_hook():
             note = "" if qlora["patched"] else f" FSDPParam was not patched: {qlora['reason']}."
             if qlora.get("reverted"):
                 note += f" {qlora['reverted']} float-packed weights kept as uint8, which this wrap preserves."
+            if qlora.get("absmax_sharded"):
+                note += f" absmax of {qlora['absmax_sharded']} sharded with them."
             _print_rank0(
                 f"Unsloth: FSDP2 QLoRA: {qlora['params4bit']} 4-bit weights packed as "
                 f"{'/'.join(qlora['storage'])} ({qlora['converted']} repacked from uint8).{note}"
