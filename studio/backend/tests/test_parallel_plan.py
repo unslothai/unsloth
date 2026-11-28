@@ -572,14 +572,6 @@ def test_layout_shards_weights_reads_cores_parse(spec, shards):
     assert pp.layout_shards_weights(spec, 2) is shards
 
 
-def test_custom_expert_parallel_needs_a_moe_model():
-    # Core loads the model before it finds no expert block to shard.
-    with pytest.raises(pp.ParallelPlanError) as err:
-        pp.plan({"parallel_mode": "custom", "parallel_spec": "ep=2"}, _host(2, ep = True), _model())
-    assert err.value.payload["code"] == "parallel_unsupported"
-    assert "mixture-of-experts" in err.value.payload["message"]
-
-
 def test_plain_training_error_rewrites_only_the_cell_gate():
     raw = (
         "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: cell "
@@ -613,3 +605,23 @@ def test_sharded_full_finetune_notes_the_optimizer_and_moe_fsdp2_warns():
     assert not any("adamw_torch" in n for n in notes("fsdp2", _model()))
     moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
     assert any("mixture-of-experts" in w for w in moe["warnings"])
+
+
+def test_fsdp2_is_sized_for_torch_adamw_and_layer_split_for_the_selected_optimizer():
+    # A sharded bfloat16 full finetune steps with torch AdamW: Auto must not pick FSDP2 on the 8-bit size.
+    model = {**_model(need = 31.6, mode = "full"), "fsdp2_per_gpu_gb": {2: 20.2}}
+    model["per_gpu_gb"][2] = 16.4
+    host = _host(2, gpus = [{**_t4(i), "total_gb": 24.0, "free_gb": 19.0} for i in range(2)])
+    plan = pp.plan({"parallel_mode": "auto"}, host, model)
+    assert plan["mode"] == "layer_split", plan["reason"]
+    row = pp._estimate_row(model, 2)
+    assert (row["fsdp2"], row["layer_split"]) == (20.2, 16.4)
+
+
+def test_the_cell_gate_is_left_to_the_load():
+    # An explicit backend no longer runs Core's cell gate at plan time: the load knows the model's traits.
+    olmoe = _model(moe = True, family = "olmoe")
+    plan = pp.plan(
+        {"parallel_mode": "custom", "parallel_spec": "cp=2,cp_backend=ulysses"}, _host(2), olmoe
+    )
+    assert plan["spec"] == "cp=2,cp_backend=ulysses"

@@ -291,6 +291,7 @@ def model_facts(
     facts: dict = {
         "required_gb": None,
         "per_gpu_gb": {},
+        "fsdp2_per_gpu_gb": {},
         "is_moe": False,
         "family": "",
         "multimodal": False,
@@ -320,6 +321,27 @@ def model_facts(
     for key, value in (meta.get("vram_breakdown") or {}).items():
         if key.startswith("min_per_gpu_") and value is not None:
             facts["per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
+    if training_type == "Full Finetuning" and bnb_adamw(optimizer):
+        # Under FSDP2 a bfloat16 full finetune steps with torch AdamW (worker._optimizer_for_run). Whether the
+        # weights are bfloat16 is known only in the worker, so the shards are sized for the larger optimizer.
+        try:
+            _, sharded = hw.estimate_required_model_memory_gb(
+                model_name,
+                hf_token = hf_token,
+                training_type = training_type,
+                load_in_4bit = load_in_4bit,
+                batch_size = batch_size,
+                max_seq_length = max_seq_length,
+                lora_rank = lora_rank,
+                target_modules = target_modules,
+                gradient_checkpointing = gradient_checkpointing,
+                optimizer = "adamw_torch",
+            )
+        except Exception:  # noqa: BLE001 -- keep the selected optimizer's shards
+            sharded = {}
+        for key, value in (sharded.get("vram_breakdown") or {}).items():
+            if key.startswith("min_per_gpu_") and value is not None:
+                facts["fsdp2_per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
     try:
         estimate_model = hw._resolve_model_identifier_for_gpu_estimate(
             model_name, hf_token = hf_token
@@ -493,14 +515,6 @@ def _core_check(
     if caps is None or not hasattr(caps, "Query"):
         return
     fields = getattr(caps.Query, "__dataclass_fields__", {})
-    if int(sizes.get("ep") or 1) > 1 and model and not model.get("is_moe", True):
-        # Core loads the whole model before it finds no expert block to shard.
-        raise ParallelPlanError(
-            "parallel_unsupported",
-            request.get("parallel_mode"),
-            "Expert parallel needs a mixture-of-experts model.",
-            'parallel_mode "ddp" or "fsdp2"',
-        )
     cp_backend = sizes.get("cp_backend")
     if cp_backend == "auto":
         cp_backend = None
@@ -548,8 +562,9 @@ def _core_check(
     }
     query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        # cp_backend "auto" resolves only at load, so the cell check is left to Unsloth then.
-        caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
+        # Core's rules only: its cell gate reads what the load knows (attention, compile, traits, router aux
+        # loss) and runs at load, where Studio rewords its refusal (plain_training_error).
+        caps.check(query, cells = False)
     except NotImplementedError as exc:
         text = str(exc)
         message, _, alternative = text.partition(" Instead: ")
@@ -698,10 +713,20 @@ def _sizes_for(mode: str, world: int) -> dict:
     return sizes
 
 
+def _fsdp2_gb(model: dict, n: int) -> Optional[float]:
+    """Per-GPU need under FSDP2, for the optimizer the run may step with there (model_facts)."""
+    return (model.get("fsdp2_per_gpu_gb") or {}).get(n) or (model.get("per_gpu_gb") or {}).get(n)
+
+
 def _estimate_row(model: dict, n: int) -> dict:
     single = model.get("required_gb")
-    sharded = (model.get("per_gpu_gb") or {}).get(max(n, 1))
-    return {"single": single, "ddp": single, "fsdp2": sharded, "layer_split": sharded}
+    split = (model.get("per_gpu_gb") or {}).get(max(n, 1))
+    return {
+        "single": single,
+        "ddp": single,
+        "fsdp2": _fsdp2_gb(model, max(n, 1)),
+        "layer_split": split,
+    }
 
 
 def _gpus_differ(gpus: list) -> bool:
@@ -843,7 +868,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 + ("" if _fits(need, gpus) else ", and not every GPU has room for a full copy")
                 + f"; GPU {largest['index']} ({largest['name']}) holds it whole, so it trains there alone.",
             )
-        shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
+        shard = _fsdp2_gb(model, len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
                 _core_check(
