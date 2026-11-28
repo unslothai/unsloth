@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bfloat16 full finetuning: step bfloat16 weights in float32, round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
+"""Trained bfloat16 weights (full finetuning, or LoRA's modules_to_save / trained norms): step them in float32,
+round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
 
 bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller than a weight's spacing.
 
@@ -1066,20 +1067,23 @@ def enable_bf16_stochastic_rounding(
     setattr(optimizer, _MARK, len(params))
     if verbose:
         print(
-            f"Unsloth: bfloat16 full finetuning steps {len(params)} bfloat16 weights in float32 and "
+            f"Unsloth: steps {len(params)} trained bfloat16 weights in float32 and "
             "rounds them back stochastically, so updates smaller than bfloat16's spacing are not lost. "
             "Set UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 to turn this off."
         )
     return len(params)
 
 
-def _full_finetuning(model):
+def _unsloth_model(model):
+    """True for a model Unsloth loaded, full finetuning or LoRA (every load stamps _unsloth_full_finetuning). Under
+    LoRA the adapters are float32, but trained bfloat16 weights beside them (modules_to_save embed_tokens / lm_head,
+    trained norms) step in bfloat16 and need the rounding as much as full finetuning does; a LoRA run with none
+    covers nothing and its optimizer is left untouched."""
     seen = set()
     while model is not None and id(model) not in seen:
         seen.add(id(model))
-        flag = getattr(model, "_unsloth_full_finetuning", None)
-        if flag is not None:
-            return bool(flag)
+        if getattr(model, "_unsloth_full_finetuning", None) is not None:
+            return True
         model = getattr(model, "module", None)
     return False
 
@@ -1098,7 +1102,7 @@ def patch_trainer_bf16_stochastic_rounding(Trainer):
         **kwargs,
     ):
         target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
-        if getattr(self, "lr_scheduler", None) is None and _full_finetuning(
+        if getattr(self, "lr_scheduler", None) is None and _unsloth_model(
             getattr(self, "model", None)
         ):
             try:

@@ -139,6 +139,13 @@ _HP_FP8 = HPLayerPolicy(output_head = True, embeddings = True, routers = True)
 _PROBE_G4 = "probed on an RTX PRO 6000 (sm120), torch 2.13.0, torchao 0.18.0"
 _PROBE_L4 = "probed on an L4 (sm89), torch 2.13.0, torchao 0.18.0"
 _PROBE_B200 = "probed on a B200 (sm100), torch 2.13, torchao 0.18"
+_PROBE_G4_214 = "RTX PRO 6000 (sm120), torch 2.14.1, torchao 0.18.0, Triton 3.8.0"
+_PROBE_L4_214 = "L4 (sm89), torch 2.14.1, torchao 0.18.0, Triton 3.8.0"
+_PROBE_B200_214 = "B200 (sm100), torch 2.14.1, torchao 0.18.0, correctness only"
+_BLOCKWISE_SCALED_MM = (
+    "torch's 1x128 / 128x128 scaled_mm is SM90 only (eager NotImplementedError, compiled "
+    "CUBLAS_STATUS_NOT_SUPPORTED)"
+)
 
 RECIPES = {}
 
@@ -271,21 +278,48 @@ _add(
         wgrad = GemmPolicy(_op(E4M3, "block1x128"), _op(E4M3, "block128x1")),
         hp_layers = HPLayerPolicy(first_n = 1, last_n = 2),
         input_dtypes = ("bf16",),
-        backend = "torchao.prototype.blockwise_fp8_training.linear.Float8BlockwiseLinear",
+        compile = "opaque",
+        backend = "torchao.prototype.blockwise_fp8_training.linear.Float8BlockwiseLinear "
+        "(use_triton = True off sm90)",
         status = "planned",
         gates = {
-            **{
-                g: Gate(
-                    "refused",
-                    "torchao's DeepSeek 1x128 / 128x128 scaled_mm is SM90 only in torch "
-                    "(Transformer Engine Float8BlockScaling does run on sm120)",
-                    _PROBE_B200 + "; " + _PROBE_G4 + "; " + _PROBE_L4,
-                )
-                for g in ("sm75", "sm80", "sm89", "sm100", "sm120", "rocm")
-            },
+            "sm75": _NO_FP8_HW,
+            "sm80": _NO_FP8_HW,
+            "sm89": Gate(
+                "explicit",
+                evidence = _BLOCKWISE_SCALED_MM
+                + "; torchao's Triton GEMMs run (linear rel err 0.036 fwd / dgrad / wgrad) at 0.75-0.98x "
+                "bf16 fwd+bwd on Qwen3 0.6B / 1.7B MLP shapes (8192 tokens) and 0.91x at 4096 x 14336, where "
+                "fp8_tensorwise is 1.25-1.59x. 100-step Qwen3-0.6B full finetune, bs 4 x 1024, every arm "
+                "compiled: step 0.97x bf16 (bf16 A/A 0.8%), fp8_tensorwise 1.06x; eval loss +0.31% vs bf16 "
+                "(fp8_tensorwise +0.44%) (" + _PROBE_L4_214 + ")",
+            ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
+            "sm100": Gate(
+                "explicit",
+                evidence = _BLOCKWISE_SCALED_MM
+                + "; torchao's Triton GEMMs run (linear rel err 0.036, rowwise 0.036-0.038); not timed ("
+                + _PROBE_B200_214
+                + ")",
+            ),
+            "sm120": Gate(
+                "explicit",
+                evidence = _BLOCKWISE_SCALED_MM
+                + "; torchao's Triton GEMMs run (linear rel err 0.036 fwd / dgrad / wgrad) at 0.58-0.94x "
+                "bf16 fwd+bwd on Qwen3 0.6B / 1.7B MLP shapes and 0.99-1.01x at 4096 x 14336 (fp8_tensorwise "
+                "1.06-1.56x). 100-step full finetune, bs 4 x 1024, every arm compiled: Qwen3-0.6B step 0.96x "
+                "bf16 (bf16 A/A 0.12%), Qwen3-1.7B 0.98x (A/A 0.05%), where fp8_tensorwise is 1.02x / 1.10x; "
+                "eval loss +0.27% / +0.19% vs bf16 (fp8_tensorwise +0.45% / +0.35%, bf16 A/A 0.01% / 0.03%). "
+                "Most accurate fp8 recipe here, never faster than bf16 (" + _PROBE_G4_214 + ")",
+            ),
+            "rocm": Gate(
+                "refused",
+                "not probed on ROCm; torch's 1x128 / 128x128 scaled_mm is CUDA SM90 only",
+            ),
         },
-        notes = "fp16 rejected by torchao; NVFP4 paper FP8 baseline keeps first 1 + last 2 blocks in bf16",
+        notes = "fp16 rejected by torchao; NVFP4 paper FP8 baseline keeps first 1 + last 2 blocks in bf16. "
+        "Inductor cannot re-emit torchao's Triton GEMM (compile error), so it runs as an opaque op under "
+        "compile; it saves the 16-bit input and weight for backward, so peak memory equals bf16",
     )
 )
 
@@ -422,21 +456,34 @@ _add(
             "sm75": _NO_MX_HW,
             "sm80": _NO_MX_HW,
             "sm90": _NO_MX_HW,
-            **{
-                g: Gate(
-                    "refused",
-                    "torchao's MXFP8 grouped kernels are SM100 only (EMULATED runs, no speed)",
-                    _PROBE_G4 + "; " + _PROBE_L4,
-                )
-                for g in ("sm89", "sm120")
-            },
+            "sm89": Gate(
+                "refused",
+                "needs block-scaled tensor cores; torch._scaled_grouped_mm runs on compute capability "
+                "9.0 / 10.0 only",
+                _PROBE_L4_214,
+            ),
+            "sm120": Gate(
+                "refused",
+                "torch._scaled_grouped_mm runs on compute capability 9.0 / 10.0 only (MX operands too); a "
+                "per-expert loop of dense MX torch._scaled_mm is 0.22-0.29x bf16 torch._grouped_mm at "
+                "Qwen3-30B-A3B expert shapes and 0.48-0.57x at gpt-oss-20b, before its host sync",
+                _PROBE_G4_214,
+            ),
             "sm100": Gate(
-                "unprobed",
-                "DSLRuntimeError with nvidia-cutlass-dsl 4.6.2 (" + _PROBE_B200 + "); "
-                "pin a torchao / cutlass-dsl pair whose subprocess probe passes",
+                "explicit",
+                evidence = "Unsloth's own MX quantizer (e4m3, e8m0 RCEIL per 1 x 32, bit-equal to torchao "
+                "to_mx) and device-side blocked scale layouts over torch._scaled_grouped_mm: fwd, dgrad and "
+                "wgrad run at Qwen3-30B-A3B (128 experts, 2048 -> 1536, 768 -> 2048) and gpt-oss-20b "
+                "(32 experts, 2880 -> 5760, 2880 -> 2880) expert shapes, uneven and empty groups, within "
+                "1e-5 of bf16 grouped GEMMs on the dequantized operands, rel err 0.038 vs bf16. Tiny MoE, "
+                "100 steps: MX fwd + dgrad with bf16 wgrad trains within the bf16 seed spread (full "
+                "finetune and bf16 expert LoRA on top); MX wgrad lands 0.4% higher, outside it. Expert "
+                "gradients 5x bf16's error vs fp32 (median 0.08-0.10 per expert), set by the MX forward. "
+                "Not timed (" + _PROBE_B200_214 + ")",
             ),
         },
-        notes = "MoE experts; fallback is dequant + bf16 torch._grouped_mm",
+        notes = "MoE experts; fallback is dequant + bf16 torch._grouped_mm. torchao's own grouped path needs its "
+        "CuTe DSL quantizers (DSLRuntimeError with nvidia-cutlass-dsl 4.6.2 on a B200, torch 2.13)",
     )
 )
 
