@@ -771,7 +771,11 @@ def _write_qwen35_gguf(
     path,
     fused,
     fused_type = "Q8_0",
+    keep = None,
+    shard = None,
 ):
+    """keep: write only tensors whose name it accepts (values are drawn either way, so shards of one file agree);
+    shard = (index, count) adds llama.cpp's split.* keys."""
     gguf = pytest.importorskip("gguf")
     c = _Q35
     value_dim, key_dim = c["v_heads"] * c["head_dim"], c["k_heads"] * c["head_dim"]
@@ -798,6 +802,9 @@ def _write_qwen35_gguf(
     writer.add_float32(f"{arch}.attention.layer_norm_rms_epsilon", 1e-6)
     writer.add_float32(f"{arch}.rope.freq_base", 10000.0)
     writer.add_array(f"{arch}.rope.dimension_sections", [6, 5, 5, 0])
+    if shard is not None:
+        writer.add_uint16("split.no", shard[0])
+        writer.add_uint16("split.count", shard[1])
     writer.add_string("tokenizer.ggml.model", "llama")
     writer.add_array("tokenizer.ggml.tokens", [f"t{i}" for i in range(_VOCAB)])
     rng = np.random.default_rng(0)
@@ -806,15 +813,19 @@ def _write_qwen35_gguf(
     def blocks(rows, cols, type_name):
         return _blocks(type_name, rows, cols, next(seed), scale = 1e-3).numpy()
 
+    def add(name, data, **kwargs):
+        if keep is None or keep(name):
+            writer.add_tensor(name, data, **kwargs)
+
     def quantized(name, data, type_name):
-        writer.add_tensor(name, data, raw_dtype = getattr(gguf.GGMLQuantizationType, type_name))
+        add(name, data, raw_dtype = getattr(gguf.GGMLQuantizationType, type_name))
 
     def floats(
         name,
         *shape,
         offset = 0.0,
     ):
-        writer.add_tensor(name, (offset + 0.1 * rng.standard_normal(shape)).astype(np.float32))
+        add(name, (offset + 0.1 * rng.standard_normal(shape)).astype(np.float32))
 
     quantized("token_embd.weight", blocks(_VOCAB, c["hidden"], "Q8_0"), "Q8_0")
     floats("output_norm.weight", c["hidden"], offset = 1.0)
@@ -858,9 +869,7 @@ def _write_qwen35_gguf(
             quantized(p + "ssm_beta.weight", beta, fused_type)
             quantized(p + "ssm_alpha.weight", alpha, fused_type)
         quantized(p + "ssm_out.weight", blocks(c["hidden"], value_dim, "Q4_K"), "Q4_K")
-        writer.add_tensor(
-            p + "ssm_a", -np.exp(0.1 * rng.standard_normal(c["v_heads"])).astype(np.float32)
-        )
+        add(p + "ssm_a", -np.exp(0.1 * rng.standard_normal(c["v_heads"])).astype(np.float32))
         floats(p + "ssm_dt.bias", c["v_heads"])
         floats(p + "ssm_conv1d.weight", 2 * key_dim + value_dim, 4)
         floats(p + "ssm_norm.weight", c["head_dim"])
@@ -913,6 +922,28 @@ def test_fused_qwen35_layout_loads_packed(tmp_path, fused_type):
         logits = fused(input_ids = ids).logits
         assert torch.equal(logits, split(input_ids = ids).logits)
         torch.testing.assert_close(logits, dense(input_ids = ids).logits, rtol = 1e-5, atol = 1e-4)
+
+
+def test_fused_qwen35_layout_in_a_split_gguf(tmp_path):
+    # Fused tensors in one shard, the ssm_out their split points come from in another, and a metadata-only first
+    # shard: the load must equal the single unfused file's.
+    _new_gguf_path()
+    pytest.importorskip("transformers.models.qwen3_5")
+    fused_names = ("attn_qkv_gate.weight", "ssm_beta_alpha.weight")
+
+    def in_second(name):
+        return name.endswith(fused_names) or name == "token_embd.weight"
+
+    paths = [tmp_path / f"m-{i:05d}-of-00003.gguf" for i in (1, 2, 3)]
+    _write_qwen35_gguf(paths[0], fused = True, keep = lambda name: False, shard = (0, 3))
+    _write_qwen35_gguf(paths[1], fused = True, keep = in_second, shard = (1, 3))
+    _write_qwen35_gguf(paths[2], fused = True, keep = lambda name: not in_second(name), shard = (2, 3))
+    _write_qwen35_gguf(tmp_path / "unfused.gguf", fused = False)
+    loaded, want = _packed_from(paths[0]), _packed_from(tmp_path / "unfused.gguf")
+    a, b = loaded.state_dict(), want.state_dict()
+    assert a.keys() == b.keys()
+    for key in a:
+        assert a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]), key
 
 
 def test_fused_split_is_row_slices_of_the_same_bytes():
