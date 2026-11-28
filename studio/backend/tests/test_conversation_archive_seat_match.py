@@ -121,7 +121,6 @@ def _positions(rng, groups):
             continue
         texts = [_seat_text(message) for message in rng.choice(groups)]
         if roll < 0.3:
-            # Shorter and longer positions: only the trailing short one may match.
             texts = texts[: rng.randint(0, len(texts))] if rng.random() < 0.6 else texts + ["extra"]
         positions.append([_stored_variant(rng, text) for text in texts])
     return positions
@@ -134,13 +133,11 @@ def test_memo_matcher_returns_the_reference_seats_on_random_turns():
         groups = [_group(rng) for _ in range(rng.randint(1, 5))]
         positions = _positions(rng, groups)
         memo = {}
-        # One memo serves every group of a pass, so reuse it across groups like _archive_turns does.
         for group in groups + [_group(rng)]:
             expected = _reference_occurrences(positions, group)
             assert conversation_archive._occurrences(positions, group) == expected
             assert conversation_archive._occurrences(positions, group, memo) == expected
             matched += bool(expected)
-    # The corpus must exercise matches, not only misses.
     assert matched > 1000
 
 

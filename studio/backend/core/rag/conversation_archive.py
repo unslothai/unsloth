@@ -1797,15 +1797,14 @@ def _occurrences(
     group: list[dict],
     memo: Optional[dict] = None,
 ) -> list[int]:
-    """Matches the whole turn, not its first line, so turns that start alike do not share seats. Compared as a prefix, since the transcript lags the evicted group.
-    memo: a dict owned by the caller for ONE positions list; it buckets positions by an exact element, so a fit's groups skip the full scan."""
+    """Match the whole turn (not its first line) as a prefix, since the transcript lags the evicted group.
+    memo: caller-owned dict for ONE positions list."""
     if not positions or not group:
         return []
     texts = [_seat_text(message) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
-    # Space offsets per live text, computed once on first need, not per stored position.
     spaces: dict[int, list[int]] = {}
 
     def _same(stored: str, live: str, is_call: bool, slot: int) -> bool:
@@ -1861,8 +1860,7 @@ def _occurrences(
         return False
 
     candidates = range(len(positions))
-    # A non-call element must match exactly, so only positions holding it there (plus the
-    # trailing one, which may be too short to hold it) can match; checked in index order below.
+    # Non-call elements match exactly, so bucket by one; the trailing short position may still match.
     exact = next((index for index, is_call in enumerate(calls) if not is_call), None)
     if memo is not None and exact is not None:
         buckets = memo.get(exact)
