@@ -13794,7 +13794,8 @@ class LlamaCppBackend:
     def _live_commit_fit_headroom_mib(gaps: dict[int, int]) -> dict[int, int]:
         """Raises each recorded gap to CUDA's own free reading less commit, read once at launch in a
         driver-API child: the nvidia-smi estimate can sit under it, and a gap may only err large."""
-        if not any(gaps.get(i) and i in LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB for i in gaps):
+        # Any device with a commit reading, a zero gap included: the estimate can sit under CUDA free.
+        if not any(i in LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB for i in gaps):
             return gaps
         try:
             from utils.hardware import nvidia
@@ -13810,7 +13811,7 @@ class LlamaCppBackend:
                 else ordinal
             )
             commit_free = LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB.get(idx)
-            if free_mib is None or commit_free is None or not out.get(idx):
+            if free_mib is None or commit_free is None or idx not in out:
                 continue
             out[idx] = max(out[idx], int(free_mib) - commit_free)
         return out

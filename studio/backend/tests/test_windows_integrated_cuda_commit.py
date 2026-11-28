@@ -377,3 +377,18 @@ def test_an_unread_cuda_free_keeps_the_recorded_gap(monkeypatch):
     # A live reading below the estimate never shrinks the gap.
     monkeypatch.setattr(nvidia, "get_cuda_free_mib", lambda: [100_000])
     assert LlamaCppBackend._live_commit_fit_headroom_mib({0: 50922}) == {0: 50922}
+
+
+def test_a_zero_estimated_gap_is_still_read_live(monkeypatch):
+    """Commit 111,500 MiB sits above the nvidia-smi estimate (111,317) but under CUDA free (112,150)."""
+    from utils.hardware import nvidia
+
+    _host(monkeypatch, platform = "win32", integrated = True, commit = 111_500, limit = 150_000)
+    LlamaCppBackend._widen_integrated_cuda_rows([(0, N1X_SMI_FREE_IDLE, N1X_SMI_TOTAL)])
+    assert LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB == {0: 0}
+    monkeypatch.setattr(nvidia, "get_cuda_free_mib", lambda: [N1X_CUDA_FREE_IDLE], raising = False)
+    gap = LlamaCppBackend._live_commit_fit_headroom_mib({0: 0})[0]
+    # At least CUDA free less commit available; the row's credit (capped at the estimate) can
+    # make it larger, never smaller.
+    assert gap >= N1X_CUDA_FREE_IDLE - 111_500
+    assert gap == N1X_CUDA_FREE_IDLE - LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB[0]
