@@ -28,13 +28,13 @@ _SHIM_INIT = _ROOT / "unsloth" / "bnb_shim" / "__init__.py"
 
 fsdp_mod = pytest.importorskip("torch.distributed.fsdp")
 if not hasattr(fsdp_mod, "fully_shard"):
-    pytest.skip("torch has no FSDP2 fully_shard", allow_module_level=True)
+    pytest.skip("torch has no FSDP2 fully_shard", allow_module_level = True)
 if (
     sys.platform == "win32"
     or not torch.distributed.is_available()
     or not torch.distributed.is_gloo_available()
 ):
-    pytest.skip("needs torch.distributed with gloo", allow_module_level=True)
+    pytest.skip("needs torch.distributed with gloo", allow_module_level = True)
 
 # (in, out, nested): 256 x 256 splits into whole 64 x 256 element groups on 2 and 4 ranks; the last
 # (24576 elements, nested) does not, so its absmax stays whole on every rank.
@@ -69,25 +69,25 @@ class _Lora4bit(torch.nn.Module):
         base = bnb.nn.Linear4bit(
             in_f,
             out_f,
-            bias=False,
-            compute_dtype=torch.bfloat16,
-            compress_statistics=nested,
-            quant_type="nf4",
-            quant_storage=torch.bfloat16,
+            bias = False,
+            compute_dtype = torch.bfloat16,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
         )
         base.weight = bnb.nn.Params4bit(
             torch.randn(out_f, in_f) * 0.05,
-            requires_grad=False,
-            compress_statistics=nested,
-            quant_type="nf4",
-            quant_storage=torch.bfloat16,
-            blocksize=64,
-            module=base,
+            requires_grad = False,
+            compress_statistics = nested,
+            quant_type = "nf4",
+            quant_storage = torch.bfloat16,
+            blocksize = 64,
+            module = base,
         )
         self.base = base.to("cpu")
-        self.lora_A = torch.nn.Linear(in_f, 8, bias=False)
-        self.lora_B = torch.nn.Linear(8, out_f, bias=False)
-        torch.nn.init.normal_(self.lora_B.weight, std=0.05)
+        self.lora_A = torch.nn.Linear(in_f, 8, bias = False)
+        self.lora_B = torch.nn.Linear(8, out_f, bias = False)
+        torch.nn.init.normal_(self.lora_B.weight, std = 0.05)
 
     def forward(self, x):
         out = self.base(x.to(torch.bfloat16)).to(x.dtype)
@@ -99,7 +99,7 @@ def _model(bnb):
 
 
 def _inputs(rank):
-    return torch.randn(4, _LAYERS[0][0], generator=torch.Generator().manual_seed(100 + rank))
+    return torch.randn(4, _LAYERS[0][0], generator = torch.Generator().manual_seed(100 + rank))
 
 
 def _full(t):
@@ -118,9 +118,9 @@ def _shard(model, world_size, q, shard_absmax, mixed):
     kwargs = {"mesh": mesh}
     if mixed:
         kwargs["mp_policy"] = MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, reduce_dtype=torch.float32
+            param_dtype = torch.bfloat16, reduce_dtype = torch.float32
         )
-    with q.fsdp2_qlora_wrap(model, native=True, shard_absmax=shard_absmax) as info:
+    with q.fsdp2_qlora_wrap(model, native = True, shard_absmax = shard_absmax) as info:
         for layer in model:
             fully_shard(layer, **kwargs)
         fully_shard(model, **kwargs)
@@ -141,7 +141,12 @@ def _absmax_bytes(model):
     return out
 
 
-def _train(model, bnb, rank, steps=_STEPS):
+def _train(
+    model,
+    bnb,
+    rank,
+    steps = _STEPS,
+):
     dequant = []
 
     def capture(module, args):
@@ -151,7 +156,7 @@ def _train(model, bnb, rank, steps=_STEPS):
 
     hooks = [layer.base.register_forward_pre_hook(capture) for layer in model]
     trainable = [p for p in model.parameters() if p.requires_grad]
-    opt = torch.optim.SGD(trainable, lr=0.5)
+    opt = torch.optim.SGD(trainable, lr = 0.5)
     losses, grads = [], []
     x = _inputs(rank)
     for _ in range(steps):
@@ -160,7 +165,7 @@ def _train(model, bnb, rank, steps=_STEPS):
         losses.append(loss.detach().clone())
         grads.append([_full(p.grad).detach().clone() for p in trainable])
         opt.step()
-        opt.zero_grad(set_to_none=True)
+        opt.zero_grad(set_to_none = True)
     for h in hooks:
         h.remove()
     return losses, grads, dequant
@@ -176,7 +181,7 @@ def _single_process(bnb, world_size):
         loss.backward()
         losses.append(loss.detach().clone())
         local.append([p.grad.detach().clone() for p in trainable])
-        model.zero_grad(set_to_none=True)
+        model.zero_grad(set_to_none = True)
     mean = [sum(g[i] for g in local) / world_size for i in range(len(trainable))]
     dequant = [
         bnb.functional.dequantize_4bit(l.base.weight.data, l.base.weight.quant_state) for l in model
@@ -194,7 +199,7 @@ def _case(rank, world_size, shim):
 
     # Replicated absmax (today's path) vs sharded, same mixed precision, same seeds.
     base = _model(bnb)
-    base_info = _shard(base, world_size, q, shard_absmax=False, mixed=True)
+    base_info = _shard(base, world_size, q, shard_absmax = False, mixed = True)
     head = _model(bnb)
     from torch.multiprocessing.reductions import StorageWeakRef
 
@@ -202,10 +207,10 @@ def _case(rank, world_size, shim):
     originals = [StorageWeakRef(l.base.weight.quant_state.absmax.untyped_storage()) for l in head]
     scales = [l.base.weight.quant_state.absmax.clone() for l in head]
     whole = _absmax_bytes(head)
-    head_info = _shard(head, world_size, q, shard_absmax=True, mixed=True)
+    head_info = _shard(head, world_size, q, shard_absmax = True, mixed = True)
     out["absmax_sharded"] = (base_info["absmax_sharded"], head_info["absmax_sharded"])
     # torch < 2.8 (one dtype per unit, frozen weights included): no float storage, absmax replicated.
-    out["float_storage"] = q.float_storage_survives_wrap(native=True)
+    out["float_storage"] = q.float_storage_survives_wrap(native = True)
     out["bytes_whole"] = whole
     out["bytes_base"] = _absmax_bytes(base)
     out["bytes_head"] = _absmax_bytes(head)
@@ -239,18 +244,18 @@ def _case(rank, world_size, shim):
 
     # Sharded absmax without mixed precision against one process holding the whole model.
     plain = _model(bnb)
-    _shard(plain, world_size, q, shard_absmax=True, mixed=False)
-    p_losses, p_grads, p_deq = _train(plain, bnb, rank, steps=1)
+    _shard(plain, world_size, q, shard_absmax = True, mixed = False)
+    p_losses, p_grads, p_deq = _train(plain, bnb, rank, steps = 1)
     ref_losses, ref_grads, ref_deq, reference = _single_process(bnb, world_size)
     out["single_loss_bitwise"] = torch.equal(p_losses[0], ref_losses[rank])
     out["single_dequant_bitwise"] = [torch.equal(a, b) for a, b in zip(p_deq, ref_deq)]
     out["single_grads_close"] = all(
-        torch.allclose(a, b, rtol=1e-5, atol=1e-7) for a, b in zip(p_grads[0], ref_grads)
+        torch.allclose(a, b, rtol = 1e-5, atol = 1e-7) for a, b in zip(p_grads[0], ref_grads)
     )
 
     # A gathered save: bitsandbytes' own state dict, byte for byte, and nothing else.
     fresh = _model(bnb)
-    _shard(fresh, world_size, q, shard_absmax=True, mixed=True)
+    _shard(fresh, world_size, q, shard_absmax = True, mixed = True)
     expected = {k: v.detach().clone() for k, v in _model(bnb).state_dict().items()}
     with s.fsdp2_gathered(fresh) as writer:
         if writer:
@@ -268,7 +273,7 @@ def _case(rank, world_size, shim):
                     if k.startswith(head_key + ".")
                 }
                 w = bnb.nn.Params4bit.from_prequantized(
-                    data=saved[head_key], quantized_stats=stats, device="cpu"
+                    data = saved[head_key], quantized_stats = stats, device = "cpu"
                 )
                 reloaded.append(
                     torch.equal(bnb.functional.dequantize_4bit(w.data, w.quant_state), ref_deq[i])
@@ -276,7 +281,7 @@ def _case(rank, world_size, shim):
             out["reload_dequant_bitwise"] = reloaded
     out["save_left_shards"] = all(hasattr(l.base._parameters["weight"], "to_local") for l in fresh)
     # Still trains after the save put the shards back.
-    f_losses, _, _ = _train(fresh, bnb, rank, steps=1)
+    f_losses, _, _ = _train(fresh, bnb, rank, steps = 1)
     out["after_save_loss_bitwise"] = torch.equal(f_losses[0], h_losses[0])
 
     # Full DCP state dict: carries the absmax; loading restores scales a run rewrote.
@@ -284,11 +289,11 @@ def _case(rank, world_size, shim):
     from torch.distributed.checkpoint.state_dict import StateDictOptions
 
     s.install_dcp_bnb_state_dict()
-    opts = StateDictOptions(full_state_dict=True)
+    opts = StateDictOptions(full_state_dict = True)
     dcp_model = _model(bnb)
-    _shard(dcp_model, world_size, q, shard_absmax=True, mixed=True)
+    _shard(dcp_model, world_size, q, shard_absmax = True, mixed = True)
     full = {
-        k: v.detach().clone() for k, v in dcp.get_model_state_dict(dcp_model, options=opts).items()
+        k: v.detach().clone() for k, v in dcp.get_model_state_dict(dcp_model, options = opts).items()
     }
     out["dcp_keys_equal"] = sorted(full) == sorted(expected)
     out["dcp_absmax_equal"] = all(
@@ -301,7 +306,7 @@ def _case(rank, world_size, shim):
             for layer in dcp_model:
                 layer.base.weight.quant_state.absmax.mul_(2)
         changed = dcp_model(x).clone()
-    dcp.set_model_state_dict(dcp_model, full, options=opts)
+    dcp.set_model_state_dict(dcp_model, full, options = opts)
     with torch.no_grad():
         after = dcp_model(x).clone()
     out["dcp_rewrite_changed"] = not torch.equal(before, changed)
@@ -318,7 +323,7 @@ def _reload_case(save_dir, shim):
     path = os.path.join(save_dir, f"{other}.pt")
     out = None
     if os.path.exists(path):
-        blob = torch.load(path, weights_only=False)
+        blob = torch.load(path, weights_only = False)
         saved, dequant = blob["state_dict"], blob["dequant"]
         out = []
         for i in range(len(_LAYERS)):
@@ -327,7 +332,7 @@ def _reload_case(save_dir, shim):
                 k[len(head_key) + 1 :]: v for k, v in saved.items() if k.startswith(head_key + ".")
             }
             w = bnb.nn.Params4bit.from_prequantized(
-                data=saved[head_key], quantized_stats=stats, device="cpu"
+                data = saved[head_key], quantized_stats = stats, device = "cpu"
             )
             out.append(
                 torch.equal(bnb.functional.dequantize_4bit(w.data, w.quant_state), dequant[i])
@@ -349,20 +354,19 @@ def _reload_case(save_dir, shim):
 def _worker(rank, world_size, port, shim, queue):
     try:
         os.environ.update(
-            MASTER_ADDR="127.0.0.1",
-            MASTER_PORT=str(port),
-            RANK=str(rank),
-            WORLD_SIZE=str(world_size),
+            MASTER_ADDR = "127.0.0.1",
+            MASTER_PORT = str(port),
+            RANK = str(rank),
+            WORLD_SIZE = str(world_size),
         )
         import torch.distributed as dist
 
-        dist.init_process_group("gloo", rank=rank, world_size=world_size)
+        dist.init_process_group("gloo", rank = rank, world_size = world_size)
         result = _case(rank, world_size, shim)
         queue.put((rank, result))
         dist.destroy_process_group()
     except BaseException as error:
         import traceback
-
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
@@ -371,7 +375,6 @@ def _reload_worker(save_dir, shim, queue):
         queue.put((0, {"reload": _reload_case(save_dir, shim)}))
     except BaseException as error:
         import traceback
-
         queue.put((0, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
@@ -380,7 +383,7 @@ def _spawn(target, args_per_rank, shim):
 
     ctx = mp.get_context("spawn")
     queue = ctx.Queue()
-    procs = [ctx.Process(target=target, args=(*args, queue)) for args in args_per_rank]
+    procs = [ctx.Process(target = target, args = (*args, queue)) for args in args_per_rank]
     saved = {k: os.environ.get(k) for k in ("CUDA_VISIBLE_DEVICES", "UNSLOTH_BNB_SHIM")}
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
     os.environ["UNSLOTH_BNB_SHIM"] = "1" if shim else "0"
@@ -396,11 +399,11 @@ def _spawn(target, args_per_rank, shim):
     results = {}
     try:
         for _ in procs:
-            rank, result = queue.get(timeout=300)
+            rank, result = queue.get(timeout = 300)
             results[rank] = result
     finally:
         for p in procs:
-            p.join(timeout=60)
+            p.join(timeout = 60)
             if p.is_alive():
                 p.terminate()
     for r in results.values():
@@ -410,7 +413,6 @@ def _spawn(target, args_per_rank, shim):
 
 def _run(world_size, shim):
     from tests._rendezvous_port import free_port
-
     port = free_port()
     return _spawn(_worker, [(r, world_size, port, shim) for r in range(world_size)], shim)
 
