@@ -243,7 +243,8 @@ def test_triton_matches_torch_path_and_float64_oracle():
 
 
 VARIANTS_GRAPHS_COMPILE = """
-import json, torch
+import json, os, torch
+os.environ["UNSLOTH_BNB_SHIM_MULTI_TENSOR"] = "0"  # the per-tensor kernel (multi-tensor: own test)
 import bitsandbytes as bnb
 from unsloth.kernels import adam8bit_blockwise as K
 dev = "cuda"
