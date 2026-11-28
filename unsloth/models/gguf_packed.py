@@ -1205,7 +1205,14 @@ def gguf_packed_load(gguf_path = None):
             finally:
                 config.dequantize = dequantize
 
-        def update_weight_conversions(self, weight_conversions, model):
+        def update_weight_conversions(
+            self,
+            weight_conversions,
+            model = None,
+        ):
+            # transformers before 5.24 passes no model (and has no model with float32-strict modules to keep).
+            if model is None:
+                return saved_update_conversions(self, weight_conversions)
             conversions = saved_update_conversions(self, weight_conversions, model)
             if getattr(self, "supported", False) and isinstance(conversions, list):
                 conversions = _keep_float32_casts(conversions, model, self.dtype)
