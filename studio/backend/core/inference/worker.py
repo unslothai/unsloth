@@ -826,6 +826,12 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             if config.get("audio_codec_path") is not None:
                 load_kwargs["audio_codec_path"] = config["audio_codec_path"]
             if getattr(backend, "device", None) == "mlx":
+                if (
+                    config.get("preserve_mlx_dtype")
+                    and not mc.is_lora
+                    and not getattr(mc, "audio_type", None)
+                ):
+                    load_kwargs["preserve_dtype"] = True
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_quant"] = config.get("mlx_kv_quant")

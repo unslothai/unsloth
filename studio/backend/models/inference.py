@@ -174,6 +174,9 @@ class LoadRequest(BaseModel):
         description = "max_seq_length is the previous load's fitted context, not a user choice",
     )
     load_in_4bit: bool = Field(True, description = "Load model in 4-bit quantization")
+    mlx_preserve_dtype: bool = Field(
+        False, description = "Use the saved dtype of a dense local MLX checkpoint"
+    )
     is_lora: bool = Field(False, description = "Whether this is a LoRA adapter")
     gguf_variant: Optional[str] = Field(
         None, description = "GGUF quantization variant (e.g. 'Q4_K_M')"
@@ -806,6 +809,7 @@ class ValidateModelRequest(BaseModel):
     # Intended load settings so the coexistence check matches the follow-up /load.
     max_seq_length: int = Field(0, ge = 0, le = MAX_REQUESTABLE_CONTEXT)
     load_in_4bit: bool = Field(True)
+    mlx_preserve_dtype: bool = False
     cache_type_kv: Optional[str] = Field(None)
     tensor_parallel: bool = Field(False)
     # Follow-up /load opens no projector when set, so do not charge for one.
@@ -2097,6 +2101,9 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = "Why requested Neural Engine prefill is not active, as unsloth_zoo reports it "
         "(for example no_neural_engine, no_eligible_mlps, no_gain, not_enough_memory or released)",
+    )
+    mlx_preserve_dtype: Optional[bool] = Field(
+        None, description = "Whether the MLX load requested saved precision"
     )
     mlx_fast_verify: Optional[bool] = Field(
         None, description = "Whether MLX Fast Verify is active for the loaded model"

@@ -147,6 +147,11 @@ test("the non-GGUF context and MLX cache width reach the backend", async () => {
   assert.equal(sent!.mlx_kv_quant, "tq-4");
 });
 
+test("a saved-precision selection disables runtime 4-bit in the estimate", async () => {
+  await fetchMemoryEstimate({ modelPath: "/models/export", loadIn4bit: false });
+  assert.equal(sent!.load_in_4bit, false);
+});
+
 test("every field sent is also a field the hook re-fetches for", () => {
   const read = (path: string, fn: string): Set<string> => {
     const source = readFileSync(new URL(path, import.meta.url), "utf8");

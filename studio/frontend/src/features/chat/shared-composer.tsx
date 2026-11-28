@@ -1922,6 +1922,7 @@ export function SharedComposer({
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
           mlx_fast_verify: ownConfig.mlxFastVerify ?? false,
+          mlx_preserve_dtype: ownConfig.mlxPreserveDtype ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,

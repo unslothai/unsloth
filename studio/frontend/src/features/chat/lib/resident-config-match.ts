@@ -39,6 +39,7 @@ type ResidentRuntime = Pick<
   | "mlx_int8_prefill_requested"
   | "mlx_ane_prefill_requested"
   | "mlx_fast_verify_requested"
+  | "mlx_preserve_dtype"
   | "mlx_offload"
   | "speculative_type"
   | "spec_draft_n_max"
@@ -259,6 +260,12 @@ const SETTING_CHECKS: SettingCheck[] = [
     pinned: () => true,
     agrees: (c, s) =>
       Boolean(c.mlxFastVerify) === (s.mlx_fast_verify_requested === true),
+  },
+  {
+    mlxComparable: true,
+    pinned: () => true,
+    agrees: (c, s) =>
+      Boolean(c.mlxPreserveDtype) === (s.mlx_preserve_dtype === true),
   },
   {
     // The request, not the applied fraction: Auto stays Auto whatever it picked.

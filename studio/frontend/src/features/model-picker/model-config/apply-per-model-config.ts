@@ -80,6 +80,7 @@ export function applyPerModelConfigToRuntime(
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
     mlxAnePrefill: config.mlxAnePrefill ?? false,
     mlxFastVerify: config.mlxFastVerify ?? false,
+    mlxPreserveDtype: config.mlxPreserveDtype ?? false,
     mlxPleOffload: config.mlxPleOffload ?? null,
     mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -160,6 +161,7 @@ export function currentRuntimePerModelConfig(
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
     mlxAnePrefill: s.mlxAnePrefill ?? false,
     mlxFastVerify: s.mlxFastVerify ?? false,
+    mlxPreserveDtype: s.mlxPreserveDtype ?? false,
     mlxPleOffload: s.mlxPleOffload ?? null,
     mlxExpertOffload: s.mlxExpertOffload ?? null,
     npuPowerMode: s.npuPowerMode ?? null,
@@ -224,6 +226,7 @@ export function perModelConfigsEqual(
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
     Boolean(a.mlxAnePrefill) === Boolean(b.mlxAnePrefill) &&
     Boolean(a.mlxFastVerify) === Boolean(b.mlxFastVerify) &&
+    Boolean(a.mlxPreserveDtype) === Boolean(b.mlxPreserveDtype) &&
     (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
     (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     (a.npuPowerMode ?? null) === (b.npuPowerMode ?? null) &&

@@ -1205,6 +1205,7 @@ class TestLoadHubDownloadExclusion:
             "mlx_ane_prefill",
             "mlx_ane_prefill_requested",
             "mlx_ane_prefill_reason",
+            "mlx_preserve_dtype",
             "mlx_fast_verify",
             "mlx_fast_verify_requested",
             "mlx_fast_verify_reason",
@@ -1245,6 +1246,7 @@ class TestLoadHubDownloadExclusion:
         assert fields["engine"] == "auto"
         assert fields["is_mlx"] is False
         assert fields["mlx_kv_quant_requested"] is None
+        assert fields["mlx_preserve_dtype"] is None
 
     def test_in_flight_marker_counts_and_normalizes_case(self):
         assert not hf_gguf_load_in_flight(REPO)

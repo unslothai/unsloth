@@ -51,6 +51,7 @@ export type SharedConfigKey = Exclude<
   | "mlxInt8Prefill"
   | "mlxAnePrefill"
   | "mlxFastVerify"
+  | "mlxPreserveDtype"
   | "mlxPleOffload"
   | "mlxExpertOffload"
   | "npuPowerMode"

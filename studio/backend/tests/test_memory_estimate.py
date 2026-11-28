@@ -5846,6 +5846,23 @@ class TestShardsTheLoaderReads:
         (adapter_only / "adapter_model.safetensors").write_bytes(b"x" * 100)
         assert mm.mlx_shard_files(str(adapter_only), {"model_type": "llama"}) == []
 
+    def test_local_saved_dtype_comes_from_weight_headers(self, tmp_path):
+        def shard(name, dtype):
+            header = json.dumps({"layer.weight": {"dtype": dtype}}).encode()
+            (tmp_path / name).write_bytes(len(header).to_bytes(8, "little") + header)
+
+        config = tmp_path / "config.json"
+        config.write_text('{"torch_dtype": "bfloat16"}')
+        shard("model-00001.safetensors", "F16")
+        shard("model-00002.safetensors", "F16")
+        shard("adapter_model.safetensors", "F32")
+        assert mm.mlx_saved_16bit_dtype(str(tmp_path), vision = False) == "float16"
+        shard("model-00002.safetensors", "BF16")
+        assert mm.mlx_saved_16bit_dtype(str(tmp_path), vision = False) is None
+        shard("model-00002.safetensors", "F16")
+        config.write_text('{"quantization": {"bits": 4}}')
+        assert mm.mlx_saved_16bit_dtype(str(tmp_path), vision = False) is None
+
     def test_the_vision_loader_reads_the_index_before_the_directory(self, tmp_path):
         assert self._spread(tmp_path, self._VISION) == [
             "adapter_model.safetensors",

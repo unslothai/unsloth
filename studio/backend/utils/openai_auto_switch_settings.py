@@ -563,6 +563,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_fast_verify")):
         entry["mlx_fast_verify"] = True
 
+    if _coerce_bool(payload.get("mlx_preserve_dtype")):
+        entry["mlx_preserve_dtype"] = True
+
     from core.inference.npu_flm_args import NPU_IMG_PRE_RESIZE_MAX, NPU_POWER_MODES
 
     if payload.get("npu_power_mode") in NPU_POWER_MODES:
@@ -693,6 +696,9 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
             kwargs["gpu_ids"] = override["gpu_ids"]
     elif not is_gguf and override.get("load_in_4bit") is False:
         kwargs["load_in_4bit"] = False
+
+    if not is_gguf and override.get("mlx_preserve_dtype"):
+        kwargs["mlx_preserve_dtype"] = True
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:

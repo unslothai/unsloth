@@ -7,6 +7,7 @@ import { VramBudgetControl } from "@/features/settings/components/vram-budget-co
 import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
+import { looksLikeLocalPath } from "@/lib/local-path";
 import { modelDisplayName } from "../model-config/model-identity";
 import {
   cachedStagedDims,
@@ -3549,6 +3550,9 @@ export function ModelConfigPage({
     ? withoutUnsupportedDiffusionSettings(rawBaseline, gpuIndexKind)
     : rawBaseline;
   const targetIsMlx = servedByMlx;
+  const localMlxCheckpoint =
+    targetIsMlx && !target.meta.isLora && looksLikeLocalPath(target.meta.loadId || target.id);
+  const weightPrecisionLabel = localMlxCheckpoint ? "Use saved precision" : "Load in 4-bit";
   const pinsContextLength = targetIsMlx || targetIsNpu;
   const atBaseline = perModelConfigsEqual(config, baseline, {
     followGlobal: true,
@@ -3622,6 +3626,9 @@ export function ModelConfigPage({
     })
       ? {
           modelPath: target.id,
+          loadIn4bit: localMlxCheckpoint
+            ? !runtimeConfig.mlxPreserveDtype && runtimeConfig.loadIn4bit !== false
+            : undefined,
           ggufVariant: target.ggufVariant ?? null,
           hfToken: hfToken || null,
           nativePathToken,
@@ -3725,6 +3732,9 @@ export function ModelConfigPage({
     residentContext,
     targetIsMlx && !residentModelLoading
       ? {
+          loadIn4bit: localMlxCheckpoint
+            ? loadedConfig?.mlxPreserveDtype ? false : loadedConfig?.loadIn4bit
+            : undefined,
           kvQuant: loadedMlxKvQuantRequested ?? null,
           pleOffload: loadedMlxPleOffload,
           expertOffload: loadedMlxExpertOffload,
@@ -4516,21 +4526,29 @@ export function ModelConfigPage({
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
         {/* LoRA adapters keep the precision they were trained in, so they get no switch. */}
-        {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (config.engine ?? "auto") === "auto" && (
+        {!target.isGguf &&
+          (!targetIsMlx || localMlxCheckpoint) &&
+          !targetIsNpu &&
+          !classifiedIsDiffusion &&
+          !target.meta.isLora &&
+          !target.meta.audioType &&
+          (config.engine ?? "auto") === "auto" && (
           <div className={ROW_CLASS}>
             <div className="flex min-w-0 items-center gap-1.5">
-              <span className={LABEL_CLASS}>Load in 4-bit</span>
+              <span className={LABEL_CLASS}>{weightPrecisionLabel}</span>
               <InfoHint>
-                Quantizes the model to 4 bits as it loads, using about a quarter
-                of the memory. Turn it off to run the model in 16-bit, the same
-                precision as a 16-bit LoRA or full fine-tune.
+                {localMlxCheckpoint
+                  ? "Load dense FP16 or BF16 weights at their saved precision. This can use more memory than the default 4-bit load."
+                  : "Quantizes the model to 4 bits as it loads, using about a quarter of the memory. Turn it off to run the model in 16-bit, the same precision as a 16-bit LoRA or full fine-tune."}
               </InfoHint>
             </div>
             <Switch
               className="shrink-0"
-              aria-label="Load in 4-bit"
-              checked={config.loadIn4bit !== false}
-              onCheckedChange={(checked) => update({ loadIn4bit: checked })}
+              aria-label={weightPrecisionLabel}
+              checked={localMlxCheckpoint ? config.mlxPreserveDtype === true : config.loadIn4bit !== false}
+              onCheckedChange={(checked) =>
+                update(localMlxCheckpoint ? { mlxPreserveDtype: checked } : { loadIn4bit: checked })
+              }
             />
           </div>
         )}

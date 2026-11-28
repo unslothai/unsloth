@@ -2822,6 +2822,8 @@ type ChatRuntimeStore = {
   loadedMlxAnePrefillRequested: boolean;
   mlxFastVerify: boolean;
   loadedMlxFastVerifyRequested: boolean;
+  mlxPreserveDtype: boolean;
+  loadedMlxPreserveDtype: boolean;
   /** FastFlowLM settings the resident NPU load asked for; the panel edits the per-model config. */
   npuPowerMode: NpuPowerMode | null;
   npuPrefillChunkLen: number | null;
@@ -4761,6 +4763,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedMlxAnePrefillRequested: false,
   mlxFastVerify: false,
   loadedMlxFastVerifyRequested: false,
+  mlxPreserveDtype: false,
+  loadedMlxPreserveDtype: false,
   npuPowerMode: null,
   npuPrefillChunkLen: null,
   npuImgPreResize: null,
@@ -5787,6 +5791,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedMlxAnePrefillRequested: false,
       mlxFastVerify: false,
       loadedMlxFastVerifyRequested: false,
+      mlxPreserveDtype: false,
+      loadedMlxPreserveDtype: false,
       npuPowerMode: null,
       npuPrefillChunkLen: null,
       npuImgPreResize: null,

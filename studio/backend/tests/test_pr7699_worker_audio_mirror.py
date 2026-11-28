@@ -42,6 +42,7 @@ def _drive_handle_load(
     entry = None,
     device = "mlx",
     load_model = lambda **kw: True,
+    **worker_config,
 ):
     """Run _handle_load against a stub MLX backend, return the emitted model_info."""
     backend = SimpleNamespace(
@@ -61,7 +62,7 @@ def _drive_handle_load(
     monkeypatch.setitem(sys.modules, "utils.hf_xet_fallback", fake_xet)
 
     q = _Q()
-    worker._handle_load(backend, {"model_name": mc.identifier}, q)
+    worker._handle_load(backend, {"model_name": mc.identifier, **worker_config}, q)
 
     loaded = [m for m in q.sent if m.get("type") == "loaded"]
     assert loaded, f"no loaded response: {q.sent}"
@@ -82,6 +83,30 @@ def _mc(audio_type, is_audio, has_audio_input):
         audio_type = audio_type,
         has_audio_input = has_audio_input,
     )
+
+
+@pytest.mark.parametrize(
+    ("audio_type", "is_lora", "preserved"),
+    [(None, False, True), ("snac", False, False), ("audio_vlm", False, False), (None, True, False)],
+)
+def test_saved_mlx_dtype_only_reaches_standalone_chat_models(
+    monkeypatch, audio_type, is_lora, preserved
+):
+    config = _mc(
+        audio_type, is_audio = audio_type == "snac", has_audio_input = audio_type == "audio_vlm"
+    )
+    config.identifier = "/models/local"
+    config.is_lora = is_lora
+    captured = {}
+
+    def load_model(**kwargs):
+        captured.update(kwargs)
+        return True
+
+    _drive_handle_load(
+        monkeypatch, config, load_model = load_model, load_in_4bit = False, preserve_mlx_dtype = True
+    )
+    assert captured.get("preserve_dtype", False) is preserved
 
 
 @pytest.mark.parametrize("codec", ["snac", "csm", "bicodec", "dac"])

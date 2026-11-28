@@ -89,6 +89,26 @@ test("a resident loaded at the other precision is reloaded, GGUF never is", () =
   );
 });
 
+test("the local MLX saved-precision switch opts out of the default 4-bit load", () => {
+  const picker = readSrc("features/model-picker/components/model-config-page.tsx");
+  assert.match(picker, /targetIsMlx && !target\.meta\.isLora && looksLikeLocalPath/);
+  assert.match(picker, /localMlxCheckpoint \? "Use saved precision" : "Load in 4-bit"/);
+  assert.match(picker, /localMlxCheckpoint \? config\.mlxPreserveDtype === true : config\.loadIn4bit !== false/);
+  assert.match(picker, /localMlxCheckpoint \? \{ mlxPreserveDtype: checked \} : \{ loadIn4bit: checked \}/);
+  assert.match(picker, /!runtimeConfig\.mlxPreserveDtype && runtimeConfig\.loadIn4bit !== false/);
+});
+
+test("saved MLX precision round-trips independently from the legacy 4-bit choice", () => {
+  const saved = normalizePerModelConfig({ mlxPreserveDtype: true });
+  assert.equal(isDefaultConfig(saved), false);
+  assert.notEqual(loadedConfigSignature(saved), loadedConfigSignature(DEFAULT_PER_MODEL_CONFIG));
+  const override = toApiOverride(saved);
+  assert.equal(override.mlx_preserve_dtype, true);
+  assert.equal(override.load_in_4bit, undefined);
+  assert.equal(fromApiOverride(override).mlxPreserveDtype, true);
+  assert.equal(fromApiOverride({ load_in_4bit: false }).mlxPreserveDtype, false);
+});
+
 test("every default-engine load path sends the choice, vLLM and SGLang never 4-bit", () => {
   const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   assert.match(

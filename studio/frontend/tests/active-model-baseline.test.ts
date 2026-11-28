@@ -33,9 +33,10 @@ function useActiveConfigFor(patch: Record<string, unknown>, gguf = true) {
           Boolean(value?.startsWith("lemonade:")),
       },
       react: { useMemo: (factory: () => unknown) => factory() },
+      "@/lib/local-path": { looksLikeLocalPath: (path: string) => path.startsWith("/") },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => gguf,
-        residentIsServedByMlx: () => false,
+        residentIsServedByMlx: () => patch.loadedIsMlx === true,
       },
     },
   );
@@ -95,6 +96,18 @@ test("the active GGUF baseline carries the arguments the server runs with", () =
   assert.deepEqual(
     useActiveConfigFor({ loadedLlamaExtraArgs: [] }).llamaExtraArgs,
     [],
+  );
+});
+
+test("local MLX run settings retain the loaded weight precision", () => {
+  const params = { checkpoint: "/models/export", maxSeqLength: 4096, loadIn4bit: false };
+  assert.equal(useActiveConfigFor({ params, loadedIsMlx: true }, false).loadIn4bit, false);
+  assert.equal(
+    useActiveConfigFor(
+      { params: { ...params, checkpoint: "org/model" }, loadedIsMlx: true },
+      false,
+    ).loadIn4bit,
+    undefined,
   );
 });
 

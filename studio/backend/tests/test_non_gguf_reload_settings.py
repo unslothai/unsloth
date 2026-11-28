@@ -84,6 +84,79 @@ def test_changed_precision_forces_a_reload():
     assert not inference_route._non_gguf_runtime_settings_match(backend, request)
 
 
+def test_saved_mlx_dtype_is_independent_of_the_quantization_choice():
+    from models.inference import LoadRequest
+
+    identifier = "/models/local"
+    backend = _loaded(load_in_4bit = False)
+    backend.active_model_name = identifier
+    backend.models[identifier] = backend.models.pop(RESIDENT)
+    backend.models[identifier].update(is_mlx = True, mlx_preserve_dtype = True)
+
+    legacy = LoadRequest(model_path = identifier, load_in_4bit = False)
+    inference_route._inherit_resident_load_in_4bit(backend, legacy, identifier)
+    assert not legacy.mlx_preserve_dtype
+    assert not inference_route._non_gguf_runtime_settings_match(backend, legacy)
+
+    omitted = LoadRequest(model_path = identifier)
+    inference_route._inherit_resident_load_in_4bit(backend, omitted, identifier)
+    assert omitted.mlx_preserve_dtype
+    assert inference_route._non_gguf_runtime_settings_match(backend, omitted)
+
+
+@pytest.mark.parametrize(
+    ("requested", "effective_quantization", "preserve_dtype"),
+    [
+        ({}, True, False),
+        ({"load_in_4bit": False}, False, False),
+        ({"mlx_preserve_dtype": True}, False, True),
+    ],
+)
+def test_local_mlx_load_requires_a_separate_dtype_opt_in(
+    monkeypatch, tmp_path, requested, effective_quantization, preserve_dtype
+):
+    import asyncio
+    import json
+    from types import SimpleNamespace
+    from models.inference import LoadRequest
+    import utils.hardware as hardware
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    (tmp_path / "model.safetensors").write_bytes(b"x")
+    backend = _Backend({})
+    backend.active_model_name = None
+    backend.models.clear()
+    loads = []
+
+    def load(
+        *,
+        config,
+        load_in_4bit,
+        preserve_mlx_dtype = False,
+        **kwargs,
+    ):
+        loads.append((load_in_4bit, preserve_mlx_dtype))
+        backend.active_model_name = config.identifier
+        backend.models[config.identifier] = {"is_mlx": True}
+        return True
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    monkeypatch.setattr(inference_route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_auto_map_trust_remote_code", lambda *a, **k: False)
+    monkeypatch.setattr(backend, "load_model", load, raising = False)
+    monkeypatch.setattr(backend, "set_parallel_slots", lambda n: n, raising = False)
+    scope = SimpleNamespace(app = SimpleNamespace(state = SimpleNamespace(llama_parallel_slots = 1)))
+    response = asyncio.run(
+        inference_route._load_model_impl(
+            LoadRequest(model_path = str(tmp_path), **requested), scope, current_subject = "t"
+        )
+    )
+    assert response.status == "loaded"
+    assert response.mlx_preserve_dtype is preserve_dtype
+    assert loads == [(effective_quantization, preserve_dtype)]
+
+
 def test_omitted_settings_keep_the_legacy_reuse():
     """A caller that sends only model_path still reuses."""
     backend = _loaded(max_seq_length = 4096, load_in_4bit = True)

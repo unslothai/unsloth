@@ -36,6 +36,7 @@ function activeConfig(patch: Record<string, unknown> = {}) {
         isNpuModelId: (value: string | null | undefined) =>
           Boolean(value?.startsWith("lemonade:")),
       },
+      "@/lib/local-path": { looksLikeLocalPath: (path: string) => path.startsWith("/") },
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => !(state.params as { engine?: string }).engine,

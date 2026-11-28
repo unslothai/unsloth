@@ -74,6 +74,7 @@ export interface MemoryEstimateRequest {
   hfToken?: string | null;
   nativePathToken?: string | null;
   nCtx?: number | null;
+  loadIn4bit?: boolean;
   cacheTypeKv?: string | null;
   maxSeqLength?: number | null;
   mlxKvQuant?: string | null;
@@ -175,6 +176,7 @@ function estimateRequestBody(
     hf_token: payload.hfToken ?? null,
     native_path_lease: nativePathLease,
     n_ctx: payload.nCtx ?? null,
+    load_in_4bit: payload.loadIn4bit,
     cache_type_kv: payload.cacheTypeKv ?? null,
     max_seq_length: payload.maxSeqLength ?? null,
     mlx_kv_quant: payload.mlxKvQuant ?? null,

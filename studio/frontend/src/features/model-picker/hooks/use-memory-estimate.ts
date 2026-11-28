@@ -98,6 +98,7 @@ export function estimateKey(
     tokenIdentity(request.hfToken),
     request.nativePathToken ?? null,
     request.nCtx ?? null,
+    request.loadIn4bit ?? null,
     request.cacheTypeKv ?? null,
     request.maxSeqLength ?? null,
     request.mlxKvQuant ?? null,

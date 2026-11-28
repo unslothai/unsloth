@@ -2300,6 +2300,7 @@ class InferenceOrchestrator:
         engine: str = "auto",
         engine_options = None,
         n_parallel: Optional[int] = None,
+        preserve_mlx_dtype: bool = False,
     ) -> bool:
         """Load a model for inference. Spawns a fresh subprocess per load for a clean interpreter
         (no stale unsloth patches, torch.compile caches, or getsource failures); only a smaller
@@ -2350,6 +2351,7 @@ class InferenceOrchestrator:
                 "model_name": model_name,
                 "max_seq_length": max_seq_length,
                 "load_in_4bit": load_in_4bit,
+                "preserve_mlx_dtype": preserve_mlx_dtype,
                 "hf_token": hf_token or "",
                 "gguf_variant": getattr(config, "gguf_variant", None),
                 "trust_remote_code": trust_remote_code,

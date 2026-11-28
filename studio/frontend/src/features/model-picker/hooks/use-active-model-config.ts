@@ -4,6 +4,7 @@
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
 import { isNpuModelId } from "@/features/npu";
+import { looksLikeLocalPath } from "@/lib/local-path";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -32,6 +33,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   );
   const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeLoadId = useChatRuntimeStore((s) => s.activeLoadId);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const activeNativePathToken = useChatRuntimeStore(
@@ -43,6 +45,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const mlxAnePrefill = useChatRuntimeStore((s) => s.mlxAnePrefill);
   const mlxFastVerify = useChatRuntimeStore((s) => s.mlxFastVerify);
+  const mlxPreserveDtype = useChatRuntimeStore((s) => s.mlxPreserveDtype);
   const mlxPleOffload = useChatRuntimeStore((s) => s.mlxPleOffload);
   const mlxExpertOffload = useChatRuntimeStore((s) => s.mlxExpertOffload);
   const npuPowerMode = useChatRuntimeStore((s) => s.npuPowerMode);
@@ -130,6 +133,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       mlxInt8Prefill: effectiveMlxInt8Prefill,
       mlxAnePrefill: effectiveMlxAnePrefill,
       mlxFastVerify: effectiveMlxFastVerify,
+      mlxPreserveDtype: isMlx && mlxPreserveDtype === true,
       mlxPleOffload: effectiveMlxPleOffload,
       mlxExpertOffload: effectiveMlxExpertOffload,
       // The store keeps the last NPU load's values after a GPU model loads.
@@ -152,7 +156,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       disableVision: disableVision ?? false,
       engramPrecision: isGguf ? (engramPrecision ?? null) : null,
       chatTemplateOverride: chatTemplateOverride ?? null,
-      ...(isGguf || isMlx ? {} : { loadIn4bit }),
+      ...(!isGguf && (!isMlx || looksLikeLocalPath(activeLoadId || checkpoint))
+        ? { loadIn4bit }
+        : {}),
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
@@ -181,6 +187,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     };
   }, [
     checkpoint,
+    activeLoadId,
     isGguf,
     isMlx,
     maxSeqLength,
@@ -197,6 +204,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     effectiveMlxInt8Prefill,
     effectiveMlxAnePrefill,
     effectiveMlxFastVerify,
+    mlxPreserveDtype,
     effectiveMlxPleOffload,
     effectiveMlxExpertOffload,
     npuPowerMode,
