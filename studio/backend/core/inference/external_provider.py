@@ -3263,7 +3263,7 @@ class ExternalProviderClient:
                         ):
                             yield (
                                 f"data: "
-                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated'}})}"
+                                f"{_json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': None}], '_toolEvent': {'type': 'container_invalidated', 'provider_type': 'anthropic'}})}"
                             )
                     yield _error_sse_line(
                         response.status_code,
@@ -3878,6 +3878,7 @@ class ExternalProviderClient:
                                     {
                                         "type": "container_ready",
                                         "container_id": latched_container_id,
+                                        "provider_type": "anthropic",
                                     }
                                 )
                                 container_id_emitted = True

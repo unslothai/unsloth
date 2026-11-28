@@ -197,6 +197,86 @@ def test_append_events_still_persists_through_a_reused_connection():
     assert len(runs_db.list_events("r", 0)) >= 15
 
 
+@pytest.mark.parametrize(
+    "expected,current,workspaces,replacement,result",
+    [
+        (None, None, ["new-workspace"], None, "new-workspace"),
+        ("old-workspace", "old-workspace", [None], None, None),
+        ("old-workspace", "different-workspace", [None], None, "different-workspace"),
+        (None, "different-workspace", ["new-workspace"], None, "different-workspace"),
+        (None, None, ["first-workspace", "new-workspace"], None, "new-workspace"),
+        ("old-workspace", "old-workspace", [None, "new-workspace"], None, "new-workspace"),
+        (None, None, ["first-workspace", "new-workspace"], "replacement", "replacement"),
+    ],
+)
+@pytest.mark.parametrize("without_json1", [False, True])
+@pytest.mark.parametrize(
+    "routing",
+    [{"provider_type": "anthropic"}, {"provider_id": "saved-claude", "external_model": "claude"}],
+)
+def test_a_durable_anthropic_event_updates_only_the_workspace_it_started_with(
+    expected, current, workspaces, replacement, result, without_json1, routing
+):
+    studio_db.upsert_chat_thread(
+        {
+            "id": "t",
+            "title": "Chat",
+            "modelType": "base",
+            "modelId": "claude",
+            "createdAt": 1,
+            "anthropicCodeExecContainerId": current,
+        }
+    )
+    studio_db.upsert_chat_message(
+        {
+            "id": "u",
+            "threadId": "t",
+            "role": "user",
+            "content": [{"type": "text", "text": "x"}],
+            "createdAt": 2,
+        }
+    )
+    runs_db.create_run(
+        run_id = "r",
+        owner_subject = "alice",
+        thread_id = "t",
+        user_message_id = "u",
+        assistant_message_id = "a",
+        request_payload = {
+            "model": "claude",
+            "messages": [],
+            **routing,
+            "anthropic_code_exec_container_id": expected,
+        },
+    )
+    token = runs_db.get_worker_token("r")
+    runs_db.mark_running("r", token)
+    if without_json1:
+
+        def deny_json_extract(action, _arg1, arg2, _db, _trigger):
+            if action == sqlite3.SQLITE_FUNCTION and arg2 == "json_extract":
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        conn = runs_db._connect()
+        conn.set_authorizer(deny_json_extract)
+        conn.close()
+
+    for index, workspace in enumerate(workspaces):
+        event = {
+            "type": "container_ready" if workspace else "container_invalidated",
+            "provider_type": "anthropic",
+            "container_id": workspace,
+        }
+        runs_db.append_events("r", token, [("chunk", {"_toolEvent": event})])
+        if index == 0 and replacement:
+            studio_db.update_chat_thread("t", {"anthropicCodeExecContainerId": replacement})
+    assert len([event for event in runs_db.list_events("r", 0) if event["type"] == "chunk"]) == len(
+        workspaces
+    )
+    assert studio_db.get_chat_thread("t")["anthropicCodeExecContainerId"] == result
+
+
 def test_an_idle_connection_on_another_LIVE_thread_is_closed_by_a_global_discard():
     """Global discard must close idle handles on live threads, since Windows refuses the account rename."""
     parked = {}
