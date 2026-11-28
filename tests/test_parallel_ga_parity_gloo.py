@@ -79,6 +79,24 @@ FULL_LR = (
 
 _TRANSFORMERS_MAJOR = int(importlib.metadata.version("transformers").split(".")[0])
 
+
+def _pipelining_available():
+    """Unsloth's pipeline parallel needs torch.distributed.pipelining with step(return_outputs) (torch >= 2.10)."""
+    try:
+        import inspect
+
+        from torch.distributed.pipelining import ScheduleGPipe
+    except ImportError:
+        return False
+    return "return_outputs" in inspect.signature(ScheduleGPipe.step).parameters
+
+
+_PIPELINING = _pipelining_available()
+needs_pipelining = pytest.mark.skipif(
+    not _PIPELINING,
+    reason = "pipeline parallel needs torch >= 2.10 (pipelining step(return_outputs))",
+)
+
 # name -> (environment, _case_train kwargs). bs is the per-rank micro-batch: data parallel ranks split the 8 rows,
 # tp / pp / cp peers share them.
 _LORA = dict(padding = PADDING, ga = GA, steps = STEPS)
@@ -120,6 +138,21 @@ WORLD4 = {
     "fsdp2_tp2": ({"UNSLOTH_PARALLEL": "dp=2,tp=2,fsdp=1"}, dict(bs = 2, **_LORA)),
     "tp2_pp2": ({"UNSLOTH_PARALLEL": "tp=2,pp=2"}, dict(bs = 4, **_LORA)),
 }
+
+
+def _uses_pp(name):
+    return name.startswith("pp") or name == "tp2_pp2"
+
+
+def _params(cells):
+    return [pytest.param(k, marks = needs_pipelining) if _uses_pp(k) else k for k in cells]
+
+
+_LORA_NAMES = [k for k in WORLD2 if not k.startswith("full-")]
+_COMPOSED_NAMES = list(WORLD4)
+if not _PIPELINING:  # the worlds leave out what the tests skip
+    WORLD2 = {k: v for k, v in WORLD2.items() if not _uses_pp(k)}
+    WORLD4 = {k: v for k, v in WORLD4.items() if not _uses_pp(k)}
 
 # One process: the trainer references and the oracle.
 REFERENCE = {
@@ -509,7 +542,7 @@ def _oracle_for(ref, name):
     return ref["oracle"]
 
 
-@pytest.mark.parametrize("name", [k for k in WORLD2 if not k.startswith("full-")])
+@pytest.mark.parametrize("name", _params(_LORA_NAMES))
 def test_lora_matches_the_oracle(name, ref, ranks2):
     oracle = _oracle_for(ref, name)
     for rank, res in enumerate(ranks2):
@@ -522,7 +555,7 @@ def test_lora_matches_the_oracle(name, ref, ranks2):
             _matches_oracle(cell, oracle, (name, rank))
 
 
-@pytest.mark.parametrize("name", list(WORLD4))
+@pytest.mark.parametrize("name", _params(_COMPOSED_NAMES))
 def test_composed_lora_matches_the_oracle(name, ref, ranks4):
     for rank, res in enumerate(ranks4):
         cell = _cell(res, name, (name, rank))
