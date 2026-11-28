@@ -241,7 +241,7 @@ def _nextn_gguf(tmp_path, arch, nextn):
 
 
 # b12776 loads these archs' whole NextN block under nextn_flags' mtp flags (TENSOR_SKIP without load_mtp).
-@pytest.mark.parametrize("arch", ["nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next"])
+@pytest.mark.parametrize("arch", ["nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next", "glm5next"])
 def test_unloaded_nextn_bytes_are_the_head_block_only(tmp_path, arch):
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -294,6 +294,51 @@ def test_estimate_drops_the_nextn_block_unless_mtp_engages(tmp_path, monkeypatch
     b = ri._gguf_memory_breakdown(config, path, n_ctx = 512, speculative_type = "off")
     # The head block is 4 * (1024 + 2048) bytes; draft-mtp loads it, so it stays charged.
     assert b.weights_bytes == file_bytes - (0 if engages else 4 * (1024 + 2048))
+
+
+def test_a_bare_draft_file_keeps_the_nextn_block_priced(tmp_path, monkeypatch):
+    # llama.cpp infers draft-mtp from a NextN-bearing --model-draft, which loads the target head.
+    from types import SimpleNamespace
+
+    import routes.inference as ri
+    from core.inference.llama_cpp import _draft_file_may_infer_mtp
+
+    path = _nextn_gguf(tmp_path, "qwen35", 1)
+    assert _draft_file_may_infer_mtp(["-md", path], {})
+    assert not _draft_file_may_infer_mtp(["-md", path, "--spec-type", "draft-simple"], {})
+    assert not _draft_file_may_infer_mtp([], {})
+    config = SimpleNamespace(
+        identifier = "local/model", gguf_file = path, is_gguf = True, gguf_mmproj_file = None
+    )
+    file_bytes = Path(path).stat().st_size
+    monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: file_bytes / 1024**3)
+    monkeypatch.setattr(ri, "_embedded_mtp_engages", lambda *a, **k: False)
+    monkeypatch.setattr(ri, "_charged_drafter_path", lambda *a, **k: None)
+    ri._estimate_files_cache.clear()
+    b = ri._gguf_memory_breakdown(
+        config, path, n_ctx = 512, speculative_type = "off", llama_extra_args = ["-md", path]
+    )
+    assert b.weights_bytes == file_bytes
+
+
+@pytest.mark.parametrize(
+    "arch, engages", [("glm5-next", True), ("glm5next", True), ("deepseek2", False)]
+)
+def test_auto_keeps_a_fast_mla_head_engaged(monkeypatch, arch, engages):
+    # The launcher exempts fast-MLA archs from the MLA Auto default-off, so the estimate must too.
+    from types import SimpleNamespace
+
+    import routes.inference as ri
+
+    monkeypatch.delenv("UNSLOTH_MLA_MTP_ENABLED", raising = False)
+    monkeypatch.setattr(
+        ri.LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, *a, **k: {"found": True, "mtp_token": True}),
+    )
+    probe = SimpleNamespace(_nextn_predict_layers = 1, _kv_lora_rank = 512, _architecture = arch)
+    config = SimpleNamespace(identifier = "org/Big-100B-GGUF")
+    assert ri._embedded_mtp_engages(probe, config, "auto", []) is engages
 
 
 def test_tensor_scan_is_unchanged_without_also(tmp_path):

@@ -15889,6 +15889,7 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
         return False
     from core.inference.llama_cpp import (
         _MTP_MIN_SIZE_B,
+        _arch_has_fast_mla_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _extract_model_size_b,
@@ -15918,7 +15919,12 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
     size_b = _extract_model_size_b(getattr(config, "identifier", None))
     if size_b is not None and size_b < _MTP_MIN_SIZE_B:
         return False
-    if getattr(probe, "_kv_lora_rank", None) is not None and not _mla_mtp_auto_enabled():
+    # Same exemption as the launcher: fast-MLA archs keep Auto MTP.
+    if (
+        getattr(probe, "_kv_lora_rank", None) is not None
+        and not _mla_mtp_auto_enabled()
+        and not _arch_has_fast_mla_mtp(getattr(probe, "_architecture", None))
+    ):
         return False
     return True
 
@@ -16110,7 +16116,9 @@ def _gguf_memory_breakdown(
     embedded_mtp = bool(not charged_drafter and mtp_engages)
     # Without draft-mtp llama.cpp skips the embedded NextN block (TENSOR_SKIP); /load drops it too.
     nextn_unloaded = 0
-    if not mtp_engages:
+    from core.inference.llama_cpp import _draft_file_may_infer_mtp
+
+    if not mtp_engages and not _draft_file_may_infer_mtp(extras, os.environ):
         try:
             nextn_unloaded = min(gpu_files_bytes, int(probe._unloaded_nextn_bytes(gguf_path) or 0))
         except Exception as exc:  # noqa: BLE001 -- unreadable header: no discount

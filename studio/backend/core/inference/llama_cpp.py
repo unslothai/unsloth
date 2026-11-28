@@ -6569,6 +6569,16 @@ def _extra_args_mtp_draft_path(
     return _extra_args_mtp_draft_source(extra_args, env)[0]
 
 
+def _draft_file_may_infer_mtp(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """A local --model-draft with no --spec-type: llama.cpp infers draft-mtp from a NextN-bearing
+    draft (common/arg.cpp), which also loads the target's NextN block, so keep it priced."""
+    return bool(_extra_args_mtp_draft_path(extra_args, env)) and not _extra_args_set_spec_type(
+        extra_args
+    )
+
+
 def _single_device_fit_margin(
     args: Iterable[str], env: Optional[Mapping[str, str]]
 ) -> Optional[float]:
@@ -7906,9 +7916,11 @@ _LAZY_READ_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 _LAZY_RESIDENT_MARGIN_FRAC = 0.10
 # Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
 # Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520). qwen35,
-# qwen35moe and glm5-next load the whole NextN block under nextn_flags' mtp flags (b12776);
+# qwen35moe and glm5-next (fork: glm5next) load the whole NextN block under mtp flags (b12776);
 # Qwen3.5-9B-MTP UD-Q4_K_XL, MTP off: CUDA0 holds 147.6 MiB (the block) under its tensor table.
-_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next"})
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset(
+    {"nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next", "glm5next"}
+)
 # Qwen3.5 loaded its NextN block unconditionally before b10212 (llama.cpp 82dbc4f017).
 _NEXTN_SKIP_MIN_BUILD = {"qwen35": 10212, "qwen35moe": 10212}
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
@@ -27017,6 +27029,7 @@ class LlamaCppBackend:
                 total_by_idx: dict[int, int] = {}
                 _gpu_mem: list[tuple[int, int, int]] = []
                 model_size = None  # set in the fit try; used by the APU RAM guard
+                _nextn_unloaded = 0  # NextN bytes the fit already took out of model_size
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
                 # none" once the fit proves no demand paging is needed, else None for llama.cpp's
@@ -27533,7 +27546,9 @@ class LlamaCppBackend:
                         or (_auto_studio_mtp and _mtp_effective not in ("dspark", "dflash"))
                     )
                     # No draft-mtp: the embedded head never loads, so its blocks leave the fit.
-                    if not _engaged_is_mtp:
+                    if not _engaged_is_mtp and not _draft_file_may_infer_mtp(
+                        extra_args, env = _spec_env
+                    ):
                         _nextn_unloaded = self._unloaded_nextn_bytes(model_path)
                         gguf_size -= _nextn_unloaded
                         model_size -= _nextn_unloaded
@@ -32992,7 +33007,8 @@ class LlamaCppBackend:
                         engages = mtp_engages
                     if model_size is None or not self._launch_forces_full_offload(run_argv, env):
                         return None
-                    need = int(model_size)
+                    # Back to the full file: the excluded blocks are taken out once, below.
+                    need = int(model_size) + int(_nextn_unloaded or 0)
                     if mmproj_size and not _argv_keeps_projector_on_gpu(run_argv, env):
                         need -= int(mmproj_size)
                     # Re-priced rather than cleared, so a spill that still stands is still reported.
