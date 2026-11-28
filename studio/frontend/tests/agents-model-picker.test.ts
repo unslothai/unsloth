@@ -199,6 +199,7 @@ test("the shared agent list keeps the nine agents in order", () => {
       "openclaw",
       "pi",
       "vibe",
+      "antigravity",
     ],
   );
   assert.equal(detailsFor("codex").name, "OpenAI Codex");
@@ -212,6 +213,7 @@ test("the shared agent list keeps the nine agents in order", () => {
 });
 
 test("every listed agent icon ships in public/agent-logos", () => {
+  assert.equal(detailsFor("antigravity").icon, "antigravity.svg");
   for (const agent of SUPPORTED_AGENTS) {
     for (const file of [agent.icon, agent.darkIcon]) {
       if (file) {

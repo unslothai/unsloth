@@ -30,10 +30,11 @@ CODING_AGENTS: tuple[str, ...] = (
     "openclaw",
     "pi",
     "vibe",
+    "antigravity",
 )
 
 # `unsloth start vscode` edits VS Code's settings; `code` is the launcher an install puts on PATH.
-_EXECUTABLES = {"vscode": "code"}
+_EXECUTABLES = {"vscode": "code", "antigravity": "agy"}
 
 
 def is_deepseek_harness_executable(executable: str, *, allow_execution: bool = True) -> bool:

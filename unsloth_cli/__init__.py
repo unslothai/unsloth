@@ -314,7 +314,7 @@ def _register_command(app, name):
             start_app,
             name = "start",
             help = "Start a coding agent (Claude, Codex, OpenClaw, OpenCode, Hermes, Pi, dsh, Vibe, "
-            "VS Code) against Unsloth.",
+            "VS Code, Antigravity) against Unsloth.",
         )
     elif name == "mcp":
         from unsloth_cli.commands.mcp import mcp_app
