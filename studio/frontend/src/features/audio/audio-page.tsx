@@ -2159,7 +2159,15 @@ export function AudioPage({
                       disabled={busy === "generating"}
                     />
                   ) : (
-                    <SpeakRail {...railProps} />
+                    <SpeakRail
+                      {...railProps}
+                      modelSelection={{
+                        selectedModel: selectorValue
+                          ? audioModelLabel(selectorValue)
+                          : null,
+                        onChooseModel: openSelector,
+                      }}
+                    />
                   );
                 })()
               ) : (
