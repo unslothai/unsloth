@@ -733,12 +733,8 @@ def _int8_params(model):
 
 
 def _integer_coded_params(model):
-    """Frozen integer-coded weights no shard context takes: unsloth_zoo's packed expert stacks (NVFP4,
-    MXFP8, block FP8, MXFP4, GGUF; uint8 codes with their block scales held as attributes) and a GGUF
-    linear's packed blocks. fully_shard cannot shard them (its sharded nn.Parameter asks an integer
-    tensor for requires_grad), and a gathered plain tensor would drop the subclass and its scales, so
-    they stay replicated, like the 8-bit weights. bitsandbytes 4-bit (bnb_qlora context) and 8-bit
-    (_int8_params) weights are left to their own handling."""
+    """Frozen integer-coded weights (zoo packed expert stacks, GGUF blocks) stay replicated: fully_shard
+    cannot shard integer tensors, and gathering would drop the subclass and its block scales."""
     found = {
         p
         for p in model.parameters()
@@ -1913,7 +1909,6 @@ def _place_replicated(params, device):
             )
         p.data = p.data.to(device)
         if not (p.is_floating_point() or p.is_complex()):
-            # A packed stack's block scales ride as tensor attributes: they move with its codes.
             for key, value in list(p.__dict__.items()):
                 if isinstance(value, torch.Tensor) and value.device != device:
                     setattr(p, key, value.to(device))

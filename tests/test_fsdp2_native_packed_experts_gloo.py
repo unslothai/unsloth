@@ -1,14 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Native FSDP2 over unsloth_zoo's frozen packed expert stacks (NVFP4, MXFP8, MXFP4), gloo world of 2, fp32.
-
-A packed stack is a uint8 nn.Parameter subclass carrying its block scales as attributes. fully_shard cannot
-take it: its sharded nn.Parameter asks the uint8 DTensor for requires_grad ("only Tensors of floating point
-dtype can require gradients"), and a gathered plain tensor would drop the subclass and its scales anyway. So
-the stacks stay replicated (ignored_params) also when frozen weights are sharded (shard_frozen = True) or the
-layout is automatic, the rest is still sharded, the packed grouped op runs, and the LoRA gradients match one
-process. A torch without fully_shard(ignored_params) refuses."""
+"""Native FSDP2 over zoo packed expert stacks (NVFP4, MXFP8, MXFP4), gloo world of 2: the stacks stay
+replicated (fully_shard cannot take uint8 subclasses), the rest is sharded, LoRA grads match one process."""
 
 import multiprocessing
 import os
@@ -16,10 +10,8 @@ import os
 if multiprocessing.parent_process() is not None or getattr(
     multiprocessing.current_process(), "_inheriting", False
 ):
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
-    os.environ.setdefault(
-        "UNSLOTH_ALLOW_CPU", "1"
-    )  # unsloth_zoo's import on a host without an accelerator
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 import sys  # noqa: E402
@@ -88,7 +80,7 @@ def _case_fsdp2_packed(
         g = p.grad
         if isinstance(g, DTensor):
             g = g.full_tensor()
-        else:  # replicated trainable (none expected here): sum the ranks' parts
+        else:
             g = g.clone()
             dist.all_reduce(g)
         got[_clean(k)] = g.detach().clone()
@@ -184,9 +176,8 @@ def test_fsdp2_keeps_packed_expert_stacks_replicated(fmt, shard_frozen):
     for rank, r in enumerate(results):
         assert r is not None and "error" not in r, r
         assert r["shard"] == "ok", (rank, r["shard"])
-        # Every stack is still the zoo's packed subclass, whole on this rank, and the packed op ran.
         assert r["stacks"] == 4 and r["packed"] == 4, (rank, r["stacks"], r["packed"])
-        assert r["sharded"] > 0, rank  # the LoRA weights and the rest are still sharded
+        assert r["sharded"] > 0, rank
         assert r["engaged"] > 0, (rank, r["engaged"])
         got, want = r["loss"]
         assert got == pytest.approx(want, rel = 1e-5), r["loss"]
