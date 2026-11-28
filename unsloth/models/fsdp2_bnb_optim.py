@@ -389,10 +389,11 @@ class _LocalShardMixin:
             for pindex, p in enumerate(group["params"])
         ]
         to_cpu = getattr(self, "_unsloth_full_cpu_export", False)
+        writer_rank = getattr(self, "_unsloth_full_cpu_export_rank", 0)
         exported = {}
         for index, raw in state_dict["state"].items():
             out = self._export_state(slots[index][0], raw, slots[index][1])
-            exported[index] = _gather_to_cpu(out) if to_cpu else out
+            exported[index] = _gather_to_cpu(out, writer_rank) if to_cpu else out
         state_dict["state"] = exported
         return state_dict
 
@@ -444,11 +445,11 @@ class _LocalShardMixin:
                     self._import_state(*slot_of[saved_id], saved)
 
 
-def _gather_to_cpu(entry):
-    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on rank 0, None elsewhere."""
+def _gather_to_cpu(entry, writer_rank = 0):
+    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on `writer_rank`, None elsewhere."""
     DTensor = _dtensor_class()
     dist = torch.distributed
-    keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == 0
+    keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == writer_rank
     out = {}
     for key, value in entry.items():
         if DTensor is not None and isinstance(value, DTensor):
@@ -473,17 +474,19 @@ def _gather_to_cpu(entry):
 
 
 @contextlib.contextmanager
-def full_cpu_state_export(optimizer):
-    """Gather + offload each parameter's dequantized state as it is exported, instead of holding all
-    float32 moments on the device until torch gathers. Every rank must enter it (collectives)."""
+def full_cpu_state_export(optimizer, writer_rank = 0):
+    """Gather + offload each parameter's dequantized state to `writer_rank` as it is exported, instead of
+    holding all float32 moments on the device. Every rank must enter it (collectives)."""
     if not is_local_shard_bnb_optimizer(optimizer):
         yield
         return
     optimizer._unsloth_full_cpu_export = True
+    optimizer._unsloth_full_cpu_export_rank = int(writer_rank)
     try:
         yield
     finally:
         optimizer._unsloth_full_cpu_export = False
+        optimizer._unsloth_full_cpu_export_rank = 0
 
 
 def _off_default_stream(optimizer):
