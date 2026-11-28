@@ -1317,8 +1317,10 @@ def install_dcp_bnb_state_dict():
         def _body(*args, **kwargs):
             adapter_only = _drops_frozen_weights(kwargs)
             model = args[0] if args else kwargs.get("model")
-            # Sharded 4-bit absmax: whole while the QuantState entries are written or restored.
-            with _full_absmax(model, enabled = not adapter_only):
+            # Sharded 4-bit absmax: whole while the QuantState entries are written or restored (model
+            # state only: optimizer-only calls never touch the QuantState).
+            needs_scales = not adapter_only and "optimizer" not in name
+            with _full_absmax(model, enabled = needs_scales):
                 return _dcp_body(adapter_only, *args, **kwargs)
 
         def _dcp_body(adapter_only, *args, **kwargs):

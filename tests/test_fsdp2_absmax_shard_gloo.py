@@ -309,6 +309,18 @@ def _case(rank, world_size, shim):
     dcp.set_model_state_dict(dcp_model, full, options = opts)
     with torch.no_grad():
         after = dcp_model(x).clone()
+    # Optimizer-only DCP calls never gather the scales.
+    gathers = []
+    gather = q.ShardedAbsmax.gather
+    q.ShardedAbsmax.gather = lambda self: gathers.append(1) or gather(self)
+    try:
+        sgd = torch.optim.SGD([p for p in dcp_model.parameters() if p.requires_grad], lr = 0.1)
+        dcp.get_optimizer_state_dict(dcp_model, sgd)
+        out["optimizer_dcp_gathers"] = len(gathers)
+        dcp.get_model_state_dict(dcp_model, options = opts)
+        out["model_dcp_gathers"] = len(gathers)
+    finally:
+        q.ShardedAbsmax.gather = gather
     out["dcp_rewrite_changed"] = not torch.equal(before, changed)
     out["dcp_restore_bitwise"] = torch.equal(before, after)
     dist.barrier()
@@ -439,6 +451,8 @@ def _check(results, world_size):
         assert r["save_left_shards"] and r["after_save_loss_bitwise"], r
         assert r["dcp_keys_equal"] and r["dcp_absmax_equal"], r
         assert r["dcp_rewrite_changed"] and r["dcp_restore_bitwise"], r
+        assert r["optimizer_dcp_gathers"] == 0, r
+        assert r["model_dcp_gathers"] == r["absmax_sharded"][1], r
     writer = results[0]
     assert writer["save_keys_equal"] and writer["save_bytes_equal"], writer
     assert writer["reload_dequant_bitwise"] == [True] * len(_LAYERS), writer
