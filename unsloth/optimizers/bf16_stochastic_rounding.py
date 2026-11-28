@@ -1000,8 +1000,11 @@ def _chunk_table(optimizer, device, numels):
     table = cache.get(key)
     if table is None:
         span = _BLOCK * _SUB
-        rows = [(t, k) for t, n in enumerate(numels) for k in range((n + span - 1) // span)]
-        table = torch.tensor(rows, dtype = torch.int32).to(device)
+        counts = (torch.tensor(numels, dtype = torch.int64) + span - 1) // span
+        row = torch.repeat_interleave(torch.arange(len(numels)), counts)
+        first = torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
+        chunk = torch.arange(row.numel()) - first
+        table = torch.stack((row, chunk), 1).to(torch.int32).to(device)
         if len(cache) > 8:  # e.g. a model whose trainable set keeps changing
             cache.clear()
         cache[key] = table
