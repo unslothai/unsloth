@@ -7,6 +7,7 @@ and an explicit dspark choice keep today's behaviour."""
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,7 @@ def _gate(
     calls = []
 
     def _build(cls, binary = None):
-        calls.append(binary)
+        calls.append("/fake/llama-server")
         if isinstance(build, Exception):
             raise build
         return build
@@ -39,18 +40,19 @@ def _gate(
     monkeypatch.setattr(
         LlamaCppBackend, "_build_has_metal", staticmethod(lambda binary = None: metal)
     )
-    monkeypatch.setattr(
-        LlamaCppBackend,
-        "_installed_ggml_backends",
-        staticmethod(lambda binary = None: frozenset(backends)),
-    )
-    won = LlamaCppBackend()._dspark_wins_auto(
-        binary = "/fake/llama-server",
-        dspark_draft_path = "/fake/dspark-model-Q8_0.gguf",
-        spec_canon = spec,
-        extra_args = None,
-        caps = lambda binary: {"supports_dspark": True},
-    )
+    # A real install layout: the ggml libraries beside llama-server name its backends.
+    with tempfile.TemporaryDirectory() as root:
+        binary = Path(root) / "llama-server"
+        binary.write_bytes(b"\x7fELF")
+        for name in backends:
+            (Path(root) / f"libggml-{name}.so").write_bytes(b"")
+        won = LlamaCppBackend()._dspark_wins_auto(
+            binary = str(binary),
+            dspark_draft_path = "/fake/dspark-model-Q8_0.gguf",
+            spec_canon = spec,
+            extra_args = None,
+            caps = lambda binary: {"supports_dspark": True},
+        )
     return won, calls
 
 
@@ -143,9 +145,13 @@ def test_explicit_dspark_still_emits_draft_dspark_on_a_pre_fix_cuda_build(monkey
     [
         (set(), None),  # static build: no ggml libraries beside the binary
         ({"base", "cpu", "sycl"}, None),
+        ({"base", "cpu", "opencl"}, None),
+        ({"base", "cpu", "cann"}, None),
+        ({"base", "cpu", "musa"}, None),
+        ({"base", "cpu", "virtgpu"}, None),
         ({"base", "cpu"}, "/opt/ggml/libggml-vulkan.so"),  # GPU backend loaded as a plugin
     ],
-    ids = ["static", "sycl", "backend_path_plugin"],
+    ids = ["static", "sycl", "opencl", "cann", "musa", "virtgpu", "backend_path_plugin"],
 )
 def test_builds_not_proven_cpu_only_are_gated(monkeypatch, backends, plugin):
     if plugin:

@@ -22980,17 +22980,13 @@ class LlamaCppBackend:
     @classmethod
     def _dspark_auto_build_allowed(cls, binary: Optional[str] = None) -> bool:
         """Auto's DSpark build gate: Metal wins on the base build and a CPU-only bundle is left as is;
-        any other build (CUDA, HIP, Vulkan, SYCL, static, or a GGML_BACKEND_PATH plugin) needs
+        any other build (any GPU library, static, or a GGML_BACKEND_PATH plugin) needs
         _DSPARK_AUTO_MIN_BUILD, since earlier GPU builds run DSpark slower than plain decoding."""
         try:
             if cls._build_has_metal(binary):
                 return True
-            backends = cls._installed_ggml_backends(binary)
-            if (
-                "cpu" in backends
-                and not backends & {"cuda", "hip", "vulkan", "sycl"}
-                and not os.environ.get("GGML_BACKEND_PATH")
-            ):
+            # Recognises OpenCL, CANN, MUSA and virtgpu too; static, unreadable or plugin layouts fail it.
+            if cls._binary_ships_no_gpu_backend(binary):
                 return True
             build = cls.probe_build_number(binary)
         except Exception as exc:
