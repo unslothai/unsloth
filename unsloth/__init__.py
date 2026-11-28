@@ -59,6 +59,17 @@ from .parallel_env import bind_local_cuda_device as _bind_local_cuda_device
 _bind_local_cuda_device()
 del _bind_local_cuda_device
 
+# Without a usable bitsandbytes, 4bit QLoRA runs on Unsloth's NF4 stand-in (unsloth/bnb_shim).
+# Before transformers / PEFT read bitsandbytes availability, after the device binding above (probing
+# an installed bitsandbytes initialises CUDA). UNSLOTH_BNB_SHIM=0 opts out.
+try:
+    from .bnb_shim import install as _install_bnb_shim
+    _install_bnb_shim()
+    del _install_bnb_shim
+except Exception as _bnb_shim_error:
+    print(f"Unsloth: could not set up the bitsandbytes stand-in ({_bnb_shim_error}).")
+    del _bnb_shim_error
+
 # Before transformers, which reads sentencepiece availability during its own import. On Windows
 # the extension is never imported at all: a code integrity policy can refuse it by reputation,
 # and any probe to find out whether this machine will is itself the refusal the user sees. See

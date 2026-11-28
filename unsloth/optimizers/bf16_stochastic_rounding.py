@@ -16,6 +16,7 @@ import contextlib
 import functools
 import os
 import types
+import weakref
 
 import torch
 
@@ -711,14 +712,25 @@ def _local_shard_bnb(optimizer):
 
 def _wrap_bitsandbytes(optimizer, tracked, seed):
     # Read at call time: FSDP2 / TP may swap the class to its local-shard form after this wraps.
-    prior = vars(optimizer).get("update_step")
+    previous = vars(optimizer).get("update_step")
+    # DTensors tracked by identity: accelerate's FSDP2 prepare frees the plain weights this saw, and a shard
+    # built then can reuse a freed weight's id.
+    shards = {
+        id(p): weakref.ref(p)
+        for group in optimizer.param_groups
+        for p in group["params"]
+        if id(p) in tracked and _is_dtensor(p)
+    }
 
     def update_step(self, group, p, gindex, pindex):
-        original = prior if prior is not None else types.MethodType(type(self).update_step, self)
+        original = (
+            previous if previous is not None else types.MethodType(type(self).update_step, self)
+        )
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
         if _is_dtensor(p):
-            if not _local_shard_bnb(self):
+            ref = shards.get(id(p))
+            if ref is None or ref() is not p or not _local_shard_bnb(self):
                 return original(group, p, gindex, pindex)
             # The local-shard class hands bitsandbytes a plain alias of this rank's shard: round that one.
             return self._shard_call(

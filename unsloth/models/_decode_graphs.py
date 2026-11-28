@@ -13,7 +13,7 @@ batch 1 by default (UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ): larger batches keep the 
 
 Graphs read weights and LoRA decode casts by address, so an optimizer step (in place) does not re-capture.
 UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING: whether graphs and their buffers stay through a training step:
-auto (default) when that fits the memory a measured training step left free, 1 always, 0 never."""
+auto (default) when that fits the memory a measured training step left free (FastModel graphs never), 1 always, 0 never."""
 
 import contextlib
 import math
@@ -1050,6 +1050,13 @@ def keep_for_training(model):
         if mode == "1":
             KEEP_DECISIONS["kept"] += 1
             return True
+        if not any(
+            getattr(m.__dict__.get("_unsloth_decode_graphs"), "graphs", None)
+            for m in model.modules()
+        ):
+            # FastModel graphs: keeping the StaticCache through the step costs memory, re-capturing costs nothing measurable.
+            KEEP_DECISIONS["released"] += 1
+            return False
         if _sleepable(model) and held <= KEEP_RESIDUAL_FRACTION * _total_bytes(device):
             # The KV caches sleep (pages back to training); what stays is small: keep from the first round.
             KEEP_DECISIONS["kept"] += 1

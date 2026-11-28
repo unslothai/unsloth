@@ -2207,3 +2207,331 @@ def test_a_priced_media_model_on_metal_always_tiles(monkeypatch, priced, free_gi
     model = types.SimpleNamespace(tiling_config = None)
     runtime._plan_vae_tiling(model, 1024, 1024)
     assert runtime.vae_tiled() is expected
+
+
+# ── Int8 Prefill on the DiT (unsloth_zoo's M5 int8-activation route) ──────────
+
+
+class FakeVerdict(tuple):
+    """Shaped like unsloth_zoo's Int8PrefillStatus (available, reason, projections)."""
+
+    def __new__(cls, available, reason, projections):
+        return super().__new__(cls, (available, reason, projections))
+
+
+class FakeTransformer:
+    def __init__(self):
+        # mflux leaves its modules in nn.Module's default training mode.
+        self.training = True
+
+    def eval(self):
+        self.training = False
+        return self
+
+    def train(self, mode = True):
+        self.training = bool(mode)
+        return self
+
+
+class FakeModel(dict):
+    def __init__(self, config):
+        super().__init__(model = config)
+        self.transformer = FakeTransformer()
+
+
+class FakeZoo:
+    def __init__(
+        self,
+        verdict = (True, "", 239),
+        available_error = None,
+        scope_error = None,
+    ):
+        self.verdict = FakeVerdict(*verdict)
+        self.available_error = available_error
+        self.scope_error = scope_error
+        self.entered = []
+        self.active = 0
+
+    def int8_prefill_available(self, model):
+        if self.available_error is not None:
+            raise self.available_error
+        return self.verdict
+
+    def nax_quantized_linear(
+        self,
+        model,
+        int8_prefill = None,
+    ):
+        zoo = self
+
+        class _Scope:
+            def __enter__(self):
+                if zoo.scope_error is not None:
+                    raise zoo.scope_error
+                zoo.entered.append((model, int8_prefill))
+                zoo.active += 1
+                return model
+
+            def __exit__(self, *exc):
+                zoo.active -= 1
+                return False
+
+        return _Scope()
+
+
+class Int8FakeRuntime(FakeRuntime):
+    def __init__(
+        self,
+        zoo,
+        preverify_error = None,
+        verified = None,
+    ):
+        super().__init__()
+        self.zoo = zoo
+        self.preverify_error = preverify_error
+        self.verified = verified
+        self.preverifies = []
+        self.seen_in_generate = []
+
+    def build(self, model_path, *, model_config, precision, te_bits):
+        super().build(model_path, model_config = model_config, precision = precision, te_bits = te_bits)
+        return FakeModel(model_config)
+
+    def int8_prefill_preverify(self, model, scope):
+        with scope(model.transformer, int8_prefill = True):
+            self.preverifies.append(
+                dict(training = model.transformer.training, active = self.zoo.active)
+            )
+            if self.preverify_error is not None:
+                raise self.preverify_error
+        return {
+            "shapes": 8,
+            "verified": 8 if self.verified is None else self.verified,
+            "projections": 239,
+        }
+
+    def apply_loras(self, model, loras):
+        super().apply_loras(model, loras)
+        # mflux's LoRA wrappers are new modules: they start in training mode.
+        if loras:
+            model.transformer.training = True
+
+    def generate(self, model, **kw):
+        self.seen_in_generate.append(
+            dict(
+                active = self.zoo.active,
+                training = model.transformer.training,
+                loras = list(model.get("loras", [])),
+            )
+        )
+        return super().generate(model, **kw)
+
+
+@pytest.fixture
+def int8_env(env, monkeypatch):
+    backend, _runtime, calls = env
+    zoo = FakeZoo()
+    runtime = Int8FakeRuntime(zoo)
+    backend.runtime_factory = lambda: runtime
+    monkeypatch.setattr(mb, "_int8_prefill_zoo", lambda: (zoo, ""))
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
+    return backend, runtime, zoo
+
+
+def _int8_status(backend):
+    st = backend.status()
+    return st["mlx"]["int8_prefill"], st
+
+
+def test_int8_prefill_auto_engages_evals_and_preverifies_inside_the_scope(int8_env):
+    backend, runtime, zoo = int8_env
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is True and info["mode"] == "auto"
+    assert info["projections"] == 239 and info["verified_shapes"] == 8
+    assert info["reason"] == ""
+    # The eager pre-verify ran once, in eval mode, inside the zoo scope.
+    assert runtime.preverifies == [dict(training = False, active = 1)]
+    assert "mlx_int8_prefill" in st["speed_optims"]
+    assert st["resolved"]["mlx_int8_prefill"]["value"] is True
+    assert st["resolved"]["mlx_int8_prefill"]["source"] == "explicit"
+    backend.generate(prompt = "p", steps = 2, seed = 1, batch_size = 2)
+    # Every render runs inside the scope, with int8_prefill on, in eval mode.
+    assert [g["active"] for g in runtime.seen_in_generate] == [1, 1]
+    assert all(g["training"] is False for g in runtime.seen_in_generate)
+    model = backend._state.model
+    assert zoo.entered[-1] == (model.transformer, True)
+    assert zoo.active == 0
+    assert all(img.get("int8_prefill") is True for img in backend.last_timings["images"])
+
+
+def test_int8_prefill_is_off_unless_asked(int8_env, monkeypatch):
+    # Lossy at the image level (LPIPS 0.061 on 24 Z-Image prompts for 1.09x), so an unset env stays on the stock path.
+    backend, runtime, zoo = int8_env
+    monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is False and info["mode"] == "off"
+    assert runtime.preverifies == [] and zoo.entered == []
+    assert backend._state.model.transformer.training is True
+    assert "mlx_int8_prefill" not in st["speed_optims"]
+    backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert runtime.seen_in_generate[-1]["active"] == 0
+
+
+@pytest.mark.parametrize("value", ["0", "off", "false"])
+def test_int8_prefill_off_is_the_stock_path(int8_env, monkeypatch, value):
+    backend, runtime, zoo = int8_env
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, value)
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is False and info["mode"] == "off" and info["reason"] == "disabled"
+    assert runtime.preverifies == []
+    # Stock means stock: the training flag is left as mflux set it.
+    assert backend._state.model.transformer.training is True
+    assert "mlx_int8_prefill" not in st["speed_optims"]
+    assert st["resolved"]["mlx_int8_prefill"]["source"] == "explicit"
+    backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert runtime.seen_in_generate[-1]["active"] == 0 and zoo.entered == []
+
+
+@pytest.mark.parametrize(
+    "verdict, reason",
+    [
+        ((False, "nax_unavailable", 0), "nax_unavailable"),
+        ((False, "no_eligible_projections", 0), "no_eligible_projections"),
+    ],
+)
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_int8_prefill_stays_off_where_the_zoo_says_it_cannot_run(
+    int8_env, monkeypatch, verdict, reason, mode
+):
+    backend, runtime, zoo = int8_env
+    zoo.verdict = FakeVerdict(*verdict)
+    if mode is not None:
+        monkeypatch.setenv(mb.INT8_PREFILL_ENV, mode)
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is False and info["reason"] == reason
+    assert runtime.preverifies == []
+    assert backend._state.model.transformer.training is True
+    expected = "unsupported" if mode == "1" else "applied"
+    assert st["resolved"]["mlx_int8_prefill"]["status"] == expected
+    backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert runtime.seen_in_generate[-1]["active"] == 0
+
+
+def test_a_zoo_without_the_api_or_a_failed_import_is_off_with_a_reason(env, monkeypatch):
+    import sys
+    import types
+
+    backend, runtime, _calls = env
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
+    # Old zoo: nax_quantized_linear without int8_prefill.
+    old = types.ModuleType("unsloth_zoo.mlx.inference")
+    old.nax_quantized_linear = lambda model: None
+    old.int8_prefill_available = lambda model: (True, "", 1)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", old)
+    zoo, reason = mb._int8_prefill_zoo()
+    assert zoo is None and reason == "unsupported_zoo"
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", None)
+    zoo, reason = mb._int8_prefill_zoo()
+    assert zoo is None and reason.startswith("zoo_unavailable")
+    assert _load(backend)["phase"] == "ready"
+    info, _st = _int8_status(backend)
+    assert info["engaged"] is False
+    assert info["reason"] in ("unsupported_runtime",) or info["reason"].startswith(
+        "zoo_unavailable"
+    )
+
+
+def test_a_preverify_exception_falls_back_to_stock_without_failing_the_load(int8_env):
+    backend, runtime, zoo = int8_env
+    runtime.preverify_error = RuntimeError("kernel build failed")
+    assert _load(backend)["phase"] == "ready"
+    info, st = _int8_status(backend)
+    assert info["engaged"] is False
+    assert info["reason"].startswith("preverify_failed") and "kernel build failed" in info["reason"]
+    # The training flag mflux left is restored: the render is the stock one.
+    assert backend._state.model.transformer.training is True
+    assert zoo.active == 0
+    backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert runtime.seen_in_generate[-1]["active"] == 0
+
+
+def test_an_availability_probe_exception_falls_back(int8_env):
+    backend, runtime, zoo = int8_env
+    zoo.available_error = ValueError("boom")
+    assert _load(backend)["phase"] == "ready"
+    info, _st = _int8_status(backend)
+    assert info["engaged"] is False and info["reason"].startswith("probe_failed")
+    assert runtime.preverifies == []
+
+
+def test_no_verified_shape_means_not_engaged(int8_env):
+    backend, runtime, zoo = int8_env
+    runtime.verified = 0
+    assert _load(backend)["phase"] == "ready"
+    info, _st = _int8_status(backend)
+    assert info["engaged"] is False and info["reason"] == "verify_failed"
+    assert backend._state.model.transformer.training is True
+
+
+def test_a_scope_that_fails_to_open_renders_stock(int8_env):
+    backend, runtime, zoo = int8_env
+    assert _load(backend)["phase"] == "ready"
+    zoo.scope_error = RuntimeError("contract drift")
+    out = backend.generate(prompt = "p", steps = 1, seed = 1)
+    assert out["images"]
+    assert runtime.seen_in_generate[-1]["active"] == 0
+    assert backend.last_timings["images"][0]["int8_prefill"] is False
+
+
+def test_int8_prefill_keeps_routing_with_loras(int8_env, monkeypatch):
+    backend, runtime, zoo = int8_env
+    from core.inference import diffusion_lora
+
+    class _Resolved:
+        def __init__(self, i, w):
+            self.id, self.fmt, self.path, self.weight = i, "safetensors", f"/tmp/{i}.safetensors", w
+
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **_k: [_Resolved(i, w) for i, w in specs],
+    )
+    assert _load(backend)["phase"] == "ready"
+    backend.generate(prompt = "p", steps = 1, seed = 1, loras = [("style", 0.8)])
+    seen = runtime.seen_in_generate[-1]
+    assert seen["loras"], "the LoRA was applied"
+    # The LoRA wrappers came in training mode; the render still runs in eval mode inside the scope.
+    assert seen["active"] == 1 and seen["training"] is False
+    backend.generate(prompt = "p", steps = 1, seed = 1, loras = [])
+    assert runtime.seen_in_generate[-1]["active"] == 1
+
+
+def test_int8_prefill_mode_parsing(monkeypatch):
+    for raw, mode in [
+        (None, "off"),
+        ("", "off"),
+        ("auto", "auto"),
+        ("1", "on"),
+        ("on", "on"),
+        ("0", "off"),
+        ("OFF", "off"),
+        ("bogus", "off"),
+    ]:
+        if raw is None:
+            monkeypatch.delenv(mb.INT8_PREFILL_ENV, raising = False)
+        else:
+            monkeypatch.setenv(mb.INT8_PREFILL_ENV, raw)
+        assert mb.int8_prefill_mode()[0] == mode, raw
+
+
+def test_the_base_fake_runtime_without_the_hook_loads_stock(env, monkeypatch):
+    backend, runtime, _calls = env
+    monkeypatch.setenv(mb.INT8_PREFILL_ENV, "auto")
+    monkeypatch.setattr(mb, "_int8_prefill_zoo", lambda: (FakeZoo(), ""))
+    assert _load(backend)["phase"] == "ready"
+    info, _st = _int8_status(backend)
+    assert info["engaged"] is False and info["reason"] == "unsupported_runtime"
