@@ -844,6 +844,7 @@ def _archive_turns(
     # Conversation order from the persisted thread, not arrival order (`_transcript_positions`).
     positions, replace_clipped = _transcript_positions(thread_id, branch or live)
     live_positions = _live_positions(live)
+    seat_memo, live_memo = {}, {}
     written = 0
     # Only an embedder failure falls back to keyword copies; a failing store would refuse those too.
     dense_failed = False
@@ -872,8 +873,8 @@ def _archive_turns(
                 continue
             legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-            seats = _occurrences(positions, group)
-            budget = _write_budget(positions, seats, live_positions, group)
+            seats = _occurrences(positions, group, seat_memo)
+            budget = _write_budget(positions, seats, live_positions, group, live_memo)
             if _archived_under(conn, scope, digest, expected_identity, occurrences = budget):
                 # Commit here: this path may return before the write lock, its only chance to converge.
                 # Bounded by the live-aware budget so no duplicate copy of in-prompt text takes a recall slot.
@@ -1153,6 +1154,7 @@ def _archive_turns_lexically(
     replace_clipped: bool,
 ) -> int:
     """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
+    seat_memo, live_memo = {}, {}
     written = 0
     conn = None
     try:
@@ -1165,8 +1167,8 @@ def _archive_turns_lexically(
                 continue
             legacy_hash = legacy_hash if replace_clipped else None
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-            seats = _occurrences(positions, group)
-            budget = _write_budget(positions, seats, live_positions, group)
+            seats = _occurrences(positions, group, seat_memo)
+            budget = _write_budget(positions, seats, live_positions, group, live_memo)
             if len(store.documents_by_hash(conn, scope, digest)) >= budget:
                 # As the dense pre-check: re-seat, retire surplus copies after a rewind, widen the span.
                 _restamp(conn, scope, digest, seats[:budget], commit = True)
@@ -1790,16 +1792,22 @@ def _transcript_positions(thread_id: str, branch = None) -> tuple[Optional[list[
     return [[_seat_text(message) for message in group] for group in groups if group], single_chain
 
 
-def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> list[int]:
-    """Matches the whole turn, not its first line, so turns that start alike do not share seats. Compared as a prefix, since the transcript lags the evicted group."""
+def _occurrences(
+    positions: Optional[list[list[str]]],
+    group: list[dict],
+    memo: Optional[dict] = None,
+) -> list[int]:
+    """Match the whole turn (not its first line) as a prefix, since the transcript lags the evicted group.
+    memo: caller-owned dict for ONE positions list."""
     if not positions or not group:
         return []
     texts = [_seat_text(message) for message in group]
     if not texts or not texts[0]:
         return []
     calls = [bool(message.get("tool_calls")) for message in group]
+    spaces: dict[int, list[int]] = {}
 
-    def _same(stored: str, live: str, is_call: bool) -> bool:
+    def _same(stored: str, live: str, is_call: bool, slot: int) -> bool:
         # Tool calls match as a substring, not equality; others exactly; one split is allowed.
         if not is_call:
             return stored == live
@@ -1814,7 +1822,9 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
         if len(stored) < len(live) - 1:
             return False
 
-        cuts = [index for index, char in enumerate(live) if char == " "]
+        cuts = spaces.get(slot)
+        if cuts is None:
+            cuts = spaces[slot] = [index for index, char in enumerate(live) if char == " "]
         if not cuts:
             return False
 
@@ -1849,14 +1859,30 @@ def _occurrences(positions: Optional[list[list[str]]], group: list[dict]) -> lis
 
         return False
 
+    candidates = range(len(positions))
+    # Non-call elements match exactly, so bucket by one; the trailing short position may still match.
+    exact = next((index for index, is_call in enumerate(calls) if not is_call), None)
+    if memo is not None and exact is not None:
+        buckets = memo.get(exact)
+        if buckets is None:
+            buckets = memo[exact] = {}
+            for index, position in enumerate(positions):
+                if len(position) > exact:
+                    buckets.setdefault(position[exact], []).append(index)
+        hits = buckets.get(texts[exact], [])
+        last = len(positions) - 1
+        candidates = hits if hits and hits[-1] == last else [*hits, last]
+
     return [
         index
-        for index, position in enumerate(positions)
+        for index in candidates
+        for position in (positions[index],)
         if position
         # Shorter positions may only match the trailing one, or an orphan user row takes a second seat. Longer ones are fine (>=, not ==).
         and (len(position) >= len(texts) or index == len(positions) - 1)
         and all(
-            _same(stored, live, is_call) for stored, live, is_call in zip(position, texts, calls)
+            _same(stored, live, is_call, slot)
+            for slot, (stored, live, is_call) in enumerate(zip(position, texts, calls))
         )
     ]
 
@@ -1921,13 +1947,14 @@ def _write_budget(
     seats: list[int],
     live_positions: Optional[list[list[str]]],
     group: Optional[list[dict]] = None,
+    live_memo: Optional[dict] = None,
 ) -> int:
     """Counts occurrences still in the live prompt, so a shown turn is not re-archived. Floors at 1 so a turn that cannot be told apart is still stored."""
     if not seats:
         return 1
     if not live_positions or not positions:
         return len(seats)
-    live = len(_occurrences(live_positions, group)) if group else 0
+    live = len(_occurrences(live_positions, group, live_memo)) if group else 0
     return max(len(seats) - live, 1)
 
 
