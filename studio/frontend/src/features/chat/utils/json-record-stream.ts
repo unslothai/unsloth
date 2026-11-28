@@ -79,6 +79,7 @@ interface Salvage {
 }
 
 const NEW_RECORD_LINE = /[^\s:,[{]\s*\n[[{]/;
+const SPACE_CHAR = /\s/;
 
 /** Until line framing is proven, only unindented object or array lines are boundaries. */
 function salvageLines(region: string, proven: boolean): Salvage {
@@ -125,6 +126,12 @@ export async function* streamJsonRecords(
   let sawArrayEnd = false;
   let emittedRecord = false;
   let lineFramed = false;
+  // Not one concatenated buffer: a whole-file record would be re-copied and re-searched per chunk.
+  let src = "";
+  let srcOffset = 0;
+  let carry = "";
+  let carryStart = 0;
+  let searched = -1;
 
   for await (const chunk of chunks) {
     options.onBytes?.(chunk.bytes);
@@ -142,14 +149,21 @@ export async function* streamJsonRecords(
       throw error;
     }
     scan -= consumed;
-    if (start >= 0) start = 0;
+    if (start >= 0) {
+      start = 0;
+      carry += chunk.text;
+      carryStart -= consumed;
+      if (searched >= 0) searched -= consumed;
+    }
+    src = chunk.text;
+    srcOffset = buffer.length - src.length;
 
     let rescan = true;
     while (rescan) {
       rescan = false;
 
       while (scan < buffer.length) {
-        const code = buffer.charCodeAt(scan);
+        const code = src.charCodeAt(scan - srcOffset);
 
         if (inString) {
           if (escaped) escaped = false;
@@ -181,6 +195,9 @@ export async function* streamJsonRecords(
           }
           start = scan;
           depth = 0;
+          carry = src.slice(start - srcOffset);
+          carryStart = start;
+          searched = -1;
         }
 
         if (code === QUOTE) inString = true;
@@ -208,14 +225,36 @@ export async function* streamJsonRecords(
 
       // A pending record is damaged once a later line starts a record; independent of chunk boundaries.
       if (!sawArrayStart && start >= 0) {
-        const lastNewline = buffer.lastIndexOf("\n");
-        const boundary =
-          lastNewline > start ? NEW_RECORD_LINE.exec(buffer.slice(start, lastNewline)) : null;
-        if (boundary) {
-          const at = start + boundary.index + boundary[0].length - 1;
+        // `src` holds every newline not yet searched, so none in it means the same answer as before.
+        const inSrc = src.lastIndexOf("\n");
+        const lastNewline = inSrc >= 0 ? srcOffset + inSrc : -1;
+        let at = -1;
+        if (lastNewline > start && lastNewline !== searched) {
+          const boundary = NEW_RECORD_LINE.exec(carry.slice(0, lastNewline - carryStart));
+          if (boundary) {
+            at = carryStart + boundary.index + boundary[0].length - 1;
+          } else {
+            // No match before lastNewline, so the leftmost match starts at its last non-space char or later.
+            const previous = searched;
+            searched = lastNewline;
+            let resume = lastNewline - 1;
+            while (resume > start && SPACE_CHAR.test(carry[resume - carryStart])) {
+              if (resume === previous) {
+                resume = carryStart;
+                break;
+              }
+              resume--;
+            }
+            carry = carry.slice(resume - carryStart);
+            carryStart = resume;
+          }
+        }
+        if (at >= 0) {
           const damaged = buffer.slice(start, at).trim();
           if (damaged) options.onMalformed?.(damaged);
           buffer = buffer.slice(at);
+          src = buffer;
+          srcOffset = 0;
           scan = 0;
           start = -1;
           depth = 0;
