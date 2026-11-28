@@ -343,7 +343,7 @@ def current(install_converter: bool = True) -> dict:
 
     backend = get_npu_backend()
     # No supported NPU: nothing is installed or fetched, every model reads as unknown.
-    if not backend.hardware().get("supported"):
+    if not backend.hardware().get("supported") or backend.hardware().get("vendor") == "qualcomm":
         return build_compat(None, None)
     flm_binary = backend._flm_binary()
     root = studio_root() / "q4nx_converter"

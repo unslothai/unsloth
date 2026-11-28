@@ -1,0 +1,245 @@
+{
+  "schema_version": 2,
+  "description": "Curated Unsloth & Hugging Face Q4_0 GGUF models verified for Qualcomm Hexagon NPU (ggml-hexagon HTP0) across 8GB-128GB Snapdragon X/X2 PCs, with Hybrid NPU + NVMe SSD offload for oversized sparse MoEs.",
+  "models": [
+    {
+      "checkpoint": "unsloth/Qwen3-0.6B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3-0.6B-NPU",
+      "size_gb": 0.38,
+      "n_layers": 28,
+      "min_ram_gb": 4,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3-1.7B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3-1.7B-NPU",
+      "size_gb": 1.06,
+      "n_layers": 28,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3-4B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3-4B-NPU",
+      "size_gb": 2.38,
+      "n_layers": 36,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3-4B-Instruct-2507-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3-4B-Instruct-2507-NPU",
+      "size_gb": 2.38,
+      "n_layers": 36,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Llama-3.2-1B-Instruct-GGUF:Q4_0",
+      "hf_repo": "unsloth/Llama-3.2-1B-Instruct-NPU",
+      "size_gb": 0.77,
+      "n_layers": 16,
+      "min_ram_gb": 4,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Llama-3.2-3B-Instruct-GGUF:Q4_0",
+      "hf_repo": "unsloth/Llama-3.2-3B-Instruct-NPU",
+      "size_gb": 1.92,
+      "n_layers": 28,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/gemma-3-1b-it-GGUF:Q4_0",
+      "hf_repo": "unsloth/gemma-3-1b-it-NPU",
+      "size_gb": 0.72,
+      "n_layers": 26,
+      "min_ram_gb": 4,
+      "max_context_window": 32768,
+      "labels": ["chat"]
+    },
+    {
+      "checkpoint": "unsloth/gemma-3-4b-it-GGUF:Q4_0",
+      "hf_repo": "unsloth/gemma-3-4b-it-NPU",
+      "size_gb": 2.37,
+      "n_layers": 34,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat"]
+    },
+    {
+      "checkpoint": "tablinum/Moon-Beam-8B-A1B-NPU:Q4_0",
+      "hf_repo": "tablinum/Moon-Beam-8B-A1B-NPU",
+      "size_gb": 4.71,
+      "n_layers": 32,
+      "min_ram_gb": 12,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "tablinum/Moon-Beam-8B-A1B-GGUF:Q4_K_M",
+      "hf_repo": "tablinum/Moon-Beam-8B-A1B-Q4KM-NPU",
+      "size_gb": 4.94,
+      "n_layers": 32,
+      "min_ram_gb": 12,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "google/gemma-4-E2B-it-qat-q4_0-gguf:Q4_0",
+      "hf_repo": "google/gemma-4-E2B-it-qat-q4_0-gguf",
+      "size_gb": 1.65,
+      "n_layers": 35,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning"]
+    },
+    {
+      "checkpoint": "ibm-granite/granite-4.2-3b-GGUF:Q4_0",
+      "hf_repo": "ibm-granite/granite-4.2-3b-GGUF",
+      "size_gb": 2.05,
+      "n_layers": 32,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling"]
+    },
+    {
+      "checkpoint": "tablinum/Phi-4-mini-instruct-NPU:Q4_0",
+      "hf_repo": "tablinum/Phi-4-mini-instruct-NPU",
+      "size_gb": 2.25,
+      "n_layers": 32,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0",
+      "hf_repo": "google/gemma-4-E4B-it-qat-q4_0-gguf",
+      "size_gb": 2.75,
+      "n_layers": 42,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3.5-4B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3.5-4B-NPU",
+      "size_gb": 2.55,
+      "n_layers": 36,
+      "min_ram_gb": 8,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "ibm-granite/granite-4.2-8b-GGUF:Q4_0",
+      "hf_repo": "ibm-granite/granite-4.2-8b-GGUF",
+      "size_gb": 4.75,
+      "n_layers": 40,
+      "min_ram_gb": 12,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3.5-9B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3.5-9B-NPU",
+      "size_gb": 5.35,
+      "n_layers": 36,
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "ornith-ai/Ornith-1.5-9B-NPU:Q4_0",
+      "hf_repo": "ornith-ai/Ornith-1.5-9B-NPU",
+      "size_gb": 5.25,
+      "n_layers": 36,
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/gemma-4-12b-it-GGUF:Q4_0",
+      "hf_repo": "unsloth/gemma-4-12b-it-NPU",
+      "size_gb": 6.85,
+      "n_layers": 48,
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning"]
+    },
+    {
+      "checkpoint": "unsloth/LFM2.5-24B-A2B-NPU:Q4_0",
+      "hf_repo": "unsloth/LFM2.5-24B-A2B-NPU",
+      "size_gb": 13.5,
+      "n_layers": 32,
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "tool-calling", "moe"]
+    },
+    {
+      "checkpoint": "unsloth/gemma-4-26B-A4B-it-NPU:IQ4_NL",
+      "hf_repo": "unsloth/gemma-4-26B-A4B-it-NPU",
+      "size_gb": 13.61,
+      "n_layers": 42,
+      "mtp_file": "mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling", "moe"]
+    },
+    {
+      "checkpoint": "unsloth/gemma-4-26B-A4B-it-NPU:Q4_0",
+      "hf_repo": "unsloth/gemma-4-26B-A4B-it-NPU",
+      "size_gb": 14.8,
+      "n_layers": 42,
+      "mtp_file": "mtp-gemma-4-26B-A4B-it-Q8_0.gguf",
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling", "moe"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3.8-27B-GGUF:Q4_0",
+      "hf_repo": "unsloth/Qwen3.8-27B-NPU",
+      "size_gb": 15.2,
+      "n_layers": 64,
+      "mtp_file": "mtp-Qwen3.8-27B-Q4_0.gguf",
+      "min_ram_gb": 32,
+      "max_context_window": 65536,
+      "labels": ["chat", "reasoning", "tool-calling"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3.6-35B-A3B-NPU:Q4_0",
+      "hf_repo": "unsloth/Qwen3.6-35B-A3B-NPU",
+      "size_gb": 19.5,
+      "n_layers": 48,
+      "mtp_file": "mtp-Qwen3.6-35B-A3B-Q8_0.gguf",
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling", "moe"]
+    },
+    {
+      "checkpoint": "ornith-ai/Ornith-1.5-35B-A3B-NPU:Q4_0",
+      "hf_repo": "ornith-ai/Ornith-1.5-35B-A3B-NPU",
+      "size_gb": 19.5,
+      "n_layers": 48,
+      "min_ram_gb": 16,
+      "max_context_window": 32768,
+      "labels": ["chat", "reasoning", "tool-calling", "moe"]
+    },
+    {
+      "checkpoint": "unsloth/Qwen3.8-Flash-Next-NPU:Q4_0",
+      "hf_repo": "unsloth/Qwen3.8-Flash-Next-NPU",
+      "size_gb": 95.0,
+      "n_layers": 60,
+      "mtp_file": "mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf",
+      "min_ram_gb": 32,
+      "max_context_window": 65536,
+      "labels": ["chat", "reasoning", "tool-calling", "moe"]
+    }
+  ]
+}

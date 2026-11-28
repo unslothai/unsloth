@@ -298,15 +298,64 @@ def is_npu_model_path(model_path: Optional[str]) -> bool:
     return isinstance(model_path, str) and model_path.startswith(MODEL_PREFIX)
 
 
+_QUALCOMM_GENIEX_VERSION_CACHE: Optional[tuple[float, str]] = None
+
+
+def _qualcomm_geniex_version() -> str:
+    global _QUALCOMM_GENIEX_VERSION_CACHE
+    now = time.monotonic()
+    if _QUALCOMM_GENIEX_VERSION_CACHE is not None and (now - _QUALCOMM_GENIEX_VERSION_CACHE[0]) < 60.0:
+        return _QUALCOMM_GENIEX_VERSION_CACHE[1]
+    label = "GenieX"
+    local_app = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    prog_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+    candidates = [
+        Path(os.environ["UNSLOTH_GENIEX_BIN"]) if os.environ.get("UNSLOTH_GENIEX_BIN") else None,
+        Path(shutil.which("geniex")) if shutil.which("geniex") else None,
+        local_app / "GenieX" / "geniex.exe",
+        local_app / "Programs" / "GenieX" / "geniex.exe",
+        prog_files / "GenieX" / "geniex.exe",
+        local_app / "GenieX CLI" / "geniex.exe",
+        local_app / "Programs" / "GenieX CLI" / "geniex.exe",
+        local_app / "Microsoft" / "WinGet" / "Links" / "geniex.exe",
+        prog_files / "GenieX CLI" / "geniex.exe",
+    ]
+    binary = next((c for c in candidates if c is not None and c.is_file()), None)
+    if binary is not None:
+        try:
+            kwargs: dict[str, Any] = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            done = subprocess.run(
+                [str(binary), "--version", "--skip-update"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=5.0,
+                **kwargs,
+            )
+            for line in ((done.stdout or "") + (done.stderr or "")).splitlines():
+                if "GenieX CLI Version:" in line:
+                    ver = line.split(":", 1)[1].strip().lstrip("v")
+                    if ver:
+                        label = f"v{ver} (GenieX)"
+                    break
+        except (OSError, subprocess.SubprocessError):
+            pass
+    _QUALCOMM_GENIEX_VERSION_CACHE = (now, label)
+    return label
+
+
 def looks_like_npu_display_name(name: Optional[str]) -> bool:
-    """A FastFlowLM repo (`FastFlowLM/<name>`) or a bare name ending in `-NPU<n>`, as shown in the app."""
+    """A FastFlowLM/Qualcomm NPU repo or a bare name ending in `-NPU<n>`, as shown in the app."""
     if not isinstance(name, str):
         return False
     text = name.strip()
     if text.lower().startswith(_REPO_OWNER):
         rest = text[len(_REPO_OWNER) :]
         return bool(rest) and "/" not in rest and ":" not in rest
-    return "/" not in text and ":" not in text and bool(_DISPLAY_NAME_SUFFIX.search(text))
+    if ":" not in text and bool(_DISPLAY_NAME_SUFFIX.search(text)):
+        return text.count("/") <= 1
+    return False
 
 
 def model_id_from_path(model_path: str) -> str:
@@ -496,6 +545,9 @@ class LemonadeNpuBackend:
             self._hardware = detect_amd_npu()
         return self._hardware
 
+    def _is_qualcomm(self) -> bool:
+        return self.hardware().get("vendor") == "qualcomm"
+
     @property
     def is_loaded(self) -> bool:
         return self.resident() is not None
@@ -581,6 +633,8 @@ class LemonadeNpuBackend:
         return str(version).lstrip("v") if version else None
 
     def _installed_flm_version(self) -> Optional[str]:
+        if self._is_qualcomm():
+            return _qualcomm_geniex_version() if self._installed_lemond() is not None else None
         binary = self._flm_binary()
         if binary is None:
             return None
@@ -699,16 +753,17 @@ class LemonadeNpuBackend:
     def _require_supported(self) -> None:
         hardware = self.hardware()
         if hardware.get("enabled") is False and (
-            hardware.get("family") == "XDNA2" or custom_runtime_configured()
+            hardware.get("family") in ("XDNA2", "Hexagon") or custom_runtime_configured()
         ):
+            vendor_label = "Qualcomm Hexagon" if hardware.get("vendor") == "qualcomm" else "AMD"
             raise NpuError(
-                "The AMD NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU. Unset it or set it "
+                f"The {vendor_label} NPU is turned off by UNSLOTH_STUDIO_ENABLE_NPU. Unset it or set it "
                 "to 1, then restart Unsloth Studio to use the NPU."
             )
         if hardware.get("supported"):
             return
         if not hardware.get("present"):
-            raise NpuError("No AMD Ryzen AI NPU was found on this machine.")
+            raise NpuError("No supported NPU was found on this machine.")
         raise NpuError(
             "FastFlowLM needs an XDNA 2 NPU (Ryzen AI 300/400 or Ryzen AI Max); "
             "this NPU is XDNA 1."
@@ -808,7 +863,7 @@ class LemonadeNpuBackend:
                 else:
                     # lemond can keep the old FastFlowLM when an update download fails.
                     expected, actual = _pinned_flm_version(), self._flm_version()
-                    if expected and actual and actual != expected:
+                    if not self._is_qualcomm() and expected and actual and actual != expected:
                         raise NpuError(
                             f"Updating FastFlowLM to v{expected} failed; v{actual} is still installed. "
                             "Check the internet connection, then try again."
@@ -838,6 +893,21 @@ class LemonadeNpuBackend:
         return self.status()
 
     def _validate(self) -> dict[str, Any]:
+        if self._is_qualcomm():
+            host = self._installed_lemond()
+            if host is None:
+                return {
+                    "ready": False,
+                    "problems": [
+                        "Qualcomm GenieX CLI (geniex.exe) was not found. "
+                        "Install it with: winget install --id Qualcomm.GenieX.CLI -e"
+                    ],
+                }
+            return {
+                "ready": True,
+                "problems": [],
+                "report": {"ready": True, "vendor": "qualcomm", "host": str(host)},
+            }
         binary = self._flm_binary()
         if binary is None:
             return {"ready": False, "problems": ["FastFlowLM was not found after installing it."]}
@@ -953,6 +1023,8 @@ class LemonadeNpuBackend:
                 None if downloaded or custom_runtime else self._model_files(checkpoint, flm_binary)
             )
             hf_repo, hf_revision = read_model_repo(flm_binary, checkpoint)
+            if not hf_repo and isinstance(row.get("hf_repo"), str):
+                hf_repo = row.get("hf_repo")
             models.append(
                 NpuModel(
                     id = str(row.get("id")),
@@ -970,7 +1042,8 @@ class LemonadeNpuBackend:
                     fits_memory = npu_memory.fits_npu_memory(size_gb, window_gb),
                 )
             )
-        models.extend(self._local_rows(models, window_gb))
+        if not self._is_qualcomm():
+            models.extend(self._local_rows(models, window_gb))
         return sorted(models, key = lambda model: (not model.downloaded, model.id))
 
     def _local_rows(self, catalog: list[NpuModel], window_gb: Optional[float]) -> list[NpuModel]:
