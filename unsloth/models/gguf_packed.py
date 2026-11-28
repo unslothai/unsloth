@@ -79,11 +79,12 @@ _OPS = []
 
 
 def gguf_ops():
-    """Namespace of (dequantize, linear, linear_backward_input, supports, name), resolved once. A plain global
-    read, so compiled code traces straight into the ops. Default: the pure torch reference, which Inductor fuses
-    into the compiled block; `UNSLOTH_GGUF_KERNELS=zoo` routes to unsloth_zoo.gguf_kernels (on a 50-step Qwen3.5-4B
-    Q4_K_M LoRA run on an A100 the reference trained at 1.2x the dequantized model's step time, the zoo kernels at
-    2.1x)."""
+    """Namespace of (dequantize, linear, linear_backward_input, grouped_mm, supports, name), resolved once. A plain
+    global read, so compiled code traces straight into the ops. `UNSLOTH_GGUF_KERNELS`: unset / "auto" picks
+    unsloth_zoo.gguf_kernels when that zoo launches its dequantize kernel from compiled graphs
+    (`COMPILE_TRACED_DEQUANTIZE`), else the pure torch reference; "zoo" forces the zoo kernels, "reference" the
+    reference. On a 30-step Qwen3.5-4B Q4_K_M LoRA run (RTX PRO 6000) the zoo kernels train at 1.06x the
+    dequantized model's step time, the reference at 1.17x; MoE expert stacks gain far more (grouped GEMM)."""
     if not _OPS:
         _OPS.append(_resolve_ops())
     return _OPS[0]
@@ -99,13 +100,17 @@ def _resolve_ops():
         grouped_mm = None,
         supports = _ref.is_supported,
     )
-    if os.environ.get("UNSLOTH_GGUF_KERNELS", "reference").strip().lower() != "zoo":
+    choice = os.environ.get("UNSLOTH_GGUF_KERNELS", "auto").strip().lower()
+    if choice not in ("auto", "zoo", ""):
         return reference
     try:
         import unsloth_zoo.gguf_kernels as zoo_kernels
     except Exception:
         return reference
     if not all(callable(getattr(zoo_kernels, name, None)) for name in _REQUIRED_ZOO_OPS):
+        return reference
+    if choice != "zoo" and not getattr(zoo_kernels, "COMPILE_TRACED_DEQUANTIZE", False):
+        # An older zoo runs every decode as a Python custom op: slower than the reference in training.
         return reference
     zoo_types = getattr(zoo_kernels, "SUPPORTED_TYPES", None)
     zoo_types = None if zoo_types is None else frozenset(int(t) for t in zoo_types)
@@ -192,27 +197,90 @@ def _effective_weight(packed, ggml_type, shape, dtype, inverse):
     return weight if inverse is None else weight.index_select(1, inverse)
 
 
+# True while a gradient-checkpoint backward re-runs a layer's forward (mirrored from unsloth_zoo's recompute
+# marker, see `_mirror_checkpoint_recompute`): that forward's backward runs right after it, so a Linear can keep
+# the weight it decoded for the forward until then (one layer's 16-bit weights at a time) instead of decoding it
+# a third time for dX. A plain global, so a compiled layer guards on it.
+_IN_CHECKPOINT_RECOMPUTE = [False]
+
+
+# UNSLOTH_GGUF_RECOMPUTE_REUSE=0 decodes for dX again (the memory of one layer's 16-bit weights back, one more
+# decode per Linear per step).
+_RECOMPUTE_REUSE = os.environ.get("UNSLOTH_GGUF_RECOMPUTE_REUSE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+
+def _reuse_recompute_weight():
+    return _RECOMPUTE_REUSE and _IN_CHECKPOINT_RECOMPUTE[0]
+
+
+def _mirror_checkpoint_recompute():
+    """Wrap unsloth_zoo's gradient-checkpoint recompute marker so `_IN_CHECKPOINT_RECOMPUTE` follows it."""
+    try:
+        from unsloth_zoo import gradient_checkpointing as zoo_gc
+    except Exception:
+        return False
+    original = getattr(zoo_gc, "_gradient_checkpoint_recompute_marker", None)
+    if original is None:
+        return False
+    if getattr(original, "_unsloth_gguf_mirror", False):
+        return True
+
+    @contextlib.contextmanager
+    def marker(*args, **kwargs):
+        previous = _IN_CHECKPOINT_RECOMPUTE[0]
+        _IN_CHECKPOINT_RECOMPUTE[0] = True
+        try:
+            with original(*args, **kwargs):
+                yield
+        finally:
+            _IN_CHECKPOINT_RECOMPUTE[0] = previous
+
+    marker._unsloth_gguf_mirror = True
+    marker.__wrapped__ = original
+    zoo_gc._gradient_checkpoint_recompute_marker = marker
+    return True
+
+
 class _GGUFLinearFunction(torch.autograd.Function):
-    """Frozen packed base: forward and dX only. Nothing 16-bit is saved for backward; dX decodes again. `inverse`:
-    argsort of an input permutation, applied to the dequantized columns (bitwise the dense model's product)."""
+    """Frozen packed base: forward and dX only. Nothing 16-bit is saved for backward and dX decodes again, except
+    in a gradient-checkpoint recompute (`keep_weight`), whose backward follows at once: the decoded weight is
+    saved for it. `inverse`: argsort of an input permutation, applied to the dequantized columns (bitwise the
+    dense model's product)."""
 
     @staticmethod
-    def forward(ctx, x, packed, bias, ggml_type, shape, inverse):
-        ctx.save_for_backward(packed, inverse)
+    def forward(
+        ctx,
+        x,
+        packed,
+        bias,
+        ggml_type,
+        shape,
+        inverse,
+        keep_weight = False,
+    ):
         ctx.ggml_type, ctx.shape = ggml_type, shape
         with torch.no_grad():
-            if inverse is None:
+            if inverse is None and not keep_weight:
+                ctx.save_for_backward(packed, inverse, None)
                 return gguf_ops().linear(x, packed, ggml_type, shape, bias)
             weight = _effective_weight(packed, ggml_type, shape, x.dtype, inverse)
+            ctx.save_for_backward(packed, inverse, weight if keep_weight else None)
             return torch.nn.functional.linear(x, weight, None if bias is None else bias.to(x.dtype))
 
     @staticmethod
     def backward(ctx, grad_output):
-        packed, inverse = ctx.saved_tensors
+        packed, inverse, weight = ctx.saved_tensors
         grad_x = grad_bias = None
         if ctx.needs_input_grad[0]:
             with torch.no_grad():
-                if inverse is None:
+                if weight is not None and weight.dtype == grad_output.dtype:
+                    grad_x = torch.matmul(grad_output, weight)
+                elif inverse is None:
                     grad_x = gguf_ops().linear_backward_input(
                         grad_output, packed, ctx.ggml_type, ctx.shape
                     )
@@ -223,7 +291,7 @@ class _GGUFLinearFunction(torch.autograd.Function):
                     grad_x = torch.matmul(grad_output, weight)
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
-        return grad_x, None, grad_bias, None, None, None
+        return grad_x, None, grad_bias, None, None, None, None
 
 
 class UnslothGGUFLinear(nn.Linear):
@@ -252,7 +320,7 @@ class UnslothGGUFLinear(nn.Linear):
         nn.Module.__init__(module)
         module.in_features = int(in_features)
         module.out_features = int(out_features)
-        module.ggml_type = int(ggml_type)
+        module.ggml_type = ggml_type
         expected = (module.out_features, _ref.row_bytes(module.ggml_type, module.in_features))
         if packed.dtype != torch.uint8 or tuple(packed.shape) != expected:
             raise ValueError(
@@ -271,6 +339,7 @@ class UnslothGGUFLinear(nn.Linear):
         if compute_dtype is not None and compute_dtype.is_floating_point:
             module.compute_dtype = compute_dtype
         gguf_ops()  # resolved before any trace reaches forward
+        _mirror_checkpoint_recompute()
         return module
 
     def _set_input_permutation(self, permutation):
@@ -278,9 +347,23 @@ class UnslothGGUFLinear(nn.Linear):
         inverse = None if permutation is None else torch.argsort(permutation)
         self.register_buffer("input_inverse", inverse, persistent = False)
 
+    # Layers of one decoder class mix ggml types and sizes (Q4_K_M: Q6_K on some down_proj). torch.compile guards an
+    # int module attribute as a constant, then on the next layer turns it into a SymInt: the zoo kernels then break the
+    # graph (and the reference loses its per-type code). A str attribute is always specialized, and the shape is
+    # read off the (static) packed parameter, so every layer compiles to constants.
+    @property
+    def ggml_type(self):
+        return int(self._ggml_type_key)
+
+    @ggml_type.setter
+    def ggml_type(self, value):
+        self._ggml_type_key = str(int(value))
+
     @property
     def shape(self):
-        return (self.out_features, self.in_features)
+        packed = self._parameters["weight_packed"]
+        block_elems, block_bytes = _ref.GGML_BLOCK[self.ggml_type]
+        return (packed.shape[0], packed.shape[1] // block_bytes * block_elems)
 
     @property
     def ggml_type_name(self):
@@ -313,7 +396,13 @@ class UnslothGGUFLinear(nn.Linear):
             x.requires_grad or (bias is not None and bias.requires_grad)
         ):
             return _GGUFLinearFunction.apply(
-                x, self.weight_packed, bias, self.ggml_type, self.shape, inverse
+                x,
+                self.weight_packed,
+                bias,
+                self.ggml_type,
+                self.shape,
+                inverse,
+                _reuse_recompute_weight(),
             )
         if inverse is None:
             return gguf_ops().linear(x, self.weight_packed, self.ggml_type, self.shape, bias)
