@@ -1427,6 +1427,9 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
     )
     try:
         models = await client.list_models()
+        capabilities = provider_model_capabilities(payload.provider_type, models)
+        if payload.provider_type == "custom":
+            capabilities += await _custom_template_capabilities(client, models, capabilities)
     except Exception as exc:
         raise log_and_http_error(
             exc,
@@ -1437,7 +1440,6 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         )
     finally:
         await client.close()
-    capabilities = provider_model_capabilities(payload.provider_type, models)
     if capabilities:
         now = time.monotonic()
         for key in [
@@ -1448,6 +1450,44 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
             del _model_capability_cache[key]
         _model_capability_cache[cache_key] = (now, capabilities)
     return capabilities
+
+
+_TEMPLATE_PROBE_MAX_MODELS = 8
+
+
+async def _custom_template_capabilities(client, models: list, known: list) -> list[dict]:
+    from core.inference.llama_cpp import detect_reasoning_flags
+
+    reported = {entry["id"] for entry in known}
+    ids = [
+        model["id"].strip()
+        for model in models
+        if isinstance(model.get("id"), str)
+        and model["id"].strip()
+        and model["id"].strip() not in reported
+    ][:_TEMPLATE_PROBE_MAX_MODELS]
+    templates = await asyncio.gather(*(client.llama_server_chat_template(i) for i in ids))
+    found = []
+    for model_id, template in zip(ids, templates):
+        flags = detect_reasoning_flags(template, model_id, log_level = "debug")
+        # "none" is the Off row, never a rung.
+        levels = [level for level in flags["reasoning_effort_levels"] if level != "none"]
+        if levels:
+            found.append(
+                {
+                    "id": model_id,
+                    "input_modalities": None,
+                    "reasoning": {
+                        "supported_efforts": levels,
+                        "mandatory": False,
+                        "default_effort": None,
+                        "default_enabled": None,
+                    },
+                    "max_output_tokens": None,
+                    "supported_parameters": None,
+                }
+            )
+    return found
 
 
 def _model_capability_names(model: dict) -> Optional[list[str]]:

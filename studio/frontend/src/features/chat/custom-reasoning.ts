@@ -64,6 +64,26 @@ function canonicalEffortLevels(
   return customReasoningEffortScale().filter((level) => levels.includes(level));
 }
 
+/** Rungs every reporting model accepts, preferring the ticked models; undefined when none report. */
+export function detectedCustomEffortLevels(
+  capabilities: readonly {
+    id: string;
+    reasoning?: { supported_efforts?: readonly string[] | null } | null;
+  }[],
+  selectedModelIds: readonly string[],
+): CustomReasoningEffortLevel[] | undefined {
+  const reported = capabilities.filter(
+    (entry) => (entry.reasoning?.supported_efforts?.length ?? 0) > 0,
+  );
+  const selected = reported.filter((entry) => selectedModelIds.includes(entry.id));
+  const pool = selected.length > 0 ? selected : reported;
+  if (pool.length === 0) return undefined;
+  const shared = customReasoningEffortScale().filter((level) =>
+    pool.every((entry) => entry.reasoning?.supported_efforts?.includes(level)),
+  );
+  return shared.length > 0 ? shared : undefined;
+}
+
 /** Cached or legacy malformed contracts fail closed. */
 export function normalizeCustomReasoningConfig(
   value: unknown,

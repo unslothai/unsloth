@@ -333,3 +333,22 @@ test("saving drops a default or inapplicable ladder so older rows keep their sha
     { enabled: false, style: "reasoning_effort", effort_levels: ["low", "max"] },
   );
 });
+
+test("detected effort levels are the rungs every reporting model shares", () => {
+  const detect = reasoning.detectedCustomEffortLevels;
+  const entry = (id: string, efforts: string[] | null) => ({
+    id,
+    reasoning: efforts === null ? null : { supported_efforts: efforts },
+  });
+  const listed = [
+    entry("a", ["none", "low", "medium", "high", "xhigh"]),
+    entry("b", ["high", "xhigh", "max", "turbo"]),
+    entry("plain", null),
+  ];
+  assert.deepEqual(detect(listed, ["b"]), ["high", "xhigh", "max"]);
+  assert.deepEqual(detect(listed, ["a", "b"]), ["high", "xhigh"]);
+  // Nothing ticked reports, so every reporting model counts.
+  assert.deepEqual(detect(listed, ["plain"]), ["high", "xhigh"]);
+  assert.equal(detect([entry("plain", null), entry("e", [])], []), undefined);
+  assert.equal(detect([entry("a", ["low"]), entry("b", ["max"])], []), undefined);
+});

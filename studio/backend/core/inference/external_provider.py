@@ -7693,6 +7693,22 @@ class ExternalProviderClient:
                 )
             return models
 
+    async def llama_server_chat_template(self, model_id: str) -> Optional[str]:
+        """llama-server's /props sits beside /v1; a router picks the model by ?model=, others ignore it."""
+        try:
+            response = await _client().get(
+                re.sub(r"/v1/?$", "", self.base_url) + "/props",
+                params = {"model": model_id},
+                headers = self._auth_headers(),
+                timeout = self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        template = data.get("chat_template") if isinstance(data, dict) else None
+        return template if isinstance(template, str) and template else None
+
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
             _append_provider_path(self.base_url, "/models"),

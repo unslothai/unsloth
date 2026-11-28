@@ -88,6 +88,7 @@ import {
   createProviderConfig,
   deleteProviderConfig,
   fetchCodexSubscriptionModels,
+  listProviderModelCapabilities,
   listProviderModels,
   listProviderRegistry,
   testProviderConnection,
@@ -100,6 +101,7 @@ import {
   customReasoningEffortLevels,
   customReasoningEffortScale,
   customReasoningStyleTakesEffort,
+  detectedCustomEffortLevels,
   normalizeCustomReasoningConfig,
 } from "./custom-reasoning";
 import { normalizeProviderBaseUrl } from "./provider-base-url";
@@ -437,6 +439,7 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [effortDetecting, setEffortDetecting] = useState(false);
   // Kept apart from modelsLoading: an automatic catalog load must not hold up saving.
   const [catalogAutoLoad, setCatalogAutoLoad] = useState<{ key: string } | null>(null);
   const codexCatalogRequestRef = useRef(0);
@@ -1014,6 +1017,62 @@ export function ChatProvidersSettings({
     return value;
   }
 
+  /** Asks the endpoint for its effort levels: OpenRouter-shaped /models entries or llama-server /props. */
+  async function detectEffortLevels({
+    silent = false,
+    modelIds = selectedModelIds,
+  }: { silent?: boolean; modelIds?: readonly string[] } = {}): Promise<void> {
+    if (!showCustomReasoning) return;
+    if (
+      editingProvider?.hasApiKey &&
+      !apiKey.trim() &&
+      baseUrlDraft.trim() !== editingProvider.baseUrl
+    ) {
+      if (!silent) toast.info("Save the new Base URL first, then detect its effort levels.");
+      return;
+    }
+    const request = formCheckRequestRef.current;
+    setEffortDetecting(true);
+    try {
+      const capabilities = await listProviderModelCapabilities({
+        providerType: LEGACY_CUSTOM_PROVIDER_TYPE,
+        providerId: editingProviderId,
+        apiKey: apiKey.trim(),
+        baseUrl: parseBaseUrlForProvider(
+          baseUrlDraft,
+          supportsRemoteModelCatalog(providerType),
+          providerType,
+        ),
+        apiType: "chat_completions",
+        extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
+      });
+      if (request !== formCheckRequestRef.current) return;
+      const levels = detectedCustomEffortLevels(capabilities, modelIds);
+      if (!levels) {
+        if (!silent) {
+          toast.info("This endpoint does not report its effort levels.", {
+            description: "Tick the levels it accepts.",
+          });
+        }
+        return;
+      }
+      setReasoningConfig((current) =>
+        current && customReasoningStyleTakesEffort(current.style)
+          ? { ...current, effort_levels: levels }
+          : current,
+      );
+      if (!silent) toast.success(`Effort levels detected: ${levels.join(", ")}`);
+    } catch (error) {
+      if (!silent) {
+        toast.error("Could not detect effort levels.", {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    } finally {
+      setEffortDetecting(false);
+    }
+  }
+
   async function loadModels({
     autoLoad,
     keepSelection = false,
@@ -1181,6 +1240,18 @@ export function ChatProvidersSettings({
           ]
             .filter(Boolean)
             .join(" · "),
+        });
+      }
+      if (
+        !silent &&
+        modelIds.length > 0 &&
+        reasoningConfig?.enabled &&
+        customReasoningStyleTakesEffort(reasoningConfig.style) &&
+        reasoningConfig.effort_levels === undefined
+      ) {
+        void detectEffortLevels({
+          silent: true,
+          modelIds: ticked.length > 0 ? ticked : selectedModelIds,
         });
       }
       if (editingProviderId) {
@@ -2789,11 +2860,22 @@ export function ChatProvidersSettings({
                         id="provider-reasoning-support"
                         checked={reasoningConfig?.enabled === true}
                         aria-describedby="provider-reasoning-support-help"
-                        onCheckedChange={(checked) => setReasoningConfig({
-                          ...reasoningConfig,
-                          enabled: checked === true,
-                          style: reasoningConfig?.style ?? "reasoning_effort",
-                        })}
+                        onCheckedChange={(checked) => {
+                          const style = reasoningConfig?.style ?? "reasoning_effort";
+                          setReasoningConfig({
+                            ...reasoningConfig,
+                            enabled: checked === true,
+                            style,
+                          });
+                          if (
+                            checked === true &&
+                            customReasoningStyleTakesEffort(style) &&
+                            reasoningConfig?.effort_levels === undefined &&
+                            availableModels.length > 0
+                          ) {
+                            void detectEffortLevels({ silent: true });
+                          }
+                        }}
                       />
                       Enable reasoning controls
                     </label>
@@ -2847,6 +2929,16 @@ export function ChatProvidersSettings({
                         <p id="provider-reasoning-levels-help" className="text-xs leading-snug text-muted-foreground">
                           Levels this endpoint accepts. The Thinking menu offers these plus Off.
                         </p>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="mt-1 w-fit"
+                          disabled={effortDetecting}
+                          onClick={() => void detectEffortLevels()}
+                        >
+                          {effortDetecting ? "Detecting..." : "Detect from endpoint"}
+                        </Button>
                       </div>
                       <div
                         role="group"
