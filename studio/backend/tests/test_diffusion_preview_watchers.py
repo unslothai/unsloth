@@ -129,7 +129,7 @@ def test_explicit_false_wins_over_any_watcher(monkeypatch):
 
 
 def _create_calls(path):
-    tree = ast.parse(path.read_text())
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Call)
@@ -153,7 +153,7 @@ def test_every_engine_previewer_is_gated_on_its_progress_poll(rel, kind):
 
 def test_headless_paths_still_never_build_a_previewer():
     """API, chat tool and MCP renders pass live_preview=False, untouched by the watcher gate."""
-    video_src = (BACKEND / "routes/video.py").read_text()
+    video_src = (BACKEND / "routes/video.py").read_text(encoding = "utf-8")
     assert "live_preview = False," in video_src
-    inference_src = (BACKEND / "routes/inference.py").read_text()
+    inference_src = (BACKEND / "routes/inference.py").read_text(encoding = "utf-8")
     assert inference_src.count("_live_preview_kwarg(backend.generate, False)") >= 3
