@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS } from "../src/features/chat/open-document-accept.ts";
+import { translateSpeechTag, translateTranscriptionTag } from "../src/features/translate/languages.ts";
 import {
   AUDIO_ACCEPT_EXTENSIONS,
   isAudioAttachmentFile,
@@ -73,7 +74,7 @@ test("every audio file the drop zone takes is transcribed, not sent to the docum
 test("an audio file is transcribed with the Voice settings model and fills the text box", () => {
   assert.match(
     audio,
-    /transcribeAudioBlob\(file, \{\s*model,\s*ggufVariant,\s*signal,\s*onSegments: timed/,
+    /transcribeAudioBlob\(file, \{\s*model,\s*language: isModelDictationLanguage\(model, language\) \? language : "",\s*ggufVariant,\s*signal,\s*onSegments: timed/,
   );
   assert.match(
     audio,
@@ -91,10 +92,16 @@ test("an audio file is transcribed with the Voice settings model and fills the t
   );
 });
 
+test("file transcription preserves Cantonese and supported regional tags", () => {
+  assert.equal(translateTranscriptionTag("yue"), "yue");
+  assert.equal(translateSpeechTag("yue"), "zh-HK");
+  assert.equal(translateTranscriptionTag("fr", ["fr-CA"]), "fr-CA");
+});
+
 test("only a video asks for segment timings, and timed segments load as SRT", () => {
   assert.match(
     page,
-    /const video = !isAudioAttachmentFile\(file\);\s*try \{\s*const text = await transcribeAudioFile\(file, controller\.signal, t, video\);/,
+    /const video = !isAudioAttachmentFile\(file\);\s*try \{\s*const language =\s*importPrefs\.from === AUTO_SOURCE\s*\? ""\s*:\s*translateTranscriptionTag\(importPrefs\.from\);\s*const text = await transcribeAudioFile\(file, controller\.signal, t, language, video\);/,
   );
   assert.match(audio, /timed = false,\n\): Promise<string \| null>/);
   assert.match(

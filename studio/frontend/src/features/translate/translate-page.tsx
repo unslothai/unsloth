@@ -145,6 +145,7 @@ import {
   translateLanguageLabel,
   translateLanguagesFor,
   translateSpeechTag,
+  translateTranscriptionTag,
   translatesLanguage,
 } from "./languages";
 import {
@@ -1495,11 +1496,15 @@ export function TranslatePage() {
     const controller = new AbortController();
     audioAbort.current = controller;
     setReadingFile(file.name);
-    const before = useTranslateStore.getState().source;
+    const { source: before, prefs: importPrefs } = useTranslateStore.getState();
     // A video's transcript becomes subtitles when the model times its segments.
     const video = !isAudioAttachmentFile(file);
     try {
-      const text = await transcribeAudioFile(file, controller.signal, t, video);
+      const language =
+        importPrefs.from === AUTO_SOURCE
+          ? ""
+          : translateTranscriptionTag(importPrefs.from);
+      const text = await transcribeAudioFile(file, controller.signal, t, language, video);
       if (text && useTranslateStore.getState().source === before) {
         loadText(text, video ? file.name : null);
       }
