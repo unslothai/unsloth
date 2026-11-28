@@ -1080,6 +1080,11 @@ def restore_fp8_lora_for_inference(model):
     owner.__dict__["_unsloth_fp8_lora_bases"] = ()
 
 
+def _frozen_base_lora_forward():
+    from ..kernels.fast_lora import frozen_base_lora_forward
+    return frozen_base_lora_forward
+
+
 def _int8_tower_skips(model):
     """Module name components the int8 base leaves in 16 bit: what NF4 keeps 16 bit (vision / audio towers,
     projectors, mamba mixers, per-architecture extras). The int8 base was only measured on text decoder layers.
@@ -1188,6 +1193,8 @@ def enable_fp8_lora(
         reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
         attach = kernels.attach_int8_lora_base if int8 else kernels.attach_fp8_lora_base
         state = attach(base, offload = offload and not reads_raw)
+        # unsloth_zoo's compiled PEFT forward (FastModel) runs this fused op instead of base_layer(x) + LoRA.
+        base.__dict__["_unsloth_fused_lora_forward"] = _frozen_base_lora_forward()
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)
