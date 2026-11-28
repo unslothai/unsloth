@@ -11466,10 +11466,14 @@ def _prepare_model_for_qat(
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
+    # torchao swaps only Linear / Embedding: packed 3-D MoE expert stacks get their own weight fake quant.
+    from .qat_expert_stacks import prepare_expert_stacks_for_qat
+
+    expert_stacks = prepare_expert_stacks_for_qat(model, torchao_config)
     from ._qat_weight_memo import install_qat_weight_memo
 
     install_qat_weight_memo(model)
-    _record_qat_engagement(model, torchao_config)
+    _record_qat_engagement(model, torchao_config, expert_stacks)
     from ._qat_round import round_frozen_qat_weights
 
     round_frozen_qat_weights(model)
@@ -11514,14 +11518,19 @@ def _qat_grouped_linear_guard(model, torchao_config):
         )
 
 
-def _record_qat_engagement(model, torchao_config):
-    """Store how many layers QAT fake-quantizes on the model (unsloth.precision.engaged); under
-    UNSLOTH_STRICT_ENGAGE=1 a scheme that wrapped nothing raises instead of training unquantized."""
+def _record_qat_engagement(
+    model,
+    torchao_config,
+    expert_stacks = 0,
+):
+    """Store how many layers (plus packed MoE expert stacks) QAT fake-quantizes on the model
+    (unsloth.precision.engaged); under UNSLOTH_STRICT_ENGAGE=1 a scheme that wrapped nothing raises instead of
+    training unquantized."""
     from ..precision import record, require
 
     scheme = getattr(torchao_config, "qat_scheme", None)
     name = "qat:" + (scheme if isinstance(scheme, str) else "custom")
-    count = sum(1 for m in model.modules() if "FakeQuantized" in type(m).__name__)
+    count = sum(1 for m in model.modules() if "FakeQuantized" in type(m).__name__) + expert_stacks
     record(model, name, count)
     require(name, count, "no Linear / Embedding layer matched the scheme's filters")
 
