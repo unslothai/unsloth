@@ -172,6 +172,10 @@ def _forward_fake_quant_linears():
     )
 
 
+def _pass_through(x):
+    return x
+
+
 @contextlib.contextmanager
 def qat_teacher(model):
     """Run `model` as its own QAD teacher: adapters off, every torchao fake quantizer off (weight, activation,
@@ -188,19 +192,27 @@ def qat_teacher(model):
     quantizers, linears = [], []
     for module in student.modules():
         if FakeQuantizerBase is not None and isinstance(module, FakeQuantizerBase):
-            quantizers.append((module, module.enabled))
+            # torchao before 0.16 has no `enabled` on Int4WeightFakeQuantizer: pass its input through instead.
+            honours = "enabled" in vars(module)
+            quantizers.append((module, getattr(module, "enabled", True), honours))
         elif forward_linears and isinstance(module, forward_linears):
             linears.append((module, getattr(module, _TEACHER_FLAG, False)))
     try:
-        for module, _ in quantizers:
+        for module, _, honours in quantizers:
             module.enabled = False
+            if not honours:
+                module.__dict__["forward"] = _pass_through
         for module, _ in linears:
             setattr(module, _TEACHER_FLAG, True)
         with _adapter_off(student):
             yield student
     finally:
-        for module, enabled in quantizers:
-            module.enabled = enabled
+        for module, enabled, honours in quantizers:
+            if honours:
+                module.enabled = enabled
+            else:
+                module.__dict__.pop("forward", None)
+                module.__dict__.pop("enabled", None)
         for module, flag in linears:
             setattr(module, _TEACHER_FLAG, flag)
 
