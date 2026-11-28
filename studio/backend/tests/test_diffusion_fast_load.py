@@ -5,7 +5,6 @@
 
 import json
 import threading
-from pathlib import Path
 
 import pytest
 
@@ -615,65 +614,3 @@ def test_fast_upload_stages_gguf_and_both_switches_keep_the_stock_path(monkeypat
     assert _staged() == 2 and rings.pop() == ["GGUFParameter", "Parameter"]
     assert _staged(**{fl.FAST_UPLOAD_GGUF_ENV: "0"}) == 1 and rings.pop() == ["Parameter"]
     assert _staged(**{fl.FAST_UPLOAD_ENV: "0"}) == 0 and not rings
-
-
-def test_load_prefetch_reads_a_gguf_denoiser_last_instead_of_the_dense_one(tmp_path, monkeypatch):
-    snap = _fake_snapshot(tmp_path)
-    denoiser = tmp_path / "flux-2-klein-4b-Q8_0.gguf"
-    denoiser.write_bytes(b"g")
-    seen = {}
-    monkeypatch.setattr(
-        fl, "start_prefetch", lambda paths, logger = None: seen.setdefault("paths", list(paths))
-    )
-    fl.start_load_prefetch(
-        object(),
-        str(snap),
-        denoiser_path = str(denoiser),
-        text_encoders_replaced = {"text_encoder_2"},
-    )
-    assert [Path(p).as_posix().split("/snap/")[-1] for p in seen.pop("paths")] == [
-        "text_encoder/model.safetensors",
-        "vae/diffusion_pytorch_model.safetensors",
-        denoiser.as_posix(),
-    ]
-    # a denoiser path that is not a file still skips the dense shards it replaces
-    fl.start_load_prefetch(object(), str(snap), denoiser_path = str(tmp_path / "missing.gguf"))
-    assert not any(
-        "transformer/" in Path(p).as_posix() or p.endswith(".gguf") for p in seen["paths"]
-    )
-
-
-def test_the_gguf_branch_starts_the_prefetch_and_stops_it_after_the_assembly():
-    import ast
-    from pathlib import Path
-
-    src = (Path(fl.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
-    tree = ast.parse(src)
-    calls = lambda node, name: [  # noqa: E731
-        n for n in ast.walk(node) if isinstance(n, ast.Call) and ast.unparse(n.func) == name
-    ]
-    gguf_branch = next(
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test).replace("'", '"') == 'kind == "gguf"'
-        and calls(node, "install_gguf_mmap")
-    )
-    (start,) = calls(gguf_branch, "start_load_prefetch")
-    kw = {k.arg: ast.unparse(k.value) for k in start.keywords}
-    assert kw["denoiser_path"] == "single_file_path"
-    assert "te_precast_components" in kw["text_encoders_replaced"]
-    # started before diffusers parses the GGUF
-    first = [ast.unparse(s) for s in gguf_branch.body]
-    assert any(
-        "start_load_prefetch" in s for s in first[: first.index("install_gguf_mmap(logger)")]
-    )
-    stops = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "_gguf_prefetched"
-        and calls(node, "self._stop_load_prefetch")
-    ]
-    assert len(stops) == 1
-    assert src.index("_gguf_prefetched = True") < src.index("if _gguf_prefetched:")

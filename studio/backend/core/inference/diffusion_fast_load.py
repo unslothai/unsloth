@@ -374,10 +374,8 @@ def start_load_prefetch(
     cache_dir: Optional[str] = None,
     logger: Any = None,
     variant: Optional[str] = None,
-    denoiser_path: Optional[str] = None,
 ) -> Optional[LoadPrefetch]:
-    """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises.
-    ``denoiser_path``: a single-file / GGUF denoiser, read last (at placement); the base's denoiser is skipped."""
+    """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises."""
     if not prefetch_enabled():
         return None
     try:
@@ -404,17 +402,12 @@ def start_load_prefetch(
                 if location and os.path.isfile(str(location)):
                     paths.append(str(location))
                     seeded = True
-        denoiser = (
-            str(denoiser_path) if denoiser_path and os.path.isfile(str(denoiser_path)) else None
-        )
         paths += pipeline_component_files(
             _snapshot_dir(base, base_local_dir, cache_dir),
-            skip_denoiser = seeded or denoiser_path is not None,
+            skip_denoiser = seeded,
             skip_components = text_encoders_replaced,
             variant = variant,
         )
-        if denoiser is not None:
-            paths.append(denoiser)
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint
         if logger is not None:

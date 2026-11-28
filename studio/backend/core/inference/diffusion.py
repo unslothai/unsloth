@@ -11234,7 +11234,6 @@ class DiffusionBackend:
                     ):
                         _refuse_pinned_precision()
 
-                    _gguf_prefetched = False
                     if pipe is None:
                         if kind == "pipeline":
                             if fam.name == IDEOGRAM4_FAMILY_NAME:
@@ -11927,19 +11926,6 @@ class DiffusionBackend:
                             # Before the prefix shim, which cannot wrap an unregistered class.
                             _register_unregistered_single_file_classes(logger)
                             if kind == "gguf":
-                                # Warm the companions, then the GGUF (read at placement), while the pipeline assembles.
-                                stop_prefetch(getattr(self, "_load_prefetch", None))
-                                self._load_prefetch = start_load_prefetch(
-                                    fam,
-                                    _base_local_dir or fetch_base,
-                                    denoiser_path = single_file_path,
-                                    text_encoders_replaced = te_precast_components(
-                                        fam, fetch_base, text_encoder_quant, target
-                                    ),
-                                    cache_dir = hub_cache_dir(),
-                                    logger = logger,
-                                )
-                                _gguf_prefetched = True
                                 # IQ1 / IQ2 / IQ3 tensors diffusers' table lacks would refuse the file
                                 install_lowbit_iq(logger)
                                 install_exact_dequant(logger)
@@ -12244,9 +12230,6 @@ class DiffusionBackend:
                                         _load_token,
                                     )
 
-                    if _gguf_prefetched:
-                        # Ends with the assembly, as the pipeline branch's prefetch does.
-                        self._stop_load_prefetch()
                     if native_streamed and pipe is not None:
                         pending_cache_write = self._save_pipeline_quant_to_cache(
                             pipe,
