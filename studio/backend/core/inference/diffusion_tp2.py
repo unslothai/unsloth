@@ -1480,9 +1480,16 @@ def engage_for_plan(
     tr = getattr(pipe, "transformer", None)
     primary = torch.device("cuda", int(sel.primary))
     reasons, devices = [], None
+    from .diffusion_multigpu import placement_refusal
+
     for ordinal in sel.secondaries:
         cand = [primary, torch.device("cuda", int(ordinal))]
-        why = refusal(tr, cand) or fit_refusal(tr, cand)
+        # a shard on a card below the primary (a mixed pair) must run the denoiser's weights' kernels there
+        why = (
+            placement_refusal(pipe, ("transformer",), int(sel.primary), int(ordinal))
+            or refusal(tr, cand)
+            or fit_refusal(tr, cand)
+        )
         if why is None:
             devices = cand
             break
