@@ -235,3 +235,71 @@ def test_a_vulkan_launch_ignores_a_gap_a_cuda_probe_left_behind(tmp_path, monkey
         intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
         targets.append(h.last(_spawn_cmd(backend, intent), "--fit-target"))
     assert targets[1] == targets[0]
+
+
+def _mixed_host(
+    tmp_path,
+    monkeypatch,
+    *,
+    order = "PCI_BUS_ID",
+):
+    """An N1X (id 0) beside a discrete card (id 1), the default memory slider."""
+    from . import _sidecar_fit_helpers as h
+
+    B = LlamaCppBackend
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
+    for k in ("CUDA_VISIBLE_DEVICES", "LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_RPC"):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setattr(llama_cpp, "_metal_capable_host", lambda: False)
+    monkeypatch.setattr(B, "_GPU_IDS_ARE_PCI_INDICES", True)
+    monkeypatch.setattr(B, "_smi_uuid_mask_order", staticmethod(lambda: None))
+    monkeypatch.setattr(B, "_visibility_mask_is_unmappable", staticmethod(lambda: False))
+    monkeypatch.setattr(B, "_SMI_MIG_INDICES", frozenset())
+    monkeypatch.setattr(B, "_host_torch_is_rocm", staticmethod(lambda: False))
+    monkeypatch.setattr(B, "_cuda_device_info", staticmethod(lambda: []))
+    # The iGPU makes this a shared-memory host, so the trim block that would seed a per-device map is skipped.
+    monkeypatch.setattr(
+        B, "_fit_trim_host_has_shared_memory_gpu", staticmethod(lambda *_a, **_k: True)
+    )
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia, "cuda_device_info_or_torch", lambda *_a, **_k: [], raising = False)
+    backend, gguf = h.cards(tmp_path, memory = ((0, 17_100, 74_732), (1, 30_000, 32_607)))
+    monkeypatch.setattr(
+        LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", {0: 53023}, raising = False
+    )
+    return backend, gguf
+
+
+def test_a_discrete_card_beside_the_n1x_keeps_its_own_margin(tmp_path, monkeypatch):
+    """llama.cpp broadcasts a single --fit-target, so the iGPU's gap goes in a per-device list."""
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    runs = []
+    for gap in (None, 53023):
+        backend, gguf = _mixed_host(tmp_path, monkeypatch)
+        if gap is None:
+            monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", {})
+        intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+        runs.append(h.margins(_spawn_cmd(backend, intent)))
+    without, with_gap = runs
+    if len(without) == 1:
+        without = without * 2  # one broadcast value: every card had the same margin
+    # The N1X keeps its gap free; the discrete card's margin does not move.
+    assert with_gap == [without[0] + 53023, without[1]]
+
+
+def test_no_gap_is_broadcast_when_the_device_order_is_unprovable(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    backend, gguf = _mixed_host(tmp_path, monkeypatch, order = "FASTEST_FIRST")
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+    targets = h.fit_targets(_spawn_cmd(backend, intent))
+    assert all(int(t) < 53023 for t in targets), targets

@@ -27448,17 +27448,37 @@ class LlamaCppBackend:
                         for _idx, _free in ([] if is_vulkan_backend else gpus)
                     }
                     if any(_commit_fit_by_idx.values()):
-                        _fit_target_delta_mib += max(_commit_fit_by_idx.values())
-                        if _fit_target_delta_by_idx:
+                        _commit_gap_mib = max(_commit_fit_by_idx.values())
+                        if len(set(_commit_fit_by_idx.values())) == 1:
+                            # Every device has the same gap, so the broadcast value is exact.
+                            _fit_target_delta_mib += _commit_gap_mib
+                            if _fit_target_delta_by_idx:
+                                _fit_target_delta_by_idx = {
+                                    _idx: _delta + _commit_gap_mib
+                                    for _idx, _delta in _fit_target_delta_by_idx.items()
+                                }
+                        elif _fit_target_delta_by_idx or self._fit_target_per_device_ok(
+                            is_vulkan_backend = is_vulkan_backend,
+                            extra_args = extra_args,
+                            env = os.environ,
+                        ):
+                            # Per device only: llama.cpp broadcasts a single value, which would
+                            # squeeze a discrete card by the iGPU's gap. The scalar stays without
+                            # it, so a spawn that cannot spell the list keeps no gap at all.
+                            _base_by_idx = dict(_fit_target_delta_by_idx or {})
                             _fit_target_delta_by_idx = {
-                                _idx: _delta + _commit_fit_by_idx.get(int(_idx), 0)
-                                for _idx, _delta in _fit_target_delta_by_idx.items()
+                                _idx: _base_by_idx.get(_idx, _fit_target_delta_mib)
+                                + _commit_fit_by_idx.get(_idx, 0)
+                                for _idx in {*_base_by_idx, *_commit_fit_by_idx}
                             }
-                        logger.info(
-                            "Windows integrated GPU: --fit keeps %d MiB more free, the driver's "
-                            "free reading above available commit.",
-                            max(_commit_fit_by_idx.values()),
-                        )
+                        else:
+                            _commit_gap_mib = 0
+                        if _commit_gap_mib:
+                            logger.info(
+                                "Windows integrated GPU: --fit keeps %d MiB more free on it, the "
+                                "driver's free reading above available commit.",
+                                _commit_gap_mib,
+                            )
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
