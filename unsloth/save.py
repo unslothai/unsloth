@@ -8884,7 +8884,11 @@ def _unsloth_save_torchao_with_given_config(
             model.save_pretrained(staging)
             tokenizer.save_pretrained(staging)
         else:
-            unsloth_generic_save(**arguments)
+            from .models._qat_lora_merged import nearest_merge_rounding
+
+            # Merged QAT-LoRA trained on the round-to-nearest merge: the staging copy must hold those weights.
+            with nearest_merge_rounding(model):
+                unsloth_generic_save(**arguments)
 
         if untied_lm_head is not None:
             _untie_merged_checkpoint(staging, *untied_lm_head)

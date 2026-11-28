@@ -3979,8 +3979,12 @@ def _legacy_block_compile(model):
 
 class FastLlamaModel:
     @staticmethod
-    def _prepare_for_qat(model, qat_scheme):
-        model = _prepare_model_for_qat(model, qat_scheme)
+    def _prepare_for_qat(
+        model,
+        qat_scheme,
+        lora_merged = None,
+    ):
+        model = _prepare_model_for_qat(model, qat_scheme, lora_merged = lora_merged)
         return model
 
     @staticmethod
@@ -5201,6 +5205,8 @@ class FastLlamaModel:
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
+        # Merged QAT-LoRA (models/_qat_lora_merged.py); None reads UNSLOTH_QAT_LORA_MERGED. Not a LoraConfig field.
+        qat_lora_merged = kwargs.pop("qat_lora_merged", None)
         # A pre-wrapped model returns early below, before patch_peft_model; reject before PEFT injects layers.
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
@@ -5248,6 +5254,7 @@ class FastLlamaModel:
                 offload_layers = offload_layers,
                 checkpoint_skip_layers = checkpoint_skip_layers,
                 prefetch_depth = prefetch_depth,
+                qat_lora_merged = qat_lora_merged,
                 **kwargs,
             )
         if _is_full_finetuning(model):
@@ -5747,7 +5754,9 @@ class FastLlamaModel:
 
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
-            model = FastLlamaModel._prepare_for_qat(model, qat_scheme)
+            model = FastLlamaModel._prepare_for_qat(model, qat_scheme, lora_merged = qat_lora_merged)
+        elif qat_lora_merged:
+            raise ValueError("Unsloth: qat_lora_merged = True needs a qat_scheme.")
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
