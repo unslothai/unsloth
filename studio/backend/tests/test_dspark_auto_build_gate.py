@@ -136,3 +136,87 @@ def test_explicit_dspark_still_emits_draft_dspark_on_a_pre_fix_cuda_build(monkey
         dspark_draft_path = str(sidecar),
     )
     assert "draft-dspark" in flags
+
+
+@pytest.mark.parametrize(
+    ("backends", "plugin"),
+    [
+        (set(), None),  # static build: no ggml libraries beside the binary
+        ({"base", "cpu", "sycl"}, None),
+        ({"base", "cpu"}, "/opt/ggml/libggml-vulkan.so"),  # GPU backend loaded as a plugin
+    ],
+    ids = ["static", "sycl", "backend_path_plugin"],
+)
+def test_builds_not_proven_cpu_only_are_gated(monkeypatch, backends, plugin):
+    if plugin:
+        monkeypatch.setenv("GGML_BACKEND_PATH", plugin)
+    else:
+        monkeypatch.delenv("GGML_BACKEND_PATH", raising = False)
+    won, calls = _gate(monkeypatch, backends = backends)
+    assert won is False
+    assert calls == ["/fake/llama-server"]
+    won, _ = _gate(monkeypatch, backends = backends, build = llama_cpp._DSPARK_AUTO_MIN_BUILD)
+    assert won is True
+
+
+def _hub_load_fetches(monkeypatch, allowed):
+    """A first Hub load in Auto, stopped at launch; records whether the DSpark sidecar is fetched."""
+    from test_llama_cpp_remote_non_chat_gguf_preflight import _chat_repo_load
+
+    fetched = []
+    backend = LlamaCppBackend()
+    with pytest.raises(RuntimeError, match = "stop here"):
+        _chat_repo_load(
+            monkeypatch,
+            backend,
+            [],
+            _dspark_auto_build_allowed = lambda _binary = None: allowed,
+            _download_dspark = lambda **_k: fetched.append("dspark"),
+        )
+    return fetched
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_auto_fetches_the_dspark_sidecar_only_past_the_build_gate(monkeypatch, allowed):
+    fetched = _hub_load_fetches(monkeypatch, allowed)
+    assert fetched == (["dspark"] if allowed else [])
+
+
+def test_the_training_guard_charges_a_dspark_sidecar_only_past_the_build_gate(tmp_path):
+    from unittest.mock import patch
+
+    from test_chat_load_during_training import _gguf_cfg, _load_inference_route
+
+    route = _load_inference_route()
+    target = tmp_path / "model.gguf"
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    target.write_bytes(b"t" * 2000)
+    sidecar.write_bytes(b"s" * 3000)
+    cfg = _gguf_cfg(
+        gguf_file = str(target),
+        gguf_dspark_file = str(sidecar),
+        gguf_hf_repo = None,
+        gguf_variant = None,
+    )
+
+    def _required(mode, allowed):
+        with (
+            patch.object(route, "_estimate_gguf_kv_gb", return_value = 0.0),
+            patch.object(route, "_remote_gguf_compute_reserve_gb", return_value = 0.0),
+            patch.object(
+                LlamaCppBackend,
+                "probe_server_capabilities",
+                classmethod(lambda cls, binary = None: {"supports_dspark": True}),
+            ),
+            patch.object(
+                LlamaCppBackend,
+                "_dspark_auto_build_allowed",
+                classmethod(lambda cls, binary = None: allowed),
+            ),
+        ):
+            return route._estimate_gguf_required_gb(cfg, speculative_type = mode)
+
+    assert _required("auto", True) == pytest.approx(5000 / 1024**3)
+    assert _required("auto", False) == pytest.approx(2000 / 1024**3)
+    # An explicit choice launches the sidecar whatever the build, so it stays charged.
+    assert _required("dspark", False) == pytest.approx(5000 / 1024**3)

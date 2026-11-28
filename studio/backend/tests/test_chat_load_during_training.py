@@ -1537,12 +1537,27 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
     def _dspark_capable(supported = True):
         """The sizing gate asks the binary whether it can run draft-dspark, so the
         probe must be stubbed or these assertions track the host's llama.cpp."""
+        from contextlib import ExitStack
+
         from core.inference.llama_cpp import LlamaCppBackend
-        return patch.object(
-            LlamaCppBackend,
-            "probe_server_capabilities",
-            classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
+
+        stack = ExitStack()
+        stack.enter_context(
+            patch.object(
+                LlamaCppBackend,
+                "probe_server_capabilities",
+                classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
+            )
         )
+        # A build past the DSpark Auto gate: these cases pin the sizing, not the build.
+        stack.enter_context(
+            patch.object(
+                LlamaCppBackend,
+                "_dspark_auto_build_allowed",
+                classmethod(lambda cls, binary = None: True),
+            )
+        )
+        return stack
 
     @staticmethod
     def _eagle3_capable(supported):
