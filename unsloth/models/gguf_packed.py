@@ -1798,9 +1798,14 @@ def write_gguf_dense_base(
 
 
 @contextlib.contextmanager
-def gguf_dense_base_for_merge(model, save_directory):
+def gguf_dense_base_for_merge(
+    model,
+    save_directory,
+    dtype = None,
+):
     """Yields a merge-base resolver pointing at a temporary dequantized copy of the base, or None when the model
-    is not a packed GGUF model. The copy sits beside `save_directory` and is removed afterwards."""
+    is not a packed GGUF model. The copy sits beside `save_directory` and is removed afterwards. `dtype`: the
+    copy's dtype (default the compute dtype); a float32 export decodes the blocks in float32."""
     if not is_gguf_packed_model(model):
         yield None
         return
@@ -1812,7 +1817,7 @@ def gguf_dense_base_for_merge(model, save_directory):
     directory = tempfile.mkdtemp(prefix = ".unsloth_gguf_dense_base_", dir = parent)
     try:
         print("Unsloth: dequantizing the packed GGUF base to 16-bit for the merge...")
-        write_gguf_dense_base(model, directory)
+        write_gguf_dense_base(model, directory, dtype = dtype)
 
         def resolver(
             model_name = None,

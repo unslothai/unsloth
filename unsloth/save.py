@@ -7987,7 +7987,14 @@ def unsloth_generic_save(
             _gguf_resolver = (
                 None
                 if in_place
-                else _merge_stack.enter_context(gguf_dense_base_for_merge(model, save_directory))
+                else _merge_stack.enter_context(
+                    gguf_dense_base_for_merge(
+                        model,
+                        save_directory,
+                        # As the unwrapped export: a float32 merge decodes the blocks in float32, not via bf16.
+                        dtype = torch.float32 if _requests_float32(dtype) else None,
+                    )
+                )
             )
             if _gguf_resolver is None:
                 _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)

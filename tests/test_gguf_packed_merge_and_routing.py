@@ -204,3 +204,58 @@ def test_zoo_linear_takes_a_bias_of_another_dtype_like_the_reference():
             torch.testing.assert_close(y, expected, atol = 2e-2, rtol = 2e-2)
     finally:
         gp._OPS.clear()
+
+
+@pytest.mark.parametrize("pre_merged", (False, True))
+def test_float32_merged_export_decodes_the_blocks_in_float32(tmp_path, monkeypatch, pre_merged):
+    # save_pretrained_merged(dtype = float32) of a bf16-loaded packed model: the dense base copy the merge reads must
+    # be decoded in float32 (as the unwrapped export does), not rounded through bf16 first.
+    peft = pytest.importorskip("peft")
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from unsloth.save import unsloth_generic_save
+
+    if not torch.cuda.is_available():
+        # The merge names the GPU to size its shards; a GPU-less runner that still reports a CUDA build has none.
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda *args, **kwargs: "")
+    config = LlamaConfig(
+        hidden_size = 64,
+        intermediate_size = 128,
+        num_hidden_layers = 1,
+        num_attention_heads = 4,
+        num_key_value_heads = 4,
+        vocab_size = 128,
+    )
+    torch.manual_seed(0)
+    model = LlamaForCausalLM(config).to(torch.bfloat16)
+    attn = model.model.layers[0].self_attn
+    attn.q_proj = _packed_linear(64, 64, 7, dtype = torch.bfloat16)
+    attn.k_proj = _packed_linear(64, 64, 8, dtype = torch.bfloat16)
+    model.config._name_or_path = str(tmp_path / "missing.gguf")
+    blocks = attn.q_proj.weight_packed, attn.q_proj.ggml_type
+    lora = peft.get_peft_model(model, peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj"]))
+    layer = lora.base_model.model.model.layers[0].self_attn.q_proj
+    with torch.no_grad():
+        layer.lora_A["default"].weight.normal_(0, 0.1)
+        layer.lora_B["default"].weight.normal_(0, 0.1)
+    delta = (layer.lora_B["default"].weight.float() @ layer.lora_A["default"].weight.float()) * 2.0
+    base = ref.dequantize_gguf(blocks[0], blocks[1], (64, 64), torch.float32)
+    if pre_merged:
+        lora.merge_adapter()
+    out = tmp_path / "out"
+    unsloth_generic_save(lora, None, str(out), save_method = "merged_16bit", dtype = torch.float32)
+    from safetensors.torch import load_file
+
+    saved = {}
+    for file in out.glob("*.safetensors"):
+        saved.update(load_file(str(file)))
+    q = saved["model.layers.0.self_attn.q_proj.weight"]
+    assert q.dtype == torch.float32
+    torch.testing.assert_close(q, base + delta, atol = 1e-6, rtol = 1e-6)
+    k = saved["model.layers.0.self_attn.k_proj.weight"]
+    assert torch.equal(
+        k,
+        ref.dequantize_gguf(
+            attn.k_proj.weight_packed, attn.k_proj.ggml_type, (64, 64), torch.float32
+        ),
+    )
