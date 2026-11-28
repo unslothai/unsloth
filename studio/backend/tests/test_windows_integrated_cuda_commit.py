@@ -44,6 +44,7 @@ def _host(
 ):
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", {}, raising = False)
+    monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FREE_MIB", {}, raising = False)
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_POOL_MIB", {})
     monkeypatch.setattr(
@@ -330,3 +331,49 @@ def test_a_full_slider_cannot_eat_into_the_commit_gap(tmp_path, monkeypatch, vra
     without, with_gap = margins
     # The fitter keeps the slider's own (floored) margin plus the whole gap free.
     assert with_gap == without + gap
+
+
+def test_the_launch_reads_cuda_free_after_an_nvidia_smi_probe(tmp_path, monkeypatch):
+    """Real order: nvidia-smi answers first, and its CUDA-free estimate (pool total less the
+    carve-out's used) sits under CUDA's own 112,150 MiB, so the launch reads CUDA free itself."""
+    from core.inference.llama_cpp import GgufLoadIntent
+    from utils.hardware import nvidia
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    _host(monkeypatch, platform = "win32", integrated = True, commit = N1X_COMMIT_IDLE)
+    LlamaCppBackend._widen_integrated_cuda_rows([(0, N1X_SMI_FREE_IDLE, N1X_SMI_TOTAL)])
+    gaps = dict(LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB)
+    commit_free = dict(getattr(LlamaCppBackend, "_WINDOWS_COMMIT_FREE_MIB", {}))
+    assert gaps[0] < N1X_CUDA_FREE_IDLE - N1X_COMMIT_IDLE  # the estimate errs small
+    # Back to this host's platform and GPU mask for the launch harness; keep what the probe recorded.
+    monkeypatch.undo()
+    monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", gaps)
+    monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FREE_MIB", commit_free, raising = False)
+    reads = []
+    monkeypatch.setattr(
+        nvidia,
+        "get_cuda_free_mib",
+        lambda: reads.append(1) or [N1X_CUDA_FREE_IDLE],
+        raising = False,
+    )
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 46_000, 46_000),))
+    intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+    target = h.last(_spawn_cmd(backend, intent), "--fit-target")
+    assert int(target) == int(llama_cpp._LLAMA_FIT_TARGET_DEFAULT_MIB) + (
+        N1X_CUDA_FREE_IDLE - N1X_COMMIT_IDLE
+    )
+    assert reads
+
+
+def test_an_unread_cuda_free_keeps_the_recorded_gap(monkeypatch):
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FREE_MIB", {0: N1X_COMMIT_IDLE})
+    monkeypatch.setattr(nvidia, "get_cuda_free_mib", lambda: None)
+    assert LlamaCppBackend._live_commit_fit_headroom_mib({0: 50922}) == {0: 50922}
+    # A live reading below the estimate never shrinks the gap.
+    monkeypatch.setattr(nvidia, "get_cuda_free_mib", lambda: [100_000])
+    assert LlamaCppBackend._live_commit_fit_headroom_mib({0: 50922}) == {0: 50922}

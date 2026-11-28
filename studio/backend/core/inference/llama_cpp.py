@@ -13771,6 +13771,8 @@ class LlamaCppBackend:
     # Per PHYSICAL id: how far the driver's free reading (what llama.cpp's --fit reads) sits above
     # the Windows commit a row was capped at. Set by the GPU probes, read when --fit-target is priced.
     _WINDOWS_COMMIT_FIT_HEADROOM_MIB: dict[int, int] = {}
+    # Commit available behind each gap above (single-device pools only), for the launch-time reading.
+    _WINDOWS_COMMIT_FREE_MIB: dict[int, int] = {}
 
     @staticmethod
     def _note_commit_fit_headroom(
@@ -13778,10 +13780,40 @@ class LlamaCppBackend:
     ) -> None:
         if commit is None:
             LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB.pop(idx, None)
+            LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB.pop(idx, None)
             return
+        if shared_count <= 1:
+            LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB[idx] = int(commit[0])
+        else:
+            LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB.pop(idx, None)
         LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB[idx] = max(
             0, int(driver_free_mib) - int(commit[0])
         ) // max(1, shared_count)
+
+    @staticmethod
+    def _live_commit_fit_headroom_mib(gaps: dict[int, int]) -> dict[int, int]:
+        """Raises each recorded gap to CUDA's own free reading less commit, read once at launch in a
+        driver-API child: the nvidia-smi estimate can sit under it, and a gap may only err large."""
+        if not any(gaps.get(i) and i in LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB for i in gaps):
+            return gaps
+        try:
+            from utils.hardware import nvidia
+            free = nvidia.get_cuda_free_mib()
+            physical_ids = LlamaCppBackend._resolve_visible_physical_ids()
+        except Exception:  # noqa: BLE001 - an unread figure keeps the recorded gap
+            return gaps
+        out = dict(gaps)
+        for ordinal, free_mib in enumerate(free or ()):
+            idx = (
+                physical_ids[ordinal]
+                if physical_ids is not None and ordinal < len(physical_ids)
+                else ordinal
+            )
+            commit_free = LlamaCppBackend._WINDOWS_COMMIT_FREE_MIB.get(idx)
+            if free_mib is None or commit_free is None or not out.get(idx):
+                continue
+            out[idx] = max(out[idx], int(free_mib) - commit_free)
+        return out
 
     @staticmethod
     def _integrated_cuda_unified_memory(gpu_indices = None) -> bool:
@@ -27447,6 +27479,9 @@ class LlamaCppBackend:
                         )
                         for _idx, _free in ([] if is_vulkan_backend else gpus)
                     }
+                    _commit_fit_by_idx = LlamaCppBackend._live_commit_fit_headroom_mib(
+                        _commit_fit_by_idx
+                    )
                     if any(_commit_fit_by_idx.values()):
                         _commit_gap_mib = max(_commit_fit_by_idx.values())
                         # Clamp the slider's margin at the floor first, then add the gap outside
