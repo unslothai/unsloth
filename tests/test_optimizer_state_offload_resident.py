@@ -395,3 +395,57 @@ def test_error_inside_a_segment_leaves_whole_state_on_host(monkeypatch):
     # The two ranges stepped before the error are written back; the rest is unchanged.
     moved = (optimizer.state[p]["exp_avg"] != before["exp_avg"]).view(-1)
     assert moved[: 2 * 262144].any() and not moved[2 * 262144 :].any()
+
+
+@needs_cuda
+def test_sequence_ending_inside_a_ranged_weight_still_matches(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", raising = False)
+    monkeypatch.delenv("UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT", raising = False)
+    monkeypatch.setenv("UNSLOTH_BF16_SR_FUSED", "1")
+
+    def run(cut):
+        monkeypatch.setenv("UNSLOTH_OFFLOAD_OPTIMIZER_STATE_SEGMENT_MB", "1")
+        module = _load(_PATH, "_unsloth_state_offload_segment_cut")
+        sr = _load(_SR_PATH, "_unsloth_sr_segment_cut")
+        generator = torch.Generator(device = "cuda").manual_seed(0)
+        params = [
+            torch.nn.Parameter(
+                (torch.randn(s, device = "cuda", generator = generator) * 0.05).to(torch.bfloat16)
+            )
+            for s in ((2048, 1024), (64,))
+        ]
+        optimizer = torch.optim.AdamW(params, lr = 1e-3, fused = True)
+        offloader = module.offload_optimizer_state(optimizer, chunk_bytes = 1 << 20)
+        assert sr.enable_bf16_stochastic_rounding(optimizer, verbose = False) == 2
+        calls = []
+        original = sr._fused_adamw_segment
+
+        def spy(*args, **kwargs):
+            calls.append(1)
+            result = original(*args, **kwargs)
+            if cut and len(calls) == 10 and offloader.sequence is not None:
+                # The sequence ends between two ranges of one weight (as an unexpected call ends it); the next
+                # ranges then step on the whole moments, restored the serial way.
+                offloader._sequence_end(offloader.sequence)
+            return result
+
+        monkeypatch.setattr(sr, "_fused_adamw_segment", spy)
+        for _ in range(3):
+            for p in params:
+                p.grad = (torch.randn(p.shape, device = "cuda", generator = generator) * 1e-3).to(
+                    torch.bfloat16
+                )
+            optimizer.step()
+        torch.cuda.synchronize()
+        return params, optimizer, len(calls)
+
+    p0, o0, n0 = run(False)
+    p1, o1, n1 = run(True)
+    assert n0 == n1 == 16  # 8 ranges on each of steps 2 and 3
+    for a, b in zip(p0, p1):
+        assert torch.equal(a, b)
+    for a, b in zip(_all_state(o0), _all_state(o1)):
+        assert torch.equal(a, b) if isinstance(a, torch.Tensor) else a == b
+    for state in o1.state.values():
+        for value in state.values():
+            assert value.device.type == "cpu"

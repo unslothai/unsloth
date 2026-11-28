@@ -1005,12 +1005,16 @@ def _fused_adamw_segment(optimizer, group, p, seed, segment):
     bc1 = 1 - beta1**t
     bc2 = 1 - beta2**t
     n = b - a
+    m, v = state["exp_avg"], state["exp_avg_sq"]
+    if m.numel() != n:
+        # The offload sequence ended early and restored the whole moments: step their range.
+        m, v = m.view(-1)[a:b], v.view(-1)[a:b]
     with torch.cuda.device(p.device):
         _adamw_kernel[_grid(n)](
             p.data.view(-1)[a:b],
             p.grad.view(-1)[a:b],
-            state["exp_avg"],
-            state["exp_avg_sq"],
+            m,
+            v,
             n,
             _seed_for(optimizer, p, seed, int(t)),
             a,

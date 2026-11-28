@@ -588,6 +588,7 @@ class _StateOffloader:
     def _pre_step(self, optimizer, args, kwargs):
         if self.inside:
             return
+        self.last_params = None
         self._decide_resident()
         # torch passes the step's own args to hooks, self included.
         has_self = bool(args) and args[0] is optimizer
