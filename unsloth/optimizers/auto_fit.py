@@ -364,6 +364,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._fsdp = False
         self._pg = None
         self._fsdp_last = set()  # id(sharded param) whose hook ends its FSDP2 group's batch
+        self._replicated = (
+            set()
+        )  # id(param) native FSDP2 keeps whole and averages at the end of backward
+        self._world = 1
         self._hooked = frozenset()
         self._armed = False
         self._done = set()
@@ -403,7 +407,13 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             handle.remove()
         self._handles = []
         self._where = None
-        self._fsdp, self._pg, self._fsdp_last = False, None, set()
+        self._fsdp, self._pg, self._fsdp_last, self._replicated, self._world = (
+            False,
+            None,
+            set(),
+            set(),
+            1,
+        )
         trainable = [p for g in self.param_groups for p in g["params"] if p.requires_grad]
         if any(_is_dtensor(p) for p in trainable):
             self._setup_fsdp(model, trainable)
@@ -441,13 +451,22 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             managed.update(ids)
             if ids:
                 self._fsdp_last.add(ids[-1])
-        if any(id(p) not in managed for p in trainable):
+        unmanaged = [p for p in trainable if id(p) not in managed]
+        if unmanaged and (any(_is_dtensor(p) for p in unmanaged) or not _is_native_fsdp2(model)):
             raise RuntimeError(
                 "Unsloth: stepping the optimizer inside backward under FSDP2 needs every trainable parameter in a "
                 "fully_shard group (an unsharded one is averaged over ranks only after backward)."
             )
+        # Native FSDP2 keeps a few small trainable weights whole (float32 norms) and averages their gradients over
+        # the ranks when their backward ends: they are stepped at optimizer.step(), after that average.
+        self._replicated = {id(p) for p in unmanaged}
         self._pg = pg
         self._fsdp = True
+        try:
+            import torch.distributed as dist
+            self._world = dist.get_world_size(pg) if dist.is_initialized() else 1
+        except Exception:
+            self._world = 1
 
     def _all_reduce(self, t):
         """Sum over the FSDP2 shard group, on the device (no host sync). Every rank calls it for the same batches."""
@@ -701,6 +720,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             return
         if self._sync_gate is not None and not self._sync_gate():
             return  # a micro-batch that does not step: the gradient accumulates until the synchronized one
+        if id(p) in self._replicated:
+            return  # averaged over ranks after its backward: stepped by flush()
         if self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done and not self._measuring:
@@ -789,6 +810,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             norms = torch.stack(_norms(grads))
             sq = norms * norms
             key = str(norms.device)
+            if self._replicated and any(id(p) in self._replicated for p in group):
+                # A whole weight's gradient is the same on every rank: each counts 1 / world of it in the sums below.
+                share = [1.0 / self._world if id(p) in self._replicated else 1.0 for p in group]
+                sq = sq * torch.tensor(share, dtype = sq.dtype, device = sq.device)
             parts = sq.unbind(0)
             for p, q in zip(group, parts):
                 self._cur_sq[id(p)] = (
@@ -934,7 +959,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                     continue
                 if id(p) in self._done:
                     raise self._second_gradient(p)  # the hook already stepped it: a second gradient
-                if self._reused(p):
+                if self._reused(p) or id(p) in self._replicated:
                     self.deferred_steps += 1
                 else:
                     self.late_steps += 1
@@ -1394,11 +1419,6 @@ def _distributed(trainer, model):
                 mesh = getattr(p, "device_mesh", None)
                 if mesh is not None and getattr(mesh, "ndim", 1) > 1:
                     return None, "FSDP2 over a multi-dimensional mesh (HSDP or tensor parallelism)"
-            elif native:
-                return (
-                    None,
-                    "native FSDP2 leaves some trainable parameters unsharded (averaged after backward)",
-                )
         if not _fsdp_calls_grad_hooks():
             return (
                 None,
