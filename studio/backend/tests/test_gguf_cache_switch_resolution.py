@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import os
+from pathlib import Path
 
 import pytest
 
@@ -119,6 +121,86 @@ def test_inactive_source_uses_scoped_online_status(
         direct.partial,
         direct.update_available,
     )
+
+
+@pytest.mark.parametrize(
+    "blob_state",
+    ["complete", "incomplete", "online-only", "copy", "copy-no-manifest", "copy-other-revision"],
+)
+def test_a_larger_remote_revision_offers_an_update_for_a_completed_old_blob(
+    cache_locations, monkeypatch, blob_state
+):
+    from hub.utils.download_manifest import ExpectedFile, write_manifest
+    from hub.utils.gguf import GgufVariantInfo
+    from hub.utils.gguf_plan import plan_from_expected_files
+
+    repo_id, expected = cache_locations
+    quant, repo, path = next(
+        (q, *source)
+        for q, source in expected.items()
+        if source[0].parent == hf_cache_settings.get_hf_cache_paths().hub_cache
+    )
+    path.unlink()
+    blob = repo / "blobs" / ("a" * 64 + (".incomplete" if blob_state == "incomplete" else ""))
+    if blob_state.startswith("copy"):
+        path.write_bytes(b"GGUF" + bytes(996))
+        if blob_state != "copy-no-manifest":
+            assert write_manifest(
+                "model",
+                repo_id,
+                quant,
+                [ExpectedFile(path.name, 1000, "a" * 64)],
+                hub_cache = repo.parent,
+                commit_hash = path.parent.name if blob_state == "copy" else "b" * 40,
+                metadata_derived = True,
+            )
+    else:
+        blob.parent.mkdir(exist_ok = True)
+        blob.write_bytes(b"GGUF" + bytes(996))
+        path.symlink_to(blob)
+
+    if blob_state == "online-only":
+        original_stat = os.stat
+        original_open = Path.open
+
+        class CloudPlaceholderStat:
+            st_file_attributes = 0x00400000  # FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
+
+            def __init__(self, stat_result):
+                self.stat_result = stat_result
+
+            def __getattr__(self, name):
+                return getattr(self.stat_result, name)
+
+        def stat_without_recall(file, *args, **kwargs):
+            result = original_stat(file, *args, **kwargs)
+            if (
+                isinstance(file, (Path, str))
+                and Path(file) in (blob, path)
+                and kwargs.get("follow_symlinks", True)
+            ):
+                return CloudPlaceholderStat(result)
+            return result
+
+        def reject_recall(file, *args, **kwargs):
+            assert file not in (blob, path), "listing opened a cloud-only model blob"
+            return original_open(file, *args, **kwargs)
+
+        monkeypatch.setattr(os, "stat", stat_without_recall)
+        monkeypatch.setattr(Path, "open", reject_recall)
+
+    variant = GgufVariantInfo(filename = path.name, quant = quant, size_bytes = 1200)
+    requirement = plan_from_expected_files(quant, [ExpectedFile(path.name, 1200, "b" * 64)])
+    monkeypatch.setattr(
+        gguf_variants, "list_gguf_variants", lambda *a, **kw: ([variant], False, [])
+    )
+    monkeypatch.setattr(gguf_variants, "_variant_requirement_cache_get", lambda *a: requirement)
+    inventory_scan.invalidate_hf_cache_scans()
+
+    response = asyncio.run(gguf_variants.get_gguf_variants_response(repo_id))
+    [online] = [item for item in response.variants if item.quant == quant]
+    assert online.downloaded is (blob_state in {"complete", "copy"})
+    assert online.update_available is (blob_state in {"complete", "copy"})
 
 
 def test_memory_estimate_uses_the_copy_selected_for_load(cache_locations):
