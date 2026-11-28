@@ -5339,6 +5339,13 @@ def _offload_step_threads():
             cores = len(os.sched_getaffinity(0))
         except (AttributeError, OSError):
             cores = os.cpu_count() or 1
+        try:
+            # Logical CPUs: count one per physical core when SMT is on.
+            with open("/sys/devices/system/cpu/smt/active") as f:
+                if f.read().strip() == "1":
+                    cores = max(1, cores // 2)
+        except OSError:
+            pass
     threads = min(_OFFLOAD_THREAD_CAP, cores if split else cores // local)
     return threads if threads > 1 else None
 
