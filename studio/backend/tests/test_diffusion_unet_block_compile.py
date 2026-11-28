@@ -110,6 +110,8 @@ def test_unet_compiles_its_repeated_blocks_not_the_whole_module(
     monkeypatch, _restore_dynamo_limits
 ):
     monkeypatch.delenv(targets.UNET_REGIONAL_ENV, raising = False)
+    # a card whose static GroupNorm reductions split (more than 32 SMs): the static compile
+    monkeypatch.setattr(ds, "unet_static_reductions_unsplit", lambda unet = None, logger = None: False)
     unet = _tiny_unet()
     pipe = SimpleNamespace(unet = unet)
     assert ds._compile_repeated_blocks(pipe, LOG) is True
@@ -128,6 +130,19 @@ def test_unet_compiles_its_repeated_blocks_not_the_whole_module(
     assert ds.compile_fallback_error(pipe) is None
     unet._unsloth_compile_guard.error = "InductorError: boom"
     assert ds.compile_fallback_error(pipe) == "InductorError: boom"
+
+
+def test_unet_blocks_compile_with_automatic_dynamic_shapes_on_a_small_card(
+    monkeypatch, _restore_dynamo_limits
+):
+    """At most 32 SMs: a static compile would leave the CFG GroupNorm reductions unsplit (RTX 4060 Laptop: 714 vs 562
+    ms eager), so the blocks compile with dynamic=None (570 ms)."""
+    monkeypatch.delenv(targets.UNET_REGIONAL_ENV, raising = False)
+    monkeypatch.setattr(ds, "unet_static_reductions_unsplit", lambda unet = None, logger = None: True)
+    unet = _tiny_unet()
+    assert ds._compile_repeated_blocks(SimpleNamespace(unet = unet), LOG) is True
+    assert unet._unsloth_regional_compile_kwargs == {"fullgraph": True, "dynamic": None}
+    assert {type(m).__name__ for m in _compiled_blocks(unet)} == set(targets.UNET_REGIONAL_BLOCKS)
 
 
 def test_unet_kill_switch_keeps_the_whole_module_compile(monkeypatch, _restore_dynamo_limits):
