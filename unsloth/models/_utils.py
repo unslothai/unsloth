@@ -4118,6 +4118,10 @@ def maybe_prefetch_hf_snapshot(
             else gguf_file
         )
         allow_patterns = [_gguf_path, *_ROOT_AUX_PREFETCH_PATTERNS]
+        # A llama.cpp split GGUF (name-00001-of-00003.gguf) is read whole: warm every sibling shard too.
+        _split = re.match(r"^(.*)-\d{5}-of-(\d{5})\.gguf$", _gguf_path)
+        if _split is not None:
+            allow_patterns.insert(1, f"{_split.group(1)}-*-of-{_split.group(2)}.gguf")
     elif tokenizer_only:
         # A distinct tokenizer repo: warm only tokenizer / config / vocab files, never its weights.
         allow_patterns = list(_ROOT_AUX_PREFETCH_PATTERNS)

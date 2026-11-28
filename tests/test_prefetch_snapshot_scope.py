@@ -816,6 +816,28 @@ def test_gguf_file_warm_keeps_gguf(capture):
     assert "model-Q8_0.gguf" not in kept
 
 
+@pytest.mark.parametrize("subfolder", [None, "Q4_K_M"])
+def test_split_gguf_file_warm_keeps_every_shard(capture, subfolder):
+    """A split GGUF (name-00001-of-00003.gguf) is read whole: the warm allow-lists every sibling shard of that
+    split, not other quants' shards."""
+    _, st = capture(
+        weights_at_root = True, gguf_file = "m-Q4_K_M-00001-of-00003.gguf", subfolder = subfolder
+    )
+    prefix = f"{subfolder}/" if subfolder else ""
+    sample = [
+        f"{prefix}m-Q4_K_M-00001-of-00003.gguf",
+        f"{prefix}m-Q4_K_M-00002-of-00003.gguf",
+        f"{prefix}m-Q4_K_M-00003-of-00003.gguf",
+        f"{prefix}m-Q8_0-00001-of-00004.gguf",
+        "m-Q4_K_M.gguf",
+        "config.json",
+    ]
+    kept = _filter(sample, st["allow_patterns"], st["ignore_patterns"])
+    assert set(sample[:3]) <= set(kept)
+    assert f"{prefix}m-Q8_0-00001-of-00004.gguf" not in kept and "m-Q4_K_M.gguf" not in kept
+    assert "config.json" in kept
+
+
 def test_adapter_only_prefers_safetensors_over_bin(capture, monkeypatch):
     """A mixed-format adapter repo warms only the safetensors PeftModel reads, not both formats."""
     _install_fake_model_info(
