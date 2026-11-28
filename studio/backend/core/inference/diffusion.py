@@ -958,6 +958,17 @@ _MIRRORED_UPSTREAMS: frozenset[str] = frozenset(
 )
 
 
+def _release_repo_id(repo_id: str) -> str:
+    """The upstream release ``repo_id`` holds the bytes of: a mirror via ``canonical_base``, and a retired full copy
+    (``unsloth/flux-3-image-klein[-base]``, the whole BFL repo) via ``retired_full_copy_base``, as
+    ``_same_base_model`` does. Without the second step a cold load of a retired copy found no size table, planned
+    "model size unknown; staying resident" and ran out of memory on a 12 GB card."""
+    from .diffusion_families import retired_full_copy_base
+
+    release = canonical_base(repo_id).strip()
+    return retired_full_copy_base(release) or release
+
+
 def _incomplete_release_cache_floor(
     fam: Any,
     repo_id: Optional[str],
@@ -971,7 +982,7 @@ def _incomplete_release_cache_floor(
     priced FLUX.1-dev at 9.3 GB, then OOM'd on a 22 GB card; fine-tunes keep their own bytes."""
     if complete or not repo_id:
         return None
-    release = canonical_base(repo_id).strip()
+    release = _release_repo_id(repo_id)
     key = release.lower()
     if not (
         key == str(getattr(fam, "base_repo", "") or "").strip().lower()
@@ -15663,7 +15674,7 @@ class DiffusionBackend:
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # Repos storing narrower weights (ideogram-4 fp8) undershoot bf16 ~2x; use the size table.
             is_narrow_base = (
-                bool(repo_id) and canonical_base(repo_id).lower() == fam.base_repo.strip().lower()
+                bool(repo_id) and _release_repo_id(repo_id).lower() == fam.base_repo.strip().lower()
             )
             if (
                 not is_narrow_base
