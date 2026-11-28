@@ -6010,7 +6010,12 @@ def _video_single_card_for_sidecar(
     if secondary is None or fallback is None:
         return plan
     why = f"the {fam.name} text encoder runs in a sidecar a split cannot move"
-    if _video_sidecar_multigpu(fam):
+    from .diffusion_multigpu import secondary_below_primary
+
+    if secondary_below_primary(int(secondary)):
+        # the worker picks its own kernels in another process, unchecked per card: never on a lower card of a mixed pair
+        why = f"the {fam.name} sidecar text encoder is not checked against cuda:{secondary}, a lower-capability card"
+    elif _video_sidecar_multigpu(fam):
         from .diffusion_multigpu import secondary_resident_limit_mib
         from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
@@ -13411,15 +13416,14 @@ class VideoBackend:
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:
-                    from .diffusion_multigpu import current_selection
+                    from .diffusion_multigpu import current_selection, same_model_secondaries
                     from .video_vae_multigpu import install as install_vae_multigpu
 
                     selection = current_selection()
-                    if (
-                        selection is not None
-                        and selection.secondaries
-                        and install_vae_multigpu(pipe, int(selection.secondaries[0]), logger = logger)
-                    ):
+                    # a tile split runs the same decode on both cards: same card model only (a mixed pair would split
+                    # it across different kernels and wait on the slower card, which nothing here prices)
+                    partners = same_model_secondaries(selection, logger = logger)
+                    if partners and install_vae_multigpu(pipe, int(partners[0]), logger = logger):
                         speed_optims += ("vae_multigpu_tiles",)
                 except Exception as exc:  # noqa: BLE001 - the decode stays on one card
                     logger.warning("video.vae_multigpu: not installed: %s", exc)
