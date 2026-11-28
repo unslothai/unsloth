@@ -200,9 +200,9 @@ def test_widened_load_still_matches_a_plain_dequantization(tmp_path):
 
 def test_loader_never_holds_a_materialised_scaffold(tmp_path, monkeypatch):
     # Meta-built: no parameter tensor of the built module is a real allocation before the checkpoint is assigned.
+    repo = _vendor_fp8_repo(tmp_path)  # skips when diffusers (or its Ideogram 4 model) is missing
     import diffusers
 
-    repo = _vendor_fp8_repo(tmp_path)
     seen = []
     original = diffusers.Ideogram4Transformer2DModel.from_config
 
