@@ -3,6 +3,7 @@ and nothing resets it, so every later model generated under bfloat16 autocast. E
 own answer, and the env var only decides for models Unsloth never loaded."""
 
 import ast
+import copy
 import inspect
 import os
 from contextlib import nullcontext
@@ -58,6 +59,7 @@ def _fast_generate(autocasts):
         # The FlashAttention fallback enters the autocast and returns _old_generate at once.
         "_uses_flash_attention_for_generation": lambda config: True,
         "_clear_generation_caches": lambda model: None,
+        "_set_generate_param": _load_function("_set_generate_param", {"copy": copy}),
         "_is_text_seq2seq_config": lambda config: False,
     }
     return _load_function("unsloth_base_fast_generate", namespace), fake_torch
