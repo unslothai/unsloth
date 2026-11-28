@@ -66,6 +66,38 @@ def test_chunked_ce_matches_dense_values_and_grads(small_chunks, project, softca
         torch.testing.assert_close(a, b, rtol = 1e-5, atol = 1e-6)
 
 
+@pytest.mark.parametrize("project", [True, False])
+@pytest.mark.parametrize("margin", [8.0, 14.0, 17.0, 20.0, 40.0])
+@pytest.mark.parametrize("peak", [0.0, 20.0, 120.0])
+def test_chunked_ce_confident_tokens_match_fp64(peak, margin, project):
+    # Once the label leads by ~16.6 nats, logsumexp - x and exp(x - logsumexp) - 1 round to 0 in fp32.
+    vocab, label = 300, 5
+    logits = torch.full((4, vocab), peak - margin)
+    logits[:, label] = peak
+    targets = torch.full((4,), label)
+    head = torch.eye(vocab) if project else None
+    grads, losses = [], []
+    for z in (logits, logits.double()):
+        z = z.clone().requires_grad_()
+        if z.dtype == torch.float64:
+            loss = F.cross_entropy(z, targets, reduction = "sum")
+        else:
+            loss, metric, _ = chunked_cross_entropy(z, targets, weight = head)
+            torch.testing.assert_close(metric, loss.detach())
+        loss.backward()
+        losses.append(loss.detach())
+        grads.append(z.grad)
+    # F.cross_entropy has the same cliff in fp64 from ~36 nats, so take the reference from softplus.
+    others = logits.double().index_fill(1, torch.tensor([label]), float("-inf")).logsumexp(1)
+    exact = F.softplus(others - logits[:, label].double(), threshold = 1000.0)
+    torch.testing.assert_close(losses[0].double(), exact.sum(), rtol = 1e-4, atol = 0.0)
+    torch.testing.assert_close(
+        grads[0][:, label].double(), torch.expm1(-exact), rtol = 1e-4, atol = 0.0
+    )
+    rest = torch.arange(vocab) != label
+    torch.testing.assert_close(grads[0][:, rest].double(), grads[1][:, rest], rtol = 1e-4, atol = 0.0)
+
+
 def test_chunked_ce_all_ignored_is_zero_with_grad():
     hidden = torch.randn(2, 5, 7, requires_grad = True)
     weighted, total, count = chunked_cross_entropy(hidden, torch.full((2, 5), -100))
@@ -102,7 +134,7 @@ def test_chunk_kernels_capture_without_graph_breaks():
     assert forward.graph_break_count == 0 and forward.graph_count == 1
     lse = torch.logsumexp(F.linear(h, w).float(), -1)
     backward = torch._dynamo.explain(diffusion_loss._chunk_backward)(
-        h, w, b, t, tw, lse, torch.tensor(1.0), 3.0
+        h, w, b, t, tw, lse, torch.zeros_like(lse), torch.tensor(1.0), 3.0
     )
     assert backward.graph_break_count == 0 and backward.graph_count == 1
 
