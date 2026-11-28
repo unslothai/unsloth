@@ -1373,14 +1373,9 @@ def test_the_race_labels_its_batched_calls_and_verdicts_with_its_canvas(monkeypa
     assert cg._BATCH_CANVAS.get() is None
 
 
-def test_hidream_requests_stay_serial_but_its_own_batch_size_still_batches():
+def test_hidream_requests_batch_across_users():
+    # G2a on L4 (int8, streamed, compiled): a target row is bit-identical whatever its neighbour is; the batched-vs-solo
+    # move equals a one-rounding nudge of a solo run, so it is batch-size numerics, not cross-row coupling.
     from core.inference import diffusion_families as families
-    from core.inference.diffusion import _generation_chunks
-
     for name in ("hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"):
-        record = families.detect_family("", name)
-        assert record.name == "hidream-i1"
-        assert adapters.batched_forward(record) is False
-        assert adapters.adapter_for(record) is None
-    jobs = [("a", 1), ("a", 2), ("b", 3)]
-    assert _generation_chunks(record, jobs, 4) == [jobs]
+        assert adapters.batched_forward(families.detect_family("", name)) is True
