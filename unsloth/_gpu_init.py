@@ -393,6 +393,7 @@ from .import_fixes import (
     fix_cudnn_sdpa_known_bad_shapes,
     fix_rocm_windows_fused_sdpa,
     fix_rocm_windows_wide_head_sdpa,
+    fix_rocm_sdpa_backward_layout,
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
@@ -497,6 +498,8 @@ fix_cudnn_sdpa_known_bad_shapes()
 fix_rocm_windows_fused_sdpa()
 # Windows ROCm only: fused SDPA miscomputes heads wider than 256 (Gemma 4 global layers) there.
 fix_rocm_windows_wide_head_sdpa()
+# ROCm only, probe-gated: fused SDPA backward strides differ from the fake kernel's (gfx942, #17548).
+fix_rocm_sdpa_backward_layout()
 fix_triton_compiled_kernel_missing_attrs()
 # Must run before unsloth_zoo's patch_torch_compile and the gpt-oss patches raise the dynamo
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
@@ -576,6 +579,7 @@ del fix_cudnn_sdpa_backward_grad_layout
 del fix_cudnn_sdpa_known_bad_shapes
 del fix_rocm_windows_fused_sdpa
 del fix_rocm_windows_wide_head_sdpa
+del fix_rocm_sdpa_backward_layout
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
