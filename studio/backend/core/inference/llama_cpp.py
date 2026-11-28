@@ -9004,6 +9004,46 @@ _DECISION_ONLY_GGUF_TYPES = frozenset(
 )
 
 
+def client_tool_calls_in(
+    tool_calls,
+    client_tool_names,
+    resolve_name = None,
+) -> list[dict]:
+    """A turn's calls to caller-run tools, as OpenAI tool_calls with string arguments."""
+    if not tool_calls or not client_tool_names:
+        return []
+    calls = []
+    for call in tool_calls:
+        function = call.get("function") or {}
+        name = str(function.get("name") or "").strip()
+        # Heal like the executor would, or a near spelling of a client tool runs server-side.
+        if resolve_name is not None:
+            name = resolve_name(name)
+        if name not in client_tool_names:
+            continue
+        arguments = function.get("arguments")
+        if arguments is None:
+            arguments = "{}"
+        elif not isinstance(arguments, str):
+            arguments = json.dumps(arguments, ensure_ascii = False)
+        call_id = call.get("id")
+        # The text parser numbers calls per turn (call_0, call_1, ...); those repeat across turns.
+        if (
+            not isinstance(call_id, str)
+            or not call_id.strip()
+            or re.fullmatch(r"call_\d+", call_id)
+        ):
+            call_id = f"call_{uuid.uuid4().hex[:24]}"
+        calls.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": arguments},
+            }
+        )
+    return calls
+
+
 class LlamaCppBackend:
     """Held across the teardown check and publish, never a health wait; class-level for __new__ doubles."""
 
@@ -40931,6 +40971,7 @@ class LlamaCppBackend:
         chat_template_kwargs: Optional[dict] = None,
         mcp_match_exchange: Optional[dict] = None,
         record_cut_thought: bool = True,
+        client_tool_names: Optional[frozenset] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -41348,6 +41389,7 @@ class LlamaCppBackend:
             session_id = session_id,
             thread_id = thread_id,
             loaded_mcp_tools = (mcp_match_exchange or {}).get("names", ()),
+            client_tool_names = client_tool_names or (),
         )
 
         def _tool_succeeded(tool_name: str) -> bool:
@@ -43193,25 +43235,6 @@ class LlamaCppBackend:
                     yield _build_metadata_event(_iter_usage, _iter_timings, _iter_finish_reason)
                     return
 
-                # ── Execute tool calls ──
-                # Progress made: reset stall counters and restore thinking.
-                _length_continuations = 0
-                _thought_before_retries = ""
-                _effective_enable_thinking = enable_thinking
-                _effective_reasoning_effort = reasoning_effort
-                # Captured before the reset: later records must merge into a resumed partial.
-                _merge_into_partial = continue_final_message
-                continue_final_message = _caller_continue_final_message
-                _accumulated_completion_tokens += (
-                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
-                ).get("completion_tokens", 0)
-                _it = _iter_timings or {}
-                _accumulated_predicted_ms += _it.get("predicted_ms", 0)
-                _accumulated_predicted_n += _it.get("predicted_n", 0)
-                # Refreshes the context meter from the usage llama-server already reported (no
-                # recount). Sent once the first tool is running, so it never delays a tool.
-                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
-
                 _over_cap: list = []
                 if tool_calls and not has_structured_tc and len(tool_calls) > 1:
                     _seen_keys: set = set()
@@ -43273,6 +43296,53 @@ class LlamaCppBackend:
                 if disable_parallel_tool_use and tool_calls and len(tool_calls) > 1:
                     tool_calls = tool_calls[:1]
                     _over_cap = []
+
+                # After dedupe and the parallel cut; batched Unsloth calls do not run.
+                _client_calls = client_tool_calls_in(
+                    tool_calls,
+                    (client_tool_names or frozenset()) & _enabled_tool_names,
+                    tool_controller.resolved_tool_name,
+                )
+                if _client_calls:
+                    for _pid, _pname in provisional_started_tool_calls.items():
+                        if _pid not in resolved_provisional_tool_call_ids:
+                            resolved_provisional_tool_call_ids.add(_pid)
+                            yield {
+                                "type": "tool_end",
+                                "tool_name": _pname,
+                                "tool_call_id": _pid,
+                                "result": "",
+                                "provenance": provisional_tool_provenance(_pname),
+                            }
+                    logger.info(
+                        f"Returning {len(_client_calls)} client tool call(s) to the caller: "
+                        + ", ".join(call["function"]["name"] for call in _client_calls)
+                    )
+                    yield {"type": "status", "text": ""}
+                    yield {
+                        "type": "client_tool_calls",
+                        "tool_calls": _client_calls,
+                        "content": content_text or "",
+                    }
+                    yield _build_metadata_event(_iter_usage, _iter_timings, "tool_calls")
+                    return
+
+                # Progress made: reset stall counters and restore thinking.
+                _length_continuations = 0
+                _thought_before_retries = ""
+                _effective_enable_thinking = enable_thinking
+                _effective_reasoning_effort = reasoning_effort
+                # Captured before the reset: later records must merge into a resumed partial.
+                _merge_into_partial = continue_final_message
+                continue_final_message = _caller_continue_final_message
+                _accumulated_completion_tokens += (
+                    _backfill_usage_from_timings(_iter_usage, _iter_timings) or {}
+                ).get("completion_tokens", 0)
+                _it = _iter_timings or {}
+                _accumulated_predicted_ms += _it.get("predicted_ms", 0)
+                _accumulated_predicted_n += _it.get("predicted_n", 0)
+                # Reuses llama-server's reported usage (no recount); sent after the first tool starts.
+                _pending_context_usage = _context_usage_event(_iter_usage, _iter_timings)
 
                 assistant_msg: dict = {"role": "assistant", "content": content_text}
                 if reasoning_accum.strip():

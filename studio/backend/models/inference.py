@@ -3136,7 +3136,10 @@ class ChatCompletionRequest(BaseModel):
         description = (
             "OpenAI function-tool definitions. When provided without `enable_tools=true`, "
             "Unsloth forwards the tools to the backend so the model returns structured "
-            "tool_calls for the client to execute (standard OpenAI function calling)."
+            "tool_calls for the client to execute (standard OpenAI function calling). "
+            "With `enable_tools=true` on a GGUF model they are offered beside Unsloth's "
+            "tools: Unsloth runs its own tools, and a call to one of these ends the turn as "
+            "tool_calls with finish_reason `tool_calls`."
         ),
     )
     tool_choice: Optional[Union[str, dict]] = Field(

@@ -1286,6 +1286,7 @@ class ToolLoopController:
         session_id: str | None = None,
         thread_id: str | None = None,
         loaded_mcp_tools: Collection[str] = (),
+        client_tool_names: Collection[str] = (),
     ) -> None:
         self._session_id = session_id
         self._thread_id = thread_id
@@ -1294,7 +1295,12 @@ class ToolLoopController:
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
-        self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        # Caller-run tools are offered, never a source of server behavior (MCP search, URL alias).
+        self._client_tool_names = frozenset(client_tool_names)
+        self._mcp_search = (
+            MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+            and MCP_TOOL_SEARCH_NAME not in self._client_tool_names
+        )
         if self._mcp_search:
             # Matched, searched or run MCP tools stay callable unlisted.
             self._allowed_tool_names.update(
@@ -1357,6 +1363,13 @@ class ToolLoopController:
             active.append(_copy_schema(tool))
         return active
 
+    def resolved_tool_name(self, name: str) -> str:
+        """The enabled tool a sampled name means after Auto-Heal, as prepare_call heals it."""
+        name = str(name or "").strip()
+        if self._auto_heal_tool_calls and name not in self._allowed_tool_names:
+            return _canonical_tool_name(name, self._allowed_tool_names) or name
+        return name
+
     def prepare_call(
         self,
         tool_call: Mapping[str, Any],
@@ -1375,7 +1388,9 @@ class ToolLoopController:
             if canonical is not None:
                 tool_name, name_healed = canonical, True
             elif _web_fetch_alias(
-                tool_name, function.get("arguments", {}), self._allowed_tool_names
+                tool_name,
+                function.get("arguments", {}),
+                self._allowed_tool_names - self._client_tool_names,
             ):
                 tool_name, name_healed = "web_search", True
         # Deferred schemas must not shift the cached prompt prefix.
