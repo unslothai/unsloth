@@ -48,9 +48,10 @@ EXPECTED = {
         16: ("both", _W8),
         24: ("model", _W8),
         32: ("model", _W8),
+        # Hosted INT8 where bf16 does not stay resident (the 57 GB bf16 pair).
         48: ("dit", _AO),
-        # Hosted INT8 even where bf16 stays resident; the 29 GB pair leaves room for the text encoder.
-        80: ("none", _AO),
+        # bf16 where it stays resident: INT8 failed the 0.05 video bar (see video_families), text encoder streamed.
+        80: ("dit", _BF),
     },
     "hv15-480p": {
         8: ("model", _W8),
@@ -124,6 +125,10 @@ def _spoof(
     monkeypatch.setattr(tq, "native_quant_host", lambda t: False)
     monkeypatch.setattr(tq, "native_offload_host", lambda t: True)
     monkeypatch.setattr(V, "stored_denoiser_precision", lambda *a, **k: None)
+    # A roomy host unless a test pins one: Auto reads host RAM before keeping the dense A14B pair (CI runners are small).
+    import core.inference.diffusion_small_host as small_host
+
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (1 << 30, 1 << 30))
     spy = types.SimpleNamespace(plans = [], quant = [], speed = [], seeded = [], seed_kw = [])
 
     import core.inference.video_denoiser_prequant as vdp
@@ -246,6 +251,47 @@ def test_auto_seeds_the_hosted_artifact_only_where_it_would_quantise(
     elif precision == _AO:
         assert spy.seeded == ["int8"] and not spy.quant
         assert status["transformer_quant"] == "int8"
+
+
+def test_explicit_int8_still_seeds_the_hosted_a14b_pair_where_bf16_fits(fake_runtime, monkeypatch):
+    """Auto keeps bf16 on an 80 GiB card, but an explicit INT8 pick still loads the hosted INT8 expert pair."""
+    spy = _spoof(monkeypatch, tier_gib = 80)
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"], transformer_quant = "int8")
+    assert status["transformer_quant"] == "int8"
+    assert spy.seeded == ["int8"] and not spy.quant
+
+
+@pytest.mark.parametrize(
+    "host_gib, precision", [(32, _AO), (64, _AO), (72, _AO), (83, _BF), (128, _BF)]
+)
+def test_a14b_auto_at_80_keeps_the_hosted_int8_pair_where_dense_bf16_misses_host_ram(
+    fake_runtime, monkeypatch, host_gib, precision
+):
+    """80 GiB card: Auto keeps the bf16 pair only where its dense load (57.2 + 11.4 + 0.5 GB bf16 plus the small-host
+    reserve) fits available host RAM; a smaller host keeps the hosted INT8 pair (14.7 GiB peak RSS measured on A100
+    against 133 GiB for bf16) instead of risking an OOM kill."""
+    import core.inference.diffusion_small_host as small_host
+
+    spy = _spoof(monkeypatch, tier_gib = 80)
+    monkeypatch.setattr(
+        small_host, "host_ram_mib", lambda: (host_gib * GIB, host_gib * GIB - 4 * GIB)
+    )
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert _precision_code(spy, status) == precision
+    if precision == _AO:
+        assert spy.seeded == ["int8"] and _tier_code(spy.plans[-1]) == "none"
+    else:
+        assert not spy.seeded and _tier_code(spy.plans[-1]) == "dit"
+
+
+def test_a14b_host_ram_check_opt_out_keeps_bf16(fake_runtime, monkeypatch):
+    import core.inference.diffusion_small_host as small_host
+
+    monkeypatch.setenv(small_host.HOST_RAM_CHECK_ENV, "0")
+    spy = _spoof(monkeypatch, tier_gib = 80)
+    monkeypatch.setattr(small_host, "host_ram_mib", lambda: (64 * GIB, 60 * GIB))
+    status = VideoBackend().load_pipeline(FAMILIES["wan2.2-t2v-a14b"])
+    assert _precision_code(spy, status) == _BF and not spy.seeded
 
 
 def _streaming_supported(monkeypatch):

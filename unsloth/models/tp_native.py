@@ -1479,6 +1479,13 @@ def _refuse_base(
     tp = 1,
 ):
     cls = type(base).__name__
+    if getattr(type(base), "_unsloth_gguf_packed_linear", False):
+        # First: UnslothGGUFLinear has no dense weight and carries the MXFP4 packed-linear flag too.
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support packed GGUF weights (gguf_packed = True, {path}). "
+            "Load the GGUF without gguf_packed (dequantized to 16-bit) for tensor parallel, or train the packed "
+            "model with DDP, UNSLOTH_FSDP2=1 or UNSLOTH_PP_SIZE."
+        )
     if weight is None:
         raise ValueError(f"Unsloth: '{path}' ({cls}) has no dense weight (GPTQ / AWQ?).")
     if getattr(base, "qweight", None) is not None or cls.startswith(("QuantLinear", "WQLinear")):
@@ -4612,6 +4619,30 @@ _UNSUPPORTED_LOAD_KWARGS = (
 )
 
 
+_TP_GGUF_HINT = (
+    "For UNSLOTH_TP_SIZE set UNSLOTH_TP_SHARDED_LOAD=0 (or load without tensor_parallel_sharded_loading): the GGUF "
+    "is then dequantized in full on every rank and sharded at get_peft_model. gguf_packed = True does not support "
+    "tensor parallel; use DDP, UNSLOTH_FSDP2=1 or UNSLOTH_PP_SIZE for it."
+)
+
+
+def _is_gguf_packed_load(kwargs):
+    return bool(getattr(kwargs.get("quantization_config"), "_unsloth_gguf_packed", False))
+
+
+def gguf_sharded_load_message(
+    label,
+    kwargs,
+    hint = None,
+):
+    """Why a sharded load refuses a gguf_file (dense or gguf_packed = True), and what to do instead."""
+    what = "a gguf_file with gguf_packed = True" if _is_gguf_packed_load(kwargs) else "a gguf_file"
+    return (
+        f"Unsloth: {label} sharded loading reads safetensors checkpoints only, so it cannot load {what} "
+        f"({kwargs.get('gguf_file')}): transformers reads a GGUF file whole. {hint or _TP_GGUF_HINT}"
+    )
+
+
 class HFDistributedKwargsError(ValueError):
     """A from_pretrained under one of Unsloth's sharders also asked transformers to distribute the model."""
 
@@ -6105,6 +6136,10 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
     if state.get("auto"):
         # Only a checkpoint too large for a whole load on this GPU loads sharded (the full load stays the
         # default); quantizing on load (other than the bitsandbytes 4-bit case above) keeps the full load.
+        if original_kwargs.get("gguf_file"):
+            # A GGUF is read whole by transformers (no slices): always the full load, never the refusal below,
+            # whatever safetensors sit beside it in the repo (same kwargs on every rank: no collective skipped).
+            return original(cls, name, *args, **original_kwargs)
         mesh = state["mesh"] if state["mesh"] is not None else _world_mesh()
         on_load = other or (
             quantized is None
@@ -6122,6 +6157,9 @@ def _from_pretrained_sharded(original, cls, name, args, kwargs, state):
         ):
             return original(cls, name, *args, **original_kwargs)
     config = kwargs.get("config")
+    if kwargs.get("gguf_file"):
+        # Before the loop: a gguf_packed load also carries a quantization_config, which must not be what is named.
+        raise ValueError(gguf_sharded_load_message(label, kwargs, state.get("gguf_hint")))
     for key in _UNSUPPORTED_LOAD_KWARGS:
         if quantized is not None and key in ("load_in_4bit", "quantization_config"):
             continue
