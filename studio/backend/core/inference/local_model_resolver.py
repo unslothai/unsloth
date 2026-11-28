@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -336,7 +337,7 @@ def _local_gguf_entry(
 
     # The lister every stored per-model setting is keyed by, so one file has one identity.
     from hub.utils.gguf import list_local_gguf_variants
-    from utils.models.model_config import detect_gguf_model
+    from utils.models.model_config import detect_gguf_model, split_set_is_loadable
 
     path = getattr(info, "path", None)
     if not isinstance(path, str):
@@ -402,7 +403,7 @@ def _local_gguf_entry(
                 variant
                 for variant in variants
                 if getattr(variant, "filename", None)
-                and _split_set_is_loadable(Path(load_dir) / variant.filename)
+                and split_set_is_loadable(Path(load_dir) / variant.filename)
             ]
             kept = {str(v.quant).lower() for v in variants if getattr(v, "quant", None)}
             withheld = tuple(
@@ -604,9 +605,9 @@ def _model_type_is_audio(model_type) -> bool:
 
 def _weights_are_servable(load_dir) -> bool:
     """On-disk shape only: safetensors weights, and no diffusers, bare LoRA or embedder markers."""
-    from routes.models import _local_pipeline_index
+    from hub.services.models.common import _is_diffusers_pipeline_dir
 
-    if _local_pipeline_index(load_dir) or not (load_dir / "config.json").is_file():
+    if _is_diffusers_pipeline_dir(load_dir) or not (load_dir / "config.json").is_file():
         return False
     if not _has_safetensors_weights(load_dir):
         return False
@@ -765,11 +766,18 @@ def _local_servable_entry(loader_id: str, info) -> Optional[_LocalGgufEntry]:
         ):
             return None
         return _LocalGgufEntry(loader_id, raw_id, (), is_gguf = False)
+    # A local row is partial only when none of its quants is whole; an HF repo still serves its complete ones.
+    if getattr(info, "partial", False) and getattr(info, "source", None) != "hf_cache":
+        # A torn safetensors set can sit beside a whole quant folder; a partial GGUF file is itself torn.
+        path = getattr(info, "path", None)
+        if not isinstance(path, str) or not os.path.isdir(path):
+            return None
+        return _local_gguf_entry(loader_id, info)
     return _local_gguf_entry(loader_id, info) or _local_weights_entry(loader_id, info)
 
 
 def local_servable_model(info) -> Optional[tuple[bool, tuple[str, ...]]]:
-    """Reads the files, not info.model_format: the HF-cache scanner leaves it unset for GGUF snapshots."""
+    """Reads the files, not info.model_format: an HF row the scanner cannot classify says "unknown"."""
     from pathlib import Path
 
     path = getattr(info, "path", None)
@@ -812,123 +820,49 @@ def local_load_dir(path: Optional[str]) -> Optional[str]:
         return path
 
 
+_STORE_SOURCES = ("hf_cache", "lmstudio", "omlx")
+
+
+def _is_symlink_alias(info) -> bool:
+    """A link at or above the row inside its scan folder; a scan folder reached through a link is no alias."""
+    from pathlib import Path
+
+    from hub.services.models.local_inventory import _is_link_component
+
+    path = Path(info.id)
+    root = getattr(info, "_scan_root", None)
+    below_root = [p for p in (path, *path.parents) if root is None or Path(root) in p.parents]
+    return any(_is_link_component(p) for p in below_root)
+
+
 @in_scan_memo
 def _build_index() -> dict[str, _LocalGgufEntry]:
-    """Scans the model picker's roots; Ollama manifests are read only, since load materializes the .gguf."""
+    """Indexes the rows /v1/models lists; Ollama manifests are read only, since load materializes the .gguf."""
     # Lazy import: routes.models imports core.inference.
     from pathlib import Path
-    from routes.models import (
-        _scan_models_dir,
-        _scan_hf_cache,
-        _scan_lmstudio_dir,
-        _scan_ollama_dir,
-        _resolve_hf_cache_dir,
-        _is_hidden_model,
-    )
-    from hub.utils.gguf import dedupe_custom_gguf_rows, suppress_grouped_gguf_file_rows
-    from hub.utils.inventory_scan import scan_folder_hf_caches
-    from utils.paths import legacy_hf_cache_dir, hf_default_cache_dir, lmstudio_model_dirs
-    from utils.hf_cache_settings import known_hf_hub_caches
+    from routes.models import collect_local_models
     from core.inference.model_ids import public_model_id
 
     index: dict[str, _LocalGgufEntry] = {}
-    seen_hf: set[str] = set()
-
+    folded: list = []
     try:
-        active_root = str(Path(_resolve_hf_cache_dir()).resolve())
-    except Exception:
-        active_root = None
-
-    def _scan_hf_once(directory) -> list:
-        if directory is None:
-            return []
-        try:
-            d = Path(directory)
-            if not d.is_dir():
-                return []
-            rp = str(d.resolve())
-            if rp in seen_hf:
-                return []
-            seen_hf.add(rp)
-            # Only the active cache loads by repo id, so an inactive repo must not be indexed under one; no format classification on this request path.
-            return _scan_hf_cache(directory, active_cache = rp == active_root, classify_format = False)
-        except Exception as exc:  # a missing/malformed root must skip, never crash the index
-            logger.debug("auto-switch: skipping HF cache dir %r: %s", directory, exc)
-            return []
-
-    # Guard each source separately so one bad root drops only that source, not the whole index.
-    found: list = []
-    try:
-        found += _scan_models_dir(Path("./models").resolve())
+        found = collect_local_models(
+            Path("./models").resolve(), materialize_ollama_links = False, folded = folded
+        )
     except Exception as exc:
-        logger.debug("auto-switch: ./models scan failed: %s", exc)
-    try:
-        for hf_dir in (
-            *known_hf_hub_caches(),
-            _resolve_hf_cache_dir(),
-            legacy_hf_cache_dir(),
-            hf_default_cache_dir(),
-        ):
-            found += _scan_hf_once(hf_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: HF cache scan failed: %s", exc)
-    try:
-        for lm_dir in lmstudio_model_dirs():
-            found += _scan_lmstudio_dir(lm_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: LM Studio scan failed: %s", exc)
-    try:
-        from utils.paths import omlx_model_dirs
-        for omlx_dir in omlx_model_dirs():
-            found += _scan_hf_once(omlx_dir) + _scan_lmstudio_dir(omlx_dir, source = "omlx")
-    except Exception as exc:
-        logger.debug("auto-switch: oMLX scan failed: %s", exc)
-    # Read-only, safe on request path; Hermes downloads the GGUF, then asks Unsloth by name.
-    try:
-        from hub.services.models.hermes import scan_hermes_dir
-        from utils.paths import hermes_model_dirs
-        for hermes_dir in hermes_model_dirs():
-            found += scan_hermes_dir(hermes_dir)
-    except Exception as exc:
-        logger.debug("auto-switch: Hermes scan failed: %s", exc)
-    try:
-        from utils.paths import ollama_model_dirs
-        for ollama_dir in ollama_model_dirs():
-            found += _scan_ollama_dir(ollama_dir, materialize_links = False)
-    except Exception as exc:
-        logger.debug("auto-switch: Ollama scan failed: %s", exc)
-    try:
-        from storage.studio_db import list_scan_folders
-
-        custom_found = []
-        for folder in list_scan_folders():
-            try:
-                fp = Path(folder["path"])
-                rows = (
-                    _scan_models_dir(fp, limit = 200)
-                    + [row for hub in scan_folder_hf_caches(fp) for row in _scan_hf_once(hub)]
-                    + _scan_lmstudio_dir(fp)
-                    + _scan_ollama_dir(fp, limit = 200, materialize_links = False)
-                )
-                if folder.get("recursive"):
-                    from routes.models import _scan_nested_compat_rows
-                    rows += _scan_nested_compat_rows(fp, rows, limit = 200)
-                custom_found += dedupe_custom_gguf_rows(rows)
-            except Exception as exc:
-                logger.debug("auto-switch: scan folder %r failed: %s", folder, exc)
-        found += suppress_grouped_gguf_file_rows(custom_found)
-    except Exception as exc:
-        logger.debug("auto-switch: scan folders enumerate failed: %s", exc)
-    for info in found:
+        logger.debug("auto-switch: local model scan failed: %s", exc)
+        return index
+    # Folded copies (other HF caches, LM Studio / oMLX roots, scan-folder symlink aliases) keep their own names,
+    # indexed after the listed rows so none takes a listed key; a scan folder's sub-build stays grouped.
+    copies = {
+        id(info): info
+        for info in folded
+        if _is_abs_path_id(info.id)
+        and (info.source in _STORE_SOURCES or (info.source == "custom" and _is_symlink_alias(info)))
+    }
+    for info in (*found, *copies.values()):
         raw_id = getattr(info, "id", None)
         if not raw_id:
-            continue
-        # Skip models hidden from pickers (validation probe, RAG embed); never an auto-switch target.
-        if _is_hidden_model(
-            raw_id,
-            getattr(info, "model_id", None),
-            getattr(info, "path", None),
-        ):
             continue
         # Advertise a client-facing alias, not an absolute filesystem path.
         loader_id = _advertised_loader_id(info)
@@ -945,13 +879,16 @@ def _build_index() -> dict[str, _LocalGgufEntry]:
         snapshot_name = (
             Path(raw_id).name if entry.repo_level_companions and _is_abs_path_id(raw_id) else None
         )
-        for key, alias_entry in (
+        aliases = (
             (raw_id, path_alias_entry),
             (snapshot_name, path_alias_entry),
             (getattr(info, "model_id", None), entry),
             (getattr(info, "display_name", None), entry),
             (public_model_id(raw_id), path_alias_entry),
-        ):
+        )
+        # Only the active cache loads by repo id, so another cache's copy answers to its snapshot path alone.
+        hf_copy = id(info) in copies and info.source == "hf_cache"
+        for key, alias_entry in aliases[:2] if hf_copy else aliases:
             if key and alias_entry is not None:
                 index.setdefault(key.strip().lower(), alias_entry)
         # Sibling revisions keep their own weights, so a pin survives a newer Hugging Face snapshot.
@@ -1291,18 +1228,6 @@ def _resolve_from_index(
         return _result(entry, entry.variants[0] if entry.variants else None)
     except Exception:
         return None
-
-
-def _split_set_is_loadable(path) -> bool:
-    """Whether the loader finds a complete shard set here or, like it, behind a shard-1 symlink."""
-    from utils.models.model_config import colocated_split_shards
-
-    if colocated_split_shards(path)[1]:
-        return True
-    try:
-        return path.is_symlink() and colocated_split_shards(path.resolve())[1]
-    except OSError:
-        return False
 
 
 def local_gguf_pinned_variant(requested: str, allow_scan: bool = True) -> Optional[str]:

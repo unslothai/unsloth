@@ -617,9 +617,12 @@ def test_the_real_index_answers_our_task_strings_and_not_the_friendly_ones(monke
         path = "/nonexistent/z-image",
         model_format = None,
         partial = False,
+        source = "models_dir",
     )
     routes_models = sys.modules.setdefault("routes.models", types.ModuleType("routes.models"))
-    monkeypatch.setattr(routes_models, "collect_local_models", lambda _root: [fake], raising = False)
+    monkeypatch.setattr(
+        routes_models, "collect_local_models", lambda _root, **_kw: [fake], raising = False
+    )
     monkeypatch.setattr(
         routes_models, "_local_model_task", lambda _info: "text-to-image", raising = False
     )

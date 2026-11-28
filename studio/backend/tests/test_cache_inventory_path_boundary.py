@@ -630,10 +630,10 @@ def test_a_scan_folder_is_listed_by_id_and_not_by_where_it_points(
 
 
 def test_the_compat_local_scan_is_not_disclosed(monkeypatch):
-    async def _scan(models_root, sources):
-        return []
+    async def _scan(models_dir = "./models", **_kwargs):
+        return LocalModelListResponse(models_dir = models_dir)
 
-    monkeypatch.setattr(models_routes, "_shared_compat_local_inventory_scan", _scan)
+    monkeypatch.setattr(local_inventory, "list_local_models_response", _scan)
     payload = (
         _models(via_api_key = True).get("/api/models/local", params = {"models_dir": "./models"}).json()
     )

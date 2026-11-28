@@ -7,7 +7,8 @@ import json
 
 import pytest
 
-from routes.models import _dir_has_downloaded_model, _scan_ollama_dir
+from hub.services.models.ollama import scan_ollama_dir
+from routes.models import _dir_has_downloaded_model
 
 NON_OBJECT_MANIFESTS = ("[]", '["a"]', '"just a string"', "3", "null", "true")
 
@@ -44,7 +45,7 @@ def test_scan_skips_non_object_manifest(tmp_path, payload):
     (_manifest_dir(tmp_path, "bad") / "latest").write_text(payload, encoding = "utf-8")
     (tmp_path / "blobs").mkdir(exist_ok = True)
 
-    assert _scan_ollama_dir(tmp_path) == []
+    assert scan_ollama_dir(tmp_path) == []
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_MANIFESTS)
@@ -52,7 +53,7 @@ def test_one_bad_manifest_does_not_hide_the_good_models(tmp_path, payload):
     _write_good_model(tmp_path)
     (_manifest_dir(tmp_path, "bad") / "latest").write_text(payload, encoding = "utf-8")
 
-    found = _scan_ollama_dir(tmp_path)
+    found = scan_ollama_dir(tmp_path)
 
     assert [m.model_id for m in found] == ["ollama/good:latest"]
 
@@ -73,7 +74,7 @@ def test_scan_survives_wrong_shapes_inside_the_manifest(tmp_path, manifest):
     (_manifest_dir(tmp_path, "bad") / "latest").write_text(json.dumps(manifest), encoding = "utf-8")
     (tmp_path / "blobs").mkdir(exist_ok = True)
 
-    assert _scan_ollama_dir(tmp_path) == []
+    assert scan_ollama_dir(tmp_path) == []
 
 
 @pytest.mark.parametrize("payload", NON_OBJECT_MANIFESTS)

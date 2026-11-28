@@ -215,6 +215,7 @@ class LocalModelInfo(BaseModel):
     """Discovered local model candidate."""
 
     _scan_root: Optional[str] = PrivateAttr(None)
+    _scan_model_id: Optional[str] = PrivateAttr(None)
 
     id: str = Field(..., description = "Identifier to use for loading/training")
     inventory_id: Optional[str] = Field(

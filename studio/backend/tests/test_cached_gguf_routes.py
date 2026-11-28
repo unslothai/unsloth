@@ -139,12 +139,31 @@ def test_iter_gguf_paths_matches_extension_case_insensitively(tmp_path):
     assert result == ["Q4_K_M.gguf", "Q8_0.GGUF"]
 
 
-def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
+def _empty_sources(tmp_path, **roots):
+    from hub.services.models import local_inventory
+    return local_inventory._LocalInventorySources(
+        **{
+            "hf_cache_dir": tmp_path / "active",
+            "legacy_hf": tmp_path / "legacy",
+            "hf_default": tmp_path / "default",
+            "lm_dirs": (),
+            "ollama_dirs": (),
+            "hermes_dirs": (),
+            "known_hf_caches": (),
+            **roots,
+        }
+    )
+
+
+def test_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
+    from hub.services.models import local_inventory
+
     repo = tmp_path / "models--Org--Model"
     snapshot = repo / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
 
-    [row] = models_route._scan_hf_cache(tmp_path, active_cache = False)
+    [row] = local_inventory._scan_hf_cache(tmp_path, active_cache = False)
 
     assert row.model_id == "Org/Model"
     assert row.id == str(snapshot.resolve())
@@ -157,15 +176,13 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     active.mkdir()
     snapshot = previous / "models--Org--Previous" / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
-
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
+    (snapshot / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
-    rows = models_route.collect_local_models(tmp_path / "models")
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        sources = _empty_sources(tmp_path, known_hf_caches = (active, previous)),
+    )
 
     previous_row = next(row for row in rows if row.model_id == "Org/Previous")
     assert previous_row.id == str(snapshot.resolve())
@@ -191,15 +208,14 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
         return real_build(repositories, **kwargs)
 
     monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
-    rows = models_route.collect_local_models(tmp_path / "models")
-    [row] = [row for row in rows if row.model_id == "Org/Model"]
+    rows = models_route.collect_local_models(
+        tmp_path / "models",
+        sources = _empty_sources(tmp_path, known_hf_caches = (active, previous)),
+    )
+    # The torn active copy stays listed as partial; the complete previous copy is the one to load.
+    [row] = [row for row in rows if row.model_id == "Org/Model" and not row.partial]
     assert row.id == str(snapshot.resolve())
     assert row.partial is False
     assert row.active_cache is False
@@ -208,183 +224,6 @@ def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_pa
         ("model", "Org/Model", active),
         ("model", "Org/Model", previous),
     }
-
-
-def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
-    # Contract: total and stable on hostile input; the exact string is platform-dependent.
-    for hostile in ("\0", "\ud800"):
-        identity = models_route._compat_inventory_path_identity(hostile)
-        assert identity == models_route._compat_inventory_path_identity(hostile)
-        assert identity.endswith(hostile)
-    sources = models_route._CompatLocalInventorySources(
-        tmp_path / "active",
-        tmp_path / "legacy",
-        tmp_path / "default",
-        (tmp_path / "lm",),
-        (tmp_path / "known",),
-    )
-    folders = [[{"id": 1, "path": "/custom", "created_at": "now"}]]
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders[0])
-    started, release, workers = [asyncio.Event(), asyncio.Event()], asyncio.Event(), []
-
-    async def fake_to_thread(function, *args, **kwargs):
-        if function is models_route.collect_local_models:
-            workers.append((args, kwargs))
-            started[len(workers) - 1].set()
-            await release.wait()
-            return []
-        return function(*args, **kwargs)
-
-    monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
-
-    async def run_requests():
-        request = lambda root = tmp_path: models_route._shared_compat_local_inventory_scan(
-            root, sources
-        )
-        first = asyncio.create_task(request(tmp_path))
-        await asyncio.wait_for(started[0].wait(), 1)
-        second = asyncio.create_task(request(tmp_path / "alias" / ".."))
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert len(workers) == 1
-        key = next(iter(models_route._compat_local_inventory_flights))[1]
-        assert sources in key and isinstance(key[-1], int)
-        first.cancel()
-        second.cancel()
-        await asyncio.gather(first, second, return_exceptions = True)
-        second = asyncio.create_task(request())
-        await asyncio.sleep(0)
-        folders[0] = [{"id": 2, "path": "/changed", "created_at": "later"}]
-        changed = asyncio.create_task(request())
-        await asyncio.wait_for(started[1].wait(), 1)
-        assert [worker[1]["custom_folders"] for worker in workers] == [
-            [{"id": 1, "path": "/custom", "created_at": "now"}],
-            folders[0],
-        ]
-        release.set()
-        return await asyncio.gather(second, changed)
-
-    assert (
-        asyncio.run(run_requests()) == [[], []] and not models_route._compat_local_inventory_flights
-    )
-
-
-def _compat_inventory_row(tmp_path, name = "model"):
-    return models_route.LocalModelInfo(
-        id = name,
-        display_name = "Model",
-        path = str(tmp_path / f"{name}.gguf"),
-        source = "models_dir",
-        model_format = "gguf",
-    )
-
-
-def _compat_inventory_sources(tmp_path):
-    return models_route._CompatLocalInventorySources(
-        tmp_path,
-        tmp_path / "legacy",
-        tmp_path / "default",
-        (),
-        (),
-    )
-
-
-def test_compat_local_inventory_classifies_inside_the_shared_scan(monkeypatch, tmp_path):
-    """Classify inside the shared scan so overlapping callers reuse one result, not repeat GGUF reads."""
-    from hub.utils import inventory_scan as hf_cache_scan
-
-    classifier_threads: list[int] = []
-    shared: list[list] = []
-    real_shared_scan = hf_cache_scan.shared_scan
-
-    async def recording_shared_scan(flights, key, factory):
-        models = await real_shared_scan(flights, key, factory)
-        shared.append(models)
-        return models
-
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
-    monkeypatch.setattr(
-        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
-    )
-    monkeypatch.setattr(
-        models_route, "collect_local_models", lambda *_a, **_kw: [_compat_inventory_row(tmp_path)]
-    )
-    monkeypatch.setattr(
-        models_route,
-        "_local_model_task",
-        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
-    )
-    monkeypatch.setattr(hf_cache_scan, "shared_scan", recording_shared_scan)
-
-    async def run():
-        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
-
-    loop_thread, listed = asyncio.run(run())
-    assert [row.task for row in listed.models] == ["text-generation"]
-    assert [[row.task for row in models] for models in shared] == [["text-generation"]]
-    assert classifier_threads and loop_thread not in classifier_threads
-
-
-def test_compat_local_inventory_rescans_when_the_cache_changes_during_classification(
-    monkeypatch, tmp_path
-):
-    """A deletion landing during the classification hop must not be answered with old rows."""
-    from hub.utils import inventory_scan as hf_cache_scan
-
-    epoch = [0]
-    scans: list[int] = []
-
-    def collect(*_args, **_kwargs):
-        scans.append(epoch[0])
-        return [_compat_inventory_row(tmp_path, f"scan{len(scans)}")]
-
-    def classify(_model):
-        if len(scans) == 1:
-            epoch[0] += 1
-        return "text-generation"
-
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
-    monkeypatch.setattr(
-        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
-    )
-    monkeypatch.setattr(models_route, "collect_local_models", collect)
-    monkeypatch.setattr(models_route, "_local_model_task", classify)
-    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
-
-    listed = asyncio.run(models_route.list_local_models(str(tmp_path), "subject"))
-    assert scans == [0, 1], scans
-    assert [row.id for row in listed.models] == ["scan2"]
-
-
-def test_compat_local_inventory_classifies_a_superseded_result(monkeypatch, tmp_path):
-    """The give-up path serves the freshest scan it has, classified like any other."""
-    from hub.utils import inventory_scan as hf_cache_scan
-
-    epoch = [0]
-    classifier_threads: list[int] = []
-
-    def collect(*_args, **_kwargs):
-        epoch[0] += 1
-        return [_compat_inventory_row(tmp_path)]
-
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
-    monkeypatch.setattr(
-        models_route, "_compat_local_inventory_sources", lambda: _compat_inventory_sources(tmp_path)
-    )
-    monkeypatch.setattr(models_route, "collect_local_models", collect)
-    monkeypatch.setattr(
-        models_route,
-        "_local_model_task",
-        lambda _model: classifier_threads.append(threading.get_ident()) or "text-generation",
-    )
-    monkeypatch.setattr(hf_cache_scan, "hf_cache_scans_epoch", lambda: epoch[0])
-
-    async def run():
-        return threading.get_ident(), await models_route.list_local_models(str(tmp_path), "subject")
-
-    loop_thread, listed = asyncio.run(run())
-    assert [row.task for row in listed.models] == ["text-generation"]
-    assert classifier_threads and loop_thread not in classifier_threads
 
 
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
@@ -426,14 +265,9 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
         "storage.studio_db.list_scan_folders",
         lambda: pytest.fail("captured custom folders were reloaded"),
     )
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
 
     rows = models_route.collect_local_models(
-        tmp_path / "models", custom_folders = [{"path": str(root)}]
+        tmp_path / "models", custom_folders = [{"path": str(root)}], sources = _empty_sources(tmp_path)
     )
     paths = {row.path for row in rows}
 

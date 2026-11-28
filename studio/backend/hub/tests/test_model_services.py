@@ -1574,7 +1574,7 @@ def test_local_inventory_scan_stops_retrying_under_constant_invalidation(monkeyp
 
     epoch, scans = [0], []
 
-    async def fake_scan(models_dir, custom_folders, sources):
+    async def fake_scan(models_dir, custom_folders, sources, *_args):
         scans.append(1)
         epoch[0] += 1
         return SimpleNamespace(models = [], model_copy = lambda update = None: SimpleNamespace(models = []))
@@ -1603,7 +1603,7 @@ def test_local_inventory_filters_and_dedupes_off_event_loop(monkeypatch):
     worker_threads = []
     original_dedupe = local_inventory._dedupe_local_models
 
-    async def collect(*_args, **_kwargs):
+    def collect(*_args, **_kwargs):
         return []
 
     def record_dedupe(rows):
@@ -1726,9 +1726,9 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
     for name in ("_scan_hf_cache", "_scan_custom_folder"):
         monkeypatch.setattr(local_inventory, name, record_state)
 
-    asyncio.run(
-        local_inventory._collect_models_from_default_sources(
-            tmp_path / "models",
+    local_inventory._collect_models_from_default_sources(
+        tmp_path / "models",
+        local_inventory._LocalInventorySources(
             active,
             tmp_path / "missing-legacy",
             tmp_path / "missing-default",
@@ -1736,8 +1736,8 @@ def test_local_inventory_indexes_registered_hf_state_once(monkeypatch, tmp_path)
             (),
             (),
             (),
-            [{"path": str(custom)}],
-        )
+        ),
+        [{"path": str(custom)}],
     )
     assert builds == [(("model", "Org/Active", active), ("model", "Org/Custom", custom))]
     assert propagated == [indexed, indexed]
@@ -1754,9 +1754,9 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
     monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
     monkeypatch.setattr(local_inventory, "record_scan_failure", lambda *_a, **_k: None)
 
-    rows = asyncio.run(
-        local_inventory._collect_models_from_default_sources(
-            tmp_path / "models",
+    rows = local_inventory._collect_models_from_default_sources(
+        tmp_path / "models",
+        local_inventory._LocalInventorySources(
             tmp_path / "hf",
             tmp_path / "legacy",
             tmp_path / "default",
@@ -1764,8 +1764,8 @@ def test_local_inventory_lists_a_hermes_dir_registered_as_a_scan_folder_once(mon
             (),
             (hermes,),
             (),
-            [{"path": str(hermes)}],
-        )
+        ),
+        [{"path": str(hermes)}],
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
@@ -1792,9 +1792,9 @@ def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, regis
     _hf_home_with_gguf(tmp_path / "hf_home")
     monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
 
-    rows = asyncio.run(
-        local_inventory._collect_models_from_default_sources(
-            tmp_path / "models",
+    rows = local_inventory._collect_models_from_default_sources(
+        tmp_path / "models",
+        local_inventory._LocalInventorySources(
             tmp_path / "hf",
             tmp_path / "legacy",
             tmp_path / "default",
@@ -1802,8 +1802,8 @@ def test_local_inventory_lists_a_registered_hf_home(monkeypatch, tmp_path, regis
             (),
             (),
             (),
-            [{"path": str(tmp_path / path)} for path in registered],
-        )
+        ),
+        [{"path": str(tmp_path / path)} for path in registered],
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
@@ -1826,16 +1826,18 @@ def test_local_inventory_checks_for_hf_home_hub_off_the_event_loop(monkeypatch, 
 
     monkeypatch.setattr(local_inventory.hf_cache_scan, "scan_folder_hf_caches", _spy)
     asyncio.run(
-        local_inventory._collect_models_from_default_sources(
-            tmp_path / "models",
-            tmp_path / "hf",
-            tmp_path / "legacy",
-            tmp_path / "default",
-            (),
-            (),
-            (),
-            (),
+        local_inventory._scan_local_models_response(
+            str(tmp_path / "hf"),
             [{"path": str(tmp_path / "hf_home")}],
+            local_inventory._LocalInventorySources(
+                tmp_path / "hf",
+                tmp_path / "legacy",
+                tmp_path / "default",
+                (),
+                (),
+                (),
+                (),
+            ),
         )
     )
 

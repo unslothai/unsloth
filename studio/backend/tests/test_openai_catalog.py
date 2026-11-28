@@ -37,6 +37,20 @@ def _no_host_default_hf_cache(monkeypatch, tmp_path):
         "omlx_model_dirs",
     ):
         monkeypatch.setattr(utils.paths, name, lambda: [])
+    # The local scan reads its roots through the Model Hub inventory, not utils.paths.
+    from hub.services.models import local_inventory
+
+    empty = tmp_path / "empty"
+    sources = local_inventory._LocalInventorySources(
+        hf_cache_dir = empty / "hub",
+        legacy_hf = empty / "legacy",
+        hf_default = tmp_path / "default_hub",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (),
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
     monkeypatch.chdir(tmp_path)
     # Module state an earlier test may leave: its media picks and a resident image or video engine.
     monkeypatch.setattr(inf, "_MEDIA_PICK_CACHE", {"at": None, "picks": {}})

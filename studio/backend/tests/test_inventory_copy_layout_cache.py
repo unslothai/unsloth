@@ -23,7 +23,6 @@ if "structlog" not in sys.modules:
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     )
 
-import routes.models as models_route
 from hub.services.models import local_inventory
 
 REPO = "unsloth/Tiny-GGUF"
@@ -89,13 +88,6 @@ def test_copy_layout_gguf_is_listed_as_a_loadable_gguf_row(tmp_path):
 def test_copy_layout_subdirectory_weights_are_discovered(tmp_path):
     _copy_layout(tmp_path, files = ("UD-Q4_K_XL/Tiny-UD-Q4_K_XL-00001-of-00002.gguf",))
     assert _discovered_ids(tmp_path) == [REPO]
-
-
-def test_both_inventories_agree_on_a_copy_layout_repo(tmp_path):
-    _copy_layout(tmp_path)
-    hub_page = {row.id for row in local_inventory._scan_hf_cache(tmp_path)}
-    models_page = {row.id for row in models_route._scan_hf_cache(tmp_path)}
-    assert hub_page == models_page == {REPO}
 
 
 def test_symlink_layout_is_still_discovered(tmp_path):
@@ -177,12 +169,12 @@ def test_the_snapshot_probe_is_bounded(tmp_path, monkeypatch):
     assert _discovered_ids(tmp_path) == [REPO]
 
 
-def test_only_the_snapshot_that_is_classified_is_probed(tmp_path):
+def test_empty_latest_snapshot_does_not_hide_retained_weights(tmp_path):
     repo = _copy_layout(tmp_path)
     newer = repo / "snapshots" / ("f" * 40)
     newer.mkdir()
     os.utime(repo / "snapshots" / REV, (1, 1))
-    assert _discovered_ids(tmp_path) == []
+    assert _discovered_ids(tmp_path) == [REPO]
 
 
 def test_a_huge_snapshot_directory_is_read_only_up_to_the_limit(tmp_path, monkeypatch):
@@ -312,3 +304,21 @@ def test_an_entry_that_cannot_be_statted_is_skipped(tmp_path, monkeypatch):
 
     monkeypatch.setattr(os, "scandir", lambda path = ".": _SortedListing(path, real_scandir, _Entry))
     assert _discovered_ids(tmp_path) == [REPO]
+
+
+def test_unresolvable_secondary_root_does_not_hide_local_models(tmp_path, monkeypatch):
+    active = tmp_path / "active"
+    looping = tmp_path / "default"
+    models = tmp_path / "models"
+    _write(models / "Local-Q4_K_M.gguf")
+    original_resolve = Path.resolve
+
+    def resolve(path, *args, **kwargs):
+        if path == looping:
+            raise RuntimeError("symlink loop")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    sources = local_inventory._LocalInventorySources(active, active, looping, (), (), (), ())
+    rows = local_inventory._collect_models_from_default_sources(models, sources, [])
+    assert [row.path for row in rows] == [str(models / "Local-Q4_K_M.gguf")]

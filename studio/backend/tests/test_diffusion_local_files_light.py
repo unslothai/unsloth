@@ -39,9 +39,11 @@ def _probe(tmp_path, call: str) -> list:
 def test_scanning_a_models_folder_does_not_import_the_diffusion_stack(tmp_path):
     found, loaded = _probe(
         tmp_path,
-        "[m.path for m in __import__('routes.models', fromlist = ['_'])._scan_models_dir(d)]",
+        "[m.path for m in __import__('hub.services.models.local_inventory', fromlist = ['_'])"
+        "._scan_models_dir(d)]",
     )
-    assert found == [str(tmp_path)]
+    # An empty file is no loose checkpoint, but deciding that runs the loose-checkpoint probe.
+    assert found == []
     assert loaded is False
 
 

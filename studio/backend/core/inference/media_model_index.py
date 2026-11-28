@@ -91,13 +91,13 @@ def _gguf_load_path(info, on_disk: Path, load_dir: Path) -> str:
 
 def _loader_can_open(load_path: str, filename: str) -> bool:
     """A split checkpoint needs its whole shard set beside it, or the load fails after evicting."""
-    from utils.models.model_config import colocated_split_shards
+    from utils.models.model_config import split_set_is_loadable
 
     root = Path(load_path)
     if not root.is_dir():
         # Cached repo id skips containment but needs a whole split set; uncached is the download guard's.
         cached = _cached_repo_file(load_path, filename)
-        return True if cached is None else bool(colocated_split_shards(cached)[1])
+        return cached is None or split_set_is_loadable(cached)
     from core.inference.diffusion_families import resolve_local_gguf_child
 
     try:
@@ -105,7 +105,7 @@ def _loader_can_open(load_path: str, filename: str) -> bool:
     except Exception:  # noqa: BLE001 -- whatever the loader refuses, the index does not advertise
         return False
     # a split checkpoint opens its siblings implicitly, so an incomplete set fails at load time
-    return bool(colocated_split_shards(child)[1])
+    return split_set_is_loadable(child)
 
 
 def _cached_repo_file(repo_id: str, filename: str) -> Optional[Path]:
@@ -261,21 +261,73 @@ def _loadable_directory(load_dir: Path) -> bool:
     return sole is not None and _loader_can_open(str(load_dir), sole)
 
 
+def _pull_is_incomplete(info) -> bool:
+    """An HF repo by its download state, as before the shared scan: the Model Hub also flags layouts it lists for
+    its own reasons (a lone checkpoint, an artifact mirror), and _loadable_directory judges those."""
+    if getattr(info, "source", None) != "hf_cache" or not getattr(info, "model_id", None):
+        return bool(getattr(info, "partial", False))
+    from hub.utils.inventory_scan import repo_partial_verdicts
+
+    path = Path(info.path)
+    repo_dir = path.parent.parent if path.parent.name == "snapshots" else path
+    return any(repo_partial_verdicts(info.model_id, repo_dir))
+
+
 @in_scan_memo
 def _build_index(task: str) -> dict[str, MediaModelPick]:
     """Map every name a downloaded *task* model answers to onto its load spec."""
+    from core.inference.local_model_resolver import _is_symlink_alias
+    from hub.utils.gguf import local_path_physical_identity
     from routes.models import _local_model_task, collect_local_models
 
     index: dict[str, MediaModelPick] = {}
+    folded_copies = {}
     try:
-        candidates = collect_local_models(Path("./models").resolve())
+        folded = []
+        candidates = collect_local_models(Path("./models").resolve(), folded = folded)
+        if folded:
+            custom_paths = {
+                (local_path_physical_identity(row.path), row.model_format): row.path
+                for row in candidates
+                if row.source == "custom"
+            }
+            for row in folded:
+                if row.source == "custom" and _is_symlink_alias(row):
+                    folded_copies[id(row)] = row
+                    continue
+                if row.source not in ("lmstudio", "omlx") or not row.model_id:
+                    continue
+                path = custom_paths.get((local_path_physical_identity(row.path), row.model_format))
+                if path is not None:
+                    candidates.append(row.model_copy(update = {"path": path}))
+                else:
+                    folded_copies[id(row)] = row
     except Exception as exc:  # noqa: BLE001 -- a failed scan must not 500 the generation
         logger.debug("media auto-switch: local model scan failed: %s", exc)
         return index
-    for info in candidates:
+
+    def is_active_cache(info) -> bool:
+        return info.source == "hf_cache" and getattr(info, "active_cache", None) is True
+
+    active_picks: dict[str, MediaModelPick] = {}
+    folded_picks: dict[str, MediaModelPick] = {}
+    listed = sorted(candidates, key = lambda row: not is_active_cache(row))
+    for info in (*listed, *folded_copies.values()):
         try:
+            active = is_active_cache(info)
+            if (
+                not active
+                and info.source == "hf_cache"
+                and info.model_id
+                and info.model_id.strip().lower() in active_picks
+            ):
+                continue
+            if id(info) in folded_copies:
+                picks = folded_picks
+            else:
+                picks = active_picks if active else index
             # a cancelled or incomplete pull still lists, and loading it fails predictably
-            if getattr(info, "partial", False):
+            if _pull_is_incomplete(info):
                 continue
             if _local_model_task(info) != task:
                 continue
@@ -285,23 +337,27 @@ def _build_index(task: str) -> dict[str, MediaModelPick]:
             # an hf cache repo keeps its weights, and its model_index.json, under snapshots/<sha>
             on_disk = Path(info.path).expanduser()
             load_dir = _resolve_load_dir(on_disk)
-            if _add_gguf_picks(index, info, keys, on_disk, load_dir):
+            if _add_gguf_picks(picks, info, keys, on_disk, load_dir):
                 continue
             if load_dir.is_file():
                 if load_dir.suffix.lower() == ".safetensors" and _loader_can_open(
                     str(load_dir.parent), load_dir.name
                 ):
                     _register(
-                        index,
+                        picks,
                         keys,
                         MediaModelPick(keys[0], str(load_dir.parent), load_dir.name, "single_file"),
                     )
                 continue
             if not _loadable_directory(load_dir):
                 continue
-            _register(index, keys, MediaModelPick(keys[0], str(load_dir)))
+            _register(picks, keys, MediaModelPick(keys[0], str(load_dir)))
         except Exception as exc:  # noqa: BLE001 -- one unreadable model must not hide the rest
             logger.debug("media auto-switch: skipped %s: %s", getattr(info, "id", "?"), exc)
+    for name, pick in active_picks.items():
+        _register(index, (name,), pick)
+    for name, pick in folded_picks.items():
+        index.setdefault(name, pick)
     return index
 
 

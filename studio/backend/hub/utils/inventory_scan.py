@@ -1870,18 +1870,19 @@ def is_gguf_repo_partial(
     return has_broken and not has_clean
 
 
-def repo_listing_partial(
+def repo_partial_verdicts(
     repo_id: str,
     repo_cache_dir: Path,
     *,
     variant_state = None,
-) -> bool:
-    """``is_snapshot_partial`` or ``is_gguf_repo_partial``, reused while the repo and Hub state are unchanged."""
+) -> tuple[bool, bool]:
+    """``(is_snapshot_partial, is_gguf_repo_partial)``, reused while the repo and Hub state are unchanged."""
 
-    def compute() -> bool:
-        return is_snapshot_partial(
-            "model", repo_id, repo_cache_dir, variant_state = variant_state
-        ) or is_gguf_repo_partial(repo_id, repo_cache_dir, variant_state = variant_state)
+    def compute() -> tuple[bool, bool]:
+        return (
+            is_snapshot_partial("model", repo_id, repo_cache_dir, variant_state = variant_state),
+            is_gguf_repo_partial(repo_id, repo_cache_dir, variant_state = variant_state),
+        )
 
     key = ("listing", repo_id, variant_state is None, is_snapshot_partial, is_gguf_repo_partial)
     return partial_verdict_cache.cached_verdict(key, repo_cache_dir, compute)

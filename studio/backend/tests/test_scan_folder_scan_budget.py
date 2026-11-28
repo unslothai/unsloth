@@ -4,8 +4,10 @@
 """A custom folder behind a hung mount must not hold the model list hostage."""
 
 import asyncio
+import concurrent.futures
 import os
 import threading
+import time
 
 import pytest
 
@@ -43,7 +45,7 @@ def test_a_stuck_folder_is_skipped_marked_slow_and_recovers():
         release.wait(5)
         return ["row"]
 
-    assert asyncio.run(local_inventory._run_custom_folder_bounded("/mnt/nas", stuck)) is None
+    assert local_inventory.run_custom_folder_bounded_sync("/mnt/nas", stuck) is None
     assert _status("/mnt/nas") == STATUS_SLOW
     # Still stuck: the next listing skips it at once instead of parking a second thread on the mount.
     assert local_inventory.run_custom_folder_bounded_sync("/mnt/nas", stuck) is None
@@ -62,17 +64,20 @@ def test_overlapping_listings_cannot_grow_threads_on_a_hung_folder():
         started.append(1)
         release.wait(5)
 
-    async def overlapping():
-        tasks = []
-        for _ in range(8):
-            tasks.append(
-                asyncio.create_task(local_inventory._run_custom_folder_bounded("/mnt/nas", stuck))
-            )
-            await asyncio.sleep(0.08)
-        return await asyncio.gather(*tasks)
+    def overlapping():
+        with concurrent.futures.ThreadPoolExecutor(8) as listings:
+            pending = []
+            for _ in range(8):
+                pending.append(
+                    listings.submit(
+                        local_inventory.run_custom_folder_bounded_sync, "/mnt/nas", stuck
+                    )
+                )
+                time.sleep(0.08)
+            return [listing.result(5) for listing in pending]
 
     try:
-        assert asyncio.run(overlapping()) == [None] * 8
+        assert overlapping() == [None] * 8
         # Only requests inside the first budget window start a thread; later ones see it stuck.
         assert len(started) <= 4
     finally:
@@ -95,13 +100,12 @@ def test_stuck_folders_cannot_starve_a_healthy_one():
 
 
 def test_healthy_folders_scan_concurrently_and_raise_as_before():
-    async def both():
-        return await asyncio.gather(
-            local_inventory._run_custom_folder_bounded("/a", lambda: ["a"]),
-            local_inventory._run_custom_folder_bounded("/a", lambda: ["a2"]),
+    with concurrent.futures.ThreadPoolExecutor(2) as listings:
+        both = listings.map(
+            lambda work: local_inventory.run_custom_folder_bounded_sync("/a", work),
+            (lambda: ["a"], lambda: ["a2"]),
         )
-
-    assert asyncio.run(both()) == [["a"], ["a2"]]
+        assert list(both) == [["a"], ["a2"]]
 
     def denied():
         raise PermissionError(13, "denied")
@@ -181,49 +185,6 @@ def test_a_hung_folder_cannot_stall_the_hub_folder_list(monkeypatch, tmp_path):
             os.path.normcase("/mnt/nas"),
             local_inventory._inventory_path_identity(healthy),
         ]
-        assert _status("/mnt/nas") == STATUS_SLOW
-    finally:
-        release.set()
-
-
-def test_a_hung_folder_cannot_stall_the_compat_model_list(monkeypatch, tmp_path):
-    from routes import models as models_route
-
-    release = threading.Event()
-    sources = models_route._CompatLocalInventorySources(
-        tmp_path / "active", tmp_path / "legacy", tmp_path / "default", (), ()
-    )
-    monkeypatch.setattr(
-        "storage.studio_db.list_scan_folders", lambda: [{"id": 1, "path": "/mnt/nas"}]
-    )
-    monkeypatch.setattr(
-        models_route,
-        "_compat_inventory_path_identity",
-        _block_on("/mnt/nas", release, models_route._compat_inventory_path_identity),
-    )
-    monkeypatch.setattr(models_route, "collect_local_models", lambda *_args, **_kwargs: [])
-
-    async def listing_and_loop():
-        ticks = 0
-
-        async def tick():
-            nonlocal ticks
-            while True:
-                ticks += 1
-                await asyncio.sleep(0.01)
-
-        ticker = asyncio.create_task(tick())
-        try:
-            rows = await asyncio.wait_for(
-                models_route._shared_compat_local_inventory_scan(tmp_path / "models", sources), 2
-            )
-        finally:
-            ticker.cancel()
-        return rows, ticks
-
-    try:
-        rows, ticks = asyncio.run(listing_and_loop())
-        assert rows == [] and ticks > 5
         assert _status("/mnt/nas") == STATUS_SLOW
     finally:
         release.set()

@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-import routes.models as models_route
+from hub.services.models import local_inventory
 from core.inference import diffusion_families, video_families
 from hub.utils import download_manifest
 from utils import audio_tokens
@@ -59,15 +59,19 @@ def _make_repo(hub: Path, repo_id: str, files: dict[str, str]) -> Path:
 def hub(monkeypatch, tmp_path):
     active = tmp_path / "hub"
     active.mkdir()
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.hermes_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.ollama_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.paths.omlx_model_dirs", lambda: [])
-    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active])
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+    sources = local_inventory._LocalInventorySources(
+        hf_cache_dir = active,
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (active,),
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: [])
+    # The listing scans a models dir only under its allowed roots.
+    monkeypatch.setattr(local_inventory, "studio_root", lambda: tmp_path)
     config = json.dumps({"architectures": ["LlamaForCausalLM"], "model_type": "llama"})
     _make_repo(active, "org/plain-chat", {"config.json": config, "model.safetensors": "x"})
     speech = _make_repo(active, "org/speech-csm", {"config.json": config, "model.safetensors": "x"})
@@ -83,8 +87,10 @@ def hub(monkeypatch, tmp_path):
 
 
 def _scan(models_root: Path) -> list[dict]:
-    rows = asyncio.run(models_route._shared_compat_local_inventory_scan(models_root))
-    return [row.model_dump(mode = "json") for row in rows]
+    listing = asyncio.run(
+        local_inventory.list_local_models_response(str(models_root), materialize_ollama_links = True)
+    )
+    return [row.model_dump(mode = "json") for row in listing.models]
 
 
 def _cold_scan(models_root: Path) -> list[dict]:
@@ -156,15 +162,16 @@ def test_rewrite_that_restores_size_and_mtime_is_still_reread(hub, tmp_path):
 
 def test_failed_tokenizer_read_is_retried_on_the_next_scan(hub, tmp_path, monkeypatch):
     real_read_text = Path.read_text
-    failures = [OSError(errno.EMFILE, "Too many open files")]
+    failing = [True]
 
     def flaky_read_text(self, *args, **kwargs):
-        if self.name == "tokenizer_config.json" and failures:
-            raise failures.pop()
+        if self.name == "tokenizer_config.json" and failing[0]:
+            raise OSError(errno.EMFILE, "Too many open files")
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", flaky_read_text)
     assert _row(_scan(tmp_path / "models"), "org/speech-csm")["audio_type"] is None
+    failing[0] = False
     # The file never changed, so its stat key is the same: the failed read must not be what it answers.
     assert _row(_scan(tmp_path / "models"), "org/speech-csm")["audio_type"] == "csm"
 

@@ -159,30 +159,16 @@ def _hub_rows(cache: Path, empty: Path, omlx_root: Path):
     return asyncio.run(local_inventory._scan_local_models_response(str(empty), [], sources)).models
 
 
-def _compat_rows(cache: Path, empty: Path, omlx_root: Path):
-    sources = models_route._CompatLocalInventorySources(
-        cache, empty, empty, (), (), omlx_dirs = (omlx_root,)
-    )
-    return models_route.collect_local_models(empty, custom_folders = [], sources = sources)
-
-
-@pytest.fixture(params = ["hub", "compat"])
-def collector(request, tmp_path):
+@pytest.fixture
+def collector(tmp_path):
     empty = tmp_path / "_empty"
     empty.mkdir()
-    scan = _hub_rows if request.param == "hub" else _compat_rows
-    return lambda cache, root: scan(cache, empty, root)
+    return lambda cache, root: _hub_rows(cache, empty, root)
 
 
 def test_hub_sources_include_omlx_roots(monkeypatch, tmp_path):
     monkeypatch.setattr(local_inventory, "omlx_model_dirs", lambda: [tmp_path])
     assert local_inventory._local_inventory_sources().omlx_dirs == (tmp_path,)
-
-
-def test_compat_sources_include_omlx_roots(monkeypatch, tmp_path):
-    import utils.paths as utils_paths
-    monkeypatch.setattr(utils_paths, "omlx_model_dirs", lambda: [tmp_path])
-    assert models_route._compat_local_inventory_sources().omlx_dirs == (tmp_path,)
 
 
 def test_omlx_rows_report_the_omlx_source(collector, tmp_path):
@@ -210,10 +196,8 @@ def test_loose_gguf_inventory_skips_companions(tmp_path, source, subdir):
     assert [(Path(row.path), row.capabilities.can_chat) for row in rows] == [(weight, True)]
 
 
-@pytest.mark.parametrize(
-    "scan", [local_inventory._scan_lmstudio_dir, models_route._scan_lmstudio_dir]
-)
-def test_source_is_the_only_difference_from_an_lmstudio_root(scan, tmp_path):
+def test_source_is_the_only_difference_from_an_lmstudio_root(tmp_path):
+    scan = local_inventory._scan_lmstudio_dir
     _write_mlx_model(tmp_path, "mlx-community", "Same-4bit", shards = 2)
 
     (as_omlx,) = [m.model_dump() for m in scan(tmp_path, source = "omlx")]
@@ -259,19 +243,18 @@ def test_omlx_root_registered_as_a_scan_folder_is_listed_once(monkeypatch, tmp_p
     monkeypatch.setattr(local_inventory, "note_scan_folder_scanned", lambda *_a, **_k: None)
     monkeypatch.setattr(local_inventory, "record_scan_failure", lambda *_a, **_k: None)
 
-    rows = asyncio.run(
-        local_inventory._collect_models_from_default_sources(
-            tmp_path / "models",
-            tmp_path / "hf",
-            tmp_path / "legacy",
-            tmp_path / "default",
-            (),
-            (),
-            (),
-            (),
-            [{"path": str(root)}],
-            omlx_dirs = (root,),
-        )
+    sources = local_inventory._LocalInventorySources(
+        tmp_path / "hf",
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (),
+        (),
+        (),
+        (),
+        omlx_dirs = (root,),
+    )
+    rows = local_inventory._collect_models_from_default_sources(
+        tmp_path / "models", sources, [{"path": str(root)}]
     )
     rows = local_inventory._filter_and_dedupe_local_models(rows)
 
@@ -279,24 +262,8 @@ def test_omlx_root_registered_as_a_scan_folder_is_listed_once(monkeypatch, tmp_p
     assert [(row.source, row.path) for row in rows] == [("custom", str(model))]
 
 
-def test_compat_omlx_root_registered_as_a_scan_folder_is_listed_once(tmp_path):
-    root = tmp_path / ".omlx" / "models"
-    model = _write_mlx_model(root, "mlx-community", "Qwen3-4bit")
-    empty = tmp_path / "_empty"
-    empty.mkdir()
-    sources = models_route._CompatLocalInventorySources(
-        empty, empty, empty, (), (), omlx_dirs = (root,)
-    )
-
-    rows = models_route.collect_local_models(
-        empty, custom_folders = [{"path": str(root)}], sources = sources
-    )
-
-    assert [(row.source, row.path) for row in rows] == [("custom", str(model))]
-
-
 @pytest.mark.parametrize("link_publisher", [False, True])
-def test_compat_custom_symlink_alias_into_an_omlx_root_is_kept(tmp_path, link_publisher):
+def test_custom_symlink_alias_into_an_omlx_root_is_kept(tmp_path, link_publisher):
     root = tmp_path / "omlx"
     model = _write_mlx_model(root, "mlx-community", "Qwen3-4bit")
     custom = tmp_path / "custom"
@@ -307,8 +274,8 @@ def test_compat_custom_symlink_alias_into_an_omlx_root_is_kept(tmp_path, link_pu
         (custom / "Qwen3-4bit-alias").symlink_to(model, target_is_directory = True)
     empty = tmp_path / "_empty"
     empty.mkdir()
-    sources = models_route._CompatLocalInventorySources(
-        empty, empty, empty, (), (), omlx_dirs = (root,)
+    sources = local_inventory._LocalInventorySources(
+        empty, empty, empty, (), (), (), (), omlx_dirs = (root,)
     )
 
     rows = models_route.collect_local_models(
@@ -321,11 +288,15 @@ def test_compat_custom_symlink_alias_into_an_omlx_root_is_kept(tmp_path, link_pu
 def test_resolver_index_scans_omlx_roots(monkeypatch, tmp_path):
     # MLX weights are servable only on Apple Silicon, so assert the scan feeds the index.
     import core.inference.local_model_resolver as resolver
-    import utils.paths as utils_paths
 
     root = tmp_path / "omlx"
     model = _write_mlx_model(root, "mlx-community", "OnlyInOmlx-4bit")
-    monkeypatch.setattr(utils_paths, "omlx_model_dirs", lambda: [root])
+    empty = tmp_path / "_empty"
+    sources = local_inventory._LocalInventorySources(
+        empty, empty, empty, (), (), (), (), omlx_dirs = (root,)
+    )
+    monkeypatch.setattr(local_inventory, "_local_inventory_sources", lambda: sources)
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
     seen = []
     monkeypatch.setattr(
         resolver, "_local_servable_entry", lambda _id, info: seen.append(info) and None

@@ -28,16 +28,16 @@ def home(monkeypatch, tmp_path):
     monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     # The scan also reads hf_default_cache_dir() (ignores XDG), the LM Studio / Hermes / Ollama / oMLX dirs and ./models.
-    import utils.paths
+    from hub.services.models import local_inventory
 
-    monkeypatch.setattr(utils.paths, "hf_default_cache_dir", lambda: tmp_path / "default_hub")
+    monkeypatch.setattr(local_inventory, "hf_default_cache_dir", lambda: tmp_path / "default_hub")
     for name in (
         "lmstudio_model_dirs",
         "hermes_model_dirs",
         "ollama_model_dirs",
         "omlx_model_dirs",
     ):
-        monkeypatch.setattr(utils.paths, name, lambda: [])
+        monkeypatch.setattr(local_inventory, name, lambda: [])
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(models_route, "_local_model_task", lambda info: mas.IMAGE_TASK)
@@ -93,7 +93,7 @@ def test_the_owner_still_gets_one_cached_scan(home, monkeypatch):
     monkeypatch.setattr(
         models_route,
         "collect_local_models",
-        lambda root: (scans.append(root), real(root))[1],
+        lambda root, **kwargs: (scans.append(root), real(root, **kwargs))[1],
     )
 
     assert mas.available_media_model_ids(mas.IMAGE_TASK) == ["owner-flux"]

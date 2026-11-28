@@ -46,32 +46,35 @@ def test_legacy_schema_admits_the_ollama_source():
     assert row.source == "ollama"
 
 
-def test_legacy_scanner_tags_rows_ollama(tmp_path):
+def test_a_registered_ollama_store_lists_ollama_rows(tmp_path):
+    from hub.services.models import local_inventory
     from routes import models as models_route
 
     root = tmp_path / "ollama"
     _write_ollama_store(root)
-    found = models_route._scan_ollama_dir(root)
-    assert len(found) == 1
-    assert found[0].source == "ollama"
-    assert found[0].model_id == "ollama/llama3:latest"
+    empty = tmp_path / "empty"
+    sources = local_inventory._LocalInventorySources(
+        hf_cache_dir = empty,
+        legacy_hf = empty,
+        hf_default = empty,
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (),
+    )
+    found = models_route.collect_local_models(
+        tmp_path / "models", custom_folders = [{"path": str(root)}], sources = sources
+    )
+    assert [(m.source, m.model_id) for m in found] == [("ollama", "ollama/llama3:latest")]
+    assert found[0].path.endswith(".gguf")
 
 
 @pytest.mark.parametrize("source", ["hf_cache", "ollama", "hermes"])
 def test_custom_folder_merge_keeps_real_sources(source):
-    src = (Path(__file__).resolve().parent.parent / "routes" / "models.py").read_text(
-        encoding = "utf-8"
+    from hub.services.models.common import _local_model_info
+    from hub.services.models.local_inventory import _promote_to_custom_source
+
+    row = _local_model_info(
+        scan_path = Path("/x"), load_path = Path("/x"), source = source, model_format = "gguf"
     )
-    assert 'if m.source in ("hf_cache", "ollama", "hermes")' in src
-    row = LocalModelInfo(
-        id = "/x",
-        display_name = "x",
-        path = "/x",
-        source = source,
-    )
-    kept = (
-        row
-        if row.source in ("hf_cache", "ollama", "hermes")
-        else row.model_copy(update = {"source": "custom"})
-    )
-    assert kept.source == source
+    assert _promote_to_custom_source(row).source == source

@@ -113,17 +113,6 @@ def test_recursive_scan_finds_a_nested_hf_cache(tmp_path):
     assert "org/tiny" not in {row.model_id for row in _scan(tmp_path, recursive = False)}
 
 
-def test_compat_nested_rows_skip_rows_already_listed(tmp_path):
-    from routes import models as models_routes
-
-    lib = _library(tmp_path)
-    existing = models_routes._scan_models_dir(tmp_path, limit = 200)
-    nested = models_routes._scan_nested_compat_rows(tmp_path, existing, limit = 200)
-    assert str(lib["deep"].parent.resolve()) in _paths(nested)
-    assert not _paths(existing) & _paths(nested)
-    assert models_routes._scan_nested_compat_rows(tmp_path, existing, limit = len(existing)) == []
-
-
 def test_storage_round_trips_and_updates_the_flag(tmp_path):
     folder = tmp_path / "models"
     folder.mkdir()
@@ -176,8 +165,6 @@ def test_add_endpoint_threads_the_flag(tmp_path):
 
 
 def test_a_config_only_folder_does_not_hide_the_model_below_it(tmp_path):
-    from routes import models as models_routes
-
     family = tmp_path / "family"
     family.mkdir()
     (family / "config.json").write_text("{}", encoding = "utf-8")
@@ -186,27 +173,22 @@ def test_a_config_only_folder_does_not_hide_the_model_below_it(tmp_path):
     (model / "config.json").write_text("{}", encoding = "utf-8")
     (model / "model.safetensors").write_bytes(b"\0" * 8)
     assert str(model.resolve()) in _paths(_scan(tmp_path, recursive = True))
-    nested = models_routes._scan_nested_compat_rows(tmp_path, [], limit = 200)
-    assert str(model.resolve()) in _paths(nested)
 
 
-def test_compat_nested_rows_skip_folders_with_nothing_to_load(tmp_path):
-    from routes import models as models_routes
-
+def test_nested_folders_with_nothing_to_load_are_not_listed(tmp_path):
     app = tmp_path / "tools" / "some-app"
     app.mkdir(parents = True)
     (app / "config.json").write_text("{}", encoding = "utf-8")
-    assert models_routes._scan_nested_compat_rows(tmp_path, [], limit = 200) == []
+    assert _scan(tmp_path, recursive = True) == []
 
 
-def test_compat_nested_rows_keep_the_cap_with_a_nested_hf_cache(tmp_path):
-    from routes import models as models_routes
-
+def test_nested_rows_keep_the_cap_with_a_nested_hf_cache(tmp_path, monkeypatch):
     hub = tmp_path / "team" / "hub"
     for i in range(5):
         repo = hub / f"models--org--tiny{i}"
         _gguf(repo / "snapshots" / "abc" / f"tiny{i}-Q4_K_M.gguf")
         (repo / "refs").mkdir()
         (repo / "refs" / "main").write_text("abc", encoding = "utf-8")
-    assert len(models_routes._scan_nested_compat_rows(tmp_path, [], limit = 5)) == 5
-    assert len(models_routes._scan_nested_compat_rows(tmp_path, [], limit = 3)) == 3
+    assert len(_scan(tmp_path, recursive = True)) == 5
+    monkeypatch.setattr(local_inventory, "_MAX_MODELS_PER_CUSTOM_FOLDER", 3)
+    assert len(_scan(tmp_path, recursive = True)) == 3

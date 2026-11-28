@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Hermes GGUF inventory; mirrors hermes_cli's staged_models rule, so unservable files stay hidden."""
+"""Hermes GGUF inventory; follows hermes_cli's staged_models rule, so unservable files stay hidden."""
 
 from __future__ import annotations
 
@@ -30,28 +30,22 @@ def staged_model_id(path: Path) -> str:
 
 def staged_gguf_files(hermes_dir: Path) -> List[Path]:
     """Flat glob, not a walk, so assets/ is skipped; continuation parts are never rows of their own."""
+    from utils.models.model_config import split_set_is_loadable
+
     try:
         files = sorted(p for p in hermes_dir.glob("*.gguf") if p.is_file())
     except OSError as exc:
         logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, exc)
         return []
 
-    names = {p.name for p in files}
     staged: List[Path] = []
     for path in files:
-        # A hand-dropped companion at top level is not servable.
-        if not _is_main_gguf_filename(path.name):
-            continue
         part = _SPLIT_PART.search(path.name)
-        if part is None:
-            staged.append(path)
-            continue
-        if part.group(1) != "00001":
-            continue
-        stem = path.name[: part.start()]
-        total = int(part.group(2))
-        if all(
-            f"{stem}-{index:05d}-of-{part.group(2)}.gguf" in names for index in range(2, total + 1)
+        # hermes_cli checks only that every part exists; an empty part fails the load too.
+        if (
+            _is_main_gguf_filename(path.name)
+            and (part is None or part.group(1) == "00001")
+            and split_set_is_loadable(path)
         ):
             staged.append(path)
     return staged

@@ -381,21 +381,20 @@ def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
         else:
             on_loop.append(True)
 
+    sources = inventory._LocalInventorySources(
+        hf_cache_dir = tmp_path / "hf",
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (),
+    )
     monkey = pytest.MonkeyPatch()
     monkey.setattr(inventory, "note_scan_folder_scanned", _spy)
     try:
         _asyncio.run(
-            inventory._collect_models_from_default_sources(
-                tmp_path,
-                tmp_path / "hf",
-                tmp_path / "legacy",
-                tmp_path / "default",
-                [],
-                [],
-                [],
-                [],
-                list(rows),
-            )
+            inventory._scan_local_models_response(str(tmp_path / "hf"), list(rows), sources)
         )
     finally:
         monkey.undo()
@@ -405,14 +404,11 @@ def test_the_hub_scan_probes_off_the_event_loop(tmp_path: Path):
 
 @requires_posix_permissions
 def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
-    """The Hub inventory has its own custom-folder loop, and it feeds the dialog.
-
-    /api/hub/models/local goes through here, not through collect_local_models,
-    so a status the dialog can show has to be recorded on this path too.
-    """
-    import asyncio as _asyncio
-
-    from hub.services.models.local_inventory import _collect_models_from_default_sources
+    """Every local listing scans custom folders through the Hub inventory, and its status feeds the dialog."""
+    from hub.services.models.local_inventory import (
+        _LocalInventorySources,
+        _collect_models_from_default_sources,
+    )
 
     denied = tmp_path / "denied"
     denied.mkdir()
@@ -420,20 +416,18 @@ def test_the_hub_scan_records_a_folder_it_cannot_read(tmp_path: Path):
     denied.chmod(0o000)
     rows = [{"id": 1, "path": str(denied), "created_at": "2026-01-01"}]
 
+    sources = _LocalInventorySources(
+        hf_cache_dir = tmp_path / "hf",
+        legacy_hf = tmp_path / "legacy",
+        hf_default = tmp_path / "default",
+        lm_dirs = (),
+        ollama_dirs = (),
+        hermes_dirs = (),
+        known_hf_caches = (),
+    )
+
     def scan():
-        return _asyncio.run(
-            _collect_models_from_default_sources(
-                tmp_path,
-                tmp_path / "hf",
-                tmp_path / "legacy",
-                tmp_path / "default",
-                [],
-                [],
-                [],
-                [],
-                list(rows),
-            )
-        )
+        return _collect_models_from_default_sources(tmp_path, sources, list(rows))
 
     try:
         scan()

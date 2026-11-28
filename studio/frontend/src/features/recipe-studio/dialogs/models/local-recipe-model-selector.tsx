@@ -512,7 +512,7 @@ export function LocalRecipeModelSelector({
         if (cancelled) {
           return;
         }
-        setModels(response.models);
+        setModels(response.models.filter((model) => !model.partial));
       })
       .catch((err) => {
         if (cancelled) {

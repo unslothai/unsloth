@@ -14,7 +14,7 @@ import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel
-from typing import List, NamedTuple, Optional
+from typing import List, Optional
 from loggers import get_logger
 from utils.scan_memo import in_scan_memo
 
@@ -32,12 +32,15 @@ from utils import gguf_archs as _gguf_archs
 from hub.services.models.catalog_classification import (
     _cached_repo_task,
     _is_sd_cpp_companion_repo,
-    _local_model_task,
     _repo_gguf_task,
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
-from hub.services.models.common import _diffusers_pipeline_artifact_kind
+from hub.services.models.common import (
+    _diffusers_pipeline_artifact_kind,
+    _is_diffusers_pipeline_dir,
+    _is_model_directory,
+)
 
 # Compat aliases for moved names; assigned via the module to satisfy verify_import_hoist.py.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = _catalog_classification._AMBIGUOUS_DIFFUSION_GGUF_ARCHS
@@ -57,6 +60,7 @@ _is_trailing_split_shard = _catalog_classification._is_trailing_split_shard
 _local_family_needles = _catalog_classification._local_family_needles
 _local_is_diffusers = _catalog_classification._local_is_diffusers
 _local_model_can_chat = _catalog_classification._local_model_can_chat
+_local_model_task = _catalog_classification._local_model_task
 _task_classify_sort_key = _catalog_classification._task_classify_sort_key
 # core.inference.llama_cpp imports this; without it the probe would wrongly report buildable.
 _video_family_buildable = _catalog_classification._video_family_buildable
@@ -129,8 +133,6 @@ def _safe_is_dir(path) -> bool:
 
 from utils.paths.scan_folder_health import (
     annotate_scan_folders,
-    note_scan_folder_scanned,
-    record_scan_failure,
     refresh_failed_scan_folders,
 )
 
@@ -313,7 +315,6 @@ from models.models import (
     ExportSizeResponse,
     GgufVariantDetail,
     GgufVariantsResponse,
-    LocalModelSource,
     ModelType,
     ScanFolderInfo,
     AddScanFolderRequest,
@@ -354,39 +355,7 @@ def _resolve_hf_cache_dir() -> Path:
     return get_hf_cache_paths().hub_cache
 
 
-def _is_model_directory(d: Path) -> bool:
-    """True when *d* looks like a model directory: both a config (``config.json`` /
-    ``adapter_config.json``) and weight files, excluding ``mmproj`` GGUFs (vision projectors),
-    calibration imatrices and non-weight ``.bin`` files (``tokenizer.bin`` etc.)."""
-
-    def _is_weight_file(f: Path) -> bool:
-        if is_appledouble_metadata(f):
-            return False
-        suffix = f.suffix.lower()
-        if suffix == ".safetensors":
-            return True
-        if suffix == ".gguf":
-            return "mmproj" not in f.name.lower() and not _is_imatrix_path(f.name)
-        if suffix == ".bin":
-            name = f.name.lower()
-            return (
-                name.startswith("pytorch_model")
-                or name.startswith("model")
-                or name.startswith("adapter_model")
-                or name.startswith("consolidated")
-            )
-        return False
-
-    try:
-        has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
-        if not has_config:
-            return False
-        return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
-    except OSError:
-        return False
-
-
-# Weight .bin prefixes scanners accept, not companions like tokenizer.bin; mirrors _is_weight_file
+# Weight .bin prefixes the recommended-folder probe accepts, not companions like tokenizer.bin.
 _WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
 
 
@@ -395,904 +364,93 @@ def _is_weight_bin(name: str) -> bool:
     return low.endswith(".bin") and low.startswith(_WEIGHT_BIN_PREFIXES)
 
 
-def _has_non_gguf_weights(path: Path) -> bool:
-    """True if *path* holds non-GGUF weight files (``.safetensors`` or a weight ``.bin``), ignoring
-    companion ``.bin`` files such as ``tokenizer.bin`` so a GGUF-only folder is not misread as a plain
-    checkpoint."""
-    try:
-        # Only the safetensors arm needs the check: a weight ".bin" is recognised by its name prefix, which a
-        # "._" already fails.
-        from core.inference.diffusion_lora import is_image_lora_file
-        if any(
-            not is_appledouble_metadata(f) and not is_image_lora_file(f)
-            for f in path.glob("*.safetensors")
-        ):
-            return True
-        return any(_is_weight_bin(f.name) for f in path.glob("*.bin"))
-    except OSError:
-        return False
-
-
-def _local_pipeline_index(d: Path) -> bool:
-    from hub.services.models.common import _is_diffusers_pipeline_dir
-    return _is_diffusers_pipeline_dir(d)
-
-
-def _servable_gguf_names(directory: Path) -> list[str]:
-    """The ``.gguf`` names in *directory* that count as a model being present there. An imatrix is
-    calibration data, not a model artifact; mmproj and MTP drafters DO count, since they are
-    companions of a real model and presence is all they decide."""
-    from core.inference.diffusion_lora import is_image_lora_file
-    return [
-        p.name
-        for p in directory.glob("*.gguf")
-        if not is_appledouble_metadata(p)
-        and not _is_imatrix_path(p.name)
-        and not is_image_lora_file(p)
-    ]
-
-
-def _is_gguf_companion_only_dir(path: Path) -> bool:
-    """Folders holding only mmproj or MTP drafter GGUFs are not loadable models and must not be listed."""
-    try:
-        if not path.is_dir():
-            return False
-        if (path / "config.json").exists() or (path / "adapter_config.json").exists():
-            return False
-        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
-    except OSError:
-        return False
-
-
-def _scan_models_dir(
-    models_dir: Path,
-    *,
-    limit: int | None = None,
-    loose_files: bool = False,
-) -> List[LocalModelInfo]:
-    if not models_dir.exists() or not models_dir.is_dir():
-        return []
-
-    # A scan folder can point at a diffusers PIPELINE dir, which _is_model_directory rejects but the load path accepts.
-    _is_self_model = _is_model_directory(models_dir) or _local_pipeline_index(models_dir)
-
-    if _is_self_model:
-        try:
-            updated_at = models_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-        return [
-            LocalModelInfo(
-                id = str(models_dir),
-                display_name = models_dir.name,
-                path = str(models_dir),
-                source = "models_dir",
-                model_format = _dir_model_format(models_dir),
-                updated_at = updated_at,
-            ),
-        ]
-
-    found: List[LocalModelInfo] = []
-    for child in models_dir.iterdir():
-        if limit is not None and len(found) >= limit:
-            break
-        try:
-            if not child.is_dir():
-                continue
-
-            gguf_names = _servable_gguf_names(child)
-            has_gguf = bool(gguf_names)
-            # mmproj alone is a vision adapter, not servable weights: decides presence, never format.
-            has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
-            has_non_gguf_weights = _has_non_gguf_weights(child)
-            has_config = (child / "config.json").exists() or (
-                child / "adapter_config.json"
-            ).exists()
-            # A diffusers PIPELINE folder (weights in component subdirs) is missed above but loadable.
-            has_pipeline_index = _local_pipeline_index(child)
-            has_model_files = has_gguf or has_non_gguf_weights or has_config or has_pipeline_index
-        except OSError:
-            continue
-        if not has_model_files:
-            continue
-        try:
-            updated_at = child.stat().st_mtime
-        except OSError:
-            updated_at = None
-        # A folder whose only weights are .gguf is GGUF-format even with a config.json; the name is no guide.
-        model_format = "gguf" if has_main_gguf and not has_non_gguf_weights else None
-        found.append(
-            LocalModelInfo(
-                id = str(child),
-                display_name = child.name,
-                path = str(child),
-                source = "models_dir",
-                model_format = model_format,
-                updated_at = updated_at,
-            ),
-        )
-    if limit is None or len(found) < limit:
-        from core.inference.diffusion_lora import is_image_lora_file
-        for gguf_file in models_dir.glob("*.gguf"):
-            if limit is not None and len(found) >= limit:
-                break
-            # A standalone mmproj is a vision adapter, not servable weights.
-            if (
-                gguf_file.is_file()
-                and _is_main_gguf_filename(gguf_file.name)
-                and not is_appledouble_metadata(gguf_file)
-                and not is_image_lora_file(gguf_file)
-            ):
-                try:
-                    updated_at = gguf_file.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(gguf_file),
-                        display_name = gguf_file.stem,
-                        path = str(gguf_file),
-                        source = "models_dir",
-                        model_format = "gguf",
-                        updated_at = updated_at,
-                    ),
-                )
-
-    # Several loose checkpoints: one row per file (the folder rescue below needs exactly one).
-    from core.inference.diffusion_local_files import resolve_local_single_file
-    from hub.utils.comfy_models import loose_diffusion_checkpoints
-
-    sole = resolve_local_single_file(str(models_dir)) if not (found or loose_files) else None
-    loose = [] if sole is not None else loose_diffusion_checkpoints(models_dir)
-
-    # A scan folder can also point at a BARE single-file checkpoint dir (one loose .safetensors,
-    # no configs): both checks reject it, but resolve_local_single_file loads it.
-    if (
-        not found
-        and not loose
-        and (limit is None or limit > 0)
-        and _has_non_gguf_weights(models_dir)
-    ):
-        try:
-            updated_at = models_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-        found.append(
-            LocalModelInfo(
-                id = str(models_dir),
-                display_name = models_dir.name,
-                path = str(models_dir),
-                source = "models_dir",
-                model_format = _dir_model_format(models_dir),
-                updated_at = updated_at,
-            ),
-        )
-
-    for checkpoint in loose:
-        if limit is not None and len(found) >= limit:
-            break
-        try:
-            updated_at = checkpoint.stat().st_mtime
-        except OSError:
-            continue
-        found.append(
-            LocalModelInfo(
-                id = str(checkpoint),
-                display_name = checkpoint.stem,
-                path = str(checkpoint),
-                source = "models_dir",
-                model_format = None,
-                updated_at = updated_at,
-            ),
-        )
-
-    return found
-
-
-def _scan_hf_cache(
-    cache_dir: Path,
-    *,
-    active_cache: bool = True,
-    classify_format: bool = True,
-    variant_states = None,
-) -> List[LocalModelInfo]:
-    if not cache_dir.exists() or not cache_dir.is_dir():
-        return []
-
-    from hub.utils import inventory_scan as hf_cache_scan
-
-    found: List[LocalModelInfo] = []
-    for repo_dir in cache_dir.glob("models--*"):
-        if not repo_dir.is_dir():
-            continue
-
-        repo_name = repo_dir.name[len("models--") :]
-        if not repo_name:
-            continue
-        model_id = repo_name.replace("--", "/")
-
-        try:
-            updated_at = repo_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-
-        variant_state = (
-            variant_states.for_repo("model", model_id, hub_cache = cache_dir)
-            if variant_states is not None
-            else None
-        )
-        partial = hf_cache_scan.repo_listing_partial(
-            model_id, repo_dir, variant_state = variant_state
-        )
-
-        load_id = model_id
-        snapshot = _resolve_hf_cache_realpath(repo_dir)
-        if not active_cache:
-            load_id = snapshot or str(repo_dir.resolve())
-        # Classify from the snapshot's own weights, not the name: GGUF repos often lack a -GGUF suffix.
-        model_format = (
-            _dir_model_format(Path(snapshot), recursive = True)
-            if snapshot and classify_format
-            else None
-        )
-        found.append(
-            LocalModelInfo(
-                id = load_id,
-                model_id = model_id,
-                display_name = model_id.split("/")[-1],
-                model_format = model_format,
-                path = load_id if not active_cache else str(repo_dir),
-                source = "hf_cache",
-                active_cache = active_cache,
-                partial = partial,
-                updated_at = updated_at,
-            ),
-        )
-    return found
-
-
-def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
-    """One level down, not an rglob (blocks async /api/models/local); recursive=True reads quant subdirs"""
-    try:
-
-        def _servable(p: Path) -> bool:
-            return _is_main_gguf_filename(p.name) and not is_appledouble_metadata(p)
-
-        if not any(_servable(p) for p in path.glob("*.gguf")):
-            if not recursive:
-                return None
-            if not any(_servable(p) for p in path.glob("*/*.gguf")):
-                return None
-        return None if _has_non_gguf_weights(path) else "gguf"
-    except OSError:
-        return None
-
-
-def _scan_lmstudio_dir(
-    lm_dir: Path, *, source: LocalModelSource = "lmstudio"
-) -> List[LocalModelInfo]:
-    """Scan a host-app model root; ``source`` names which app it belongs to."""
-    if not lm_dir.exists() or not lm_dir.is_dir():
-        return []
-
-    # lm_dir may itself be a model directory (not a publisher); return it rather than skip it.
-    if _is_model_directory(lm_dir):
-        try:
-            updated_at = lm_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-        return [
-            LocalModelInfo(
-                id = str(lm_dir),
-                display_name = lm_dir.name,
-                path = str(lm_dir),
-                source = source,
-                model_format = _dir_model_format(lm_dir),
-                updated_at = updated_at,
-            ),
-        ]
-
-    from core.inference.diffusion_lora import is_image_lora_file
-
-    found: List[LocalModelInfo] = []
-    for child in lm_dir.iterdir():
-        try:
-            if not child.is_dir():
-                if (
-                    _is_main_gguf_filename(child.name)
-                    and child.is_file()
-                    and not is_appledouble_metadata(child)
-                    and not is_image_lora_file(child)
-                ):
-                    try:
-                        updated_at = child.stat().st_mtime
-                    except OSError:
-                        updated_at = None
-                    found.append(
-                        LocalModelInfo(
-                            id = str(child),
-                            display_name = child.stem,
-                            path = str(child),
-                            source = source,
-                            model_format = "gguf",
-                            updated_at = updated_at,
-                        ),
-                    )
-                continue
-
-            # Surface a model-directory child directly instead of descending into it as a publisher.
-            if _is_model_directory(child):
-                try:
-                    updated_at = child.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(child),
-                        display_name = child.name,
-                        path = str(child),
-                        source = source,
-                        model_format = _dir_model_format(child),
-                        updated_at = updated_at,
-                    ),
-                )
-                continue
-
-            for model_dir in child.iterdir():
-                try:
-                    if model_dir.is_dir():
-                        has_model = (
-                            bool(_servable_gguf_names(model_dir))
-                            or (model_dir / "config.json").exists()
-                            or any(
-                                not is_appledouble_metadata(p) and not is_image_lora_file(p)
-                                for p in model_dir.glob("*.safetensors")
-                            )
-                        )
-                        if not has_model:
-                            continue
-                        model_id = f"{child.name}/{model_dir.name}"
-                        try:
-                            updated_at = model_dir.stat().st_mtime
-                        except OSError:
-                            updated_at = None
-                        found.append(
-                            LocalModelInfo(
-                                id = str(model_dir),
-                                model_id = model_id,
-                                display_name = model_dir.name,
-                                path = str(model_dir),
-                                source = source,
-                                model_format = _dir_model_format(model_dir),
-                                updated_at = updated_at,
-                            ),
-                        )
-                    elif (
-                        _is_main_gguf_filename(model_dir.name)
-                        and model_dir.is_file()
-                        and not is_appledouble_metadata(model_dir)
-                        and not is_image_lora_file(model_dir)
-                    ):
-                        try:
-                            updated_at = model_dir.stat().st_mtime
-                        except OSError:
-                            updated_at = None
-                        found.append(
-                            LocalModelInfo(
-                                id = str(model_dir),
-                                model_id = f"{child.name}/{model_dir.stem}",
-                                display_name = model_dir.stem,
-                                path = str(model_dir),
-                                source = source,
-                                model_format = "gguf",
-                                updated_at = updated_at,
-                            ),
-                        )
-                except OSError:
-                    continue
-        except OSError:
-            continue
-    return found
-
-
-def _scan_ollama_dir(
-    ollama_dir: Path,
-    *,
-    limit: Optional[int] = None,
-    materialize_links: bool = True,
-) -> List[LocalModelInfo]:
-    """Readers treat row ids and paths as filenames, so materialize_links defaults to a .gguf link."""
-    from hub.services.models.ollama import scan_ollama_dir
-    return [
-        LocalModelInfo.model_validate(row.model_dump())
-        for row in scan_ollama_dir(ollama_dir, limit = limit, materialize_links = materialize_links)
-    ]
-
-
-def _scan_hermes_dir(hermes_dir: Path) -> List[LocalModelInfo]:
-    """Hermes rows in this module's row schema; the scanner builds the Hub inventory's."""
-    from hub.services.models.hermes import scan_hermes_dir
-
-    fields = LocalModelInfo.model_fields
-    return [
-        LocalModelInfo.model_validate({k: v for k, v in row.model_dump().items() if k in fields})
-        for row in scan_hermes_dir(hermes_dir)
-    ]
-
-
-class _CompatLocalInventorySources(NamedTuple):
-    hf_cache_dir: Path
-    legacy_hf: Path
-    hf_default: Path
-    lm_dirs: tuple[Path, ...]
-    known_hf_caches: tuple[Path, ...]
-    hermes_dirs: tuple[Path, ...] = ()
-    ollama_dirs: tuple[Path, ...] = ()
-    omlx_dirs: tuple[Path, ...] = ()
-
-
-def _compat_local_inventory_sources() -> _CompatLocalInventorySources:
-    from utils.paths import (
-        ollama_model_dirs,
-        hermes_model_dirs,
-        hf_default_cache_dir,
-        legacy_hf_cache_dir,
-        lmstudio_model_dirs,
-        omlx_model_dirs,
-    )
-    from utils.hf_cache_settings import known_hf_hub_caches
-    return _CompatLocalInventorySources(
-        _resolve_hf_cache_dir(),
-        legacy_hf_cache_dir(),
-        hf_default_cache_dir(),
-        tuple(lmstudio_model_dirs()),
-        tuple(known_hf_hub_caches()),
-        tuple(hermes_model_dirs()),
-        tuple(ollama_model_dirs()),
-        tuple(omlx_model_dirs()),
-    )
-
-
-def _scan_nested_compat_rows(
-    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
-) -> List[LocalModelInfo]:
-    """Rows from a recursive scan folder's sub-folders that its own scan did not already list (#6371)."""
-    from hub.services.models.local_inventory import is_loadable_model_dir, nested_scan_roots
-
-    seen = {(m.path, m.model_format) for m in existing}
-    found: List[LocalModelInfo] = []
-    for root in nested_scan_roots(folder_path):
-        if len(existing) + len(found) >= limit:
-            break
-        # No shared variant index: it was built for the registered caches, so a nested one reads its own state.
-        rows = _scan_models_dir(root, limit = limit - len(existing) - len(found)) + _scan_hf_cache(
-            root, active_cache = False
-        )
-        for row in rows:
-            key = (row.path, row.model_format)
-            path = Path(row.path)
-            # This scanner also lists config-only folders; across a whole tree those are mostly other apps' configs.
-            if row.source != "hf_cache" and not (path.is_file() or is_loadable_model_dir(path)):
-                continue
-            if key in seen or any(
-                p in (".studio_links", "ollama_links") for p in Path(row.path).parts
-            ):
-                continue
-            seen.add(key)
-            found.append(row)
-            if len(existing) + len(found) >= limit:
-                return found
-    return found
-
-
-def _with_comfy_compat_rows(
-    folder_path: Path, existing: List[LocalModelInfo], *, limit: int
-) -> List[LocalModelInfo]:
-    """``existing`` plus a ComfyUI root's denoiser-folder rows, minus the role folders themselves
-    (the ``publisher/model`` scan lists them as models; they are containers)."""
-    from hub.utils.comfy_models import comfy_dit_scan_roots, comfy_role_dirs
-
-    role_dirs = comfy_role_dirs(folder_path)
-    if role_dirs:
-        existing = [
-            m for m in existing if os.path.normcase(os.path.realpath(m.path)) not in role_dirs
-        ]
-    seen = {(m.path, m.model_format) for m in existing}
-    found: List[LocalModelInfo] = []
-    roots = comfy_dit_scan_roots(folder_path)
-    scanned = {os.path.normcase(str(root)) for root in roots}
-    for root in roots:
-        if len(existing) + len(found) >= limit:
-            break
-        for row in _scan_models_dir(
-            root, limit = limit - len(existing) - len(found), loose_files = True
-        ):
-            key = (row.path, row.model_format)
-            if key in seen or os.path.normcase(row.path) in scanned:
-                continue
-            seen.add(key)
-            found.append(row)
-    return existing + found
-
-
 @in_scan_memo
 def collect_local_models(
     models_root: Path,
     *,
     custom_folders: Optional[list[dict]] = None,
-    sources: Optional[_CompatLocalInventorySources] = None,
+    sources: Optional[tuple] = None,
     materialize_ollama_links: bool = True,
-) -> List[LocalModelInfo]:
-    """Shared by the model picker and /v1/models so they cannot drift; models_root is caller-validated."""
+    folded: Optional[list] = None,
+) -> list:
+    """The Model Hub inventory rows, shared by /v1/models, the model resolver and the media index so they
+    cannot drift; models_root is caller-validated. ``folded`` receives the rows the listing drops as copies
+    of a listed one. Blocks, so call it off the event loop."""
     from storage.studio_db import list_scan_folders
-    from hub.services.models.local_inventory import run_custom_folder_bounded_sync
-    from hub.utils import gguf as gguf_utils
-    from hub.utils import inventory_scan as hf_cache_scan
-    from utils.models.model_config import detect_gguf_model
+    from hub.services.models import local_inventory
 
-    sources = sources or _compat_local_inventory_sources()
-    hf_cache_dir = sources.hf_cache_dir
-    legacy_hf = sources.legacy_hf
-    hf_default = sources.hf_default
-    lm_dirs = sources.lm_dirs
     if custom_folders is None:
         try:
             custom_folders = list_scan_folders()
         except Exception as e:
             logger.warning("Could not load custom scan folders: %s", e)
             custom_folders = []
-
-    local_models = _scan_models_dir(models_root)
-    active_cache_real = _safe_resolve(hf_cache_dir)
-    active_cache_key = os.path.normcase(active_cache_real) if active_cache_real else None
-    seen_hf: set[str] = set()
-    hf_sources: list[tuple[Path, bool]] = []
-    for cache_dir in (
-        hf_cache_dir,
-        *sources.known_hf_caches,
-        legacy_hf,
-        hf_default,
-        # oMLX also serves models--* repos kept under its own roots.
-        *sources.omlx_dirs,
-    ):
-        cache_real = _safe_resolve(cache_dir)
-        if cache_real is None:
-            continue
-        cache_key = os.path.normcase(str(cache_real))
-        if cache_key in seen_hf:
-            continue
-        seen_hf.add(cache_key)
-        hf_sources.append((cache_dir, cache_key == active_cache_key))
-
-    state_repositories = []
-    state_cache_dirs = [cache_dir for cache_dir, _active_cache in hf_sources]
-    for folder in custom_folders:
-        state_cache_dirs.extend(
-            run_custom_folder_bounded_sync(
-                str(folder["path"]),
-                lambda path = Path(folder["path"]): hf_cache_scan.scan_folder_hf_caches(path),
-            )
-            or ()
-        )
-    for cache_dir in dict.fromkeys(state_cache_dirs):
-        try:
-            for repo_dir in cache_dir.glob("models--*"):
-                repo_name = repo_dir.name[len("models--") :]
-                if repo_name and repo_dir.is_dir():
-                    state_repositories.append(("model", repo_name.replace("--", "/"), cache_dir))
-        except OSError:
-            continue
-    try:
-        from hub.utils import download_manifest, partial_verdict_cache
-
-        # Taken before the index reads the Hub state, so a write in between misses next time.
-        partial_verdict_cache.scan_token()
-        variant_states = download_manifest.build_variant_state_index(
-            state_repositories,
-            active_hub_cache = hf_cache_dir,
-        )
-    except Exception as e:
-        logger.warning("Could not build shared legacy Hub-state index: %s", e)
-        variant_states = None
-
-    for cache_dir, active_cache in hf_sources:
-        local_models += _scan_hf_cache(
-            cache_dir,
-            active_cache = active_cache,
-            variant_states = variant_states,
-        )
-
-    for lm_dir in lm_dirs:
-        local_models += _scan_lmstudio_dir(lm_dir)
-
-    for hermes_dir in sources.hermes_dirs:
-        try:
-            local_models += _scan_hermes_dir(hermes_dir)
-        except Exception as e:
-            logger.warning("Error scanning Hermes directory %s: %s", hermes_dir, e)
-
-    for ollama_dir in sources.ollama_dirs:
-        try:
-            local_models += _scan_ollama_dir(ollama_dir, materialize_links = materialize_ollama_links)
-        except Exception as e:
-            logger.warning("Error scanning Ollama directory %s: %s", ollama_dir, e)
-
-    for omlx_dir in sources.omlx_dirs:
-        try:
-            local_models += _scan_lmstudio_dir(omlx_dir, source = "omlx")
-        except Exception as e:
-            logger.warning("Error scanning oMLX directory %s: %s", omlx_dir, e)
-
-    # Scan user-added custom folders (per-folder cap).
-    _MAX_MODELS_PER_FOLDER = 200
-    hermes_identities = {_compat_inventory_path_identity(str(d)) for d in sources.hermes_dirs}
-    from hub.services.models.local_inventory import _local_model_path_is_symlink
-
-    custom_identities: set[str] = set()
-
-    def _scan_custom_folder(folder_path: Path, recursive: bool) -> list:
-        # Filter Ollama .studio_links/ from generic scanners: duplicates and internal paths.
-        _generic = [
-            m
-            for m in (
-                _scan_models_dir(folder_path, limit = _MAX_MODELS_PER_FOLDER)
-                + [
-                    row
-                    for cache_dir in hf_cache_scan.scan_folder_hf_caches(folder_path)
-                    for row in _scan_hf_cache(
-                        cache_dir,
-                        active_cache = False,
-                        variant_states = variant_states,
-                    )
-                ]
-                + _scan_lmstudio_dir(folder_path)
-            )
-            if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
-        ]
-        if recursive:
-            _generic += _scan_nested_compat_rows(
-                folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER
-            )
-        _generic = _with_comfy_compat_rows(folder_path, _generic, limit = _MAX_MODELS_PER_FOLDER)
-        custom_models = []
-        for model in _generic:
-            path = Path(model.path)
-            is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
-            if not is_gguf_row or model.partial:
-                custom_models.append(model)
-                continue
-            if path.is_dir():
-                patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
-                if any(
-                    detect_gguf_model(str(file), model_root = str(folder_path)) is not None
-                    for pattern in patterns
-                    for file in path.glob(pattern)
-                    if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
-                ):
-                    custom_models.append(model)
-            elif (
-                detect_gguf_model(
-                    model.path,
-                    model_root = str(folder_path),
-                )
-                is not None
-            ):
-                custom_models.append(model)
-        custom_models = gguf_utils.dedupe_custom_gguf_rows(custom_models)
-        if _compat_inventory_path_identity(str(folder_path)) in hermes_identities:
-            # Registering ~/.hermes/models was how Hermes downloads were listed before this
-            # scan; the walk lists every download a second time under the same id. Anything
-            # else kept in that folder is still the user's custom row.
-            staged = {
-                _compat_inventory_path_identity(m.path) for m in _scan_hermes_dir(folder_path)
-            }
-            custom_models = [
-                m for m in custom_models if _compat_inventory_path_identity(m.path) not in staged
-            ]
-        if len(custom_models) < _MAX_MODELS_PER_FOLDER:
-            custom_models += _scan_ollama_dir(
-                folder_path,
-                limit = _MAX_MODELS_PER_FOLDER - len(custom_models),
-                materialize_links = materialize_ollama_links,
-            )
-        return custom_models
-
-    for folder in custom_folders:
-        folder_path = Path(folder["path"])
-        row_path = str(folder.get("path", folder_path))
-        try:
-            custom_models = run_custom_folder_bounded_sync(
-                row_path,
-                lambda path = folder_path, recursive = bool(folder.get("recursive")): (
-                    _scan_custom_folder(path, recursive)
-                ),
-            )
-        except OSError as e:
-            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
-            # Keep the reason so the folder list can show it instead of nothing.
-            record_scan_failure(row_path, e)
-            continue
-        if custom_models is None:
-            continue
-        note_scan_folder_scanned(row_path, found = bool(custom_models))
-        # Links below the scan root are distinct aliases (as in the Hub inventory), not twins.
-        for m in custom_models:
-            try:
-                below_root = os.path.join(
-                    os.path.realpath(folder_path), os.path.relpath(m.path, folder_path)
-                )
-            except (OSError, ValueError):
-                continue
-            if not _local_model_path_is_symlink(below_root):
-                custom_identities.add(_compat_inventory_path_identity(m.path))
-        # Keep an already-attributed source: a registered ~/.ollama/models (or a folder shadowing the HF
-        # cache) must not re-stamp its rows as generic custom entries.
-        local_models += [
-            m
-            if m.source in ("hf_cache", "ollama", "hermes")
-            else m.model_copy(update = {"source": "custom"})
-            for m in custom_models
-        ]
-
-    # A registered oMLX root (the pre-scan workaround) lists its models as custom rows too; keep
-    # those (the train picker refuses oMLX rows).
-    local_models = [
-        m
-        for m in local_models
-        if m.source != "omlx" or _compat_inventory_path_identity(m.path) not in custom_identities
-    ]
-
-    # Deduplicate, but always keep custom folder entries (keyed by (id, source)) so they show in the
-    # "Custom Folders" UI section even when the model is also in the HF cache.
-    deduped: dict[str, LocalModelInfo] = {}
-    for model in local_models:
-        semantic_id = model.model_id if model.source == "hf_cache" and model.model_id else model.id
-        if model.source == "custom":
-            physical_identity = gguf_utils.local_path_physical_identity(model.path)
-            if (
-                model.model_id
-                and model.model_id.startswith("ollama/")
-                and any(
-                    part in (".studio_links", "ollama_links") for part in Path(model.path).parts
-                )
-            ):
-                physical_identity = "\x00".join((model.model_id, physical_identity))
-            key = "\x00".join((physical_identity, model.model_format or "", "custom"))
-        else:
-            key = semantic_id
-        existing = deduped.get(key)
-        prefer_model = existing is None
-        if existing is not None and model.source == existing.source == "hf_cache":
-            if model.partial != existing.partial:
-                prefer_model = not model.partial
-            elif bool(model.active_cache) != bool(existing.active_cache):
-                prefer_model = bool(model.active_cache)
-            else:
-                prefer_model = (model.updated_at or 0) > (existing.updated_at or 0)
-        if prefer_model:
-            deduped[key] = model
-
-    deduped_values = list(deduped.values())
-    custom_values = [model for model in deduped_values if model.source == "custom"]
-    models = sorted(
-        [model for model in deduped_values if model.source != "custom"]
-        + gguf_utils.suppress_grouped_gguf_file_rows(custom_values),
-        key = lambda item: item.updated_at or 0,
-        reverse = True,
+    rows = local_inventory._collect_models_from_default_sources(
+        models_root,
+        sources or local_inventory._local_inventory_sources(),
+        custom_folders,
+        materialize_ollama_links = materialize_ollama_links,
     )
-    return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
-
-
-_CompatLocalInventoryKey = tuple[Path, _CompatLocalInventorySources, tuple[str, ...], int]
-_compat_local_inventory_flights: dict[
-    tuple[asyncio.AbstractEventLoop, _CompatLocalInventoryKey], asyncio.Task[List[LocalModelInfo]]
-] = {}
-
-
-# Retrying a superseded scan pays only while invalidations are rare; past the cap, answer anyway.
-_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS = 8
-
-
-class _CompatLocalCacheChanged(RuntimeError):
-    def __init__(self, models: List[LocalModelInfo]) -> None:
-        super().__init__("local inventory sources changed during the scan")
-        # Carried so the attempt cap can serve the freshest scan rather than loop forever or answer empty.
-        self.models = models
-
-
-def _compat_inventory_path_identity(path: object) -> str:
-    raw = str(path)
-    try:
-        return os.path.normcase(os.path.realpath(os.path.expanduser(raw)))
-    except (OSError, UnicodeError, ValueError):
-        return os.path.normcase(raw)
-
-
-@in_scan_memo
-async def _shared_compat_local_inventory_scan(
-    models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
-) -> List[LocalModelInfo]:
-    from storage.studio_db import list_scan_folders
-    from hub.services.models.local_inventory import custom_folder_identities
-    from hub.utils import inventory_scan as hf_cache_scan
-
-    requested_sources = sources
-
-    def classify(models: List[LocalModelInfo]) -> List[LocalModelInfo]:
-        # Task and audio type are set in the shared flight, so overlapping callers skip repeated GGUF reads.
-        classified = []
-        for model in models:
-            task, audio_type = _catalog_classification._local_model_classification_for_task(
-                model, _local_model_task(model)
-            )
-            workflows = _catalog_classification.local_audio_workflows(model, audio_type)
-            classified.append(
-                model.model_copy(
-                    update = {
-                        "task": task,
-                        "audio_type": audio_type,
-                        **({"audio_workflows": workflows} if workflows else {}),
-                    }
-                )
-            )
-        return classified
-
-    async def collect(
-        expected_epoch: int, custom_folders: List[dict], scan_sources: _CompatLocalInventorySources
-    ) -> List[LocalModelInfo]:
-        models = await asyncio.to_thread(
-            collect_local_models,
-            models_root,
-            custom_folders = custom_folders,
-            sources = scan_sources,
-        )
-        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
-            raise _CompatLocalCacheChanged(models)
-        classified = await asyncio.to_thread(classify, models)
-        # That hop is an await point of its own, so a mutation can land after the check above.
-        if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
-            raise _CompatLocalCacheChanged(models)
-        return classified
-
-    # Discard obsolete results and retry their waiters against the current cache epoch.
-    superseded: Optional[List[LocalModelInfo]] = None
-    for _attempt in range(_COMPAT_LOCAL_INVENTORY_MAX_ATTEMPTS):
-        # Read the epoch first so any later source/folder change lands in a newer epoch.
-        # Caller-supplied sources stay pinned: /local validated models_dir against those roots.
-        epoch = hf_cache_scan.hf_cache_scans_epoch()
-        scan_sources = requested_sources or _compat_local_inventory_sources()
-        try:
-            custom_folders = await asyncio.to_thread(list_scan_folders)
-        except Exception as e:
-            logger.warning("Could not load custom scan folders: %s", e)
-            custom_folders = []
-        # Off the loop and under the scan budget: realpath on a hung mount blocks in the kernel.
-        identities = await asyncio.to_thread(
-            custom_folder_identities, custom_folders, _compat_inventory_path_identity
-        )
-        key: _CompatLocalInventoryKey = (
-            Path(_compat_inventory_path_identity(models_root)),
-            scan_sources,
-            tuple(
-                identity + ("\x00r" if folder.get("recursive") else "")
-                for identity, folder in zip(identities, custom_folders)
-            ),
-            epoch,
-        )
-        try:
-            return await hf_cache_scan.shared_scan(
-                _compat_local_inventory_flights,
-                key,
-                lambda expected_epoch = epoch, folders = custom_folders, roots = scan_sources: collect(
-                    expected_epoch, folders, roots
-                ),
-            )
-        except _CompatLocalCacheChanged as changed:
-            superseded = changed.models
+    rows = _without_format_labels(
+        [_with_scan_model_id(row) for row in local_inventory._filter_hidden_models(rows)]
+    )
+    listed = local_inventory._dedupe_local_models(rows)
+    # Keep the preferred entry first without moving a repo ahead of another model's aliases.
+    by_hf_repo: dict[str, list[int]] = {}
+    for i, row in enumerate(listed):
+        if row.source == "hf_cache" and row.model_id:
+            by_hf_repo.setdefault(row.model_id.strip().lower(), []).append(i)
+    for slots in by_hf_repo.values():
+        if len(slots) < 2:
             continue
-    # Invalidations outpace the walk, so no scan can confirm as current; serve the freshest one.
-    logger.warning("Compat local inventory kept racing cache invalidations; serving the last scan")
-    return await asyncio.to_thread(classify, superseded)
+        preferred = sorted((listed[i] for i in slots), key = lambda row: row.active_cache is not True)
+        for i, row in zip(slots, preferred):
+            listed[i] = row
+    if folded is not None:
+        kept = {id(row) for row in listed}
+        folded.extend(row for row in rows if id(row) not in kept)
+    return listed
+
+
+def _with_scan_model_id(model):
+    """The Hub drops a custom folder row's publisher/model id; requests and /v1/models still name it so."""
+    scan_model_id = getattr(model, "_scan_model_id", None)
+    if model.model_id or not scan_model_id:
+        return model
+    return model.model_copy(update = {"model_id": scan_model_id})
+
+
+def _without_format_labels(models: list) -> list:
+    """The Hub lists a folder or repo holding two weight formats once per format, as "X (GGUF)" and
+    "X (Safetensors)". These rows name it X, the id /v1/models lists, so a loaded model reports that id.
+    A label counts as the Hub's only when X is the folder or repo name, so "Literal (GGUF)" keeps its name."""
+    from pathlib import PurePath
+
+    from hub.services.models.common import _format_label
+
+    rows = []
+    for model in models:
+        label = f" ({_format_label(model.model_format)})"
+        base = model.display_name[: -len(label)] if model.display_name.endswith(label) else None
+        names = {PurePath(model.path or "").name, (model.model_id or "").rsplit("/", 1)[-1]}
+        if base and base in names:
+            model = model.model_copy(update = {"display_name": base})
+        rows.append(model)
+    return rows
+
+
+def _one_row_per_id(models: list) -> List[LocalModelInfo]:
+    """Pickers on this route key rows by id, so a folder or repo the Hub lists once per format keeps its first
+    row (the GGUF one)."""
+    fields = set(LocalModelInfo.model_fields)
+    seen: set[str] = set()
+    rows = []
+    for model in models:
+        if model.id in seen:
+            continue
+        seen.add(model.id)
+        rows.append(LocalModelInfo.model_validate(model.model_dump(include = fields)))
+    return rows
 
 
 async def _invalidate_local_scans() -> None:
@@ -1314,8 +472,10 @@ async def list_local_models(
     Redacted as ``/api/hub/local`` is: this router mirrors it over the same scan roots, so
     leaving it alone recovers the layout that route hides.
     """
+    from hub.services.models import local_inventory
+
     # Off the loop: the probes stat every source root.
-    sources = await asyncio.to_thread(_compat_local_inventory_sources)
+    sources = await asyncio.to_thread(local_inventory._local_inventory_sources)
     hf_cache_dir = sources.hf_cache_dir
     legacy_hf = sources.legacy_hf
     hf_default = sources.hf_default
@@ -1347,16 +507,17 @@ async def list_local_models(
         )
 
     try:
-        models = await _shared_compat_local_inventory_scan(models_root, sources)
-        if account_access.managed_account():
-            models = await asyncio.to_thread(account_access.filter_model_rows, models)
+        # Readers of this route open an Ollama row's id as a file, so it lists the .gguf link.
+        listing = await local_inventory.list_local_models_response(
+            str(models_root), materialize_ollama_links = True, sources = sources
+        )
         return redact_inventory_host_paths(
             LocalModelListResponse(
                 models_dir = str(models_root),
                 hf_cache_dir = str(hf_cache_dir),
                 lmstudio_dirs = [str(d) for d in lm_dirs],
                 hermes_dirs = [str(d) for d in sources.hermes_dirs],
-                models = models,
+                models = _one_row_per_id(_without_format_labels(listing.models)),
             ),
             via_api_key = via_api_key,
         )
@@ -1454,7 +615,7 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                     manifest = json.loads(m.read_text(encoding = "utf-8-sig"))
                 except (json.JSONDecodeError, OSError, ValueError):
                     continue
-                # Skip valid-JSON non-objects under manifests/ as _scan_ollama_dir does, or the chip probe raises.
+                # Skip valid-JSON non-objects under manifests/ as scan_ollama_dir does, or the chip probe raises.
                 if not isinstance(manifest, dict):
                     continue
                 layers = manifest.get("layers") or []
@@ -5369,7 +4530,7 @@ _NON_GGUF_WEIGHT_EXTENSIONS = (".safetensors", ".bin")
 
 def _snapshot_can_serve_a_load(snapshot: Path) -> bool:
     """Check contents, not mtime: a partial fetch leaves an unloadable dir newer than a complete one."""
-    if _local_pipeline_index(snapshot):
+    if _is_diffusers_pipeline_dir(snapshot):
         from core.inference.media_locality import _pipeline_components_present
         from hub.utils.inventory_scan import snapshot_pipeline_missing_denoiser
         return _pipeline_components_present(snapshot) and not snapshot_pipeline_missing_denoiser(

@@ -199,24 +199,22 @@ def test_the_catalog_registered_as_a_custom_folder_is_not_listed_twice(catalog, 
     assert list(_local()) == ["style"]
 
 
-@pytest.mark.parametrize("scanner", ["routes", "inventory"])
-def test_marked_loras_are_not_listed_as_models(tmp_path, scanner):
-    if scanner == "routes":
-        from routes.models import _scan_models_dir
-    else:
-        from hub.services.models.local_inventory import _scan_models_dir
+def test_marked_loras_are_not_listed_as_models(tmp_path):
+    from hub.services.models import local_inventory
 
     folder = tmp_path / "image-loras"
     _safetensors(folder / "a.safetensors", sidecar = _MARK)
     _safetensors(folder / "b.safetensors", sidecar = {"source": "studio-trained"})
-    assert _scan_models_dir(folder) == []
-    assert _scan_models_dir(tmp_path) == []
+    assert local_inventory._scan_models_dir(folder) == []
+    assert local_inventory._scan_models_dir(tmp_path) == []
 
     _safetensors(tmp_path / "plain" / "style.safetensors")
-    assert _scan_models_dir(tmp_path) == []
+    assert local_inventory._scan_models_dir(tmp_path) == []
 
     _safetensors(tmp_path / "checkpoint" / "model.safetensors", key = _MODEL_KEY)
-    assert [row.display_name for row in _scan_models_dir(tmp_path)] == ["checkpoint"]
+    assert [row.display_name for row in local_inventory._scan_models_dir(tmp_path)] == [
+        "checkpoint"
+    ]
 
 
 def test_the_picker_route_reports_fine_tuned(catalog):
@@ -229,18 +227,14 @@ def test_the_picker_route_reports_fine_tuned(catalog):
     assert flags == {"trained": True, "downloaded": False}
 
 
-@pytest.mark.parametrize("scanner", ["routes", "inventory"])
-def test_a_marked_gguf_in_a_subfolder_is_not_a_model(tmp_path, scanner):
-    if scanner == "routes":
-        from routes.models import _scan_models_dir
-    else:
-        from hub.services.models.local_inventory import _scan_models_dir
+def test_a_marked_gguf_in_a_subfolder_is_not_a_model(tmp_path):
+    from hub.services.models import local_inventory
 
     folder = tmp_path / "image-loras"
     folder.mkdir()
     (folder / "style.gguf").write_bytes(b"GGUF" + b"\0" * 60)
     (folder / "style.json").write_text(json.dumps(_MARK))
-    assert _scan_models_dir(tmp_path) == []
+    assert local_inventory._scan_models_dir(tmp_path) == []
 
 
 def test_a_managed_account_only_sees_custom_folder_loras_it_may_access(
@@ -260,19 +254,15 @@ def test_a_managed_account_only_sees_custom_folder_loras_it_may_access(
         dl.resolve_one("style", 1.0)
 
 
-@pytest.mark.parametrize("scanner", ["routes", "inventory"])
-def test_the_lmstudio_fallback_skips_marked_loras(tmp_path, scanner):
-    if scanner == "routes":
-        from routes.models import _scan_lmstudio_dir
-    else:
-        from hub.services.models.local_inventory import _scan_lmstudio_dir
+def test_the_lmstudio_fallback_skips_marked_loras(tmp_path):
+    from hub.services.models import local_inventory
 
     for gguf in (tmp_path / "image-loras" / "style.gguf", tmp_path / "loose.gguf"):
         gguf.parent.mkdir(parents = True, exist_ok = True)
         gguf.write_bytes(b"GGUF" + b"\0" * 60)
         gguf.with_suffix(".json").write_text(json.dumps(_MARK))
     (tmp_path / "real.gguf").write_bytes(b"GGUF" + b"\0" * 60)
-    assert [row.display_name for row in _scan_lmstudio_dir(tmp_path)] == ["real"]
+    assert [row.display_name for row in local_inventory._scan_lmstudio_dir(tmp_path)] == ["real"]
 
 
 def test_stacked_loras_share_one_custom_folder_scan(catalog, tmp_path, monkeypatch):
