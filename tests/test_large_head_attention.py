@@ -1275,7 +1275,6 @@ def _fake_rocm(monkeypatch, arch, opted_in):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device = None: props)
-    # HIP reports the gfx major as the capability, which the sm80 rule would admit.
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (9, 0))
     monkeypatch.setattr(LH, "_ROCM_OPT_IN", [opted_in])
 
@@ -1305,7 +1304,6 @@ def test_rocm_route_is_opt_in_and_allowlisted(monkeypatch, arch, opted_in, insta
     saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
     try:
         assert LH.patch_large_head_attention(model) is installs
-        # Off or ineligible: nothing wraps sdpa and nothing is compiled or autotuned.
         assert (ALL_ATTENTION_FUNCTIONS["sdpa"] is not saved) is installs
         assert bool(checked) is installs
     finally:
