@@ -18989,6 +18989,121 @@ class LlamaCppBackend:
             weights.append(int(width * (swa_cells if is_swa else full_cells)))
         return weights if any(weights) else []
 
+    def _kv_gpu_share(
+        self,
+        gpu_layers: int,
+        n_ctx: int,
+        *,
+        kv_bytes: Optional[int] = None,
+        **shape,
+    ) -> Optional[float]:
+        """Share of the KV cache -ngl ``gpu_layers`` puts on the GPU, or None when unweighable.
+        llama.cpp offloads weight layers at or past n_weight_layers + 1 - ngl (i_gpu_start), and a
+        loop slot's cache sits with the physical layer it reuses; weighted as _kv_layer_weights.
+        ``kv_bytes``: the priced total, so a hybrid's fixed recurrent state follows its own layers."""
+        n_slots = self._n_layers or 0
+        if n_slots <= 0:
+            return None
+        # MTP blocks hold no target KV where the total leaves them out.
+        n_target = n_slots
+        if self._target_kv_excludes_nextn():
+            n_target = max(1, n_slots - (self._nextn_predict_layers or 0))
+        try:
+            weights = self._kv_layer_weights(n_ctx, **shape)
+        except Exception:  # noqa: BLE001 -- unweighable header: the caller's fallback
+            weights = []
+        recurrent_mask = None
+        if len(weights) != n_slots or sum(weights[:n_target]) <= 0:
+            heads = getattr(self, "_n_kv_heads_by_layer", None)
+            shared = int(getattr(self, "_shared_kv_layers", None) or 0)
+            interval = getattr(self, "_full_attention_interval", None)
+            if isinstance(heads, (list, tuple)) and len(heads) == n_slots:
+                # Per-layer KV heads (hybrid models), at the widths the total prices.
+                hs = [max(0, int(h or 0)) for h in heads]
+                weights = self._kv_head_layer_widths(hs, **shape)
+                if 0 < shared < n_slots:
+                    weights[n_slots - shared :] = [0] * shared
+                # Zero-head layers are recurrent, except Nemotron-H's FFN-only blocks.
+                ffn = (
+                    getattr(self, "_feed_forward_length_by_layer", None)
+                    if getattr(self, "_architecture", None) in _SSM_FFN_FREE_LAYER_ARCHS
+                    else None
+                ) or []
+                recurrent_mask = [
+                    h == 0 and not (i < len(ffn) and (ffn[i] or 0) > 0)
+                    for i, h in enumerate(hs[:n_target])
+                ]
+            elif self._ssm_inner_size is not None and interval:
+                # Scalar-head hybrid: llama.cpp's is_recr, every interval-th layer attends.
+                weights = [int((i + 1) % int(interval) == 0) for i in range(n_slots)]
+                recurrent_mask = [not w for w in weights[:n_target]]
+            elif shared > 0:
+                # Scalar heads, shared-KV tail: the estimator's max(1, ...) floor.
+                allocating = max(1, n_target - shared)
+                weights = [1] * allocating + [0] * (n_slots - allocating)
+            else:
+                return None
+        weights = list(weights[:n_target]) + [0] * (n_slots - n_target)
+        if sum(weights) <= 0:
+            return None
+        n_phys = self.n_weight_layers or n_slots
+        phys = list(range(n_slots))
+        start, end = getattr(self, "_loop_start", None), getattr(self, "_loop_end", None)
+        if n_phys < n_slots and start is not None and end and 0 <= start < end <= n_phys:
+            span, extra = end - start, n_slots - n_phys
+            if getattr(self, "_architecture", None) in _LOOP_VISIT_ARCHS:
+                # Visit order: prelude and first pass, the repeated passes, then the coda.
+                phys = [
+                    i if i < end else start + (i - end) % span if i < end + extra else i - extra
+                    for i in range(n_slots)
+                ]
+            else:
+                # Slot order: physical layers, then one slot per repeated visit (layer_phys).
+                phys = [i if i < n_phys else start + (i - n_phys) % span for i in range(n_slots)]
+        elif n_phys != n_slots:
+            return None
+        first_gpu = max(0, n_phys + 1 - max(0, int(gpu_layers)))
+        on_gpu = [p >= first_gpu for p in phys]
+        share = sum(w for w, g in zip(weights, on_gpu) if g) / sum(weights)
+        if recurrent_mask and kv_bytes:
+            # The total holds the live recurrent state beside the growing KV, on the recurrent layers.
+            rec_layers = [g for g, r in zip(on_gpu[:n_target], recurrent_mask) if r]
+            try:
+                recurrent = int(self._rollback_state_bytes(int(shape.get("n_parallel") or 1)) or 0)
+            except Exception:  # noqa: BLE001 -- not a recurrent hybrid
+                recurrent = 0
+            if rec_layers and 0 < recurrent < kv_bytes:
+                rec_share = sum(rec_layers) / len(rec_layers)
+                share = (share * (kv_bytes - recurrent) + rec_share * recurrent) / kv_bytes
+        return share
+
+    def _kv_head_layer_widths(
+        self,
+        heads: "list[int]",
+        *,
+        flash_attn: bool = True,
+        cache_type_kv: Optional[str] = None,
+        **_shape,
+    ) -> "list[float]":
+        """Per-layer bytes per cell as _estimate_kv_cache_bytes prices per-layer heads: one latent
+        per attention layer under MLA and interval hybrids (path 2), else K plus V, with V padded
+        to the widest layer when flash attention is off (paths 4 and 5)."""
+        if self._kv_lora_rank is not None:
+            return [float(h > 0) for h in heads]
+        if self._ssm_inner_size is not None and self._full_attention_interval is not None:
+            # Path 2 prices one equal width per attention layer and no V for recurrent ones.
+            return [float(h > 0) for h in heads]
+        bpe_k = _kv_bytes_per_elem(cache_type_kv)
+        bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
+        key_len, val_len = self._kv_key_length, self._kv_value_length
+        if key_len is not None and val_len is not None:
+            pad = None if flash_attn else self._max_kv_value_width(val_len)
+            return [
+                h * key_len * bpe_k + (h * val_len if pad is None else pad) * bpe_v for h in heads
+            ]
+        v_max = max(heads or [0])
+        return [h * bpe_k + (h if flash_attn else v_max) * bpe_v for h in heads]
+
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
         if self._n_kv_heads_by_layer is not None and layer_idx < len(self._n_kv_heads_by_layer):
             return self._n_kv_heads_by_layer[layer_idx]

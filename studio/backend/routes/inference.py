@@ -14245,6 +14245,8 @@ class _GgufRuntimeBytes(NamedTuple):
     n_ubatch: Optional[int] = None
     # Host-heap checkpoint share of kv_bytes (bounded by --cache-ram); never reaches the GPU.
     kv_checkpoint_bytes: int = 0
+    # Flash-attention state the total was priced with (FA off pads V), for the per-layer split.
+    flash_attn: Optional[bool] = True
 
 
 _GGUF_RUNTIME_UNKNOWN = _GgufRuntimeBytes(0, 0, False, 0, None, 1)
@@ -14602,6 +14604,7 @@ def _gguf_runtime_bytes(
             swa_full = swa_full,
             kv_unified = kv_unified,
             n_ubatch = effective_ubatch,
+            flash_attn = flash_attn,
         )
         # the load reserves ubatch-scaled compute buffers, so they count against training too
         if is_diffusion:
@@ -15237,6 +15240,33 @@ def _gguf_offloaded_layer_fraction(
         # No dims to scale against; 1.0 keeps it consistent with Auto.
         return 1.0
     return max(0.0, min(1.0, gpu_layers / float(layer_count + 1)))
+
+
+def _gguf_gpu_kv_share(
+    probe, gpu_fraction: float, layer_count: Optional[int], runtime, kv_bytes: int
+) -> float:
+    """KV share on the GPU: SWA and cacheless layers hold fewer cells, so weight the offloaded
+    layers by their cache as the load path does; the layer fraction when unweighable."""
+    if not (0.0 < gpu_fraction < 1.0) or not layer_count:
+        return gpu_fraction
+    # Exact inverse of _gguf_offloaded_layer_fraction's ngl / (layers + 1).
+    gpu_layers = round(gpu_fraction * (layer_count + 1))
+    try:
+        share = probe._kv_gpu_share(
+            gpu_layers,
+            runtime.n_ctx,
+            swa_full = runtime.swa_full,
+            n_parallel = runtime.n_parallel,
+            kv_unified = runtime.kv_unified,
+            n_ubatch = runtime.n_ubatch,
+            flash_attn = runtime.flash_attn,
+            cache_type_kv = runtime.cache_type_kv,
+            kv_bytes = kv_bytes,
+        )
+    except Exception as exc:  # noqa: BLE001 -- unweighable header: the layer fraction
+        logger.debug("KV GPU share fell back to the layer fraction: %s", exc)
+        share = None
+    return gpu_fraction if share is None else share
 
 
 def _probe_backend():
@@ -16472,7 +16502,14 @@ def _gguf_memory_breakdown(
     if per_gpu and all(row.cache_bytes is not None for row in per_gpu):
         gpu_bytes = sum(row.weights_bytes + row.cache_bytes for row in per_gpu)
     else:
-        gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
+        gpu_bytes = gpu_weights + (
+            int(
+                gpu_kv_bytes
+                * _gguf_gpu_kv_share(probe, gpu_fraction, layer_count, runtime, gpu_kv_bytes)
+            )
+            if kv_on_gpu
+            else 0
+        )
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
