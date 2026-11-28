@@ -229,9 +229,21 @@ def test_compiled_fullgraph_no_breaks():
     assert torch.equal(out, eager)
 
 
+_ARCHS = {"own": None, "sm80": (8, 0), "sm89": (8, 9)}
+
+
+def _use_arch(monkeypatch, name):
+    """Run the launch configuration of another GPU class on this GPU (its kernels and tiles run anywhere)."""
+    cap = _ARCHS[name]
+    if cap is not None:
+        monkeypatch.setitem(IL._ARCH, torch.cuda.current_device(), IL._arch_for(cap))
+
+
+@pytest.mark.parametrize("arch", list(_ARCHS))
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
-def test_nan_rows_propagate(dtype):
+def test_nan_rows_propagate(monkeypatch, dtype, arch):
     """A NaN in one row of x / dY makes that output row NaN (as the 16-bit GEMM does) and leaves the others finite."""
+    _use_arch(monkeypatch, arch)
     M, N, K = 512, 256, 512
     x, w, dy = _inputs(M, N, K, dtype, seed = 3)
     wq, ws = IL.quantize_weight(w)
@@ -242,3 +254,42 @@ def test_nan_rows_propagate(dtype):
     dx = IL.int8_lora_dgrad(dy, wq, ws, None, None)
     assert torch.isnan(y[7]).all() and torch.isfinite(torch.cat([y[:7], y[8:]])).all()
     assert torch.isnan(dx[9]).all() and torch.isfinite(torch.cat([dx[:9], dx[10:]])).all()
+
+
+def _same(a, b):
+    return torch.equal(torch.isnan(a), torch.isnan(b)) and torch.equal(
+        a.nan_to_num(), b.nan_to_num()
+    )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+@pytest.mark.parametrize(
+    "M,N,K", [(2048, 3072, 4096), (1000, 1000, 1024), (512, 20480, 512), (300, 512, 20480)]
+)
+def test_arch_configurations_are_bit_identical(monkeypatch, M, N, K, dtype):
+    """The sm_80 and sm_89 configurations (input-gradient tile, one-pass quantizations, no prefetch pass) compute
+    the same bits as this GPU's own, on whichever GPU runs this (N or K = 20480 keeps the two-pass kernels)."""
+    x, w, dy = _inputs(M, N, K, dtype, seed = 5)
+    x[5, 9] = float("nan")
+    dy[3, 7] = float("nan")
+    wq, ws = IL.quantize_weight(w)
+    delta = torch.randn((M, K), device = "cuda", dtype = dtype) * 1e-3
+    outs = {}
+    for arch in _ARCHS:
+        monkeypatch.delitem(IL._ARCH, torch.cuda.current_device(), raising = False)
+        _use_arch(monkeypatch, arch)
+        IL.clear_int8_lora_cache()
+        xq, xs = IL.quantize_rotated_rows(x)
+        dq, ds = IL.quantize_rows_scaled(dy, ws)
+        outs[arch] = (
+            xq,
+            xs,
+            dq,
+            ds,
+            IL.int8_lora_fwd(x, wq, ws),
+            IL.int8_lora_dgrad(dy, wq, ws, None, None),
+            IL.int8_lora_dgrad(dy, wq, ws, None, delta),
+        )
+    for arch in ("sm80", "sm89"):
+        for a, b in zip(outs["own"], outs[arch]):
+            assert _same(a, b), arch

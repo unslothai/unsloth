@@ -19,6 +19,7 @@ reading the same input (q / k / v, gate / up) share one activation quantization.
 import contextlib
 import math
 import os
+import threading
 from typing import Optional
 
 import torch
@@ -74,12 +75,37 @@ _SHARE_XQ = os.environ.get("UNSLOTH_INT8_LORA_SHARE_XQ", "1") != "0"
 # Keep the transposed int8 weight for the input gradient (+1 byte per weight) instead of transposing per call.
 _CACHE_T = os.environ.get("UNSLOTH_INT8_LORA_CACHE_T", "0") == "1"
 _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
-# Tile (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on an RTX 5090 and an RTX PRO 6000.
+# Tile (BLOCK_M, BLOCK_N, BLOCK_K, GROUP_M, warps, stages): fastest on an RTX 5090 and an RTX PRO 6000, and on
+# A100 / L4 once the prefetch pass is skipped (below).
 _TILE = (128, 128, 64, 8, 4, 4)
 # Input gradient (BLOCK_M, BLOCK_R reduction step, GROUP_M, warps, stages), output block = GROUP: fastest of 8 on an
-# RTX PRO 6000 (8 warps for the un-rotation dots in the epilogue).
+# RTX PRO 6000 and on an L4 (8 warps for the un-rotation dots in the epilogue).
 _DGRAD_TILE = (128, 128, 8, 8, 3)
+# A100 without the prefetch pass: fastest of 8, 1.1-1.4x the tile above at Qwen3 4B / 8B shapes.
+_DGRAD_TILE_SM80 = (64, 128, 8, 4, 3)
 _ROTQ_ROWS = 16
+# One read of the input per row (rotated activations: L4; dY: sm_8x) for rows up to this many elements, instead
+# of an amax pass and a quantization pass. L4: 1.2-1.7x the two-pass rotated quantization, sm_8x: 2.2x (A100) the
+# two-pass dY quantization; A100 keeps the two-pass rotated one (the one-pass kernel measured 1.0-1.5x slower).
+_ONE_PASS_MAX = 16384
+_ROTQ1_BUDGET = 128  # rows x 128-blocks held per program by the one-pass rotated quantization
+# Triton 3.8 started splitting 8-bit dots in its sm_8x prefetch pass: the pass moves the first K slice of the next
+# iteration's operands from shared memory into registers ahead of the loop body. With the int32 accumulator and
+# the pipelined int8 tiles that is past the register file: ptxas spills (900 bytes per thread on the 128 x 128 x 64
+# tile, some wider tiles collapse to 32 registers with ~9 KB of spills) and the GEMM runs at 0.2x bf16 on A100.
+# These kernels compile without that one pass on sm_8x (other kernels keep it): 1.5x bf16 on A100 and 1.7x on L4
+# for the same tile, bit-identical. Older Triton does not split them (3.5 - 3.7: the pass leaves the loop as is;
+# 3.2: it helps), so they keep it.
+_SKIP_PREFETCH = os.environ.get("UNSLOTH_INT8_LORA_SKIP_PREFETCH", "1") != "0"
+
+
+def _triton_version():
+    import re
+    m = re.match(r"(\d+)\.(\d+)", getattr(triton, "__version__", "") if triton is not None else "")
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+_TRITON_SPLITS_8BIT_PREFETCH = _triton_version() >= (3, 8)
 
 
 def reset_int8_lora_stats():
@@ -90,6 +116,88 @@ def reset_int8_lora_stats():
 def _count(key):
     if not _compiling():
         INT8_LORA_STATS[key] += 1
+
+
+class _Arch(tuple):
+    """Per-device launch configuration: (prefetch_off, dgrad_tile, rowq_one_pass, rotq_one_pass)."""
+
+    __slots__ = ()
+
+    prefetch_off = property(lambda self: self[0])
+    dgrad_tile = property(lambda self: self[1])
+    rowq_one_pass = property(lambda self: self[2])
+    rotq_one_pass = property(lambda self: self[3])
+
+
+def _arch_for(cap) -> _Arch:
+    """The launch configuration for compute capability cap (major, minor)."""
+    cap = (int(cap[0]), int(cap[1]))
+    sm8x = cap[0] == 8
+    prefetch_off = bool(
+        sm8x and _SKIP_PREFETCH and _TRITON_SPLITS_8BIT_PREFETCH and _install_prefetch_skip()
+    )
+    dgrad_tile = _DGRAD_TILE_SM80 if prefetch_off and cap == (8, 0) else _DGRAD_TILE
+    return _Arch((prefetch_off, dgrad_tile, sm8x, cap == (8, 9)))
+
+
+_ARCH = {}
+
+
+def _arch(device) -> _Arch:
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    arch = _ARCH.get(index)
+    if arch is None:
+        arch = _ARCH[index] = _arch_for(torch.cuda.get_device_capability(index))
+    return arch
+
+
+_PREFETCH = threading.local()
+_PREFETCH_SENTINEL = "_unsloth_int8_lora_prefetch_skip"
+_PREFETCH_INSTALLED = []
+
+
+def _install_prefetch_skip() -> bool:
+    """Wrap Triton's prefetch pass so it is skipped while _no_prefetch() is active (this thread only)."""
+    if _PREFETCH_INSTALLED:
+        return _PREFETCH_INSTALLED[0]
+    ok = False
+    try:
+        from triton._C.libtriton import passes
+
+        ttgpuir = passes.ttgpuir
+        original = ttgpuir.add_prefetch
+        if getattr(original, _PREFETCH_SENTINEL, False):
+            ok = True
+        elif callable(original):
+
+            def add_prefetch(*args, **kwargs):
+                if getattr(_PREFETCH, "skip", False):
+                    return None
+                return original(*args, **kwargs)
+
+            setattr(add_prefetch, _PREFETCH_SENTINEL, True)
+            add_prefetch.__wrapped__ = original
+            ttgpuir.add_prefetch = add_prefetch
+            ok = True
+    except Exception:
+        ok = False
+    _PREFETCH_INSTALLED.append(ok)
+    return ok
+
+
+@contextlib.contextmanager
+def _no_prefetch(active):
+    # Compilation happens inside the launch on a cache miss; the PREFETCH_OFF constexpr keeps those
+    # compiles under their own cache key, so a cached stock compile is never reused here or the reverse.
+    if not active:
+        yield
+        return
+    previous = getattr(_PREFETCH, "skip", False)
+    _PREFETCH.skip = True
+    try:
+        yield
+    finally:
+        _PREFETCH.skip = previous
 
 
 def int8_lora_supported(device) -> Optional[str]:
@@ -164,6 +272,39 @@ if triton is not None:
         # tl.max drops NaN: a NaN row scale makes the whole output row NaN, as the 16-bit GEMM would.
         tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), amax * INV_SCALE), mask = rmask)
 
+    @triton.jit(do_not_specialize = ["M"])
+    def _int8_rotq1_kernel(
+        x_ptr,
+        h_ptr,
+        q_ptr,
+        s_ptr,
+        M,
+        K,
+        stride_x,
+        G: tl.constexpr,  # Hadamard block, fixed 128
+        INV_SCALE: tl.constexpr,  # 1 / (127 * sqrt(G))
+        ROWS: tl.constexpr,  # rows per program
+        NB: tl.constexpr,  # next power of two >= K / G (>= 16): the row is held as NB blocks of G
+    ):
+        # Same codes and scales as _int8_rotq_kernel with one read of x: ROWS rows as a [ROWS * NB, G] tile, one dot
+        # with H, the row amax, then the codes.
+        r = tl.arange(0, ROWS)
+        b = tl.arange(0, NB)
+        g = tl.arange(0, G)
+        rows = tl.program_id(0).to(tl.int64) * ROWS + r
+        mask = (rows < M)[:, None, None] & (b < K // G)[None, :, None]
+        cols = b[None, :, None] * G + g[None, None, :]
+        x = tl.load(x_ptr + rows[:, None, None] * stride_x + cols, mask = mask, other = 0.0)
+        H = tl.load(h_ptr + g[:, None] * G + g[None, :])
+        xr = tl.reshape(tl.dot(tl.reshape(x, (ROWS * NB, G)), H), (ROWS, NB * G))
+        amax = tl.maximum(tl.max(tl.abs(xr), axis = 1), 1e-30)
+        nans = tl.sum((xr != xr).to(tl.int32), axis = 1)
+        y = tl.extra.cuda.libdevice.rint(xr * (127.0 / amax)[:, None])
+        y = tl.reshape(tl.minimum(tl.maximum(y, -127.0), 127.0).to(tl.int8), (ROWS, NB, G))
+        tl.store(q_ptr + rows[:, None, None] * K + cols, y, mask = mask)
+        # tl.max drops NaN: a NaN row scale makes the whole output row NaN, as the 16-bit GEMM would.
+        tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), amax * INV_SCALE), mask = rows < M)
+
     @triton.jit(do_not_specialize = ["N"])
     def _int8_rowq_kernel(
         x_ptr,
@@ -198,6 +339,33 @@ if triton is not None:
         tl.store(s_ptr + row, tl.where(tl.sum(nans, axis = 0) > 0, float("nan"), rmax / 127.0))
 
     @triton.jit(do_not_specialize = ["M"])
+    def _int8_rowq1_kernel(
+        x_ptr,
+        c_ptr,
+        q_ptr,
+        s_ptr,
+        M,
+        N,
+        stride_x,
+        ROWS: tl.constexpr,  # rows per program
+        BLOCK: tl.constexpr,  # next power of two >= N: the whole row is read once
+    ):
+        # Same codes and scales as _int8_rowq_kernel, one read of x.
+        rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
+        offs = tl.arange(0, BLOCK)
+        mask = (rows < M)[:, None] & (offs < N)[None, :]
+        x = tl.load(x_ptr + rows[:, None] * stride_x + offs[None, :], mask = mask, other = 0.0).to(
+            tl.float32
+        )
+        xc = x * tl.load(c_ptr + offs, mask = offs < N, other = 0.0)[None, :]
+        rmax = tl.maximum(tl.max(tl.abs(xc), axis = 1), 1e-30)
+        nans = tl.sum((xc != xc).to(tl.int32), axis = 1)
+        y = tl.extra.cuda.libdevice.rint(xc * (127.0 / rmax)[:, None])
+        y = tl.minimum(tl.maximum(y, -127.0), 127.0)
+        tl.store(q_ptr + rows[:, None] * N + offs[None, :], y.to(tl.int8), mask = mask)
+        tl.store(s_ptr + rows, tl.where(nans > 0, float("nan"), rmax / 127.0), mask = rows < M)
+
+    @triton.jit(do_not_specialize = ["M"])
     def _int8_mm_kernel(
         a_ptr,
         b_ptr,
@@ -214,6 +382,7 @@ if triton is not None:
         BLOCK_N: tl.constexpr,  # columns of c per program
         BLOCK_K: tl.constexpr,  # reduction step; K % BLOCK_K == 0, so the K loop loads unmasked
         GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the b tiles
+        PREFETCH_OFF: tl.constexpr,  # compiled without the sm_8x prefetch pass (cache key only)
     ):
         # c[m, n] = as[m] * bs[n] * sum_k a[m, k] b[n, k] (+ d[m, n]); a, b int8 with K contiguous, K % BLOCK_K == 0.
         pid = tl.program_id(0)
@@ -267,6 +436,7 @@ if triton is not None:
         BLOCK_M: tl.constexpr,  # rows of c per program
         BLOCK_R: tl.constexpr,  # reduction (N) step
         GROUP_M: tl.constexpr,  # row tiles per swizzle group, for L2 reuse of the bt tiles
+        PREFETCH_OFF: tl.constexpr,  # compiled without the sm_8x prefetch pass (cache key only)
     ):
         # c[m, kblock] = (as[m] * sum_n a[m, n] bt[kblock, n]) @ H / sqrt(G) (+ d): a [M, N] int8 codes of dY * s,
         # bt [K, N] the transposed forward int8 codes of W @ H (int8 MMA operands are K-major); the epilogue undoes
@@ -322,6 +492,25 @@ def quantize_rotated_rows(x: torch.Tensor):
     q = torch.empty((M, K), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
     h = _hadamard_pm1(x.device, x.dtype)
+    nb = max(16, triton.next_power_of_2(K // GROUP))
+    if nb * GROUP <= _ONE_PASS_MAX and _arch(x.device).rotq_one_pass:
+        rows = max(1, _ROTQ1_BUDGET // nb)
+        with _device_ctx(x):
+            _launch(
+                _int8_rotq1_kernel,
+                ((M + rows - 1) // rows,),
+                (x, h, q, s, M, K, x.stride(0)),
+                4,
+                {
+                    "G": GROUP,
+                    "INV_SCALE": 1.0 / (127.0 * math.sqrt(GROUP)),
+                    "ROWS": rows,
+                    "NB": nb,
+                },
+                x.device.index,
+                num_warps = 8,
+            )
+        return q, s
     with _device_ctx(x):
         _launch(
             _int8_rotq_kernel,
@@ -342,6 +531,20 @@ def quantize_rows_scaled(x: torch.Tensor, col_scale: torch.Tensor):
         x = x.contiguous()
     q = torch.empty((M, N), device = x.device, dtype = torch.int8)
     s = torch.empty((M,), device = x.device, dtype = torch.float32)
+    block = triton.next_power_of_2(N)
+    if block <= _ONE_PASS_MAX and _arch(x.device).rowq_one_pass:
+        rows = max(1, _ONE_PASS_MAX // block)
+        with _device_ctx(x):
+            _launch(
+                _int8_rowq1_kernel,
+                ((M + rows - 1) // rows,),
+                (x, col_scale, q, s, M, N, x.stride(0)),
+                4,
+                {"ROWS": rows, "BLOCK": block},
+                x.device.index,
+                num_warps = 8,
+            )
+        return q, s
     with _device_ctx(x):
         _launch(
             _int8_rowq_kernel,
@@ -363,7 +566,8 @@ def _mm(xq, xs, wq, ws, delta, out_dtype):
     if delta is not None and delta.stride(-1) != 1:
         delta = delta.contiguous()  # the epilogue reads rows with a unit column stride
     d = delta if delta is not None else out
-    with _device_ctx(xq):
+    off = _arch(xq.device).prefetch_off
+    with _device_ctx(xq), _no_prefetch(off):
         _launch(
             _int8_mm_kernel,
             (((M + bm - 1) // bm) * ((N + bn - 1) // bn),),
@@ -375,6 +579,7 @@ def _mm(xq, xs, wq, ws, delta, out_dtype):
                 "BLOCK_N": bn,
                 "BLOCK_K": bk,
                 "GROUP_M": gm,
+                "PREFETCH_OFF": off,
             },
             xq.device.index,
             num_warps = warps,
@@ -387,12 +592,14 @@ def _dgrad_mm(dyq, dys, wqt, delta, out_dtype):
     M, N = dyq.shape
     K = wqt.shape[0]
     out = torch.empty((M, K), device = dyq.device, dtype = out_dtype)
-    bm, br, gm, warps, stages = _DGRAD_TILE
+    arch = _arch(dyq.device)
+    bm, br, gm, warps, stages = arch.dgrad_tile
     if delta is not None and delta.stride(-1) != 1:
         delta = delta.contiguous()
     d = delta if delta is not None else out
     h = _hadamard_pm1(dyq.device, torch.bfloat16)
-    with _device_ctx(dyq):
+    off = arch.prefetch_off
+    with _device_ctx(dyq), _no_prefetch(off):
         _launch(
             _int8_dgrad_kernel,
             (((M + bm - 1) // bm) * (K // GROUP),),
@@ -405,6 +612,7 @@ def _dgrad_mm(dyq, dys, wqt, delta, out_dtype):
                 "BLOCK_M": bm,
                 "BLOCK_R": br,
                 "GROUP_M": gm,
+                "PREFETCH_OFF": off,
             },
             dyq.device.index,
             num_warps = warps,
