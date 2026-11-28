@@ -685,6 +685,65 @@ def test_trigger_fires_only_on_a_predicted_oom(af, monkeypatch):
     assert _decide_with(af, monkeypatch, between, mode = "in_backward")[0] == "in_backward"
 
 
+def test_distributed_training_is_refused_except_fsdp2(af, monkeypatch):
+    """FSDP2 (accelerate's plugin with fsdp_version 2, or Unsloth's native FSDP2) can step inside backward, with
+    gradient accumulation too; DDP, FSDP1, DeepSpeed, tensor / pipeline / context parallelism, HSDP and FSDP2 CPU
+    offload keep their reasons."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(af, "_fsdp_calls_grad_hooks", lambda: True)
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE"):
+        monkeypatch.delenv(name, raising = False)
+
+    def trainer(plugin = None, config = None, **kw):
+        t = _Trainer(world_size = 2, **kw)
+        t.accelerator = SimpleNamespace(state = SimpleNamespace(fsdp_plugin = plugin), parallelism_config = config)
+        t.is_fsdp_enabled = plugin is not None
+        return t
+
+    model = _plan_model()
+    fsdp2 = SimpleNamespace(fsdp_version = 2, cpu_offload = None)
+    assert af._distributed(trainer(fsdp2), model) == ("fsdp2", None)
+    assert af._blocker(trainer(fsdp2, gradient_accumulation_steps = 4), model, False) is None
+    assert "gradient_accumulation" in af._blocker(_Trainer(gradient_accumulation_steps = 4), model, False)
+
+    class CPUOffloadPolicy:
+        pass
+
+    cases = [
+        (trainer(), "DDP"),
+        (trainer(SimpleNamespace(fsdp_version = 1)), "FSDP1"),
+        (trainer(SimpleNamespace(fsdp_version = 2, cpu_offload = CPUOffloadPolicy())), "CPU offload"),
+        (trainer(fsdp2, SimpleNamespace(tp_size = 2)), "tensor parallelism"),
+        (trainer(fsdp2, SimpleNamespace(dp_replicate_size = 2)), "HSDP"),
+        (trainer(fsdp2, SimpleNamespace(cp_size = 2)), "context parallelism"),
+    ]
+    deepspeed = trainer(fsdp2)
+    deepspeed.is_deepspeed_enabled = True
+    cases.append((deepspeed, "DeepSpeed"))
+    for t, why in cases:
+        kind, reason = af._distributed(t, model)
+        assert kind is None and why in reason, (why, reason)
+        assert why in af._blocker(t, model, True)
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "2")
+    assert "pipeline" in af._distributed(trainer(fsdp2), model)[1]
+    monkeypatch.delenv("UNSLOTH_PP_SIZE")
+    monkeypatch.setattr(af, "_fsdp_calls_grad_hooks", lambda: False)
+    assert "torch 2.5" in af._distributed(trainer(fsdp2), model)[1]
+
+
+def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
+    from types import SimpleNamespace
+
+    model = _plan_model()
+    single = af.plan_auto_fit(_Trainer(), model, usable_bytes = 0)
+    monkeypatch.setattr(af, "_distributed", lambda trainer, model: ("fsdp2", None))
+    monkeypatch.setattr(af, "_world_size", lambda: 4)
+    sharded = af.plan_auto_fit(SimpleNamespace(args = _Args(), optimizer_cls_and_kwargs = None), model, usable_bytes = 0)
+    assert sharded["grads"] == single["grads"] // 4 and sharded["states"] == single["states"] // 4
+    assert sharded["in_backward"] < sharded["standard"] < single["standard"]
+
+
 def test_kill_switch_and_forced_modes(af, monkeypatch):
     for value, mode in (
         ("0", "off"),

@@ -226,6 +226,79 @@ def _sync(p):
             torch.cuda.synchronize(p.device)
 
 
+def _local(t):
+    """The local shard of a DTensor (FSDP2's sharded parameters and gradients), else the tensor itself. Norms and
+    clipping read local shards: a DTensor norm launches its own collective per tensor."""
+    local = getattr(t, "_local_tensor", None)
+    return local if isinstance(local, torch.Tensor) else t
+
+
+def _is_dtensor(t):
+    return isinstance(getattr(t, "_local_tensor", None), torch.Tensor)
+
+
+def _fsdp_calls_grad_hooks():
+    """Whether this torch's FSDP2 runs a sharded parameter's post-accumulate-grad hooks once its reduce-scattered
+    gradient is assigned (foreach_reduce, torch 2.5+; torch 2.4's fully_shard does not). Read from the source where
+    it is readable, else by version."""
+    try:
+        try:
+            from torch.distributed.fsdp._fully_shard import _fsdp_collectives as module
+        except ImportError:
+            from torch.distributed._composable.fsdp import _fsdp_collectives as module
+        import inspect
+
+        return "_post_accumulate_grad_hooks" in inspect.getsource(module.foreach_reduce)
+    except Exception:
+        pass
+    try:
+        major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+        return (major, minor) >= (2, 5)
+    except Exception:
+        return False
+
+
+def _fsdp_layout(model):
+    """FSDP2 parameter groups of a fully_shard model, in no particular order: (lists of sharded params, the shard
+    process group). FSDP2 reduce-scatters each group's gradients together and then runs the hooks of its sharded
+    params in order, on the post-reduce stream (the root group's inside the root's post-backward final callback).
+    Refused: HSDP (a replicate dimension: the post-reduce stream is the all-reduce stream and the norm needs the
+    replicate group too), an FSDP2 all-reduce hook, CPU offload (gradients land on the host), several groups."""
+    groups, pgs = [], []
+    seen = set()
+    for module in model.modules() if model is not None else ():
+        get_state = getattr(module, "_get_fsdp_state", None)
+        if not callable(get_state):
+            continue
+        try:
+            state = get_state()
+        except Exception:
+            continue
+        param_groups = getattr(state, "_fsdp_param_groups", None)
+        if param_groups is None:
+            single = getattr(state, "_fsdp_param_group", None)
+            param_groups = [single] if single is not None else []
+        for group in param_groups:
+            if group is None or id(group) in seen:
+                continue
+            seen.add(id(group))
+            mesh_info = getattr(group, "mesh_info", None)
+            if getattr(mesh_info, "replicate_mesh_dim", None) is not None:
+                raise RuntimeError("HSDP (FSDP2 with a replicate dimension)")
+            if getattr(group, "_all_reduce_hook", None) is not None:
+                raise RuntimeError("an FSDP2 all-reduce hook")
+            if any(getattr(fp, "offload_to_cpu", False) for fp in group.fsdp_params):
+                raise RuntimeError("FSDP2 CPU offload (the gradients are reduced to the host)")
+            groups.append([fp.sharded_param for fp in group.fsdp_params])
+            pg = getattr(mesh_info, "shard_process_group", None)
+            if pg is not None:
+                pgs.append(pg)
+    pg = pgs[0] if pgs else None
+    if any(q is not pg for q in pgs):
+        raise RuntimeError("FSDP2 groups on different process groups")
+    return groups, pg
+
+
 _ACTIVE = weakref.WeakValueDictionary()  # id(param) -> the InBackwardOptimizer that owns its hook
 
 
@@ -245,7 +318,18 @@ class InBackwardOptimizer(torch.optim.Optimizer):
     step's total and P the previous step's sum over the same tensors. It is never below sqrt(S) (so never clips
     less than the norm already seen implies), is exact when the gradients keep their relative sizes, and is the
     exact norm for everything stepped by flush() at optimizer.step(). Under `measuring()` the hooks only measure (no step, gradients
-    freed), so the next pass can clip with the exact norm; the first step does that when `calibrate` is set."""
+    freed), so the next pass can clip with the exact norm; the first step does that when `calibrate` is set.
+
+    FSDP2 (`fully_shard`, torch 2.5+; pass `model`): FSDP2 runs a sharded parameter's post-accumulate-grad hooks after
+    it assigns the reduce-scattered (averaged) gradient shard, on the post-reduce stream. Each FSDP2 group is one
+    batch, stepped at the hook of its last sharded parameter, on that stream, with the gradients freed
+    stream-safely. Norms read local shards; one all-reduce per group (on the device, no host sync) sums the squared
+    norms over the shard group, so every clip mode sees the full gradients' norms. Parameters replaced after this
+    optimizer was built (accelerate shards the model after Trainer.create_optimizer) get their hooks at the next
+    armed() / measuring(). `sync_gate` (e.g. `lambda: accelerator.sync_gradients`) makes a hook on a micro-batch
+    that does not step leave the gradient to accumulate (FSDP2 under no_sync runs no hooks until the synchronized
+    micro-batch; reducing every micro-batch runs them each time). Under compiled autograd FSDP2 skips the hooks,
+    and step() steps every gradient."""
 
     def __init__(
         self,
@@ -254,6 +338,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         model = None,
         batch_bytes = None,
         clip = None,
+        sync_gate = None,
     ):
         kind = _step_kind(optimizer)
         if kind is None:
@@ -271,6 +356,12 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._cur_sq = {}
         self._prev_seen = {}  # device -> sum of _prev_sq over the tensors seen this step
         self.measured_steps = 0
+        self._sync_gate = sync_gate
+        self._model_ref = weakref.ref(model) if model is not None else None
+        self._fsdp = False
+        self._pg = None
+        self._fsdp_last = set()  # id(sharded param) whose hook ends its FSDP2 group's batch
+        self._hooked = frozenset()
         self._armed = False
         self._done = set()
         self._norm_sq = {}
@@ -298,9 +389,69 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                 (p.numel() * p.element_size() for g in groups for p in g["params"]), default = 0
             )
         self.batch_bytes = int(batch_bytes)
+        self._attach(model)
+
+    def _trainable_ids(self):
+        return frozenset(id(p) for g in self.param_groups for p in g["params"] if p.requires_grad)
+
+    def _attach(self, model):
+        """Hooks on the current parameters, the reuse watch on `model`, and the FSDP2 layout when they are sharded."""
+        for handle in self._handles:
+            handle.remove()
+        self._handles = []
+        self._where = None
+        self._fsdp, self._pg, self._fsdp_last = False, None, set()
+        trainable = [p for g in self.param_groups for p in g["params"] if p.requires_grad]
+        if any(_is_dtensor(p) for p in trainable):
+            self._setup_fsdp(model, trainable)
         self._register_hooks()
         if model is not None:
             self._watch_reuse(model)
+        self._hooked = self._trainable_ids()
+
+    def _refresh(self):
+        """accelerate's FSDP2 prepare replaces the parameters in param_groups after the optimizer is built."""
+        if self._trainable_ids() != self._hooked:
+            model = self._model_ref() if self._model_ref is not None else None
+            self._attach(model)
+
+    def _setup_fsdp(self, model, trainable):
+        if model is None:
+            raise ValueError("Unsloth: pass the fully_shard model to step the optimizer inside backward under FSDP2.")
+        if not _fsdp_calls_grad_hooks():
+            raise RuntimeError(
+                f"Unsloth: torch {torch.__version__}'s FSDP2 does not run post-accumulate-grad hooks on sharded "
+                "parameters (torch 2.5 added them), so the optimizer cannot step inside backward."
+            )
+        try:
+            groups, pg = _fsdp_layout(model)
+        except RuntimeError as e:
+            raise RuntimeError(f"Unsloth: stepping the optimizer inside backward does not support {e}.") from None
+        mine = {id(p) for p in trainable}
+        managed = set()
+        for params in groups:
+            ids = [id(p) for p in params if id(p) in mine]
+            managed.update(ids)
+            if ids:
+                self._fsdp_last.add(ids[-1])
+        if any(id(p) not in managed for p in trainable):
+            raise RuntimeError(
+                "Unsloth: stepping the optimizer inside backward under FSDP2 needs every trainable parameter in a "
+                "fully_shard group (an unsharded one is averaged over ranks only after backward)."
+            )
+        self._pg = pg
+        self._fsdp = True
+
+    def _all_reduce(self, t):
+        """Sum over the FSDP2 shard group, on the device (no host sync). Every rank calls it for the same batches."""
+        if not self._fsdp or self._pg is None:
+            return t
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return t
+        dist.all_reduce(t, op = dist.ReduceOp.SUM, group = self._pg)
+        return t
 
     # Forwarded, so the wrapper and the wrapped optimizer can never disagree (load_state_dict replaces both).
     @property
@@ -460,6 +611,11 @@ class InBackwardOptimizer(torch.optim.Optimizer):
     @contextlib.contextmanager
     def armed(self):
         previous = self._armed
+        if not previous:
+            self._refresh()
+            # One armed region is one micro-batch (Unsloth arms each training_step): a module is reused when it runs
+            # twice within it, not when gradient accumulation runs the next micro-batch.
+            self._calls = {}
         self._armed = True
         try:
             yield self
@@ -475,6 +631,9 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         """Hooks only measure: each gradient's norm is recorded and the gradient freed, nothing is stepped. On exit
         the step's exact norm is kept for the stepping pass that follows."""
         previous = self._armed
+        if not previous:
+            self._refresh()
+            self._calls = {}
         self._armed, self._measuring = True, True
         ok = False
         try:
@@ -492,8 +651,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                     ]
                     if left:
                         self._account(left)
-                    for p in left:
-                        p.grad = None
+                    self._free_grads(left)
                     self._known_sq = self._total_sq()
                     self.measured_steps += 1
             finally:
@@ -534,13 +692,25 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         grad = p.grad
         if grad is None or self._locate(p) is None:
             return
+        if self._sync_gate is not None and not self._sync_gate():
+            return  # a micro-batch that does not step: the gradient accumulates until the synchronized one
         if self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done and not self._measuring:
             raise self._second_gradient(p)
         if id(p) in self._pending_ids:
             return  # accumulated again before its batch was stepped: stepped once, with the sum
-        nbytes = grad.numel() * grad.element_size()
+        local = _local(grad)
+        nbytes = local.numel() * local.element_size()
+        if self._fsdp:
+            # FSDP2 runs a group's hooks back to back after its reduce-scatter: the last one steps the batch. Never
+            # split by size: shard sizes differ across ranks, and every rank must all-reduce the same batches.
+            self._pending.append(p)
+            self._pending_ids.add(id(p))
+            self._pending_bytes += nbytes
+            if id(p) in self._fsdp_last:
+                self._flush_pending()
+            return
         if self._pending and self._pending_bytes + nbytes > self.batch_bytes:
             self._flush_pending()  # a batch never exceeds batch_bytes (one larger weight steps alone)
         self._pending.append(p)
@@ -584,8 +754,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             return
         if self._measuring:
             self._account(params)
-            for p in params:
-                p.grad = None
+            self._free_grads(params)
             return
         for p in params:
             if id(p) in self._done:
@@ -595,34 +764,40 @@ class InBackwardOptimizer(torch.optim.Optimizer):
 
     def _account(self, params):
         """Each gradient's float32 norm (one multi-tensor launch per device), added to this step's running sum of
-        squares and recorded for the next step's estimate. Returns {device: (grads, norms, squares)}."""
+        squares and recorded for the next step's estimate. Under FSDP2 the squares of the local shards are summed over
+        the shard group in one all-reduce per batch (with the previous step's squares of the same tensors), so
+        everything below sees the full gradients. Returns {device: (local grads, norms, squares)}."""
         by_device = {}
         for p in params:
-            by_device.setdefault(p.grad.device, []).append(p)
+            by_device.setdefault(_local(p.grad).device, []).append(p)
         info = {}
+        estimate = (
+            self.max_grad_norm > 0 and self.clip in ("estimate", "exact") and self._prev_total is not None
+        )
         for device, group in by_device.items():
-            grads = [p.grad.detach() for p in group]
+            # Local shards (FSDP2): a DTensor norm or multiply would launch hidden collectives per tensor.
+            grads = [_local(p.grad.detach()) for p in group]
             norms = torch.stack(_norms(grads))
             sq = norms * norms
             key = str(norms.device)
+            parts = sq.unbind(0)
+            for p, q in zip(group, parts):
+                self._cur_sq[id(p)] = q  # this rank's share: the next step's P is reduced the same way
+            # The previous step's squares of these tensors (a tensor new this step counts as unchanged).
+            previous = (
+                torch.stack([self._prev_sq.get(id(p), q).to(sq.device) for p, q in zip(group, parts)]).sum()
+                if estimate
+                else None
+            )
+            if self._fsdp:
+                both = torch.cat([sq, previous.reshape(1) if previous is not None else sq.new_zeros(1)])
+                both = self._all_reduce(both)
+                sq, previous = both[:-1], (both[-1] if previous is not None else None)
+                norms = sq.sqrt()
             square = sq.sum()
             self._norm_sq[key] = square if key not in self._norm_sq else self._norm_sq[key] + square
-            parts = sq.unbind(0)
-            if (
-                self.max_grad_norm > 0
-                and self.clip in ("estimate", "exact")
-                and self._prev_total is not None
-            ):
-                # The previous step's squares of these tensors (a tensor new this step counts as unchanged).
-                previous = torch.stack(
-                    [self._prev_sq.get(id(p), q).to(sq.device) for p, q in zip(group, parts)]
-                )
-                seen = previous.sum()
-                self._prev_seen[key] = (
-                    seen if key not in self._prev_seen else self._prev_seen[key] + seen
-                )
-            for p, q in zip(group, parts):
-                self._cur_sq[id(p)] = q
+            if previous is not None:
+                self._prev_seen[key] = previous if key not in self._prev_seen else self._prev_seen[key] + previous
             info[key] = (grads, norms, sq)
         return info
 
@@ -679,7 +854,22 @@ class InBackwardOptimizer(torch.optim.Optimizer):
                     self._step_bitsandbytes(gi, pi, p)
             else:
                 self._step_torch(params)
+        self._free_grads(params)
+
+    def _free_grads(self, params):
+        """Drop the gradients. Under FSDP2 they were allocated on the reduce-scatter stream (or cast on the post-reduce
+        stream) and read on the current one: recording it keeps the allocator from handing the block to the next
+        reduce-scatter before the update has read it (a no-op when the streams are the same)."""
+        stream = None
         for p in params:
+            grad = p.grad
+            if grad is None:
+                continue
+            local = _local(grad)
+            if self._fsdp and local.is_cuda:
+                if stream is None:
+                    stream = torch.cuda.current_stream(local.device)
+                local.record_stream(stream)
             p.grad = None
 
     def _step_torch(self, params):
@@ -739,7 +929,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         # planner budgets them for one batch.
         batch, size = [], 0
         for p in left:
-            nbytes = p.grad.numel() * p.grad.element_size()
+            local = _local(p.grad)
+            nbytes = local.numel() * local.element_size()
             if batch and size + nbytes > self.batch_bytes:
                 self._step_only(batch)
                 batch, size = [], 0
@@ -907,18 +1098,22 @@ def plan_auto_fit(
 ):
     """Memory prediction for one training step (bytes beyond what is allocated now).
 
-    Returns a dict with `standard`, `in_backward`, `lomo` (bytes each needs), `usable`, and the parts."""
+    Returns a dict with `standard`, `in_backward`, `lomo` (bytes each needs), `usable`, and the parts. Under FSDP2
+    everything is per rank: weights, gradients and optimizer state are 1 / world of the full sizes, and each rank
+    also holds one or two gathered (unsharded) blocks while it computes."""
     args = getattr(trainer, "args", None)
     params = _trainable(model)
-    grads = sum(p.numel() * p.element_size() for p in params)
-    largest = max((p.numel() for p in params), default = 0)
-    largest_bytes = max((p.numel() * p.element_size() for p in params), default = 0)
+    kind, _ = _distributed(trainer, model)
+    world = _world_size() if kind == "fsdp2" else 1
+    grads = sum(p.numel() * p.element_size() for p in params) // world
+    largest = max((p.numel() for p in params), default = 0) // world
+    largest_bytes = max((p.numel() * p.element_size() for p in params), default = 0) // world
     optim_name = _optim_name(args)
     custom = getattr(trainer, "optimizer_cls_and_kwargs", None)
     if optimizer_cls is None and custom is not None:
         optimizer_cls = custom[0]
         optim_name = ""
-    states = _state_bytes(optim_name, optimizer_cls, params, model)
+    states = _state_bytes(optim_name, optimizer_cls, params, model) // world
     label = (optim_name + " " + getattr(optimizer_cls, "__name__", "")).lower()
     # Measured on Llama-3.2-3B and Qwen3-0.6B / Qwen3-4B full finetuning (adamw_8bit, Unsloth checkpointing):
     # the standard step peaks at gradients + state + about the activations. torch's foreach AdamW (without the
@@ -938,12 +1133,18 @@ def plan_auto_fit(
     activations = _activation_bytes(model, seq, batch)
     margin = activations // 16 + (256 << 20)  # split allocator blocks + a fixed safety margin
     # Reused weights (tied, shared, looped) keep their gradient until the step in both in-backward tiers.
-    deferred = _reused_bytes(model, params)
+    deferred = _reused_bytes(model, params) // world
+    gathered = 0
+    if world > 1:
+        # FSDP2 all-gathers one block to compute and prefetches the next: about two blocks of full weights.
+        blocks = max(1, len(_fsdp_blocks(model)))
+        gathered = 2 * sum(p.numel() * p.element_size() for p in model.parameters()) // blocks
+    activations += gathered
     standard = grads + states + max(activations, step_temp) + margin
     in_backward = states + deferred + max(activations, live) + margin
     lomo = deferred + max(activations, live_lomo) + margin
     if usable_bytes is None:
-        usable_bytes = _usable_bytes(params)
+        usable_bytes = _usable_bytes(params) if world == 1 else _usable_bytes(params, world)
     return dict(
         usable = usable_bytes,
         standard = standard,
@@ -964,16 +1165,38 @@ def _sr_on(params):
     return any(p.dtype == torch.bfloat16 for p in params)
 
 
-def _usable_bytes(params):
-    device = next((p.device for p in params if p.device.type == "cuda"), None)
+def _fsdp_blocks(model):
+    """The repeated decoder blocks (FSDP2 shards one unit per block)."""
+    import re
+
+    blocks = set()
+    for name, _ in model.named_modules():
+        m = re.search(r"(?:^|\.)layers\.(\d+)$", name)
+        if m:
+            blocks.add(name)
+    if not blocks:  # no decoder stack by name: one unit per child that holds weights
+        blocks = {name for name, child in model.named_children() if any(True for _ in child.parameters())}
+    return blocks
+
+
+def _usable_bytes(params, world = 1):
+    device = next((_local(p).device for p in params if _local(p).device.type == "cuda"), None)
+    if device is None and world > 1 and torch.cuda.is_available():
+        device = torch.device("cuda", torch.cuda.current_device())  # accelerate moves and shards the model later
     if device is None:
         return None
     try:
         from ..models._utils import usable_cuda_bytes
-        return usable_cuda_bytes(device)
+        free = usable_cuda_bytes(device)
     except Exception:
         free, _ = torch.cuda.mem_get_info(device)
-        return int(free)
+        free = int(free)
+    if world > 1:
+        # Weights still whole on this GPU (accelerate's FSDP2 shards them after the optimizer is built): only
+        # 1 / world of them stays.
+        whole = sum(p.numel() * p.element_size() for p in params if not _is_dtensor(p) and p.is_cuda)
+        free += whole - whole // world
+    return free
 
 
 def _single_process(trainer):
@@ -1012,6 +1235,87 @@ def _single_process(trainer):
     return True
 
 
+def _is_native_fsdp2(model):
+    try:
+        from ..models.fsdp2_native import is_native_fsdp2
+
+        return bool(is_native_fsdp2(model))
+    except Exception:
+        return False
+
+
+def _fsdp_plugin(trainer):
+    state = getattr(getattr(trainer, "accelerator", None), "state", None)
+    return getattr(state, "fsdp_plugin", None)
+
+
+def _env_size(name):
+    try:
+        return int(os.environ.get(name, "1") or 1)
+    except ValueError:
+        return 1
+
+
+def _distributed(trainer, model):
+    """(None, None) for one process; ("fsdp2", None) for FSDP2 sharding the in-backward step supports (Unsloth's
+    native FSDP2 or accelerate's FSDP2 plugin); (None, why) when refused."""
+    if _single_process(trainer):
+        return None, None
+    args = getattr(trainer, "args", None)
+    if getattr(trainer, "is_deepspeed_enabled", False) or getattr(args, "deepspeed", None):
+        return None, "DeepSpeed (it builds and steps its own optimizer)"
+    for name, what in (
+        ("UNSLOTH_TP_SIZE", "tensor parallelism"),
+        ("UNSLOTH_PP_SIZE", "pipeline parallelism"),
+        ("UNSLOTH_CP_SIZE", "context parallelism"),
+    ):
+        if _env_size(name) > 1:
+            return None, f"{what} ({name})"
+    accelerator = getattr(trainer, "accelerator", None)
+    if accelerator is not None and accelerator.__dict__.get("_unsloth_pp_stage") is not None:
+        return None, "pipeline parallelism"
+    config = getattr(accelerator, "parallelism_config", None)
+    for attr, what in (
+        ("tp_size", "tensor parallelism"),
+        ("cp_size", "context parallelism"),
+        ("dp_replicate_size", "HSDP (FSDP2 with a replicate dimension)"),
+    ):
+        if int(getattr(config, attr, 1) or 1) > 1:
+            return None, what
+    plugin = _fsdp_plugin(trainer)
+    native = _is_native_fsdp2(model)
+    if native or (plugin is not None and int(getattr(plugin, "fsdp_version", 1) or 1) == 2):
+        offload = getattr(plugin, "cpu_offload", None) if plugin is not None else None
+        if offload is not None and "CPUOffloadPolicy" in type(offload).__name__:
+            return None, "FSDP2 CPU offload (the gradients are reduced to the host)"
+        for p in _trainable(model):
+            if _is_dtensor(p):
+                if _local(p).device.type != "cuda" and torch.cuda.is_available():
+                    return None, "FSDP2 CPU offload (the gradients are reduced to the host)"
+                mesh = getattr(p, "device_mesh", None)
+                if mesh is not None and getattr(mesh, "ndim", 1) > 1:
+                    return None, "FSDP2 over a multi-dimensional mesh (HSDP or tensor parallelism)"
+            elif native:
+                return None, "native FSDP2 leaves some trainable parameters unsharded (averaged after backward)"
+        if not _fsdp_calls_grad_hooks():
+            return None, f"FSDP2 on torch {torch.__version__} (post-accumulate-grad hooks on shards need torch 2.5)"
+        return "fsdp2", None
+    if plugin is not None or getattr(args, "fsdp", None) or getattr(trainer, "is_fsdp_enabled", False):
+        return None, "FSDP1 (it reduces flat parameters after backward)"
+    return None, "DDP (it all-reduces gradients after backward)"
+
+
+def _world_size():
+    try:
+        import torch.distributed as dist
+
+        if dist.is_available() and dist.is_initialized():
+            return dist.get_world_size()
+    except Exception:
+        pass
+    return 1
+
+
 def _full_finetuning(model):
     seen = set()
     while model is not None and id(model) not in seen:
@@ -1037,10 +1341,12 @@ def _scaler_active(trainer):
 def _blocker(trainer, model, forced):
     """Why neither tier may engage for this trainer (None: eligible)."""
     args = getattr(trainer, "args", None)
-    if int(getattr(args, "gradient_accumulation_steps", 1) or 1) != 1:
+    kind, why = _distributed(trainer, model)
+    if why is not None:
+        return f"distributed training: {why}"
+    if int(getattr(args, "gradient_accumulation_steps", 1) or 1) != 1 and kind != "fsdp2":
+        # Under FSDP2 the hooks run only on the synchronized micro-batch (no_sync) or are gated to it.
         return "gradient_accumulation_steps > 1 (every micro-batch's gradient must be kept until the step)"
-    if not _single_process(trainer):
-        return "distributed training (DDP / FSDP / DeepSpeed) reduces gradients after backward"
     if getattr(args, "fp16", False) or _scaler_active(trainer):
         return "fp16 mixed precision (the GradScaler skips whole steps on overflow)"
     if not forced and not _full_finetuning(model):
@@ -1406,14 +1712,21 @@ def _arm_training_step(trainer, wrapper):
     wrapper_ref = weakref.ref(wrapper)
     trainer_ref = weakref.ref(trainer)
     repeatable = _can_repeat_step(trainer)
-    if not repeatable:
+    accumulates = int(getattr(getattr(trainer, "args", None), "gradient_accumulation_steps", 1) or 1) > 1
+    if not repeatable or accumulates:
         wrapper.calibrate = False
         if wrapper.max_grad_norm > 0 and wrapper.clip == "exact":
             wrapper.clip = "estimate"
-            print(
-                f"Unsloth: {_CLIP_ENV}=exact needs to run each training step twice, but this trainer generates its "
-                "inputs inside the step, so max_grad_norm uses the estimated global norm instead."
+            why = (
+                "gradient accumulation (FSDP2) spreads the step over several micro-batches"
+                if accumulates
+                else "this trainer generates its inputs inside the step"
             )
+            print(
+                f"Unsloth: {_CLIP_ENV}=exact needs to run each training step twice, but {why}, so max_grad_norm "
+                "uses the estimated global norm instead."
+            )
+        repeatable = False
 
     def training_step(*args, **kwargs):
         opt = wrapper_ref()
@@ -1491,9 +1804,17 @@ def _convert(
         print(f"Unsloth: not stepping {name} inside backward: it is not a per-weight optimizer.")
         return optimizer
     max_norm = float(getattr(trainer.args, "max_grad_norm", 0) or 0)
-    wrapper = InBackwardOptimizer(
-        base, max_grad_norm = max_norm, model = getattr(trainer, "model", None)
-    )
+    model = getattr(trainer, "model", None)
+    sync_gate = None
+    if _distributed(trainer, model)[0] == "fsdp2":
+        # Unsloth's native FSDP2 can reduce-scatter every micro-batch: step only on the synchronized one.
+        accelerator_ref = weakref.ref(trainer.accelerator)
+
+        def sync_gate():
+            accelerator = accelerator_ref()
+            return accelerator is None or bool(getattr(accelerator, "sync_gradients", True))
+
+    wrapper = InBackwardOptimizer(base, max_grad_norm = max_norm, model = model, sync_gate = sync_gate)
     setattr(trainer, _MARK, True)
     setattr(trainer, _TIER, tier)
     trainer._unsloth_in_backward_optimizer = wrapper
