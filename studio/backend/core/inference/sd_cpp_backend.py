@@ -3476,6 +3476,20 @@ def _family_rng_kwargs(fam: Any) -> dict[str, str]:
     return {"rng": rng} if rng else {}
 
 
+def _family_metal_vae_conv_direct(fam: Any) -> bool:
+    """True on macOS when the family's VAE takes Metal direct conv by default (``sd_cpp_metal_vae_conv_direct``).
+    Always False elsewhere, so other hosts call sd-server / sd-cli with exactly the same kwargs as before."""
+    return sys.platform == "darwin" and bool(getattr(fam, "sd_cpp_metal_vae_conv_direct", False))
+
+
+def _family_start_kwargs(fam: Any) -> dict[str, Any]:
+    """Per-family sd-server start kwargs: ``rng`` (``_family_rng_kwargs``) and the Metal VAE direct conv default."""
+    kwargs: dict[str, Any] = dict(_family_rng_kwargs(fam))
+    if _family_metal_vae_conv_direct(fam):
+        kwargs["metal_vae_conv_direct"] = True
+    return kwargs
+
+
 def _request_extra_sample_args(state: Any) -> Optional[str]:
     """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
     if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
@@ -4451,7 +4465,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
-                            **_family_rng_kwargs(fam),
+                            **_family_start_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -5444,7 +5458,7 @@ class SdCppDiffusionBackend:
             threads = state.threads,
             env = env,
             extra_args = ["--mmap"] if mmap else None,
-            **_family_rng_kwargs(state.family),
+            **_family_start_kwargs(state.family),
         )
         lane_state = replace(
             state,
@@ -5785,7 +5799,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
+            server.start(state.files, **start_kwargs, **_family_start_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -6077,6 +6091,11 @@ class SdCppDiffusionBackend:
                         env = state.spawn_env(),
                         on_log = self._on_log,
                         cancel_event = cancel,
+                        **(
+                            {"metal_vae_conv_direct": True}
+                            if _family_metal_vae_conv_direct(state.family)
+                            else {}
+                        ),
                     )
                 outputs = sd_cli_output_paths(out_path, (layers + 1) if layers else 1)
                 for path in _keep_layers(outputs, layers or 0):
@@ -6274,9 +6293,9 @@ class SdCppDiffusionBackend:
             return {
                 "metal_vae_conv_direct": {"enabled": on, "reason": f"user --conv-direct {value}"}
             }
-        if state.native_speed == "off":
-            return {"metal_vae_conv_direct": {"enabled": False, "reason": "off: speed mode off"}}
-        on, reason = sd_cpp_args.metal_vae_conv_direct_decision(offload, binary)
+        on, reason = sd_cpp_args.metal_vae_conv_direct_decision(
+            offload, binary, _family_metal_vae_conv_direct(getattr(state, "family", None))
+        )
         return {"metal_vae_conv_direct": {"enabled": on, "reason": reason}}
 
     def status(self) -> dict[str, Any]:

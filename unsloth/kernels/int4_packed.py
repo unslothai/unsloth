@@ -23,10 +23,13 @@ import torch
 import triton
 import triton.language as tl
 
+from ..rocm_build import is_rocm_torch as _is_rocm_torch
+
 __all__ = [
     "Int4QuantState",
     "int4_dequantize",
     "int4_dequantize_weight",
+    "int4_fast_self_check",
     "int4_matmul",
     "int4_matmul_t",
     "int4_repack_",
@@ -421,7 +424,7 @@ def _marlin_api():
     global _MARLIN_API
     if _MARLIN_API is None:
         _MARLIN_API = False
-        if os.environ.get("UNSLOTH_INT4_MARLIN", "1") != "0" and torch.version.hip is None:
+        if os.environ.get("UNSLOTH_INT4_MARLIN", "1") != "0" and not _is_rocm_torch(torch):
             try:
                 from vllm import _custom_ops as ops
                 from vllm.scalar_type import scalar_types
@@ -498,7 +501,7 @@ def _pick_layout(packed, qs):
     if (
         os.environ.get("UNSLOTH_INT4_REPACK", "1") == "0"
         or not packed.is_cuda
-        or torch.version.hip is not None
+        or _is_rocm_torch(torch)
         or qs.bits != 4
         or qs.g_idx is not None
         or packed.dtype != torch.int32
@@ -729,6 +732,10 @@ def _fast_args(packed, qs):
             )
     key = (qs.layout, packed.device, zp is not None, qs.dtype)
     if call is not None and key not in _FAST_CHECKED:
+        if _self_check_unsafe(packed.device):
+            # The check syncs (.item()) and draws from a Generator: never inside a trace or a graph capture.
+            # int4_fast_self_check runs it eagerly at load; until then take the exact path, uncached.
+            return None
         g = torch.Generator(device = packed.device).manual_seed(0)
         probe = torch.randn(4, K, device = packed.device, dtype = qs.dtype, generator = g)
         ref = probe.float() @ int4_dequantize(packed, qs, qs.dtype).float().t()
@@ -746,6 +753,24 @@ def _fast_args(packed, qs):
     call = call if call is not None and _FAST_CHECKED[key] else None
     qs._fast = (packed.data_ptr(), call)
     return call
+
+
+def _self_check_unsafe(device):
+    if torch.compiler.is_compiling():
+        return True
+    return device.type == "cuda" and torch.cuda.is_current_stream_capturing()
+
+
+def int4_fast_self_check(packed, qs):
+    """Run the fused path's one-time self-check now (eagerly, at load), so the first decode call under
+    torch.compile or CUDA graph capture finds it done. Returns whether the fused path is used."""
+    if qs.layout is None or qs.dtype != qs.scale.dtype:
+        return False
+    key = (qs.layout, packed.device, qs.zero_point is not None, qs.dtype)
+    if key in _FAST_CHECKED:
+        return _FAST_CHECKED[key]
+    with torch.no_grad(), _on_device(packed.device):
+        return _fast_args(packed, qs) is not None
 
 
 def _marlin_gemm_args(op, **values):

@@ -119,13 +119,15 @@ def hidream_te4_kwargs(
                 )
 
     logger.info("diffusion.hidream: loading Llama TE4 from %s", HIDREAM_LLAMA_REPO)
-    from .host_pinning import cuda_is_integrated
+    from .host_pinning import cuda_is_integrated, rocm_is_integrated
     from .safetensors_pread import pread_safetensors
 
     # loaded before the pipeline's own scope: a 16 GB bf16 Llama converted on Windows reads through pread too
     device = getattr(target, "torch_device", None)
     with pread_safetensors(
-        convert_to = dtype, integrated_cuda = device is not None and cuda_is_integrated(device)
+        convert_to = dtype,
+        integrated_cuda = device is not None and cuda_is_integrated(device),
+        integrated_rocm = device is not None and rocm_is_integrated(device),
     ):
         text_encoder_4 = LlamaForCausalLM.from_pretrained(
             HIDREAM_LLAMA_REPO,

@@ -381,6 +381,35 @@ def tail_start(
     return start
 
 
+def _request_reference_index(messages: list[dict], request: Optional[int] = None) -> Optional[int]:
+    """The image-edit reference just before the request: a tool loop passes its active turn, since
+    image results are appended as user turns after it."""
+    if request is None:
+        users = [index for index, message in enumerate(messages) if message.get("role") == "user"]
+        request = users[-1] if users else None
+    if not request:
+        return None
+    previous = messages[request - 1]
+    parts = previous.get("content")
+    if previous.get("role") == "assistant" and isinstance(parts, list):
+        if any(isinstance(p, dict) and p.get("type") == "image_generation_call" for p in parts):
+            return request - 1
+    return None
+
+
+def keep_request_reference(
+    body: list[dict],
+    cut: int,
+    request: Optional[int] = None,
+) -> int:
+    return cut - 1 if cut > 0 and _request_reference_index(body, request) == cut - 1 else cut
+
+
+def request_reference_ids(messages: list[dict], request: Optional[int] = None) -> set[int]:
+    index = _request_reference_index(messages, request)
+    return set() if index is None else {id(messages[index])}
+
+
 def tail_token_budget(prompt_budget_tokens: Optional[int]) -> int:
     if not prompt_budget_tokens or prompt_budget_tokens <= 0:
         return TAIL_TOKENS

@@ -13,7 +13,7 @@ from .autotuning import (
 
 # PERMUTE_X loads tokens in expert order, PERMUTE_Y stores output in token order: the same
 # permutation indices either way.
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_forward_kernel(
     x_ptr,
     w_ptr,

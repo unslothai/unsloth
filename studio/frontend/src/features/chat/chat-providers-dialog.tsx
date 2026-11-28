@@ -2465,11 +2465,7 @@ export function ChatProvidersSettings({
                   {compactionModeDraft !== "summary"
                     ? "How full the model's context window gets before the oldest messages are dropped."
                     : "How full the model's context window gets before older messages are summarized."}{" "}
-                  Default {AUTO_COMPACT_PERCENT_DEFAULT}%
-                  {providerType === "anthropic" || providerType === "openai"
-                    ? ", up to 200,000 tokens"
-                    : ""}
-                  .
+                  Default {AUTO_COMPACT_PERCENT_DEFAULT}%.
                 </p>
                 <p
                   id="provider-auto-compact-tokens-note"
@@ -2586,9 +2582,6 @@ export function ChatProvidersSettings({
                     : compactionModeDraft === "checkpoint"
                       ? "Everything before the latest turn leaves the model's context at once, as on a local model, with no summary call. Search conversation brings it back word for word."
                       : "The same model writes a summary of the older turns; the recent ones stay as they are."}
-                  {providerType === "anthropic" || providerType === "openai"
-                    ? " Models that compact on the provider's side keep doing so."
-                    : ""}
                 </p>
               </div>
               <Select

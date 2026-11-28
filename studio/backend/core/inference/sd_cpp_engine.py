@@ -696,13 +696,18 @@ class SdCppEngine:
         env: Optional[dict[str, str]] = None,
         on_log: Optional[Callable[[str], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        metal_vae_conv_direct: bool = False,
     ) -> Path:
         """Speed flags skip any offload flag; a set cancel_event kills the sd-cli process tree."""
         offload = list(offload or [])
         binary = self._require_binary()
         speed = speed_flags_without(
             native_speed_flags(
-                native_speed, [*offload, *(extra_args or ())], binary_accelerator(binary), binary
+                native_speed,
+                [*offload, *(extra_args or ())],
+                binary_accelerator(binary),
+                binary,
+                metal_vae_conv_direct,
             ),
             offload,
         )

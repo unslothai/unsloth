@@ -44,7 +44,7 @@ TODO:
 """
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dX_kernel(
     dY_ptr,
     w_ptr,
@@ -235,7 +235,7 @@ to account for expert boundaries
 """
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dW_kernel(
     x_ptr,
     dY_ptr,
@@ -433,7 +433,7 @@ _autotuned_grouped_gemm_dW_kernel = triton.autotune(
 )(_grouped_gemm_dW_kernel)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dW_per_expert_kernel(
     x_ptr,
     dY_ptr,

@@ -11,6 +11,7 @@ import torch
 from real_accelerator import has_real_cuda
 
 from unsloth.kernels import fp8 as F8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 OLD = "torchao.prototype.blockwise_fp8_inference.blockwise_quantization"
 NEW = "torchao.kernel.blockwise_quantization"
@@ -56,6 +57,7 @@ def _devices(
         lambda index = None: (10, 0) if tma_arch[index] else capability,
     )
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_FP8_TMA_GEMM", True)
     monkeypatch.setattr(F8, "_TensorDescriptor", object)
 

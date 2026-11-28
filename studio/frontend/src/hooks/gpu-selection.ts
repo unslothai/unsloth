@@ -12,6 +12,8 @@ export interface SystemGpuDevice {
   memoryFreeGb: number;
   /** Whether free memory was reported, including a real zero. */
   memoryFreeKnown?: boolean;
+  pcieLinkWidth?: number;
+  pcieLinkGen?: number;
   /** A Vulkan iGPU: memoryTotalGb is a capped view of system RAM. Per device, since a mixed
    * inventory pairs it with a discrete card. */
   sharedMemory: boolean;

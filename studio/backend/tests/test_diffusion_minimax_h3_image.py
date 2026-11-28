@@ -729,7 +729,7 @@ def test_the_plan_sizes_the_encoder_the_request_takes(h3i, monkeypatch):
     )
     h3i.planned_dit_scheme(None, "cpu")
     h3i.planned_dit_scheme(None, "cpu", "none")
-    assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_GB]
+    assert seen == [h3i.H3_IMAGE_TE_INT8_GB, h3i.H3_IMAGE_TE_BF16_READ_GB]
 
 
 def test_the_plan_credits_host_memory_the_unload_frees(h3i, monkeypatch):

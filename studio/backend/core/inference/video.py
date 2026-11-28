@@ -3547,6 +3547,7 @@ def _h3_others_bytes(
     dtype: Any,
     rotating: bool,
     te_streamed: bool = False,
+    pipe: Any = None,
 ) -> int:
     """Bytes beside the denoiser: when rotating, only the larger of conditioner and VAEs counts (the
     40 GB reserve evicts one), else they add up; te_streamed uses the streamed footprint."""
@@ -3557,7 +3558,12 @@ def _h3_others_bytes(
         from .video_minimax_h3_te import H3_TE_STREAMED_GB
         text_encoder_gb = H3_TE_STREAMED_GB
     else:
-        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = components[1])
+        from .video_minimax_h3_te import h3_bf16_te_gb
+
+        # The read-layer bf16 conditioner only where that is what this pipeline loads.
+        text_encoder_gb = h3_te_resident_gb(
+            te_scheme, bf16_gb = h3_bf16_te_gb(components[1], pipe = pipe)
+        )
     headroom_bytes = (
         estimate_video_runtime_mib(
             width = fam.resolution_presets[0][0],
@@ -3579,6 +3585,7 @@ def _h3_dense_denoiser_resident_bytes(
     dtype: Any,
     rotating: bool = False,
     te_streamed: bool = False,
+    pipe: Any = None,
 ) -> Optional[tuple[int, int]]:
     """Denoiser size is measured from the built module, not the family table's released dense figure."""
     components = getattr(fam, "bf16_components_gb", None)
@@ -3603,6 +3610,7 @@ def _h3_dense_denoiser_resident_bytes(
             dtype = dtype,
             rotating = rotating,
             te_streamed = te_streamed,
+            pipe = pipe,
         )
         return int(denoiser_bytes), others
     except Exception:  # noqa: BLE001 -- an unanswerable estimate keeps the rotation as it is
@@ -3983,13 +3991,14 @@ def _h3_residency_budget_bytes(
     te_scheme: Optional[str],
     fragmentation: bool = True,
     top_gb: float = 0.0,
+    pipe: Any = None,
 ) -> int:
     """Device bytes the resident set may occupy for this request."""
     try:
         from .diffusion_memory import cuda_reusable_cache_bytes
         from .video_minimax_h3 import H3_TEXT_ENCODER_BF16_GB
         from .video_minimax_h3_residency import h3_phase_need_gb
-        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB, h3_bf16_te_gb
 
         # Signed: a card already inside the budget reserve owes that deficit before cache and resident groups count.
         free = _h3_signed_free_device_bytes(device)
@@ -4004,7 +4013,9 @@ def _h3_residency_budget_bytes(
         te_gb = (
             H3_TE_STREAMED_GB
             if te_streamed
-            else h3_te_resident_gb(te_scheme, bf16_gb = H3_TEXT_ENCODER_BF16_GB)
+            else h3_te_resident_gb(
+                te_scheme, bf16_gb = h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = pipe)
+            )
         )
         need = h3_phase_need_gb(
             width,
@@ -4020,7 +4031,13 @@ def _h3_residency_budget_bytes(
 
 
 def _h3_resident_pin_deferral(
-    fam: Any, denoiser: Any, device: str, *, te_streamed: bool, te_scheme: Optional[str]
+    fam: Any,
+    denoiser: Any,
+    device: str,
+    *,
+    te_streamed: bool,
+    te_scheme: Optional[str],
+    pipe: Any = None,
 ) -> Optional[int]:
     """Denoiser bytes if the initial fit is predicted to hold it whole (so pins can be deferred), else None."""
     try:
@@ -4054,6 +4071,7 @@ def _h3_resident_pin_deferral(
             frames = fam.default_num_frames,
             te_streamed = te_streamed,
             te_scheme = te_scheme,
+            pipe = pipe,
         )
         return int(total) if 0 < total <= budget else None
     except Exception:  # noqa: BLE001 -- unpredictable: pin up front
@@ -8146,7 +8164,7 @@ class VideoBackend:
                         pinned_snapshot[0],
                         pinned_snapshot[1][:12],
                     )
-            from .host_pinning import cuda_is_integrated
+            from .host_pinning import cuda_is_integrated, rocm_is_integrated
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
@@ -8159,8 +8177,9 @@ class VideoBackend:
                     else resolve_diffusion_device_target(ordinal = _ordinal)
                 )
                 integrated_cuda = cuda_is_integrated(_target.torch_device)
+                integrated_rocm = rocm_is_integrated(_target.torch_device)
             except Exception:  # noqa: BLE001 - unresolvable target: the platform default
-                integrated_cuda = False
+                integrated_cuda = integrated_rocm = False
 
             checkpoint_cached_repo = (
                 str(checkpoint_local) if checkpoint_local is not None else kwargs["repo_id"]
@@ -8177,7 +8196,9 @@ class VideoBackend:
             def _load(offline: bool) -> None:
                 if forced_offline:
                     kwargs["local_files_only"] = offline
-                with pread_safetensors(integrated_cuda = integrated_cuda):
+                with pread_safetensors(
+                    integrated_cuda = integrated_cuda, integrated_rocm = integrated_rocm
+                ):
                     with pinned_repo_revision(
                         kwargs.get("_base_fetch_repo"), kwargs.get("_base_fetch_revision")
                     ):
@@ -13813,6 +13834,7 @@ class VideoBackend:
         scheme: Optional[str],
         te_scheme: Optional[str] = None,
         device_memory: Optional[DeviceMemory] = None,
+        pipe: Any = None,
     ) -> None:
         """Refuse H3 modular loads that cannot fit unified memory; best-effort, skipped if no table/device."""
         components = getattr(fam, "bf16_components_gb", None)
@@ -13831,7 +13853,12 @@ class VideoBackend:
         elif factor is not None:
             transformer_gb *= factor
         # The hosted conditioner stays INT8 in memory; price the same artifact the loader seeds.
-        text_encoder_gb = h3_te_resident_gb(te_scheme, bf16_gb = text_encoder_gb)
+        from .video_minimax_h3_te import h3_bf16_te_gb
+
+        # A bf16 conditioner this pipeline builds read-layer-only is priced at that size.
+        text_encoder_gb = h3_te_resident_gb(
+            te_scheme, bf16_gb = h3_bf16_te_gb(text_encoder_gb, pipe = pipe)
+        )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         plan = plan_diffusion_memory(
             target = target,
@@ -14029,6 +14056,7 @@ class VideoBackend:
             scheme = comfy_scheme or scheme,
             te_scheme = te_scheme,
             device_memory = preseed_memory,
+            pipe = pipe,
         )
         if comfy_scan is not None:
             from .video_minimax_h3_comfy import load_h3_comfy_transformer
@@ -14260,6 +14288,7 @@ class VideoBackend:
                 memory_mode = memory_mode,
                 scheme = transformer_quant_engaged,
                 te_scheme = text_encoder_quant_engaged,
+                pipe = pipe,
                 device_memory = preseed_memory,
             )
         # Without cache_dir components resolve against the import-time HF_HUB_CACHE.
@@ -14289,17 +14318,24 @@ class VideoBackend:
         }
         # Strict: diffusers logs a failed component and registers None, which then fails at the first render.
         from .diffusion_component_fetch import load_components_strict
+        from .video_minimax_h3_te import h3_read_layers_spec
 
-        load_components_strict(
-            pipe,
-            workflow = workflow,
-            dtype = dtype,
-            cache_dir = hub_cache_dir(),
-            local_files_only = local_files_only,
-            **({"token": hf_token} if hf_token else {}),
-            **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
-            **({"revision": component_revisions} if component_revisions else {}),
-        )
+        # A bf16 conditioner loads only the 50 layers hidden_states[50] reads, as the hosted int8 one does (-15 GB).
+        with h3_read_layers_spec(pipe) as te_read_layers:
+            load_components_strict(
+                pipe,
+                workflow = workflow,
+                dtype = dtype,
+                cache_dir = hub_cache_dir(),
+                local_files_only = local_files_only,
+                **({"token": hf_token} if hf_token else {}),
+                **({"pretrained_model_name_or_path": offline_sources} if offline_sources else {}),
+                **({"revision": component_revisions} if component_revisions else {}),
+            )
+        if te_read_layers:
+            logger.info(
+                "video.h3_te_read_layers: bf16 conditioner loaded without decoder layers 50+, norm and head"
+            )
         if baked_loras and video_lora.side_branch_enabled(fam):
             # Unmerged: the denoiser's weights (bf16 or hosted int8 codes) stay as released and every adapted Linear
             # adds its low-rank branch, so the update is never rounded into a 16-bit or 8-bit weight.
@@ -14384,7 +14420,11 @@ class VideoBackend:
             denoiser = getattr(pipe, denoiser_component, None)
             # Asked before installing offload; the size already includes every other component.
             whole_set_sizes = _h3_dense_denoiser_resident_bytes(
-                fam, denoiser = denoiser, te_scheme = text_encoder_quant_engaged, dtype = dtype
+                fam,
+                denoiser = denoiser,
+                te_scheme = text_encoder_quant_engaged,
+                dtype = dtype,
+                pipe = pipe,
             )
             free_before_placement = _h3_free_device_bytes(device)
             # Headroom is for the default frame count; speed "off" keeps the rotation.
@@ -14422,6 +14462,7 @@ class VideoBackend:
                         fam,
                         denoiser = denoiser,
                         te_scheme = text_encoder_quant_engaged,
+                        pipe = pipe,
                         dtype = dtype,
                         rotating = True,
                     )
@@ -14456,6 +14497,7 @@ class VideoBackend:
                             device,
                             te_streamed = bool(te_streamed),
                             te_scheme = text_encoder_quant_engaged,
+                            pipe = pipe,
                         )
                         if stream
                         else None
@@ -14528,6 +14570,7 @@ class VideoBackend:
                                         frames = fam.default_num_frames,
                                         te_streamed = bool(te_streamed),
                                         te_scheme = text_encoder_quant_engaged,
+                                        pipe = pipe,
                                     )
                                     pin_deferred = defer_resident_block_pins(
                                         residency, pin_deferred_budget, logger = logger
@@ -14623,6 +14666,7 @@ class VideoBackend:
                                             frames = fam.default_num_frames,
                                             te_streamed = bool(te_streamed),
                                             te_scheme = text_encoder_quant_engaged,
+                                            pipe = pipe,
                                         ),
                                         initial = True,
                                     )
@@ -14653,6 +14697,7 @@ class VideoBackend:
                         fam,
                         denoiser = denoiser,
                         te_scheme = text_encoder_quant_engaged,
+                        pipe = pipe,
                         dtype = dtype,
                         rotating = True,
                     )
@@ -14670,6 +14715,7 @@ class VideoBackend:
                                 fam,
                                 denoiser = denoiser,
                                 te_scheme = text_encoder_quant_engaged,
+                                pipe = pipe,
                                 dtype = dtype,
                                 rotating = True,
                                 te_streamed = True,
@@ -16835,6 +16881,7 @@ class VideoBackend:
                         H3_TEXT_ENCODER_BF16_GB,
                         estimate_h3_diffusers_vram_gb,
                     )
+                    from .video_minimax_h3_te import h3_bf16_te_gb
 
                     device_obj = torch.device(state.device)
                     device_module = getattr(torch, device_obj.type, None)
@@ -16852,7 +16899,8 @@ class VideoBackend:
                             height,
                             frames,
                             text_encoder_gb = h3_te_resident_gb(
-                                state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                                state.text_encoder_quant,
+                                bf16_gb = h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = state.pipe),
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_pinned = bool(getattr(state, "denoiser_pinned", False)),
@@ -16869,6 +16917,7 @@ class VideoBackend:
                                 frames = frames,
                                 te_streamed = bool(getattr(state, "te_streamed", False)),
                                 te_scheme = state.text_encoder_quant,
+                                pipe = state.pipe,
                             )
                             floor_room = _h3_residency_budget_bytes(
                                 residency,
@@ -16900,7 +16949,8 @@ class VideoBackend:
                                 height,
                                 frames,
                                 text_encoder_gb = h3_te_resident_gb(
-                                    state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                                    state.text_encoder_quant,
+                                    bf16_gb = h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = state.pipe),
                                 ),
                                 text_encoder_streamed = True,
                             )
@@ -16924,7 +16974,8 @@ class VideoBackend:
                         shortfall = h3_host_ram_shortfall(
                             max(0.0, available_vram_gb),
                             text_encoder_gb = h3_te_resident_gb(
-                                state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                                state.text_encoder_quant,
+                                bf16_gb = h3_bf16_te_gb(H3_TEXT_ENCODER_BF16_GB, pipe = state.pipe),
                             ),
                             transformer_gb = h3_transformer_resident_gb(state.transformer_quant),
                             transformer_streamed = bool(getattr(state, "denoiser_host_copy", False)),

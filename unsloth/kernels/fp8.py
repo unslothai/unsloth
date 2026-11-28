@@ -22,6 +22,7 @@ from typing import List
 from unsloth_zoo.utils import Version
 
 from .indexing import long_indexing
+from ..rocm_build import is_rocm_torch as _is_rocm_torch
 from unsloth_zoo.log import logger
 from unsloth_zoo.temporary_patches.common import torch_compile
 
@@ -166,7 +167,7 @@ torchao_blockwise_gemm = _import_torchao_blockwise_gemm()
 
 # ROCm Triton fuses fp32 multiply + fp16 cast into v_fma_mixlo_f16, which drops -0.0 and rounds
 # differently from the torch loop, so the dequant kernels round to fp16 with integer ops there.
-_FP8_EXACT_F16_ROUND = torch.version.hip is not None
+_FP8_EXACT_F16_ROUND = _is_rocm_torch(torch)
 
 
 def _fp8_exact_f16_round(dtype):
@@ -305,7 +306,7 @@ def _scale_dequant_one_pass_ok(x, s, dtype):
         return False
     return (
         x.is_cuda
-        and torch.version.hip is None
+        and not _is_rocm_torch(torch)
         and x.dtype == torch.float8_e4m3fn
         and dtype in (torch.float16, torch.bfloat16, torch.float32)
         and x.dim() == 2
@@ -533,7 +534,7 @@ _FP8_TMA_GEMM = os.environ.get("UNSLOTH_FP8_TMA_GEMM", "1").strip().lower() not 
 _TL_OUT_DTYPES = {torch.bfloat16: tl.bfloat16, torch.float16: tl.float16, torch.float32: tl.float32}
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["M"])
 def _w8a8_block_fp8_matmul_tma(
     a_desc,
     b_desc,
@@ -585,7 +586,7 @@ def _w8a8_block_fp8_matmul_tma(
 def _fp8_tma_gemm_arch_at(index):
     # Measured on B200 only (2.2-2.4x over the pointer kernel at 8192-token training shapes): 4 stages
     # of 128 x 128 fp8 A and B tiles need 128 KB of shared memory, more than sm_120 / sm_89 have.
-    return torch.version.hip is None and torch.cuda.get_device_capability(index)[0] == 10
+    return not _is_rocm_torch(torch) and torch.cuda.get_device_capability(index)[0] == 10
 
 
 def _fp8_tma_gemm_disable(reason):
@@ -1050,7 +1051,7 @@ def _prefer_triton_block_matmul_at(device, M):
     # sm_89 (L4): torchao is 1.73x slower than the pointer kernel at K = 14336, a net loss per layer.
     # sm_100: above 64 rows w8a8_block_fp8_matmul_triton takes BLOCK_SIZE_M = 128 and the TMA kernel
     # (~2x torchao); at 64 rows or fewer it runs the pointer kernel, which torchao beats by 1.1-2.3x.
-    if device.type != "cuda" or torch.version.hip is not None:
+    if device.type != "cuda" or _is_rocm_torch(torch):
         return False
     index = device.index if device.index is not None else torch.cuda.current_device()
     if tuple(torch.cuda.get_device_capability(index)) == (8, 9):
@@ -1110,7 +1111,7 @@ def _triton_release():
 @functools.lru_cache(maxsize = None)
 def _fp8_gemv_miscompiles(device):
     # Triton 3.3 miscompiles this GEMV on Blackwell (garbage rows at BLOCK_N 4/8); 3.4 is exact.
-    if torch.version.hip is not None:
+    if _is_rocm_torch(torch):
         return False
     try:
         return torch.cuda.get_device_capability(device) >= (10, 0) and _triton_release() < (3, 4)
@@ -1122,7 +1123,7 @@ def _fp8_gemv_miscompiles(device):
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
-    if torch.version.hip is not None:
+    if _is_rocm_torch(torch):
         return not _rocm_fp8e4nv_kernel_supported(device)
     return torch.cuda.get_device_capability(device) < (8, 9)
 
@@ -1191,7 +1192,7 @@ _CUDA_NATIVE_BF16 = _native_bf16_per_device()
 
 
 def _bf16_skipped_by_inductor(tensor, dtype):
-    if dtype != torch.bfloat16 or not tensor.is_cuda or torch.version.hip is not None:
+    if dtype != torch.bfloat16 or not tensor.is_cuda or _is_rocm_torch(torch):
         return False
     index = tensor.device.index if tensor.device.index is not None else torch.cuda.current_device()
     return index < len(_CUDA_NATIVE_BF16) and not _CUDA_NATIVE_BF16[index]
@@ -1544,7 +1545,7 @@ def _fp8_block_gemv_weight_ok(weight, weight_scale):
 
 def can_use_fp8_block_gemv(X, weight, weight_scale):
     # Not validated on ROCm yet.
-    if not _FP8_BLOCK_GEMV or torch.version.hip is not None:
+    if not _FP8_BLOCK_GEMV or _is_rocm_torch(torch):
         return False
     cached = getattr(weight, "_unsloth_fp8_block_gemv", None)
     if cached is not None and cached[0] is weight_scale:
@@ -1855,7 +1856,7 @@ def _blockwise_weight_dequant_any_shape(weight, weight_scale, block_size, out_dt
             weight.is_cuda
             and weight.dtype == torch.float8_e4m3fn
             and weight_scale.ndim == 2
-            and (torch.version.hip is None or _hip_bytes_dequant(weight.device, out_dtype))
+            and (not _is_rocm_torch(torch) or _hip_bytes_dequant(weight.device, out_dtype))
         ):
             return _e4m3fn_bytes_dequant(
                 weight, weight_scale, int(block_size[0]), int(block_size[1]), out_dtype
@@ -2084,7 +2085,7 @@ if hasattr(torch._dynamo, "assume_constant_result"):
 # 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
 _SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
 # 2.10-2.13 rowwise CUTLASS writes bf16 bits without a bias; a zero fp16 bias makes it write fp16.
-_SCALED_MM_FP16_BIAS_OUT = torch.__version__ >= "2.10.0" and torch.version.hip is None
+_SCALED_MM_FP16_BIAS_OUT = torch.__version__ >= "2.10.0" and not _is_rocm_torch(torch)
 # torch < 2.10 and ROCm < 2.14 cannot write fp16 (bf16 detour overflows to inf), so fp16 dequantizes.
 _SCALED_MM_FP16_ZERO_BIAS = _SCALED_MM_FP16_OUT_BROKEN and _SCALED_MM_FP16_BIAS_OUT
 _SCALED_MM_FP16_DEQUANT_ONLY = _SCALED_MM_FP16_OUT_BROKEN and not _SCALED_MM_FP16_BIAS_OUT
@@ -2215,7 +2216,7 @@ def _fp8_unit_scale_epilogue(
     acc: torch.Tensor, x_scale: torch.Tensor, weight_scale: torch.Tensor, dtype: torch.dtype
 ) -> torch.Tensor:
     """(acc [M, N] * x_scale [M, 1]) * weight_scale [N, 1] in float32, rounded once to dtype."""
-    if acc.device.type != "cuda" or torch.version.hip is not None:
+    if acc.device.type != "cuda" or _is_rocm_torch(torch):
         return (acc * x_scale.float() * weight_scale.to(torch.float32).view(1, -1)).to(dtype)
     acc, x_scale, weight_scale = acc.contiguous(), x_scale.contiguous(), weight_scale.contiguous()
     out = torch.empty(acc.shape, device = acc.device, dtype = dtype)
@@ -2557,7 +2558,7 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         and weight.dtype == torch.float8_e4m3fn
         and weight.dim() == 2
         and weight_scale.dim() == 2
-        and torch.version.hip is None
+        and not _is_rocm_torch(torch)
     ):
         return None
     N, K = weight.shape
@@ -2903,7 +2904,7 @@ def _pick_fp8_block_quant_linear(block_forward):
     # Decode-sized calls take the GEMV whichever block GEMM was selected.
     if (
         block_forward is fp8_torch_block_quant_forward
-        and torch.version.hip is None
+        and not _is_rocm_torch(torch)
         and _SM_COUNTS
         and min(_SM_COUNTS) >= 100
     ):

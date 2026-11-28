@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Metal VAE direct conv: off by default. ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and then only an Apple
+"""Metal VAE direct conv for a family outside the measured VAEs (``test_sd_cpp_metal_vae_conv_default.py`` covers the
+default): off. ``UNSLOTH_SD_CPP_METAL_VAE_CONV_DIRECT=1`` opts in, and then only an Apple
 Silicon Mac on a build with the implicit GEMM Metal CONV_2D (unslothai/stable-diffusion.cpp#103) gets
 ``--conv-direct off,vae=on``; Intel Macs, older builds and every other backend keep their argv."""
 
@@ -291,8 +292,9 @@ def test_status_reports_the_resolved_metal_vae_state(tmp_path, monkeypatch):
     assert got["enabled"] is False and _ENV in got["reason"]
     monkeypatch.setenv(_ENV, "1")
     assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is True
+    # Speed mode off keeps it too: the argv carries the flag in every mode.
     state.native_speed = "off"
-    assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is False
+    assert backend._metal_vae_conv_status(state)["metal_vae_conv_direct"]["enabled"] is True
 
 
 def test_status_follows_the_effective_conv_direct_policy(tmp_path, monkeypatch):
