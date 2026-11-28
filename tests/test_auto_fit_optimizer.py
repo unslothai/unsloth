@@ -752,6 +752,20 @@ def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
     )
     assert sharded["grads"] == single["grads"] // 4 and sharded["states"] == single["states"] // 4
     assert sharded["in_backward"] < sharded["standard"] < single["standard"]
+    # Gradient accumulation: the earlier micro-batches' gradients are held in every tier (shards when reduced each
+    # micro-batch, else FSDP2's whole accumulators under no_sync).
+    for each, held in ((True, sharded["grads"]), (False, sharded["grads"] * 4)):
+        monkeypatch.setattr(
+            af, "_fsdp_reduces_every_micro_batch", lambda trainer, model, each = each: each
+        )
+        ga = af.plan_auto_fit(
+            SimpleNamespace(
+                args = _Args(gradient_accumulation_steps = 2), optimizer_cls_and_kwargs = None
+            ),
+            model,
+            usable_bytes = 0,
+        )
+        assert ga["held"] == held and ga["in_backward"] == sharded["in_backward"] + held
 
 
 def test_kill_switch_and_forced_modes(af, monkeypatch):

@@ -1157,9 +1157,19 @@ def plan_auto_fit(
         blocks = max(1, len(_fsdp_blocks(model)))
         gathered = 2 * sum(p.numel() * p.element_size() for p in model.parameters()) // blocks
     activations += gathered
-    standard = grads + states + max(activations, step_temp) + margin
-    in_backward = states + deferred + max(activations, live) + margin
-    lomo = deferred + max(activations, live_lomo) + margin
+    # Gradient accumulation under FSDP2: the hooks step on the synchronized micro-batch only, so the earlier
+    # micro-batches' gradients are held in every tier: as shards when every micro-batch is reduce-scattered, else
+    # (no_sync) as FSDP2's whole, unsharded accumulators.
+    held = held_standard = 0
+    accumulation = int(getattr(args, "gradient_accumulation_steps", 1) or 1)
+    if world > 1 and accumulation > 1:
+        if _fsdp_reduces_every_micro_batch(trainer, model):
+            held = grads
+        else:
+            held = held_standard = grads * world
+    standard = grads + states + held_standard + max(activations, step_temp) + margin
+    in_backward = states + deferred + held + max(activations, live) + margin
+    lomo = deferred + held + max(activations, live_lomo) + margin
     if usable_bytes is None:
         usable_bytes = _usable_bytes(params) if world == 1 else _usable_bytes(params, world)
     return dict(
@@ -1170,6 +1180,7 @@ def plan_auto_fit(
         grads = grads,
         states = states,
         deferred = deferred,
+        held = held,
         params = sum(p.numel() for p in params),
         seq = seq,
         batch = batch,
@@ -1180,6 +1191,19 @@ def _sr_on(params):
     if os.environ.get("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "1").strip().lower() in _OFF:
         return False
     return any(p.dtype == torch.bfloat16 for p in params)
+
+
+def _fsdp_reduces_every_micro_batch(trainer, model):
+    """Under gradient accumulation: Unsloth's native FSDP2 GA mode "each", or accelerate's sync_each_batch."""
+    if _is_native_fsdp2(model):
+        try:
+            from ..models.fsdp2_native import _ga_mode
+            return _ga_mode(model) == "each"
+        except Exception:
+            return True
+    state = getattr(getattr(trainer, "accelerator", None), "gradient_state", None)
+    kwargs = getattr(state, "plugin_kwargs", None) or {}
+    return bool(kwargs.get("sync_each_batch", False))
 
 
 def _fsdp_blocks(model):
