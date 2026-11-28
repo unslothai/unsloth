@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  isVertexBaseUrl,
   normalizeProviderMaxOutputTokens,
   providerModelSupportsStudioTools,
   providerModelSupportsThinking,
@@ -582,10 +583,11 @@ export function providerSupportsBuiltinImageGeneration(
       normalized.startsWith(prefix),
     );
   }
-  if (providerType === "gemini") {
-    // Compat proxies skip the native translator, so hide the pill.
-    if (isGeminiCustomOpenAICompatBase(baseUrl)) return false;
-    return normalized.includes("-image") || normalized.includes("nano-banana");
+  if (providerType === "gemini" || providerType === "vertex") {
+    const native =
+      isVertexBaseUrl(baseUrl) ||
+      (providerType === "gemini" && !isGeminiCustomOpenAICompatBase(baseUrl));
+    return native && isGeminiImageModel(normalized);
   }
   return false;
 }
