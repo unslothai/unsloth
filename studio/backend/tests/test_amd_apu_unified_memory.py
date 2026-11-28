@@ -23,6 +23,18 @@ def _no_inherited_gpu_mask(monkeypatch):
         monkeypatch.delenv(_m, raising = False)
 
 
+# Taken before the autouse pin replaces it, so the reader itself stays testable.
+_REAL_CARVE_OUT_READER = LlamaCppBackend._windows_apu_carve_out_free_mib
+
+
+@pytest.fixture(autouse = True)
+def _no_host_carve_out(monkeypatch):
+    """Pin the carve-out: on a Windows runner the real registry and WDDM counters would move the cap."""
+    monkeypatch.setattr(
+        LlamaCppBackend, "_windows_apu_carve_out_free_mib", staticmethod(lambda: None)
+    )
+
+
 def _fake_torch(
     hip,
     archs,
@@ -276,6 +288,187 @@ class TestTheApuBudgetIsCappedByHostRam:
 
     def test_a_discrete_card_is_never_capped(self, monkeypatch):
         assert self._probe(monkeypatch, "gfx1100", 100_000, 12_000) == [(0, 100_000, 100_000)]
+
+
+class TestAWindowsCarveOutIsCountedAboveHostRam:
+    @staticmethod
+    def _probe(monkeypatch, hip_free_mib, avail_mib, carve_out_free_mib):
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_windows_apu_carve_out_free_mib",
+            staticmethod(lambda: carve_out_free_mib),
+        )
+        return TestTheApuBudgetIsCappedByHostRam._probe(
+            monkeypatch, "gfx1151", hip_free_mib, avail_mib
+        )
+
+    def test_the_reported_strix_halo_gets_its_carve_out(self, monkeypatch):
+        # #19768: 64 GB, 32 GB carve-out, HIP 44,765 MiB free, Windows 17,002 MiB available.
+        assert self._probe(monkeypatch, 44_765, 17_002, 30_500) == [(0, 44_765 - 1024, 0)]
+
+    def test_the_hip_reading_still_bounds_it(self, monkeypatch):
+        assert self._probe(monkeypatch, 40_000, 17_002, 30_500) == [(0, 40_000 - 1024, 0)]
+
+    def test_a_carve_out_in_use_credits_only_what_is_left(self, monkeypatch):
+        assert self._probe(monkeypatch, 44_765, 17_002, 4_000) == [(0, 21_002 - 1024, 0)]
+
+    def test_no_carve_out_reading_keeps_the_host_ram_cap(self, monkeypatch):
+        assert self._probe(monkeypatch, 44_765, 17_002, None) == [(0, 17_002 - 1024, 0)]
+
+    def test_hip_below_host_ram_never_asks(self, monkeypatch):
+        def _boom():
+            raise AssertionError("read although the RAM cap does not bind")
+
+        monkeypatch.setattr(LlamaCppBackend, "_windows_apu_carve_out_free_mib", staticmethod(_boom))
+        assert TestTheApuBudgetIsCappedByHostRam._probe(
+            monkeypatch, "gfx1151", 78_471, 114_646
+        ) == [(0, 78_471 - 1024, 0)]
+
+    def test_a_discrete_card_never_asks(self, monkeypatch):
+        def _boom():
+            raise AssertionError("read for a discrete card")
+
+        monkeypatch.setattr(LlamaCppBackend, "_windows_apu_carve_out_free_mib", staticmethod(_boom))
+        assert TestTheApuBudgetIsCappedByHostRam._probe(
+            monkeypatch, "gfx1100", 100_000, 12_000
+        ) == [(0, 100_000, 100_000)]
+
+
+class TestTheWindowsCarveOutReader:
+    _GIB = 1024**3
+
+    @pytest.fixture(autouse = True)
+    def _no_managed_memory_env(self, monkeypatch):
+        for k in (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY",
+            "UNSLOTH_ENABLE_UNIFIED_MEMORY",
+            "UNSLOTH_DISABLE_UNIFIED_MEMORY",
+        ):
+            monkeypatch.delenv(k, raising = False)
+
+    @staticmethod
+    def _read(
+        monkeypatch,
+        carve_out,
+        used,
+        *,
+        platform = "win32",
+    ):
+        calls = {"carve_out": 0, "used": 0}
+
+        def _carve_out(*a, **k):
+            calls["carve_out"] += 1
+            assert k.get("rocm_fallback") is False  # the HIP total on Windows includes shared RAM
+            return carve_out
+
+        def _used():
+            calls["used"] += 1
+            return used
+
+        monkeypatch.setattr("core.inference.llama_cpp.sys.platform", platform)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_carve_out)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_windows_apu_gpu_used_bytes", staticmethod(_used))
+        monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_APU_CARVE_OUT_FREE", None)
+        return _REAL_CARVE_OUT_READER(), calls
+
+    def test_unused_carve_out_is_returned(self, monkeypatch):
+        answer, _calls = self._read(monkeypatch, 32 * self._GIB, 1.5 * self._GIB)
+        assert answer == 30 * 1024 + 512
+
+    def test_usage_past_the_carve_out_credits_nothing(self, monkeypatch):
+        answer, _calls = self._read(monkeypatch, 32 * self._GIB, 40 * self._GIB)
+        assert answer == 0
+
+    def test_unreadable_usage_is_none(self, monkeypatch):
+        answer, _calls = self._read(monkeypatch, 32 * self._GIB, None)
+        assert answer is None
+
+    @pytest.mark.parametrize("carve_out", [None, 0])
+    def test_no_carve_out_skips_the_counters(self, monkeypatch, carve_out):
+        answer, calls = self._read(monkeypatch, carve_out, 1.0 * self._GIB)
+        assert answer is None
+        assert calls["used"] == 0
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin"])
+    def test_off_windows_is_none(self, monkeypatch, platform):
+        answer, calls = self._read(monkeypatch, 32 * self._GIB, 0.0, platform = platform)
+        assert answer is None
+        assert calls == {"carve_out": 0, "used": 0}
+
+    @pytest.mark.parametrize(
+        "env",
+        [{"GGML_CUDA_ENABLE_UNIFIED_MEMORY": "1"}, {"UNSLOTH_ENABLE_UNIFIED_MEMORY": "1"}],
+    )
+    def test_managed_memory_gets_no_credit(self, monkeypatch, env):
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        answer, calls = self._read(monkeypatch, 32 * self._GIB, 1.0 * self._GIB)
+        assert answer is None
+        assert calls == {"carve_out": 0, "used": 0}
+
+    def test_an_opt_out_keeps_the_credit(self, monkeypatch):
+        monkeypatch.setenv("GGML_CUDA_ENABLE_UNIFIED_MEMORY", "1")
+        monkeypatch.setenv("UNSLOTH_DISABLE_UNIFIED_MEMORY", "1")
+        answer, _calls = self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        assert answer == 30 * 1024
+
+    def test_a_slow_read_is_still_reused(self, monkeypatch):
+        import core.inference.llama_cpp as lc
+
+        clock = [1000.0]
+        monkeypatch.setattr(lc, "time", types.SimpleNamespace(monotonic = lambda: clock[0]))
+
+        def _slow_used():
+            clock[0] += lc._WINDOWS_APU_CARVE_OUT_TTL_S + 1.0
+            return 2.0 * self._GIB
+
+        self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_windows_apu_gpu_used_bytes", staticmethod(_slow_used)
+        )
+        monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_APU_CARVE_OUT_FREE", None)
+        _REAL_CARVE_OUT_READER()
+        clock[0] += 1.0
+        monkeypatch.setattr(
+            LlamaCppBackend,
+            "_windows_apu_gpu_used_bytes",
+            staticmethod(lambda: pytest.fail("re-read inside the TTL")),
+        )
+        assert _REAL_CARVE_OUT_READER() == 30 * 1024
+
+    def test_a_failing_reader_is_none(self, monkeypatch):
+        def _boom(*a, **k):
+            raise OSError("registry")
+
+        self._read(monkeypatch, 32 * self._GIB, 0.0)
+        monkeypatch.setattr(LlamaCppBackend, "_igpu_dedicated_memory_bytes", staticmethod(_boom))
+        monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_APU_CARVE_OUT_FREE", None)
+        assert _REAL_CARVE_OUT_READER() is None
+
+    def test_the_reading_is_reused_until_residency_changes(self, monkeypatch):
+        from utils import gpu_memory_events
+
+        first, calls = self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        assert _REAL_CARVE_OUT_READER() == first
+        assert calls == {"carve_out": 1, "used": 1}
+        gpu_memory_events.invalidate_gpu_memory("test")
+        assert _REAL_CARVE_OUT_READER() == first
+        assert calls == {"carve_out": 2, "used": 2}
+
+    def test_the_reading_expires(self, monkeypatch):
+        import core.inference.llama_cpp as lc
+
+        clock = [1000.0]
+        monkeypatch.setattr(lc, "time", types.SimpleNamespace(monotonic = lambda: clock[0]))
+        _first, calls = self._read(monkeypatch, 32 * self._GIB, 2.0 * self._GIB)
+        clock[0] += lc._WINDOWS_APU_CARVE_OUT_TTL_S - 0.1
+        _REAL_CARVE_OUT_READER()
+        assert calls["used"] == 1
+        clock[0] += 0.2
+        _REAL_CARVE_OUT_READER()
+        assert calls["used"] == 2
 
 
 class TestRadeonWheelsWithoutAnArchName:

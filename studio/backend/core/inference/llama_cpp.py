@@ -8375,6 +8375,7 @@ def _report_live_llama_timings(callback, chunk) -> None:
 
 # Matches llama.cpp's --fit margin; an iGPU's VRAM is shared system RAM.
 _IGPU_HOST_RESERVE_MIB = 1024
+_WINDOWS_APU_CARVE_OUT_TTL_S = 5.0
 _HOST_RAM_HEADROOM_MIB = 2048
 # The host keeps the larger of a GB floor or a RAM share, else the desktop becomes unusable.
 _CARVEOUT_ADVICE_MIN_HOST_GB = 8
@@ -13578,6 +13579,49 @@ class LlamaCppBackend:
             return float(hw._ROCM_WIN_ADAPTER_MIN_BYTES)
         return used
 
+    # (monotonic time, residency generation, MiB): the usage read is two PowerShell spawns (~4 s).
+    _WINDOWS_APU_CARVE_OUT_FREE: Optional[tuple[float, int, Optional[int]]] = None
+
+    @staticmethod
+    def _windows_apu_carve_out_free_mib() -> Optional[int]:
+        """Unused BIOS carve-out MiB of the only AMD/Intel APU on Windows (registry dedicated less
+        WDDM usage); None off Windows, under managed memory, or when either reading is missing."""
+        if sys.platform != "win32":
+            return None
+        # Managed (GGML_CUDA_ENABLE_UNIFIED_MEMORY) allocations are host-backed, not carve-out.
+        if not LlamaCppBackend._unified_memory_opted_out() and (
+            "GGML_CUDA_ENABLE_UNIFIED_MEMORY" in os.environ
+            or LlamaCppBackend._unified_memory_opted_in()
+        ):
+            return None
+        from utils import gpu_memory_events
+
+        now = time.monotonic()
+        generation = gpu_memory_events.generation()
+        cached = LlamaCppBackend._WINDOWS_APU_CARVE_OUT_FREE
+        if (
+            cached is not None
+            and cached[1] == generation
+            and now - cached[0] < _WINDOWS_APU_CARVE_OUT_TTL_S
+        ):
+            return cached[2]
+        answer = None
+        try:
+            carve_out = LlamaCppBackend._igpu_dedicated_memory_bytes(rocm_fallback = False)
+            used = (
+                LlamaCppBackend._windows_apu_gpu_used_bytes()
+                if carve_out and carve_out > 0
+                else None
+            )
+            if used is not None:
+                # Used (dedicated + shared) fills the carve-out first, so this never over-credits.
+                answer = max(0, int(carve_out) - int(used)) // (1024 * 1024)
+        except Exception:
+            answer = None
+        # Stamped after the read: it takes ~4 s, close to the TTL.
+        LlamaCppBackend._WINDOWS_APU_CARVE_OUT_FREE = (time.monotonic(), generation, answer)
+        return answer
+
     # PHYSICAL integrated ids, keyed per visibility mask; integratedness cannot change under a fixed mask.
     _INTEGRATED_CUDA_IDS: dict[tuple, set[int]] = {}
 
@@ -16022,8 +16066,10 @@ class LlamaCppBackend:
                 if shared:
                     # ROCm free is unreliable on a shared pool (Windows free==total); cap at system RAM before taking the reserve.
                     avail = LlamaCppBackend._available_system_memory_mib()
-                    if avail is not None:
-                        raw_mib = min(raw_mib, avail)
+                    if avail is not None and raw_mib > avail:
+                        # Windows RAM excludes the BIOS carve-out, which HIP allocates from first.
+                        carve_out_mib = LlamaCppBackend._windows_apu_carve_out_free_mib()
+                        raw_mib = min(raw_mib, avail + (carve_out_mib or 0))
                 elif integrated:
                     # cudaMemGetInfo reports MemFree; MemAvailable adds back the page cache.
                     avail = LlamaCppBackend._available_system_memory_mib()
