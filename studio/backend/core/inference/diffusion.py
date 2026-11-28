@@ -169,7 +169,11 @@ from .diffusion_conditioning import (
     reference_request_pixels,
     match_source_size,
 )
-from .diffusion_ideogram4 import ideogram4_repo_is_fp8, load_ideogram4_pipeline
+from .diffusion_ideogram4 import (
+    ideogram4_host_plan,
+    ideogram4_repo_is_fp8,
+    load_ideogram4_pipeline,
+)
 from .diffusion_hidream import (
     HIDREAM_FAMILY_NAME,
     HIDREAM_LLAMA_BF16_BYTES,
@@ -11258,6 +11262,14 @@ class DiffusionBackend:
                                     dense_source = fetch_base if local_files_only else None,
                                 ).get("text_encoder")
                                 self._raise_if_load_cancelled(_load_token)
+                                ideogram_fp8_storage = self._ideogram4_fp8_storage(
+                                    fam,
+                                    fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    text_encoder_ready = ideogram_te is not None,
+                                    lora_active = _has_active_lora(loras),
+                                )
                                 pipe = load_ideogram4_pipeline(
                                     fetch_base,
                                     dtype,
@@ -11266,6 +11278,7 @@ class DiffusionBackend:
                                         _load_token
                                     ),
                                     text_encoder = ideogram_te,
+                                    **({"fp8_storage": True} if ideogram_fp8_storage else {}),
                                 )
                             else:
                                 pipe_kwargs = {
@@ -15236,6 +15249,42 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 -- failed sizing must not refuse a load
             return None
         return unified_memory_shortfall_message(plan, family = fam.name)
+
+    def _ideogram4_fp8_storage(
+        self,
+        fam: Any,
+        source: Any,
+        dtype: Any,
+        *,
+        hf_token: Optional[str],
+        text_encoder_ready: bool,
+        lora_active: bool,
+    ) -> bool:
+        """Whether this Ideogram 4 assembly keeps the DiTs' fp8 Linears stored; raises the host RAM refusal.
+        ``text_encoder_ready``: the hosted pre-cast encoder is already built (and counted in the host reading)."""
+        if not ideogram4_repo_is_fp8(str(source), hf_token):
+            return False
+        table = family_bf16_components_gb(fam, fam.base_repo)
+        if table is None:
+            return False
+        import torch
+
+        width = torch.empty((), dtype = dtype).element_size() / 2.0
+        to_mib = (1000.0**3) / (1024.0 * 1024.0)
+        total, available = host_ram_mib()
+        storage, refuse, reason = ideogram4_host_plan(
+            dit_bf16_mib = int(table[0] * to_mib),
+            text_encoder_mib = 0 if text_encoder_ready else int(table[1] * to_mib * width),
+            vae_mib = int(table[2] * to_mib * width),
+            host_total_mib = total,
+            host_available_mib = available,
+            lora_active = lora_active,
+            compute_width = width,
+        )
+        logger.info("diffusion.ideogram4: fp8_storage=%s (%s)", storage, reason)
+        if refuse:
+            raise RuntimeError(refuse)
+        return storage
 
     def _small_host_decision(
         self,

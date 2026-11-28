@@ -138,7 +138,7 @@ def test_bf16_state_from_a_checkpoint_is_upcast(sr):
     assert p.grad.dtype == torch.bfloat16
 
 
-def test_trainer_hook_enables_full_finetuning_only(sr):
+def test_trainer_hook_enables_unsloth_models_only(sr):
     class Trainer:
         def create_scheduler(
             self,
@@ -166,8 +166,10 @@ def test_trainer_hook_enables_full_finetuning_only(sr):
         t.create_scheduler(10)
         return getattr(t.optimizer, "_unsloth_bf16_stochastic_rounding", 0)
 
-    assert run(True) == 2
-    assert run(False) == 0 and run(None) == 0
+    # Full finetuning and LoRA loads (stamped False) both cover their trained bfloat16 weights; a model Unsloth
+    # did not load is left alone.
+    assert run(True) == 2 and run(False) == 2
+    assert run(None) == 0
 
 
 @pytest.mark.gpu

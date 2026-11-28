@@ -468,7 +468,10 @@ class _NormNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
         torch.manual_seed(0)
-        self.a = torch.nn.Linear(6, 8)
+        # No bias before BatchNorm: the norm subtracts it back out, so its gradient is zero up to rounding, and AdamW
+        # turns that rounding into lr-sized steps that differ between two equivalent paths. running_mean includes
+        # it, which made this comparison depend on the CPU's GEMM kernels rather than on the buffers.
+        self.a = torch.nn.Linear(6, 8, bias = False)
         self.norm = torch.nn.BatchNorm1d(8)
         self.b = torch.nn.Linear(8, 1)
 
@@ -683,6 +686,122 @@ def test_trigger_fires_only_on_a_predicted_oom(af, monkeypatch):
     monkeypatch.setattr(af, "_full_finetuning", lambda model: False)
     assert _decide_with(af, monkeypatch, between) == (None, None)
     assert _decide_with(af, monkeypatch, between, mode = "in_backward")[0] == "in_backward"
+
+
+def test_distributed_training_is_refused_except_fsdp2(af, monkeypatch):
+    """FSDP2 (accelerate's plugin with fsdp_version 2, or Unsloth's native FSDP2) can step inside backward, with
+    gradient accumulation too; DDP, FSDP1, DeepSpeed, tensor / pipeline / context parallelism, HSDP and FSDP2 CPU
+    offload keep their reasons."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(af, "_fsdp_calls_grad_hooks", lambda: True)
+    for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE"):
+        monkeypatch.delenv(name, raising = False)
+
+    def trainer(
+        plugin = None,
+        config = None,
+        **kw,
+    ):
+        t = _Trainer(world_size = 2, **kw)
+        t.accelerator = SimpleNamespace(
+            state = SimpleNamespace(fsdp_plugin = plugin), parallelism_config = config
+        )
+        t.is_fsdp_enabled = plugin is not None
+        return t
+
+    model = _plan_model()
+    fsdp2 = SimpleNamespace(fsdp_version = 2, cpu_offload = None)
+    assert af._distributed(trainer(fsdp2), model) == ("fsdp2", None)
+    assert af._blocker(trainer(fsdp2, gradient_accumulation_steps = 4), model, False) is None
+    assert "gradient_accumulation" in af._blocker(
+        _Trainer(gradient_accumulation_steps = 4), model, False
+    )
+
+    class CPUOffloadPolicy:
+        pass
+
+    cases = [
+        (trainer(), "DDP"),
+        (trainer(SimpleNamespace(fsdp_version = 1)), "FSDP1"),
+        (trainer(SimpleNamespace(fsdp_version = 2, cpu_offload = CPUOffloadPolicy())), "CPU offload"),
+        (trainer(fsdp2, SimpleNamespace(tp_size = 2)), "tensor parallelism"),
+        (trainer(fsdp2, SimpleNamespace(dp_replicate_size = 2)), "HSDP"),
+        (trainer(fsdp2, SimpleNamespace(cp_size = 2)), "context parallelism"),
+    ]
+    deepspeed = trainer(fsdp2)
+    deepspeed.is_deepspeed_enabled = True
+    cases.append((deepspeed, "DeepSpeed"))
+    for t, why in cases:
+        kind, reason = af._distributed(t, model)
+        assert kind is None and why in reason, (why, reason)
+        assert why in af._blocker(t, model, True)
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "2")
+    assert "pipeline" in af._distributed(trainer(fsdp2), model)[1]
+    monkeypatch.delenv("UNSLOTH_PP_SIZE")
+    monkeypatch.setattr(af, "_fsdp_calls_grad_hooks", lambda: False)
+    assert "torch 2.5" in af._distributed(trainer(fsdp2), model)[1]
+
+
+def test_planner_budgets_whole_fsdp2_weights_before_sharding(af):
+    """accelerate shards after the optimizer is built: the root group (outside the decoder blocks) stays whole for
+    the step, resharding blocks are whole two at a time, and without reshard_after_forward every block stays whole."""
+    from types import SimpleNamespace
+
+    model = _tiny_model().float()
+    full = {n: p.numel() * p.element_size() for n, p in model.named_parameters()}
+    root = sum(v for n, v in full.items() if "layers." not in n)
+    block = sum(v for n, v in full.items() if "layers.0." in n)
+    trainer = SimpleNamespace(
+        accelerator = SimpleNamespace(
+            state = SimpleNamespace(
+                fsdp_plugin = SimpleNamespace(fsdp_version = 2, reshard_after_forward = True)
+            )
+        )
+    )
+    assert af._fsdp_gathered(trainer, model) == (root, 2 * block)
+    trainer.accelerator.state.fsdp_plugin.reshard_after_forward = False
+    assert af._fsdp_gathered(trainer, model) == (root + 2 * block, 0)
+    # Each group is one in-backward batch: the planner budgets the largest group, not the largest weight.
+    assert af._fsdp_group_bytes(model) == [block, block, root]
+
+
+def test_free_memory_reserves_the_shard_of_host_resident_weights(af, monkeypatch):
+    """Planning before accelerate moves the model to the GPU: the rank's weight shard still has to arrive there."""
+    params = [torch.nn.Parameter(torch.zeros(1000, 250)) for _ in range(4)]  # 4 MB on the host
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (100 << 20, 200 << 20))
+    monkeypatch.setattr(af, "_min_over_ranks", lambda value, device: value)
+    assert af._usable_bytes(params, world = 2) == (100 << 20) - 4 * 1000 * 250 * 4 // 2
+
+
+def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
+    from types import SimpleNamespace
+
+    model = _plan_model()
+    single = af.plan_auto_fit(_Trainer(), model, usable_bytes = 0)
+    monkeypatch.setattr(af, "_distributed", lambda trainer, model: ("fsdp2", None))
+    monkeypatch.setattr(af, "_world_size", lambda: 4)
+    sharded = af.plan_auto_fit(
+        SimpleNamespace(args = _Args(), optimizer_cls_and_kwargs = None), model, usable_bytes = 0
+    )
+    assert sharded["grads"] == single["grads"] // 4 and sharded["states"] == single["states"] // 4
+    assert sharded["in_backward"] < sharded["standard"] < single["standard"]
+    # Gradient accumulation: the earlier micro-batches' gradients are held in every tier (shards when reduced each
+    # micro-batch, else FSDP2's whole accumulators under no_sync).
+    for each, held in ((True, sharded["grads"]), (False, sharded["grads"] * 4)):
+        monkeypatch.setattr(
+            af, "_fsdp_reduces_every_micro_batch", lambda trainer, model, each = each: each
+        )
+        ga = af.plan_auto_fit(
+            SimpleNamespace(
+                args = _Args(gradient_accumulation_steps = 2), optimizer_cls_and_kwargs = None
+            ),
+            model,
+            usable_bytes = 0,
+        )
+        assert ga["held"] == held and ga["in_backward"] == sharded["in_backward"] + held
 
 
 def test_kill_switch_and_forced_modes(af, monkeypatch):
@@ -1200,3 +1319,72 @@ def test_planner_budgets_the_batch_workspace(af, monkeypatch):
     foreach = af.plan_auto_fit(_Trainer(optim = "adamw_torch"), model, usable_bytes = 0)
     assert foreach["in_backward"] - one_pass["in_backward"] == largest
     assert one_pass["in_backward"] - one_pass["states"] - (256 << 20) == 2 * largest
+
+
+class _CompiledNet(torch.nn.Module):
+    """A forward through a dynamic-shape torch.compile'd function (as Unsloth's compiled blocks are)."""
+
+    def __init__(self):
+        super().__init__()
+        torch.manual_seed(0)
+        self.a = torch.nn.Linear(6, 8)
+        self.b = torch.nn.Linear(8, 1)
+        self.body = torch.compile(self._body, backend = "eager", dynamic = True)
+
+    def _body(self, x, labels):
+        return (self.b(torch.relu(self.a(x))).squeeze(-1) - labels).square().mean()
+
+    def forward(self, x, labels):
+        return {"loss": self.body(x, labels)}
+
+
+def test_measuring_pass_does_not_recompile_the_real_pass(af, sr, monkeypatch, tmp_path):
+    """The measuring pass and the stepping pass hit the same compiled graphs: the measuring pass's inputs are new
+    tensor objects that are not views (a graph compiled on a view guards on its `_base`, which the real pass's
+    tensors do not have, so every graph recompiled once at the first step)."""
+    import sys
+
+    from datasets import Dataset
+    from torch._dynamo.utils import counters
+    from transformers import Trainer, TrainingArguments
+
+    # A module of its own name: dynamo imports the module of code it traces by name, and torch 2.6 keeps the module
+    # an earlier test registered under the fixture's name.
+    af = _load("_test_auto_fit_recompile", "unsloth/optimizers/auto_fit.py")
+    monkeypatch.setitem(sys.modules, af.__name__, af)
+    g = torch.Generator().manual_seed(2)
+    rows = [{"x": torch.randn(6, generator = g).tolist(), "labels": float(i % 3)} for i in range(16)]
+    graphs = {}
+    for mode, clip in (("0", "estimate"), ("in_backward", "estimate"), ("in_backward", "exact")):
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_OPTIMIZER", mode)
+        monkeypatch.setenv("UNSLOTH_AUTO_FIT_CLIP", clip)
+        torch._dynamo.reset()
+        counters.clear()
+        args = TrainingArguments(
+            output_dir = str(tmp_path),
+            per_device_train_batch_size = 4,
+            max_steps = 3,
+            learning_rate = 1e-2,
+            max_grad_norm = 0.5,
+            report_to = [],
+            use_cpu = True,
+            save_strategy = "no",
+            seed = 0,
+            dataloader_num_workers = 0,
+            disable_tqdm = True,
+        )
+        trainer = Trainer(model = _CompiledNet(), args = args, train_dataset = Dataset.from_list(rows))
+        af.install_auto_fit_optimizer(trainer)
+        trainer.train()
+        if mode != "0":
+            assert trainer._unsloth_in_backward_optimizer.measured_steps == (
+                3 if clip == "exact" else 1
+            )
+        graphs[mode, clip] = counters["stats"]["unique_graphs"]
+    torch._dynamo.reset()
+    assert graphs["0", "estimate"] >= 1
+    assert (
+        graphs["in_backward", "estimate"]
+        == graphs["in_backward", "exact"]
+        == graphs["0", "estimate"]
+    ), graphs

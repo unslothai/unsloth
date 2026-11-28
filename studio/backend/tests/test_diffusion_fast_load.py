@@ -5,10 +5,17 @@
 
 import json
 import threading
+import types
+from pathlib import Path
 
 import pytest
 
 from core.inference import diffusion_fast_load as fl
+
+
+def _posix(path):
+    """A path as the forward-slash string these assertions spell, on Windows too."""
+    return Path(path).as_posix()
 
 
 @pytest.fixture(autouse = True)
@@ -150,7 +157,7 @@ def _fake_snapshot(tmp_path):
 
 def test_component_files_are_the_weights_from_pretrained_reads_text_encoders_first(tmp_path):
     snap = _fake_snapshot(tmp_path)
-    rel = lambda paths: [p[len(str(snap)) + 1 :] for p in paths]  # noqa: E731
+    rel = lambda paths: [Path(p).relative_to(snap).as_posix() for p in paths]  # noqa: E731
     assert rel(fl.pipeline_component_files(str(snap), skip_denoiser = False)) == [
         "text_encoder/model.safetensors",
         "text_encoder_2/model-00001-of-00002.safetensors",
@@ -197,9 +204,9 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
     assert seen.pop("paths")[0] == str(ckpt)
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
-    assert not any("transformer/" in p for p in seen.pop("paths"))
+    assert not any("transformer/" in _posix(p) for p in seen.pop("paths"))
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = None)
-    assert seen["paths"][-1].endswith("transformer/diffusion_pytorch_model.safetensors")
+    assert _posix(seen["paths"][-1]).endswith("transformer/diffusion_pytorch_model.safetensors")
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, cache_dir = None: None)
     seen.clear()
     fl.start_load_prefetch(
@@ -208,7 +215,7 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
         prequant_scheme = "int8",
         text_encoders_replaced = {"text_encoder", "text_encoder_2"},
     )
-    assert [p.split("/snap/")[-1] for p in seen["paths"]] == [
+    assert [_posix(p).split("/snap/")[-1] for p in seen["paths"]] == [
         "vae/diffusion_pytorch_model.safetensors",
         "transformer/diffusion_pytorch_model.safetensors",
     ]
@@ -469,6 +476,8 @@ def test_a_mostly_cached_file_reads_only_its_uncached_chunks(tmp_path, monkeypat
     path.write_bytes(b"q" * size)
     monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 1 << 20)
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
+    # The residency probe is Linux-only (mincore); stand in a mapping so this case runs on every OS.
+    monkeypatch.setattr(fl, "_residency_map", lambda p: types.SimpleNamespace(close = lambda: None))
     # the first 7 MiB sit in the page cache, the last MiB does not
     monkeypatch.setattr(
         fl,

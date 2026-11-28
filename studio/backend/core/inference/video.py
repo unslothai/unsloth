@@ -6010,7 +6010,12 @@ def _video_single_card_for_sidecar(
     if secondary is None or fallback is None:
         return plan
     why = f"the {fam.name} text encoder runs in a sidecar a split cannot move"
-    if _video_sidecar_multigpu(fam):
+    from .diffusion_multigpu import secondary_below_primary
+
+    if secondary_below_primary(int(secondary)):
+        # the worker picks its own kernels in another process, unchecked per card: never on a lower card of a mixed pair
+        why = f"the {fam.name} sidecar text encoder is not checked against cuda:{secondary}, a lower-capability card"
+    elif _video_sidecar_multigpu(fam):
         from .diffusion_multigpu import secondary_resident_limit_mib
         from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
@@ -13408,18 +13413,26 @@ class VideoBackend:
                     speed_optims += ("vae_rocm_pertap_conv",)
             except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
                 logger.warning("video.vae_rocm_pertap: not installed: %s", exc)
+            # Apple MPS: Conv3d runs as per-tap Conv2d on torch < 2.14 (stock is 8-14x slower there and a 1.7 GB call
+            # can hang the GPU); from 2.14 only wide-channel small-frame calls and calls over the size guard.
+            try:
+                from .video_vae_mps_pertap import OPTIM_NAME as _MPS_PERTAP
+                from .video_vae_mps_pertap import install_on_pipe as install_vae_mps_pertap
+                if install_vae_mps_pertap(pipe, target, logger = logger):
+                    speed_optims += (_MPS_PERTAP,)
+            except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
+                logger.warning("video.vae_mps_pertap: not installed: %s", exc)
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:
-                    from .diffusion_multigpu import current_selection
+                    from .diffusion_multigpu import current_selection, same_model_secondaries
                     from .video_vae_multigpu import install as install_vae_multigpu
 
                     selection = current_selection()
-                    if (
-                        selection is not None
-                        and selection.secondaries
-                        and install_vae_multigpu(pipe, int(selection.secondaries[0]), logger = logger)
-                    ):
+                    # a tile split runs the same decode on both cards: same card model only (a mixed pair would split
+                    # it across different kernels and wait on the slower card, which nothing here prices)
+                    partners = same_model_secondaries(selection, logger = logger)
+                    if partners and install_vae_multigpu(pipe, int(partners[0]), logger = logger):
                         speed_optims += ("vae_multigpu_tiles",)
                 except Exception as exc:  # noqa: BLE001 - the decode stays on one card
                     logger.warning("video.vae_multigpu: not installed: %s", exc)
