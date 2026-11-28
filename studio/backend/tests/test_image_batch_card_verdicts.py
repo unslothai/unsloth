@@ -71,8 +71,7 @@ def test_anima_fuses_rows_on_a_card_with_a_verdict(monkeypatch, card):
 
 
 def test_anima_chunks_each_conditioned_length_on_its_own(monkeypatch):
-    # The pipeline fuses only rows of one conditioned length; one chunk per such run gives every fused call its own
-    # encode, denoise and decode phase, so the text encoder is released again before each run's denoise.
+    # One chunk per conditioned-length run.
     from core.inference.diffusion import _generation_chunks
 
     record = _anima()

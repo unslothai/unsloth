@@ -1882,8 +1882,7 @@ def _generation_chunks(
     and the next image's encode would bring it back for the rest of the chunk)."""
     from .diffusion_batch_adapters import BATCHED_FORWARD_ATTR, batched_forward
 
-    # A family that says its call fuses the rows (``batched_forward``) chunks like any other; so does Anima on a card
-    # whose G2c verdict admits it (diffusion_batch_adapters).
+    # Anima fuses rows only on a card with a G2c verdict (diffusion_batch_adapters).
     if getattr(family, BATCHED_FORWARD_ATTR, None) is not True and (
         layer_count
         or is_flux3_family(family)
@@ -18572,8 +18571,7 @@ class DiffusionBackend:
         def ok(verdict: Optional[dict]) -> bool:
             if diffusion_batch_race.seeded_join_ok(verdict):
                 return True
-            # A neighbour-exact win whose row is not batch-exact may still take a seeded request where a stored G2c
-            # verdict for this card and path says batch-shape noise costs nothing (diffusion_batch_quality).
+            # Seeded rows may join a neighbour-exact win where this card's G2c verdict admits them.
             return (
                 isinstance(verdict, dict)
                 and bool(verdict.get("promoted"))

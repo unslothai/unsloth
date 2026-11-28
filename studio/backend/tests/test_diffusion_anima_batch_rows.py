@@ -178,8 +178,7 @@ def test_a_single_image_is_the_unbatched_call(pipe, monkeypatch):
 
 
 def test_the_anima_record_keeps_requests_serial_without_a_card_verdict():
-    # Anima fuses rows only on a card with a stored G2c PASS: without a pipe (the route, the adaLN precompute) or on
-    # a card with no verdict it renders one image per forward, and the adapter refuses it.
+    # No pipe, or a card without a verdict: one image per forward, adapter refuses.
     from core.inference import diffusion_families as families
     from core.inference.diffusion import _generation_chunks
     from core.inference.diffusion_batch_adapters import adapter_for

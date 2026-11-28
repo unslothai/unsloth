@@ -1412,8 +1412,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "CosmosTransformer3DModel",
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
-        # Fuses rows (diffusion_anima _row_groups) only on a card with a stored G2c PASS against a high-precision
-        # reference (diffusion_batch_adapters._card_verdict_families); every other card renders one image per forward.
+        # Fuses rows only on a card with a stored G2c PASS (diffusion_batch_quality).
         profile = FamilyProfile(auto_bf16_when_resident = ANIMA_BF16_WHEN_RESIDENT),
         gguf_loadable = False,
         fp16_incompatible = True,

@@ -21,8 +21,7 @@ def _default_serial_names() -> frozenset:
     from .diffusion_families import MINIMAX_H3_IMAGE_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME
     from .diffusion_flux3 import FLUX3_FAMILY_NAMES
 
-    # FLUX.3 and Anima loop one prompt per modular call (Anima fuses rows on a card with a G2c verdict, checked first); MiniMax-H3-Image runs each image as batch 1 (lockstep);
-    # MOSS loops samples outside its layer loop except on a measured layer-major load (_moss_layer_major).
+    # One image per forward unless a G2c verdict (Anima) or a measured layer-major load (MOSS) says otherwise.
     return frozenset(
         (
             *FLUX3_FAMILY_NAMES,
@@ -57,8 +56,7 @@ def _qwen21_denoiser(pipe: Any) -> bool:
 def _card_verdict_families() -> frozenset:
     from .diffusion_anima import ANIMA_FAMILY_NAME
 
-    # Fuse their rows only on a card with a stored G2c PASS (diffusion_batch_quality): batch-shape GEMM tiling moves
-    # a row by IEEE noise, and the paired gate against a high-precision reference is what says it costs nothing.
+    # Batch-shape GEMM tiling moves a row by IEEE noise: fuse only where a stored G2c PASS bounds it.
     return frozenset((ANIMA_FAMILY_NAME,))
 
 

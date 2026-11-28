@@ -45,9 +45,7 @@ for _path in ("eager", "graph"):
         _KLEIN_G4, path = _path
     )
 
-# FLUX.3 klein, A100-SXM4-40GB, Auto (int8 weights, compiled + CUDA graphs; a batch of 2 runs without graphs), 16
-# steps, 1024 px, batch 2, 24 prompts x 2 seeds vs eager bf16 with fp32 attention. G2a: the target row is
-# bit-identical when only its neighbour changes (first and last position), so no activation scale spans rows.
+# FLUX.3 klein A100-40 Auto int8, 16 steps, 1024 px, batch 2, 24 prompts x 2 seeds vs eager bf16 + fp32 attention; G2a exact.
 SHIPPED[("flux.3-klein", "NVIDIA A100-SXM4-40GB", "eager")] = {
     "verdict": "PASS",
     "n": 48,
@@ -61,9 +59,7 @@ SHIPPED[("flux.3-klein", "NVIDIA A100-SXM4-40GB", "eager")] = {
     "source": "batch_regate_nov28 (main f585e816d9)",
 }
 
-# Anima, A100-SXM4-40GB, Auto (bf16, compiled + CUDA graphs; a batch of 2 runs without graphs), 30 steps, 1024 px,
-# batch 2, 24 prompts x 2 seeds vs eager bf16 with fp32 attention; G2a bit-identical. Anima renders one image per
-# forward elsewhere (diffusion_batch_adapters._card_verdict_families): only a card listed here fuses its rows.
+# Anima A100-40 Auto bf16, 30 steps, same gate. Only a card listed here fuses Anima rows.
 SHIPPED[("anima", "NVIDIA A100-SXM4-40GB", "any")] = {
     "verdict": "PASS",
     "n": 48,
@@ -76,21 +72,15 @@ SHIPPED[("anima", "NVIDIA A100-SXM4-40GB", "any")] = {
     "neighbour_exact": True,
     "source": "batch_regate_nov28 (main f585e816d9)",
 }
-# Same gate on the RTX PRO 6000 (G4), Auto bf16 resident: mean -0.0014, upper 0.0003, G2a bit-identical.
 SHIPPED[("anima", "NVIDIA RTX PRO 6000 Blackwell Server Edition", "any")] = dict(
     SHIPPED[("anima", "NVIDIA A100-SXM4-40GB", "any")], upper = 0.0003, mean = -0.0014
 )
 
-# FLUX.3 klein, L4, Auto (int8, compiled + CUDA graphs; batch 2 without graphs), same gate: mean -0.0011,
-# upper 0.0008, G2a bit-identical.
 SHIPPED[("flux.3-klein", "NVIDIA L4", "eager")] = dict(
     SHIPPED[("flux.3-klein", "NVIDIA A100-SXM4-40GB", "eager")], upper = 0.0008, mean = -0.0011
 )
 
-# SDXL, L4, Low VRAM (model offload, compiled + CUDA graphs; batch 2 without graphs), 25 steps, 1024 px, batch 2,
-# 24 prompts x 2 seeds vs eager bf16 with fp32 attention: mean +0.0015, upper 0.0047, G2a bit-identical. ``seeded``:
-# an explicitly seeded request may join a neighbour-exact race win here (coalesce_seeded_ok) although its row is
-# not batch-exact: the returned seed reproduces the image up to batch-shape IEEE noise, which this gate bounds.
+# SDXL L4 Low VRAM, 25 steps, same gate. ``seeded``: a seeded request may join although its row is not batch-exact.
 SHIPPED[("sdxl", "NVIDIA L4", "eager")] = {
     "verdict": "PASS",
     "n": 48,
