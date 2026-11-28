@@ -14,8 +14,8 @@
   whose LoRA base GEMMs run as block-Hadamard rotated int8 (unsloth.kernels.int8_lora).
 - `load_in_8bit = "bnb"` / `"bitsandbytes"` / `"llm.int8"`: bitsandbytes LLM.int8, always.
 - `load_in_8bit = True` (with `load_in_4bit = False`): bitsandbytes LLM.int8, except for LoRA on a 16-bit
-  checkpoint on a GPU where the rotated int8 base is measured faster than bitsandbytes and bf16 with the same
-  eval loss (RTX 50 / RTX PRO 6000, compute capability 12.0), which runs `"int8"` instead and says so once.
+  checkpoint on a GPU class whose int8_lora_rotated gate is measured (precision/recipes.py: sm80, sm89, sm120
+  today), which runs `"int8"` instead and says so once.
   `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes.
 
 `load_in_4bit = True` is untouched.
@@ -49,9 +49,9 @@ _FP8_NAMES = {
 }
 _INT8_NAMES = ("int8", "int8_rotated", "rotated_int8", "int8_lora")
 _BNB8_NAMES = ("bnb", "bnb_int8", "bnb_8bit", "bitsandbytes", "llm.int8", "llm_int8")
-# Where load_in_8bit = True picks the int8 base: timed faster than bf16 and bitsandbytes (RTX 5090, RTX PRO 6000).
-# sm80 / sm89 run its Triton int8 GEMM slower than bf16; sm90 / sm100 / sm121 are untimed.
-_INT8_AUTO_CAPABILITIES = ((12, 0),)
+# load_in_8bit = True picks the int8 base on GPU classes whose int8_lora_rotated gate (precision/recipes.py) is
+# measured ("explicit" / "named"); refused and unprobed classes keep bitsandbytes.
+_INT8_AUTO_GATES = ("explicit", "named")
 AUTO_8BIT_ENV = "UNSLOTH_LOAD_IN_8BIT_AUTO"
 _CONFIG_OPTIONS = ("cache_dir", "local_files_only", "subfolder", "proxies")
 _AUTO_NOTICE = []
@@ -151,8 +151,16 @@ def _int8_auto_device_reason():
         capability = tuple(torch.cuda.get_device_capability())
     except Exception:
         return "no CUDA device"
-    if capability not in _INT8_AUTO_CAPABILITIES:
-        return f"compute capability {capability[0]}.{capability[1]} is not one it was measured faster on"
+    try:
+        from ..precision import get_recipe
+        from ..precision.hardware import gpu_class
+
+        gpu = gpu_class(capability)
+        status = get_recipe("int8_lora_rotated").gate(gpu).status
+    except Exception as exc:
+        return f"the int8 recipe gate could not be read ({type(exc).__name__})"
+    if status not in _INT8_AUTO_GATES:
+        return f"the int8 LoRA base is {status} on {gpu} (compute capability {capability[0]}.{capability[1]})"
     try:
         from ..kernels import int8_lora
     except Exception as exc:

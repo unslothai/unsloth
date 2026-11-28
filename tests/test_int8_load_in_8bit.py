@@ -165,12 +165,12 @@ def test_false_and_fp8_untouched(wrapped, int8_gpu):
     "capability, hip, ok",
     [
         ((12, 0), None, True),
-        ((12, 1), None, False),
-        ((10, 0), None, False),
-        ((9, 0), None, False),
-        ((8, 9), None, False),
-        ((8, 0), None, False),
-        ((7, 5), None, False),
+        ((12, 1), None, True),  # class sm120
+        ((10, 0), None, False),  # unprobed
+        ((9, 0), None, False),  # unprobed
+        ((8, 9), None, True),
+        ((8, 0), None, True),
+        ((7, 5), None, False),  # refused
         ((12, 0), "6.4", False),
     ],
 )
@@ -182,6 +182,22 @@ def test_device_rule(monkeypatch, capability, hip, ok):
     monkeypatch.setattr(torch.version, "hip", hip)
     monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
     assert (oq._int8_auto_device_reason() is None) is ok
+
+
+def test_device_rule_reads_the_recipe_gate(monkeypatch):
+    import unsloth.kernels.int8_lora as IL
+    from unsloth import precision as P
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
+    gates = P.get_recipe("int8_lora_rotated").gates
+    monkeypatch.setitem(gates, "sm90", P.Gate("explicit", evidence = "test"))
+    monkeypatch.setitem(gates, "sm89", P.Gate("refused", "test"))
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (9, 0))
+    assert oq._int8_auto_device_reason() is None
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: (8, 9))
+    assert "refused on sm89" in oq._int8_auto_device_reason()
 
 
 def _config_dir(tmp_path, **extra):
