@@ -251,6 +251,22 @@ def test_unloaded_nextn_bytes_are_the_head_block_only(tmp_path, arch):
     assert b._unloaded_nextn_bytes(path) == 4 * (1024 + 2048)
 
 
+@pytest.mark.parametrize(
+    "arch, kept", [("qwen35", True), ("qwen35moe", True), ("glm5-next", False)]
+)
+def test_builds_before_the_nextn_skip_keep_the_block(tmp_path, monkeypatch, arch, kept):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    path = _nextn_gguf(tmp_path, arch, 1)
+    b = LlamaCppBackend(manages_processes = False)
+    b._read_gguf_metadata(path)
+    # Qwen3.5 skips the block from b10212; GLM-5.3 skipped it from its first loader.
+    monkeypatch.setattr(LlamaCppBackend, "probe_build_number", classmethod(lambda cls, *a: 10211))
+    assert b._unloaded_nextn_bytes(path) == (0 if kept else 4 * (1024 + 2048))
+    monkeypatch.setattr(LlamaCppBackend, "probe_build_number", classmethod(lambda cls, *a: 10212))
+    assert b._unloaded_nextn_bytes(path) == 4 * (1024 + 2048)
+
+
 @pytest.mark.parametrize("arch, nextn", [("glm4moe", 1), ("nemotron_h_moe", 0), ("qwen35", 0)])
 def test_unloaded_nextn_bytes_are_zero_elsewhere(tmp_path, arch, nextn):
     from core.inference.llama_cpp import LlamaCppBackend

@@ -7909,6 +7909,8 @@ _LAZY_RESIDENT_MARGIN_FRAC = 0.10
 # qwen35moe and glm5-next load the whole NextN block under nextn_flags' mtp flags (b12776);
 # Qwen3.5-9B-MTP UD-Q4_K_XL, MTP off: CUDA0 holds 147.6 MiB (the block) under its tensor table.
 _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next"})
+# Qwen3.5 loaded its NextN block unconditionally before b10212 (llama.cpp 82dbc4f017).
+_NEXTN_SKIP_MIN_BUILD = {"qwen35": 10212, "qwen35moe": 10212}
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),
@@ -12090,6 +12092,14 @@ class LlamaCppBackend:
             or getattr(self, "_architecture", None) not in _NEXTN_SKIPPED_WITHOUT_MTP_ARCHS
         ):
             return 0
+        min_build = _NEXTN_SKIP_MIN_BUILD.get(getattr(self, "_architecture", None))
+        if min_build:
+            try:
+                build = self.probe_build_number()
+            except Exception:  # noqa: BLE001 -- unknown build: treated as current
+                build = None
+            if build is not None and build < min_build:
+                return 0  # this build still loads the block
         first = n_blocks - nextn
 
         def in_head(name: str) -> bool:
