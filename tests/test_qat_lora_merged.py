@@ -98,9 +98,8 @@ def _oracle_forward(
     split = False,
 ):
     """Q(W + s B A) on every LoRA Linear, by hand; ste = True makes it differentiable in A and B.
-    split = True quantizes the activation once per branch: torchao's float8 activation fake quantizer rounds
-    its incoming gradient to float8 (a cast, not a straight-through estimator), so a sum of two branch
-    gradients differs from the gradient of their sum."""
+    split = True is the activation quantized form: the base on fq(x) and Q(W + s B A), the adapter branch with
+    value 0 on a detached input, so dX comes from the base alone and dA / dB use the unquantized input."""
     up, down = _lora_layers(model)
 
     def layer(proj, h):
@@ -113,7 +112,9 @@ def _oracle_forward(
         q = quantizer(merged)
         act = base._modules.get("activation_fake_quantizer")
         if split and act is not None:
-            return F.linear(act(h), (q - s * (B @ A)).detach()) + s * F.linear(act(h), B @ A)
+            # The exact path: base on Q(W + s B A), adapter branch of value 0 on a detached input.
+            lora = s * F.linear(h.detach(), B @ A)
+            return F.linear(act(h), q.detach()) + (lora - lora.detach())
         if ste:
             w = W + s * (B @ A)
             q = w + (q - w).detach()
@@ -142,7 +143,7 @@ def test_forward_and_grads_match_merged_oracle(scheme, monkeypatch):
     params = [p for n, p in model.named_parameters() if "lora_" in n]
     grads = torch.autograd.grad(out.square().sum(), [x, *params])
     x2 = x.detach().clone().requires_grad_(True)
-    split = scheme.startswith("fp8")
+    split = scheme in ("fp8-fp8", "fp8-int4", "int8-int4")
     ref = _oracle_forward(model, x2, ste = True, split = split)
     ref_grads = torch.autograd.grad(ref.square().sum(), [x2, *params])
     for g, r in zip(grads, ref_grads):
@@ -243,19 +244,24 @@ def test_disabled_adapters_and_quantizers_fall_back(monkeypatch):
         torch.testing.assert_close(plain, ref, rtol = 1e-6, atol = 1e-6)
 
 
-def test_lora_input_hook_follows_the_base_quantizer(monkeypatch):
-    """The LoRA branch reads the base's fake quantized input only while the base has an activation quantizer:
-    after the export strips fake quantization, the in-memory model is plain LoRA again."""
-    model = _model("fp8-fp8", monkeypatch)
-    up = _lora_layers(model)[0]
-    x = _x()
-    lora_A = up.lora_A["default"]
-    quantizer = up.get_base_layer().activation_fake_quantizer
+def test_activation_quantized_layers_are_bitwise_the_export(monkeypatch):
+    """With an activation quantizer the merged layer is exactly F.linear(fq(x), Q(W + s B A)): no 16-bit
+    residual rounding, which the activation quantizer of the next layer would amplify."""
+    model = _model("fp8-fp8", monkeypatch, dtype = torch.bfloat16)
+    x = _x(torch.bfloat16)
     with torch.no_grad():
-        torch.testing.assert_close(lora_A(x), F.linear(quantizer(x), lora_A.weight))
-        del up.get_base_layer()._modules["activation_fake_quantizer"]
-        up.get_base_layer().activation_fake_quantizer = None
-        torch.testing.assert_close(lora_A(x), F.linear(x, lora_A.weight))
+        for proj in _lora_layers(model):
+            base = proj.get_base_layer()
+            A, B = proj.lora_A["default"].weight, proj.lora_B["default"].weight
+            q = base.weight_fake_quantizer.inner(
+                qlm.qat_lora_merged_weight(base.weight, A, B, proj.scaling["default"])
+            )
+            h = (
+                x
+                if proj is _lora_layers(model)[0]
+                else torch.randn(6, proj.in_features, dtype = torch.bfloat16)
+            )
+            assert torch.equal(proj(h), F.linear(base.activation_fake_quantizer(h), q))
 
 
 def test_shared_recipe_keeps_quantizer_state_per_model(monkeypatch):
@@ -372,13 +378,13 @@ def test_microscaling_forward_is_the_merged_low_precision_matmul(scheme, monkeyp
     x = _x(torch.bfloat16).cuda().requires_grad_(True)
     up = _lora_layers(model)[0]
     base = up.get_base_layer()
-    weight_forward = base.__dict__["_unsloth_qat_lora_weight_forward"]
+    weight_forward = up.__dict__["_unsloth_qat_lora_weight_forward"]
     A, B = up.lora_A["default"].weight, up.lora_B["default"].weight
     s = up.scaling["default"]
     out = up(x)
     merged = qlm.qat_lora_merged_weight(base.weight, A, B, s)
     ref = weight_forward(base, x, weight = merged)
-    torch.testing.assert_close(out, ref, rtol = 2e-2, atol = 2e-2)
+    assert torch.equal(out, ref)  # bit for bit the exported layer
     grad = torch.randn_like(out)
     gx, gA, gB = torch.autograd.grad(out, [x, A, B], grad)
     x2 = x.detach().clone().requires_grad_(True)

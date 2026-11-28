@@ -13,15 +13,16 @@ The gradient uses the straight-through estimator through Q: dL/dA and dL/dB are 
 formulas (s * (G B)^T X and s * G^T (X A^T)), and dL/dX = G Q(W + s B A). So the backward costs what LoRA
 costs; the forward adds one merge and one fake quantization of the weight per call.
 
-How: the base layer's weight fake quantizer returns the residual R = Q(W + s B A) - s B A (no grad), so the
-unchanged LoRA forward (PEFT's, or Unsloth's fused LoRA kernels, which read the base weight through that same
-quantizer) computes R x + s B A x = Q(W + s B A) x up to 16-bit rounding of R. The LoRA branch of an
-activation quantized base reads the same fake quantized input as the base. torchao's NVFP4 / MX QAT
-linears quantize inside forward(), so their forward runs on W + s B A and subtracts s B A x with the adapter
-weights detached. Live memory: one weight-sized residual per layer while autograd holds it (freed by
-gradient checkpointing, exactly like base-only QAT without the in-place rounding). The QAT weight memo
-(models/_qat_weight_memo.py) caches each residual, keyed on the adapter's storage and version, within its memory
-budget, so gradient accumulation micro batches and checkpoint replays reuse it until the optimizer step.
+How: for weight-only recipes the base layer's weight fake quantizer returns the residual R = Q(W + s B A) - s B A
+(no grad), so the unchanged LoRA forward (PEFT's, or Unsloth's fused LoRA kernels, which read the base weight
+through that same quantizer) computes R x + s B A x = Q(W + s B A) x up to 16-bit rounding of R. Activation
+quantized bases (int8 / fp8 activations) never take the fused kernels, and torchao's NVFP4 / MX linears quantize
+inside forward(): there the LoRA layer runs the base forward on Q(W + s B A), bit for bit the exported layer (the
+activation quantizer would amplify any rounding difference), and adds its adapter branch with value exactly 0 on
+a detached input to carry the gradients. Live memory: one weight-sized tensor per layer while autograd holds it
+(freed by gradient checkpointing, exactly like base-only QAT without the in-place rounding). The QAT weight memo
+(models/_qat_weight_memo.py) caches it, keyed on the adapter's storage and version, within its memory budget, so
+gradient accumulation micro batches and checkpoint replays reuse it until the optimizer step.
 
 The merge is the one save.py's _merge_lora writes (fp32 W^T + s A^T B^T, cast back), shared through
 qat_lora_merged_weight, so the exported 16-bit weights are bitwise the weights fake quantized in training.
@@ -211,6 +212,23 @@ def _(W, A, B, scale, key):
     return torch.empty_like(W)
 
 
+@torch.library.custom_op("unsloth::qat_lora_merged_quantized_v1", mutates_args = ())
+def _quantized_op(
+    W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float, key: int
+) -> torch.Tensor:
+    quantizer = _QUANTIZERS[key]
+    try:
+        with torch.no_grad():
+            return quantizer(_merged_fp32(W, A, B, scale).to(W.dtype))
+    finally:
+        _drop_qparams(quantizer)
+
+
+@_quantized_op.register_fake
+def _(W, A, B, scale, key):
+    return torch.empty_like(W)
+
+
 @torch.library.custom_op("unsloth::qat_lora_merged_weight_v1", mutates_args = ())
 def _merged_weight_op(
     W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float
@@ -284,19 +302,27 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
         A, B, scale = adapter
         if not torch.compiler.is_compiling():
             _STATS["calls"] += 1
+        if self.__dict__.get(
+            "_full", False
+        ):  # the LoRA layer adds a zero-valued adapter branch itself
+            return _quantized_op(
+                W.detach(), A.detach(), B.detach(), float(scale), self.__dict__["_key"]
+            )
         return _residual_op(W.detach(), A.detach(), B.detach(), float(scale), self.__dict__["_key"])
 
 
-def _activation_quantize_lora_input(module, args):
-    """forward_pre_hook on lora_A: the LoRA branch sees the base layer's fake quantized input. Read from the
-    base layer per call: once the export strips fake quantization the hook is a no-op."""
-    layer = module.__dict__.get("_unsloth_qat_lora_owner")
-    if layer is None or not args or not layer.__dict__.get(_FLAG, False):
-        return None
-    quantizer = layer.get_base_layer()._modules.get("activation_fake_quantizer")
-    if quantizer is None or not getattr(quantizer, "enabled", True):
-        return None
-    return (quantizer(args[0]), *args[1:])
+def _exact_lora_forward(self, x, *args, **kwargs):
+    """LoRA Linear over an activation quantized base (fake quant int8 / fp8 activations): the base forward, whose
+    weight quantizer returns Q(W + s B A) here, is bit for bit the exported layer; the adapter branch is added with
+    value exactly 0 to carry the straight-through LoRA gradients, on a detached input so dX comes from the base."""
+    adapter = _active_adapter(self)
+    if adapter is None or args or kwargs:
+        return type(self).forward(self, x, *args, **kwargs)
+    A, _, scale = adapter
+    out = self.get_base_layer()(x)
+    name = next(a for a in self.active_adapters if a in self.lora_A)
+    lora = self.lora_B[name](self.lora_A[name](x.detach().to(A.dtype))) * scale
+    return out + (lora - lora.detach()).to(out.dtype)
 
 
 def _microscaling_weight_forward(base):
@@ -316,22 +342,23 @@ def _microscaling_weight_forward(base):
     return None
 
 
-def _merged_microscaling_forward(self, x):
-    """NVFP4 / MX QAT base inside a merged LoRA layer: Q(W + s B A) x - s B A x, the adapter detached here
-    (the LoRA layer adds s B A x back with gradients), so the sum is Q(W + s B A) x and dX = G Q(W + s B A)."""
-    weight_forward = self.__dict__["_unsloth_qat_lora_weight_forward"]
-    layer = self.__dict__["_unsloth_qat_lora_layer"]
-    adapter = None if self.__dict__.get(_TEACHER, False) else _active_adapter(layer)
-    if adapter is None:
-        return weight_forward(self, x)
+def _merged_microscaling_forward(self, x, *args, **kwargs):
+    """LoRA Linear over an NVFP4 / MX QAT base: the base's own low-precision forward on W + s B A, bit for bit
+    the exported layer (W4A4 / W8A8 amplify any rounding difference through the activation quantizer), plus
+    the adapter branch with value exactly 0 that carries the straight-through LoRA gradients. The adapter reads
+    a detached input, so dX = G Q(W + s B A) comes from the base alone."""
+    base = self.get_base_layer()
+    adapter = None if base.__dict__.get(_TEACHER, False) else _active_adapter(self)
+    if adapter is None or args or kwargs:
+        return type(self).forward(self, x, *args, **kwargs)
     A, B, scale = adapter
     if not torch.compiler.is_compiling():
         _STATS["calls"] += 1
-    merged = _merged_weight_op(self.weight.detach(), A.detach(), B.detach(), float(scale))
-    out = weight_forward(self, x, weight = merged)
-    lora_x = x.to(A.dtype)
-    correction = F.linear(F.linear(lora_x, A.detach()), B.detach()) * scale
-    return out - correction.to(out.dtype)
+    merged = _merged_weight_op(base.weight.detach(), A.detach(), B.detach(), float(scale))
+    out = self.__dict__["_unsloth_qat_lora_weight_forward"](base, x, weight = merged)
+    adapter_name = next(a for a in self.active_adapters if a in self.lora_A)
+    lora = self.lora_B[adapter_name](self.lora_A[adapter_name](x.detach().to(A.dtype))) * scale
+    return out + (lora - lora.detach()).to(out.dtype)
 
 
 def _refusal(layer, name):
@@ -387,17 +414,16 @@ def install_qat_lora_merged(model):
         if quantizer is not None:
             if not isinstance(quantizer, MergedLoRAWeightFakeQuantizer):
                 base.weight_fake_quantizer = MergedLoRAWeightFakeQuantizer(quantizer, layer)
-            activation = base._modules.get("activation_fake_quantizer")
-            if activation is not None:
-                for lora_A in layer.lora_A.values():
-                    if "_unsloth_qat_lora_owner" not in lora_A.__dict__:
-                        lora_A.__dict__["_unsloth_qat_lora_owner"] = layer
-                        lora_A.register_forward_pre_hook(_activation_quantize_lora_input)
+            if base._modules.get("activation_fake_quantizer") is not None:
+                # Never on the fused LoRA kernels (they skip activation quantized layers): exact path.
+                base.weight_fake_quantizer.__dict__["_full"] = True
+                if "_unsloth_qat_lora_exact" not in layer.__dict__:
+                    layer.__dict__["_unsloth_qat_lora_exact"] = True
+                    layer.forward = types.MethodType(_exact_lora_forward, layer)
         else:
-            if "_unsloth_qat_lora_weight_forward" not in base.__dict__:
-                base.__dict__["_unsloth_qat_lora_weight_forward"] = weight_forward
-                base.__dict__["_unsloth_qat_lora_layer"] = layer
-                base.forward = types.MethodType(_merged_microscaling_forward, base)
+            if "_unsloth_qat_lora_weight_forward" not in layer.__dict__:
+                layer.__dict__["_unsloth_qat_lora_weight_forward"] = weight_forward
+                layer.forward = types.MethodType(_merged_microscaling_forward, layer)
             microscaling += 1
         layer.__dict__[_FLAG] = True
         count += 1
