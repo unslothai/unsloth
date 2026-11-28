@@ -5374,6 +5374,9 @@ _INKLING2_BANDED_QUANT_KV_RE = re.compile(rb"flash_attn_ext_banded\w*ggml_type8E
 # loader string with the banded reserve, so the build number gates it too.
 _INKLING2_MULTI_SEQ_DENSE_RE = re.compile(rb"inkling2_loop: %zu cache slots exceed")
 _INKLING2_MULTI_SEQ_DENSE_BUILD = 12649
+# Auto picks DSpark on CUDA/HIP/Vulkan only from this build: b12776 and older lack the DSpark speed
+# fixes and run DSpark at 0.56-0.94x of plain decoding. Move it to the first prebuilt carrying the fixes.
+_DSPARK_AUTO_MIN_BUILD = 12777
 # 386 fix drops dense reserve; attn_inp_k_pos*/attn_inp_rel_shift* survive strip only from it.
 _INKLING2_BANDED_POS_RES = (
     re.compile(rb"attn_inp_k_pos_swa\x00"),
@@ -22991,7 +22994,23 @@ class LlamaCppBackend:
         try:
             # Through the caller's getter so an inconclusive probe still latches for this launch.
             probe = caps or self.probe_server_capabilities
-            return bool(probe(binary).get("supports_dspark"))
+            if not probe(binary).get("supports_dspark"):
+                return False
+            # Metal wins on the base build; GPU builds before the fixes are slower than plain decoding.
+            if not self._build_has_metal(binary) and (
+                self._installed_ggml_backends(binary) & {"cuda", "hip", "vulkan"}
+            ):
+                build = self.probe_build_number(binary)
+                if build is None or build < _DSPARK_AUTO_MIN_BUILD:
+                    logger.info(
+                        "Auto: llama.cpp build %s predates the DSpark speed fixes (b%d); "
+                        "skipping DSpark. Choose DSpark in the Speculative Decoding dropdown "
+                        "to force it.",
+                        build,
+                        _DSPARK_AUTO_MIN_BUILD,
+                    )
+                    return False
+            return True
         except Exception as exc:
             logger.debug("DSpark capability probe failed during Auto: %s", exc)
             return False
