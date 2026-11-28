@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { matchesFormatFilter } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import type * as NpuApi from "../src/features/npu/api.ts";
+import * as npuModelId from "../src/features/npu/model-id.ts";
 import * as runtimeVersions from "../src/features/npu/runtime-versions.ts";
 import * as displayName from "../src/features/npu/display-name.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
@@ -22,6 +23,7 @@ function client(response: () => Response) {
           return response();
         },
       },
+      "./model-id": npuModelId,
       "@/lib/format-fastapi-error": formatFastApiError,
       "./display-name": displayName,
       "@/lib/sse-json-events": sseJsonEvents,

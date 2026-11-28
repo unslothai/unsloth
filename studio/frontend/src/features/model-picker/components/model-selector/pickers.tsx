@@ -2363,13 +2363,13 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
             onClick={() => {
               const a = actions.get();
               if (isDirectGguf) {
-                a.select(m.id, localDirectGgufMeta(m.task));
+                a.select(m.id, localDirectGgufMeta(m.task, m.path));
               } else if (isGguf) {
                 a.toggleGgufExpanded(m.id);
               } else {
                 a.select(
                   m.id,
-                  localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                  localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                 );
               }
             }}
@@ -2410,9 +2410,9 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
             <ModelLoadSettingsAction
               ariaLabel={`Inference settings for ${name}`}
               onConfigure={() =>
-                actions.get().configure(m.id, localDirectGgufMeta(m.task))
+                actions.get().configure(m.id, localDirectGgufMeta(m.task, m.path))
               }
-              savedFor={modelConfigTarget(m.id, localDirectGgufMeta(m.task))}
+              savedFor={modelConfigTarget(m.id, localDirectGgufMeta(m.task, m.path))}
             />
           )}
           {!isGguf && canConfigure && (
@@ -2423,12 +2423,12 @@ const LocalModelDeviceRow = memo(function LocalModelDeviceRow({
                   .get()
                   .configure(
                     m.id,
-                    localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                    localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
                   )
               }
               savedFor={modelConfigTarget(
                 m.id,
-                localModelMeta(false, m.task, m.audio_type, m.opaque === true),
+                localModelMeta(false, m.task, m.audio_type, m.opaque === true, m.path),
               )}
             />
           )}
@@ -3720,6 +3720,7 @@ function localModelMeta(
   pipelineTag?: string | null,
   audioType?: string | null,
   familyOverrideRequired = false,
+  localPath?: string,
 ): ModelSelectorChangeMeta {
   return {
     source: "local",
@@ -3729,13 +3730,15 @@ function localModelMeta(
     pipelineTag: pipelineTag ?? null,
     audioType: audioType ?? null,
     familyOverrideRequired,
+    ...(localPath ? { localPath } : {}),
   };
 }
 
 function localDirectGgufMeta(
   pipelineTag?: string | null,
+  localPath?: string,
 ): ModelSelectorChangeMeta {
-  return localModelMeta(true, pipelineTag);
+  return localModelMeta(true, pipelineTag, undefined, false, localPath);
 }
 
 function hubRepoUrl(id: string | null | undefined): string | undefined {
