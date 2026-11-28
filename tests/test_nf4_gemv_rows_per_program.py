@@ -5,22 +5,27 @@
 CUDA groups by the largest of 4, 3, 2 dividing M, ROCm runs one row per program (gfx1151 got 3-row groups wrong)."""
 
 import pytest
-import torch
 
 pytest.importorskip("triton")
 nf4_gemv = pytest.importorskip("unsloth.kernels.nf4_gemv")
 
 
-@pytest.mark.parametrize("hip", [None, "7.13.0"], ids = ["cuda", "rocm"])
-def test_rows_per_program(hip, monkeypatch):
-    monkeypatch.setattr(torch.version, "hip", hip)
+@pytest.mark.parametrize("rocm", [False, True], ids = ["cuda", "rocm"])
+def test_rows_per_program(rocm, monkeypatch):
+    monkeypatch.setattr(nf4_gemv, "_ROCM", rocm)
     for M in (1, 2, 3, 4):
         assert nf4_gemv._rows_per_program(M) == M
     want = (
-        {5: 1, 6: 3, 8: 4, 9: 3, 10: 2, 12: 4}
-        if hip is None
-        else {M: 1 for M in (5, 6, 8, 9, 10, 12)}
+        {5: 1, 6: 3, 8: 4, 9: 3, 10: 2, 12: 4} if not rocm else {M: 1 for M in (5, 6, 8, 9, 10, 12)}
     )
     for M, rows in want.items():
         assert nf4_gemv._rows_per_program(M) == rows, M
         assert M % rows == 0
+
+
+def test_cuda_rows_unchanged(monkeypatch):
+    # The expression _launch used before this route existed, for every row count a row cap can reach.
+    monkeypatch.setattr(nf4_gemv, "_ROCM", False)
+    for M in range(0, 129):
+        old = max(M, 1) if M <= 4 else next(r for r in (4, 3, 2, 1) if M % r == 0)
+        assert nf4_gemv._rows_per_program(M) == old, M
