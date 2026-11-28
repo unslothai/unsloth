@@ -63,6 +63,16 @@ export type SandboxMemoryStatus = {
   lockedByEnvironment: boolean;
 };
 
+// MB one file a sandboxed call writes can reach. null on Windows and on backends without the setting.
+export type SandboxFileSizeStatus = {
+  limitMb: number;
+  savedMb: number;
+  defaultMb: number;
+  minMb: number;
+  maxMb: number;
+  lockedByEnvironment: boolean;
+};
+
 export type SandboxStatus = {
   platform: string;
   python: SandboxToolStatus;
@@ -70,6 +80,7 @@ export type SandboxStatus = {
   terminalShell: TerminalShell | null;
   windows: WindowsSandboxStatus | null;
   memory: SandboxMemoryStatus | null;
+  fileSize: SandboxFileSizeStatus | null;
   setup: SandboxSetupPlan | null;
   checkedAt: number;
   restored?: number;
@@ -80,6 +91,7 @@ export type SandboxSettingsUpdate = {
   persistentReadGrants?: boolean;
   memoryLimitGb?: number;
   memoryLimitAuto?: true;
+  fileSizeLimitMb?: number;
 };
 
 export type HostPrepState =
@@ -164,6 +176,21 @@ type ApiMemoryStatus = {
   locked_by_environment?: boolean;
 };
 
+type ApiFileSizeStatus = {
+  // biome-ignore lint/style/useNamingConvention: API schema
+  limit_mb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  saved_mb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  default_mb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  min_mb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  max_mb?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  locked_by_environment?: boolean;
+};
+
 type ApiSandboxStatus = {
   platform?: string;
   python?: ApiToolStatus;
@@ -172,6 +199,8 @@ type ApiSandboxStatus = {
   terminal_shell?: TerminalShell | null;
   windows?: ApiWindowsStatus | null;
   memory?: ApiMemoryStatus | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  file_size?: ApiFileSizeStatus | null;
   setup?: ApiSetupPlan | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   checked_at?: number;
@@ -247,6 +276,20 @@ function windowsFromApi(
   };
 }
 
+function fileSizeFromApi(
+  fileSize: ApiFileSizeStatus | null | undefined,
+): SandboxFileSizeStatus | null {
+  if (!fileSize || typeof fileSize.saved_mb !== "number") return null;
+  return {
+    limitMb: fileSize.limit_mb ?? fileSize.saved_mb,
+    savedMb: fileSize.saved_mb,
+    defaultMb: fileSize.default_mb ?? 4096,
+    minMb: fileSize.min_mb ?? 1,
+    maxMb: fileSize.max_mb ?? 1048576,
+    lockedByEnvironment: fileSize.locked_by_environment ?? false,
+  };
+}
+
 function memoryFromApi(
   memory: ApiMemoryStatus | null | undefined,
 ): SandboxMemoryStatus | null {
@@ -270,6 +313,7 @@ export function statusFromApi(status: ApiSandboxStatus): SandboxStatus {
     terminalShell: status.terminal_shell ?? null,
     windows: windowsFromApi(status.windows),
     memory: memoryFromApi(status.memory),
+    fileSize: fileSizeFromApi(status.file_size),
     setup: setupFromApi(status.setup),
     checkedAt: status.checked_at ?? 0,
   };
@@ -329,6 +373,9 @@ export async function updateSandboxSettings(
   }
   if (update.memoryLimitAuto) {
     body.memory_limit_auto = true;
+  }
+  if (update.fileSizeLimitMb !== undefined) {
+    body.file_size_limit_mb = update.fileSizeLimitMb;
   }
   const res = await authFetch(ROUTE, {
     method: "PUT",
