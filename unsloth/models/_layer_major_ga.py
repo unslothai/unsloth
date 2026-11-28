@@ -240,17 +240,33 @@ def _dropout_modules(model):
     return None
 
 
+def _unsloth_compiled_patch(module):
+    """A forward Unsloth's own temporary patches compiled onto the module's class (patch_function(..., fullgraph =
+    ...), such as Gemma 4's TextMLP): the same compiled function runs in standard accumulation, and a window's
+    recompile-limit error rolls back to it."""
+    if "forward" in module.__dict__:
+        return False
+    forward = type(module).__dict__.get("forward")
+    original = getattr(forward, "_torchdynamo_orig_callable", None)
+    if original is None or isinstance(original, functools.partial) or hasattr(original, "__self__"):
+        return False
+    owner = getattr(original, "__module__", "") or ""
+    return owner.split(".")[0] in ("unsloth", "unsloth_zoo")
+
+
 def _compiled_in_layers(layers):
-    """torch.compile on a decoder layer or inside one, other than Unsloth's block compile (proven): module.compile()
-    takes the layer's checkpoint wrapper into the graph, and the window's extra no-grad specialisations can use up
-    the recompile budget the standard retry needs."""
+    """torch.compile on a decoder layer or inside one, other than Unsloth's block compile and Unsloth's own compiled
+    patches (proven): module.compile() takes the layer's checkpoint wrapper into the graph, and the window's extra
+    no-grad specialisations can use up the recompile budget the standard retry needs."""
     optimized = getattr(getattr(torch, "_dynamo", None), "OptimizedModule", None)
     for module in layers.modules():
         if getattr(module, "_compiled_call_impl", None) is not None:
             return True
         if optimized is not None and isinstance(module, optimized):
             return True
-        if hasattr(getattr(module, "forward", None), "_torchdynamo_orig_callable"):
+        if hasattr(
+            getattr(module, "forward", None), "_torchdynamo_orig_callable"
+        ) and not _unsloth_compiled_patch(module):
             return True
     return False
 
