@@ -352,7 +352,7 @@ async def _decide(
     if images:
         _validate_images(images)
         if isinstance(checkpoint, catalog.Connection) and "image" not in (
-            laya_runtime.input_modalities(checkpoint)
+            await asyncio.to_thread(laya_runtime.input_modalities, checkpoint)
         ):
             raise _error(
                 400,
