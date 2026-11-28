@@ -208,14 +208,25 @@ def restore_inventory_handles(payload: Any) -> Any:
     return _restore(payload, known)
 
 
+# Exact types only: a subclass may carry model_dump or be a Mapping, so it takes the full walk.
+_REDACT_PASSTHROUGH_TYPES = frozenset({type(None), bool, int, float, str})
+# str is absent: _restore rewrites handles inside text.
+_RESTORE_PASSTHROUGH_TYPES = frozenset({type(None), bool, int, float})
+
+
 def _restore(payload: Any, known: "dict[str, str]") -> Any:
+    if type(payload) in _RESTORE_PASSTHROUGH_TYPES:
+        return payload
     dumped = _dump_model(payload)
     if dumped is not None:
         return _restore(dumped, known)
     if isinstance(payload, Mapping):
         return {key: _restore(value, known) for key, value in payload.items()}
     if isinstance(payload, (list, tuple)):
-        restored = [_restore(item, known) for item in payload]
+        restored = [
+            item if type(item) in _RESTORE_PASSTHROUGH_TYPES else _restore(item, known)
+            for item in payload
+        ]
         if not isinstance(payload, tuple):
             return restored
         # NamedTuple takes fields positionally; try/except would explode a plain ('abc',) into chars.
@@ -316,6 +327,8 @@ def _redact(
     redact_ambiguous_path: bool,
     echo: frozenset = frozenset(),
 ) -> Any:
+    if type(payload) in _REDACT_PASSTHROUGH_TYPES:
+        return payload
     dumped = _dump_model(payload)
     if dumped is not None:
         return _redact(dumped, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
@@ -401,7 +414,9 @@ def _redact(
         return out
     if isinstance(payload, (list, tuple)):
         redacted = [
-            _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
+            item
+            if type(item) in _REDACT_PASSTHROUGH_TYPES
+            else _redact(item, redact_ambiguous_path = redact_ambiguous_path, echo = echo)
             for item in payload
         ]
         if not isinstance(payload, tuple):
