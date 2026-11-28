@@ -9233,6 +9233,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         mlx_ane_prefill = None,
         mlx_ane_prefill_requested = None,
         mlx_ane_prefill_reason = None,
+        mlx_preserve_dtype = None,
         mlx_fast_verify = None,
         mlx_fast_verify_requested = None,
         mlx_fast_verify_reason = None,
