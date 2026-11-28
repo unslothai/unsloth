@@ -1130,6 +1130,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "qwen-image-2.1",
         comfy_shift_node = "flux",
         label = "Qwen-Image-2.1",
+        batched_forward = True,
         profile = FamilyProfile(
             # 2.1 is a 32-block single-stream DiT with no add-prefixed projections or txt_mlp, so
             # MMDiT exclusions do not apply; txt_in exclusion affects quality, not crashes.
