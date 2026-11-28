@@ -638,7 +638,10 @@ def layer_major_ineligible(
     if why is not None:
         return why
     config = _text_config(model)
-    if _engine_module() is not None and not hasattr(_engine_module(), "_thread_forwards"):
+    if _engine_module() is not None and not (
+        getattr(_engine_module(), "MOE_ROUTER_LOSSES", False)
+        or hasattr(_engine_module(), "_thread_forwards")
+    ):
         for key in _MOE_KEYS:
             value = getattr(config, key, 0)
             if isinstance(value, int) and value > 0:
