@@ -120,6 +120,33 @@ def test_other_cases_run_peft(case, monkeypatch):
         torch.testing.assert_close(out, ref)
 
 
+@pytest.mark.parametrize("where", ["pre_hook", "hf_hook", "diffusers_hook"])
+def test_offloaded_adapters_run_peft(where):
+    # Leaf / sequential offload moves an adapter's weights onto the device only inside its own forward (a hook), so
+    # the epilogue must not read them directly: PEFT's forward runs and goes through the hook.
+    m = _model()
+    x = torch.randn(4, 64)
+    ref = _stock(m, x)
+    target = m[0].lora_B["a"]
+    if where == "pre_hook":
+        target.register_forward_pre_hook(lambda mod, inp: None)
+    elif where == "hf_hook":
+        target._hf_hook = object()
+    else:
+        target._diffusers_hook = object()
+    with torch.no_grad():
+        out = m(x)
+    assert la.CALLS == [0, 1]
+    torch.testing.assert_close(out, ref)
+
+
+def test_adapter_weights_off_the_input_device_run_peft():
+    # Weights left on another device (an offloaded leaf that has not been onloaded yet) never reach the epilogue.
+    m = _model()
+    assert la._plain_adapters(m[0], torch.randn(4, 64)) == ["a"]
+    assert la._plain_adapters(m[0], torch.empty(4, 64, device = "meta")) is None
+
+
 def test_install_idempotent():
     from peft.tuners.lora import layer as lora_layer
 

@@ -28,9 +28,24 @@ def enabled() -> bool:
     return (os.environ.get(LORA_ADDMM_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
-def _plain_adapters(layer: Any, dtype: Any) -> Any:
-    """The active adapters when every one is a vanilla LoRA the epilogue path computes exactly, else None."""
+def _hooked(module: Any) -> bool:
+    """Whether a module's own forward does more than its matmul: offload / execution hooks (diffusers group or leaf
+    offload, accelerate cpu / sequential offload) move its weights onto the device only inside that forward."""
+    return bool(
+        getattr(module, "_diffusers_hook", None) is not None
+        or getattr(module, "_hf_hook", None) is not None
+        or getattr(module, "_forward_pre_hooks", None)
+        or getattr(module, "_forward_hooks", None)
+    )
+
+
+def _plain_adapters(layer: Any, x: Any) -> Any:
+    """The active adapters when every one is a vanilla LoRA the epilogue path computes exactly, else None. An adapter
+    whose modules carry offload hooks, or whose weights are not already on ``x``'s device, runs PEFT's forward, which
+    goes through those hooks."""
     import torch
+
+    dtype = x.dtype
 
     if layer.disable_adapters or layer.merged or getattr(layer, "lora_variant", None):
         return None
@@ -44,8 +59,12 @@ def _plain_adapters(layer: Any, dtype: Any) -> Any:
             return None
         if not isinstance(layer.scaling[a], (int, float)):
             return None
+        if _hooked(layer.lora_A[a]) or _hooked(layer.lora_B[a]):
+            return None
         wa, wb = layer.lora_A[a].weight, layer.lora_B[a].weight
         if wa.dtype != dtype or wb.dtype != dtype:
+            return None
+        if wa.device != x.device or wb.device != x.device:
             return None
         if (
             getattr(layer.lora_B[a], "bias", None) is not None
@@ -63,7 +82,7 @@ def _forward(original: Any) -> Any:
         if args or kwargs or not enabled() or x.dim() < 2 or torch.is_grad_enabled():
             CALLS[1] += 1
             return original(self, x, *args, **kwargs)
-        active = _plain_adapters(self, x.dtype)
+        active = _plain_adapters(self, x)
         if active is None:
             CALLS[1] += 1
             return original(self, x, *args, **kwargs)
