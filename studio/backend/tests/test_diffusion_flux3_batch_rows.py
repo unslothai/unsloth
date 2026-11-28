@@ -157,6 +157,42 @@ def test_rows_of_different_text_windows_render_apart(distilled):
         assert _maxabs(images[i], solo[0]) < 1e-4
 
 
+def test_each_modular_call_starts_its_own_static_skip_trajectory(distilled, monkeypatch):
+    """The engine resets the static skip schedule once per chunk; every extra modular call in it must rewind."""
+    from core.inference import diffusion_step_skip
+
+    rewinds: list = []
+    monkeypatch.setattr(
+        diffusion_step_skip, "rewind_static_step_skip", lambda pipe: rewinds.append(pipe) or True
+    )
+    _render(distilled, ["a red fox", LONG, "a ramen bowl", LONG + " at dusk"], [11, 22, 33, 44])
+    assert len(rewinds) == 1 and rewinds[0] is distilled  # two text windows: two trajectories
+    rewinds.clear()
+    _render(distilled, ["a red fox", "a ramen bowl"], [11, 22])
+    assert rewinds == []  # one batched call: the chunk's own reset is enough
+    rewinds.clear()
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_FLUX3_BATCH", "0")
+    _render(distilled, ["a red fox", "a ramen bowl", "a lighthouse"], [11, 22, 33])
+    assert len(rewinds) == 2  # one call per image
+
+
+def test_rewind_restarts_the_step_count_and_keeps_the_plan():
+    from core.inference.diffusion_step_skip import StaticStepSkip
+
+    skip = StaticStepSkip.__new__(StaticStepSkip)
+    skip.counting, skip.steps_ended, skip.ordinal = True, 7, 3
+    skip.counters, skip.history, skip.plan = {"a": 1}, {"b": 2}, (True, False, True)
+    from core.inference import diffusion_step_skip as S
+
+    pipe = object()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(S, "_find", lambda p: skip if p is pipe else None)
+        assert S.rewind_static_step_skip(pipe) is True
+        assert S.rewind_static_step_skip(object()) is False
+    assert (skip.steps_ended, skip.ordinal, skip.counters, skip.history) == (0, 0, {}, {})
+    assert skip.plan == (True, False, True)
+
+
 def test_per_row_negative_prompts_group_by_negative(base):
     images, rows = _render(base, PROMPTS, SEEDS, negative_prompt = ["blurry", "blurry", "dark"])
     assert sorted(rows) == sorted([2] * STEPS * 2 + [1] * STEPS * 2)

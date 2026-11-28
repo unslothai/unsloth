@@ -794,19 +794,31 @@ class _Flux3KleinPipelineMixin:
                 else None
             ),
         )
+        from .diffusion_step_skip import rewind_static_step_skip
+
         images: list = []
+        trajectories = [0]
+
+        def next_trajectory() -> None:
+            # The engine resets the static skip schedule once per chunk; each modular call here is its own trajectory.
+            if trajectories[0]:
+                rewind_static_step_skip(self)
+            trajectories[0] += 1
+
         try:
             by_row: dict = {}
             for group_index, group in enumerate(groups):
                 first = group_index == 0
                 if len(group) > 1:
                     try:
+                        next_trajectory()
                         for i, img in zip(group, run_rows(group, first)):
                             by_row[i] = [img]
                         continue
                     except _Flux3RowsMismatch as exc:
                         logger.info("FLUX.3 rows render one by one: %s", exc)
                 for i in group:
+                    next_trajectory()
                     out = run_modular(call_kwargs(i), first and i == group[0])
                     by_row[i] = out if isinstance(out, list) else [out]
             for i in range(len(calls)):
