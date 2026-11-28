@@ -196,11 +196,12 @@ def _pipe_kwargs(
     mode,
     target = CUDA_BF16,
     logger = None,
+    base = None,
 ):
     fam = detect_family("", override = family)
     return tpq.te_prequant_pipe_kwargs(
         fam,
-        fam.base_repo,
+        base or fam.base_repo,
         te_quant_mode = mode,
         target = target,
         dtype = torch.float32,
@@ -245,6 +246,34 @@ def test_one_encoder_serves_both_variants():
     assert tpq.te_base_equivalent(DISTILLED, BASE)
     assert tpq.te_base_equivalent("unsloth/flux-3-image-klein-FP8", BASE)
     assert not tpq.te_base_equivalent(DISTILLED, "Qwen/Qwen-Image-2.1")
+    # Retired full copies stand for their bases; both variants' hosted file records the distilled base.
+    assert tpq.te_base_equivalent(DISTILLED, "unsloth/flux-3-image-klein-base")
+    assert tpq.te_base_equivalent("unsloth/flux-3-image-klein", "unsloth/flux-3-image-klein-base")
+    assert tpq.te_base_equivalent("unsloth/flux-3-image-klein-base", DISTILLED)
+    assert not tpq.te_base_equivalent("unsloth/flux-3-image-klein-base", "Qwen/Qwen-Image-2.1")
+
+
+# Every id a FLUX.3 Klein load can be named by: the upstream base, its -FP8 mirror and the retired full copy.
+_LOAD_IDS = [
+    (family, load_id)
+    for family, (base, repo, _stem) in sorted(VARIANTS.items())
+    for load_id in (base, repo, base.replace("black-forest-labs/", "unsloth/"))
+]
+
+
+@pytest.mark.parametrize("family,load_id", _LOAD_IDS)
+@pytest.mark.parametrize("mode", ["int8", "fp8"])
+def test_every_load_id_loads_the_hosted_encoder(mirror, family, load_id, mode):
+    """The hosted files record the distilled base (one encoder, the same bytes in both repos). A load named by any id
+    of either variant passes the planner's base check, so the loader's check must accept the file as well, or the
+    load fails with "present but could not be loaded" (unsloth/flux-3-image-klein-base did on main)."""
+    fam = detect_family("", override = family)
+    planned = tpq.te_prequant_sources_for_base(fam, load_id, te_quant_mode = mode, target = CUDA_BF16)
+    assert "text_encoder" in planned
+    log = _Log()
+    encoder = _pipe_kwargs(family, mode, logger = log, base = load_id)["text_encoder"]
+    assert getattr(encoder, tpq.TE_PREQUANT_SCHEME_ATTR) == mode
+    assert not any("checkpoint base" in line for line in log.lines), log.lines
 
 
 @pytest.mark.parametrize("family", sorted(VARIANTS))

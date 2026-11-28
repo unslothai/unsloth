@@ -789,10 +789,14 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     equivalence group above."""
     if _same_base_model(ckpt_base, base):
         return True
-    # Groups hold UPSTREAM ids: an unnormalised mirror id would be refused.
-    from .diffusion_families import canonical_base
+    # Groups hold upstream ids: normalise mirrors and retired full copies as ``_same_base_model`` does.
+    from .diffusion_families import canonical_base, retired_full_copy_base
 
-    a, b = canonical_base(ckpt_base).lower(), canonical_base(base).lower()
+    def _upstream(repo_id: str) -> str:
+        upstream = canonical_base(repo_id)
+        return (retired_full_copy_base(upstream) or upstream).lower()
+
+    a, b = _upstream(ckpt_base), _upstream(base)
     return any(a in group and b in group for group in _TE_EQUIVALENT_BASES)
 
 
