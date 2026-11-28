@@ -496,7 +496,7 @@ def test_install_on_pipe_only_on_mps(monkeypatch):
 
 
 def test_video_loader_wires_install():
-    src = (_BACKEND / "core" / "inference" / "video.py").read_text()
+    src = (_BACKEND / "core" / "inference" / "video.py").read_text(encoding = "utf-8")
     assert "from .video_vae_mps_pertap import install_on_pipe as install_vae_mps_pertap" in src
     assert "speed_optims += (_MPS_PERTAP,)" in src
     assert P.OPTIM_NAME == "vae_mps_pertap_conv"
