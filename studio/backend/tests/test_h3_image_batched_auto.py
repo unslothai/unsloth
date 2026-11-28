@@ -388,3 +388,24 @@ def test_the_engine_races_this_family_instead_of_refusing_it(h3r, monkeypatch):
     # the backend registers itself, so a pipe call finds the loaded state that holds it
     engine._state.pipe = object()
     assert h3r.state_of(engine._state.pipe) is engine._state
+
+
+def test_a_race_arm_follows_the_render_onto_the_render_thread(h3i):
+    """Studio runs CUDA renders on a persistent render thread that copies the caller's context
+    (diffusion_render_thread.run); a thread-local arm never reached the pipe there."""
+    import contextvars
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    b = h3i.h3_batch
+    with ThreadPoolExecutor(max_workers = 1) as pool:
+        with b.forced_arm(b.MODE_ON):
+            ctx = contextvars.copy_context()
+            seen = pool.submit(ctx.run, b.batched_mode).result()
+            # a request rendering beside the race (no copied context) keeps Auto
+            other = []
+            t = threading.Thread(target = lambda: other.append(b.batched_mode()))
+            t.start()
+            t.join()
+        after = pool.submit(contextvars.copy_context().run, b.batched_mode).result()
+    assert seen == b.MODE_ON and other == [b.MODE_AUTO] and after == b.MODE_AUTO

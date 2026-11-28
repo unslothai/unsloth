@@ -213,6 +213,7 @@ def run_race(
             out = generate(prompt = prompt, seeds = list(seeds), batch_size = len(seeds), **common)
             took = clock() - start
         stats = dict(getattr(pipe, "_unsloth_h3_last_stats", None) or {})
+        stats["refusal"] = getattr(pipe, "_unsloth_h3_together_refusal", None)
         return took, list(out.get("images") or []), stats
 
     for size in sorted({int(k) for k in sizes}, reverse = True):
@@ -228,7 +229,7 @@ def run_race(
                     "promoted": False,
                     "engaged": False,
                     "skipped": f"the batched forward did not run all {size} rows as one call here "
-                    f"(batched {batched or 'off'}): nothing to judge",
+                    f"(batched {batched or 'off'}; {warm.get('refusal') or 'no refusal'}): nothing to judge",
                     "size": size,
                 }
                 continue

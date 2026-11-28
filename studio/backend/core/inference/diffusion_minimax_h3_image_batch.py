@@ -16,8 +16,8 @@ image_batch_race); elsewhere each image runs batch 1. ``UNSLOTH_H3_IMAGE_BATCHED
 
 from __future__ import annotations
 
+import contextvars
 import os
-import threading
 import types
 from contextlib import contextmanager
 from typing import Any, Iterator, Optional, Sequence
@@ -29,13 +29,17 @@ _SHARED_FIELDS = ("position_ids", "token_tags", "image_indices", "text_indices")
 
 
 MODE_ON, MODE_OFF, MODE_AUTO = "on", "off", "auto"
-# The race's arm (MODE_ON / MODE_OFF) for the thread that runs it; it wins over the env and the measured verdicts.
-_ARM: dict = {}
+# The race's arm (MODE_ON / MODE_OFF) for the context that runs it; it wins over the env and the measured verdicts. A
+# context variable, so it follows the render onto the CUDA render thread (diffusion_render_thread copies the context)
+# and never reaches a concurrent request's render.
+_ARM: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "h3_image_batch_arm", default = None
+)
 
 
 def batched_mode() -> str:
     """``on`` (forced by the env or a race arm), ``off`` (forced), or ``auto`` (a measured verdict decides)."""
-    arm = _ARM.get(threading.get_ident())
+    arm = _ARM.get()
     if arm is not None:
         return arm
     raw = (os.environ.get(BATCHED_ENV) or "").strip().lower()
@@ -52,24 +56,19 @@ def batched_forward_enabled() -> bool:
 
 
 def race_arm_active() -> bool:
-    return threading.get_ident() in _ARM
+    return _ARM.get() is not None
 
 
 @contextmanager
 def forced_arm(mode: str) -> Iterator[None]:
-    """Run this thread's renders with the batched forward forced ``on`` or ``off`` (a race arm)."""
+    """Run this context's renders with the batched forward forced ``on`` or ``off`` (a race arm)."""
     if mode not in (MODE_ON, MODE_OFF):
         raise ValueError(f"arm must be {MODE_ON!r} or {MODE_OFF!r}")
-    ident = threading.get_ident()
-    saved = _ARM.get(ident)
-    _ARM[ident] = mode
+    token = _ARM.set(mode)
     try:
         yield
     finally:
-        if saved is None:
-            _ARM.pop(ident, None)
-        else:
-            _ARM[ident] = saved
+        _ARM.reset(token)
 
 
 def layout_key(job: dict) -> tuple:

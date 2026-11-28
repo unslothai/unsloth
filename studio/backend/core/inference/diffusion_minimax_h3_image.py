@@ -2848,6 +2848,7 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         images = []
         done = 0
         refusal = self._together_refusal(len(jobs), (width, height, steps))
+        self._unsloth_h3_together_refusal = refusal
         if refusal is None:
             done, finished = self._render_together(
                 jobs,
