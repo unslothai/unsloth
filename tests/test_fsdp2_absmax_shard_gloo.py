@@ -258,6 +258,8 @@ def _case(rank, world_size, shim):
     _shard(fresh, world_size, q, shard_absmax = True, mixed = True)
     expected = {k: v.detach().clone() for k, v in _model(bnb).state_dict().items()}
     with s.fsdp2_gathered(fresh) as writer:
+        # Only the writing rank holds the gathered scales.
+        out["save_scales_held"] = [e.full is not None for e in q.absmax_shards(fresh)]
         if writer:
             saved = {k: v.detach().clone() for k, v in fresh.state_dict().items()}
             out["save_keys_equal"] = sorted(saved) == sorted(expected)
@@ -452,6 +454,7 @@ def _check(results, world_size):
         assert r["dcp_keys_equal"] and r["dcp_absmax_equal"], r
         assert r["dcp_rewrite_changed"] and r["dcp_restore_bitwise"], r
         assert r["optimizer_dcp_gathers"] == 0, r
+        assert r["save_scales_held"] == [rank == 0] * r["absmax_sharded"][1], r
         assert r["model_dcp_gathers"] == r["absmax_sharded"][1], r
     writer = results[0]
     assert writer["save_keys_equal"] and writer["save_bytes_equal"], writer
@@ -496,6 +499,12 @@ def test_absmax_eligibility():
     entries = q.register_absmax_shards(model, 2)
     assert len(entries) == 1
     assert "0.base.weight_unsloth_absmax" not in model.state_dict()
+    # Two weights sharing one QuantState keep it whole (their units would free each other's scales).
+    shared = torch.nn.Sequential(
+        _Lora4bit(bnb, 0, 256, 256, True), _Lora4bit(bnb, 1, 256, 256, True)
+    )
+    shared[1].base.weight.quant_state = shared[0].base.weight.quant_state
+    assert q.register_absmax_shards(shared, 2) == []
     # Not taken by FSDP2: back to the QuantState's own absmax, same bytes.
     assert q.finish_absmax_shards(entries) == 0
     assert "weight_unsloth_absmax" not in model[0].base._parameters

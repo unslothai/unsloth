@@ -451,9 +451,16 @@ def _is_absmax_holder(name, param):
 
 
 @contextlib.contextmanager
-def _full_absmax(model, enabled = True):
+def _full_absmax(
+    model,
+    enabled = True,
+    device = None,
+    keep = True,
+):
     """Every rank: each QuantState whose absmax FSDP2 shards holds it whole for the duration, so
-    saves and loads see bitsandbytes' layout; scales a load rewrote go back into the shards."""
+    saves and loads see bitsandbytes' layout; scales a load rewrote go back into the shards.
+    `device` stages them (a CPU-offloaded export); `keep = False` (a rank that writes nothing) only
+    takes part in the gathers."""
     entries = []
     if enabled and isinstance(model, torch.nn.Module):
         seen = set()
@@ -465,7 +472,7 @@ def _full_absmax(model, enabled = True):
     done = []
     try:
         for entry in entries:
-            entry.materialize()
+            entry.materialize(device = device, keep = keep)
             done.append(entry)
         yield len(done)
     finally:
@@ -609,8 +616,16 @@ def fsdp2_gathered(
     failure = None
     scales = contextlib.ExitStack()
     try:
-        # Sharded 4-bit absmax: whole in its QuantState while rank 0 writes (not for adapter-only saves).
-        scales.enter_context(_full_absmax(model, enabled = not trainable_only or include is not None))
+        # Sharded 4-bit absmax: whole in its QuantState while rank 0 writes (not for adapter-only
+        # saves); on the CPU when the packed weights go there, held by the writer only.
+        scales.enter_context(
+            _full_absmax(
+                model,
+                enabled = not trainable_only or include is not None,
+                device = "cpu" if offload_4bit and offload_to_cpu is True else None,
+                keep = writer,
+            )
+        )
         for name, param in model.named_parameters():
             if id(param) in seen:
                 continue

@@ -602,17 +602,29 @@ class ShardedAbsmax:
     def _states(self):
         return [s for s in (self.quant_state, self.shard_state) if s is not None]
 
-    def materialize(self):
-        """Every rank: both QuantStates hold the whole absmax until the matching `release`."""
-        if self.depth == 0:
-            self.full = self.gather()
-            for state in self._states():
-                state.absmax = self.full
+    def materialize(
+        self,
+        device = None,
+        keep = True,
+    ):
+        """Every rank (a collective): both QuantStates hold the whole absmax, on `device` (default the
+        gathering device), until the matching `release`. `keep = False` only takes part in the gather
+        (a rank that writes nothing) and holds nothing."""
+        if self.full is None and (self.depth == 0 or keep):
+            full = self.gather()
+            if device is not None:
+                full = full.to(device)
+            if keep:
+                self.full = full
+                for state in self._states():
+                    state.absmax = full
+            del full
         self.depth += 1
 
     def release(self):
         self.depth -= 1
-        if self.depth > 0:
+        if self.depth > 0 or self.full is None:
+            self.depth = max(self.depth, 0)
             return
         full, self.full = self.full, None
         for state in self._states():
@@ -676,6 +688,10 @@ def register_absmax_shards(model, world_size):
         for param in module._parameters.values():
             if param is not None:
                 users[id(param)] = users.get(id(param), 0) + 1
+                state = getattr(param, "quant_state", None)
+                if state is not None:
+                    # Distinct weights sharing one QuantState (any of them, in any unit) keep it whole.
+                    users[id(state)] = users.get(id(state), 0) + 1
     entries = []
     states = set()
     for module in list(model.modules()):
@@ -686,6 +702,8 @@ def register_absmax_shards(model, world_size):
                 continue
             quant_state = param.quant_state
             if users.get(id(param), 0) > 1 or id(quant_state) in states:
+                continue
+            if users.get(id(quant_state), 0) > users.get(id(param), 0):
                 continue
             holder_name = name + _ABSMAX_SUFFIX
             if holder_name in module._parameters or holder_name in module.__dict__:
@@ -725,14 +743,19 @@ def finish_absmax_shards(entries):
 
 
 @contextlib.contextmanager
-def full_absmax(model, enabled = True):
+def full_absmax(
+    model,
+    enabled = True,
+    device = None,
+    keep = True,
+):
     """Every rank: whole absmax in each sharded QuantState for the duration (saves, loads); a load
     that rewrites them in place is copied back into the shards on exit."""
     entries = [e for e in absmax_shards(model) if e.is_sharded()] if enabled else []
     done = []
     try:
         for entry in entries:
-            entry.materialize()
+            entry.materialize(device = device, keep = keep)
             done.append(entry)
         yield len(done)
     finally:
