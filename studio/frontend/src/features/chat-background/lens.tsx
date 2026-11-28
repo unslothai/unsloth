@@ -43,16 +43,31 @@ function drawsGlass(el: HTMLElement): boolean {
 const painted = (s: CSSStyleDeclaration) =>
   (s.backgroundColor !== "rgba(0, 0, 0, 0)" && s.backgroundColor !== "transparent") || s.backgroundImage !== "none";
 
-// One lens per sidebar column: legacy WebKitGTK masks the frame's ::before to the caption and gives the sidebar its
-// own glass, elsewhere the frame holds it. Keyed on the compositor, not the motion flag both carry while moving.
+// One lens per sidebar column: legacy WebKitGTK masks the frame's ::before (and its lens) to the caption and gives the
+// sidebar its own glass, elsewhere the frame holds it. Keyed on the compositor, not the motion flag both carry while moving.
+const FRAME = '[data-slot="sidebar-container"][data-windows-glass-frame]';
 const FRAME_SIDEBAR = '[data-windows-glass-frame] > [data-slot="sidebar-inner"]';
+const legacyCompositor = () => document.documentElement.classList.contains("webkit-legacy-compositor");
 function oneSidebarLens(found: HTMLElement[]): HTMLElement[] {
+  const legacy = legacyCompositor();
   const inner = found.filter((h) => h.matches(FRAME_SIDEBAR) && found.includes(h.parentElement as HTMLElement));
-  if (!inner.length) return found;
-  const drop = new Set<Element | null>(
-    document.documentElement.classList.contains("webkit-legacy-compositor") ? inner.map((h) => h.parentElement) : inner,
-  );
-  return found.filter((h) => !drop.has(h));
+  const drop = new Set<Element | null>(legacy ? [] : inner);
+  // The frame's lens spans the whole strip (index.css), docked Run settings included: a second lens there seams.
+  const stripLens = !legacy && found.some((h) => h.matches(FRAME));
+  return found.filter((h) => !drop.has(h) && !(stripLens && h.matches(STRIP_PANEL)));
+}
+
+// Legacy WebKitGTK draws the strip as three lenses (caption, sidebar, docked Run settings). Scaled about one origin,
+// the strip's, their copies line up where they meet, so the three read as one sheet.
+const LEGACY_STRIP_HOSTS = `${FRAME}, ${FRAME_SIDEBAR}, html[data-sidebar-glass-frame] aside[data-slot="chat-settings-panel"]`;
+type Box = { left: number; top: number; width: number; height: number };
+function legacyStripBox(host: HTMLElement): Box | null {
+  if (!legacyCompositor() || !host.matches(LEGACY_STRIP_HOSTS)) return null;
+  const frame = host.matches(FRAME) ? host : document.querySelector<HTMLElement>(FRAME);
+  if (!frame) return null;
+  // The frame's lens box: inset 0 auto 0 0, 100vw wide (index.css).
+  const r = frame.getBoundingClientRect();
+  return { left: r.left, top: r.top, width: window.innerWidth, height: r.height };
 }
 
 const PREVIEW_HOSTS = ".wallpaper-preview-composer";
@@ -153,7 +168,9 @@ function Lens({
       const sy = host.scrollTop;
       el.style.translate = sx || sy ? `${sx}px ${sy}px` : "";
       const w = wallpaper.getBoundingClientRect();
-      const h = host.getBoundingClientRect();
+      // The frame's lens is the strip's width, not the sidebar's.
+      const h = (host.matches(FRAME) ? el : host).getBoundingClientRect();
+      const o = legacyStripBox(host) ?? h;
       const opacity = getComputedStyle(wallpaper).opacity;
       const source = glassSource(host);
       const glass = glassLayer(source);
@@ -171,6 +188,10 @@ function Lens({
         h.top,
         h.width,
         h.height,
+        o.left,
+        o.top,
+        o.width,
+        o.height,
         opacity,
         fill.backgroundColor,
         fill.backgroundImage,
@@ -184,7 +205,7 @@ function Lens({
         copy.style.width = `${w.width}px`;
         copy.style.height = `${w.height}px`;
         copy.style.opacity = opacity;
-        copy.style.transformOrigin = `${h.left - w.left + h.width / 2}px ${h.top - w.top + h.height / 2}px`;
+        copy.style.transformOrigin = `${o.left - w.left + o.width / 2}px ${o.top - w.top + o.height / 2}px`;
         copy.style.transform = `scale(${scale})`;
       }
       // A moving host drops its backdrop filter (glass-motion.ts); the copy drops its blur with it instead of the CSS fallback.
