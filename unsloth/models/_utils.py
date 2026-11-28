@@ -10852,7 +10852,11 @@ def _trainable_bias(module, fqn = "") -> bool:
     return bias.requires_grad or _is_lora_adapter_name(fqn)
 
 
-def _mx_autocast_forward(self, x):
+def _mx_autocast_forward(
+    self,
+    x,
+    weight = None,
+):
     # torchao's MX QAT matmul returns bfloat16 under autocast and asserts it matches x, whatever the weight dtype.
     from torchao.prototype.qat import MXFakeQuantizedLinear
 
@@ -10861,7 +10865,13 @@ def _mx_autocast_forward(self, x):
     # torchao flattens the input with .view, which raises on a strided (e.g. transposed) activation.
     if not x.is_contiguous():
         x = x.contiguous()
-    out = MXFakeQuantizedLinear.forward(self, x)
+    if weight is None:
+        out = MXFakeQuantizedLinear.forward(self, x)
+    else:  # merged QAT-LoRA (_qat_lora_merged.py): the same MX forward on W + s * B @ A
+        from torchao.prototype.qat.mx import _MXQuantizedForwardFakeQuantizedBackward
+        out = _MXQuantizedForwardFakeQuantizedBackward.apply(
+            x, weight, self.bias, self.activation_config, self.weight_config
+        )
     # Its backward flattens grad_output with .view too; a later transpose hands it a strided gradient.
     return _ContiguousGrad.apply(out) if out.requires_grad else out
 
@@ -11132,10 +11142,16 @@ def _register_nvfp4_qat_linear_v1(forward_v2, backward_v2, forward_schema):
     return forward
 
 
-def _nvfp4_qat_linear(self, x):
+def _nvfp4_qat_linear(
+    self,
+    x,
+    weight_tensor = None,
+):
     from torchao.prototype.qat import NVFP4FakeQuantizedLinear
 
     act, weight = self.activation_config, self.weight_config
+    if weight_tensor is None:
+        weight_tensor = self.weight
     op = None
     # The custom op covers torchao's CUDA kernel path with its QAT config (unswizzled, plain activation
     # quantizer); anything else, or a torchao without these internals, keeps torchao's own forward.
@@ -11145,11 +11161,16 @@ def _nvfp4_qat_linear(self, x):
         except Exception:
             op = None
     if op is None:
-        return NVFP4FakeQuantizedLinear.forward(self, x)
+        if weight_tensor is self.weight:
+            return NVFP4FakeQuantizedLinear.forward(self, x)
+        from torchao.prototype.qat.nvfp4 import _NVFP4QuantizedForwardFakeQuantizedBackward
+        return _NVFP4QuantizedForwardFakeQuantizedBackward.apply(
+            x, weight_tensor, self.bias, act, weight
+        )
     mm_dtype = torch.get_autocast_dtype("cuda") if torch.is_autocast_enabled("cuda") else None
     return op(
         x,
-        self.weight,
+        weight_tensor,
         self.bias,
         act.use_per_tensor_scale,
         weight.use_per_tensor_scale,
@@ -11159,7 +11180,11 @@ def _nvfp4_qat_linear(self, x):
     )[0]
 
 
-def _nvfp4_any_rank_forward(self, x):
+def _nvfp4_any_rank_forward(
+    self,
+    x,
+    weight = None,
+):
     # torchao's NVFP4FakeQuantizedLinear flattens only rank-3 inputs (vision layers see rank 4+), and
     # its quantizer asserts contiguous bfloat16 / float32 activations (nvfp4_quantize).
     out_dtype = None
@@ -11172,7 +11197,8 @@ def _nvfp4_any_rank_forward(self, x):
     x2 = x if x.dim() == 2 else x.reshape(-1, x.shape[-1])
     if not x2.is_contiguous():
         x2 = x2.contiguous()
-    out = _nvfp4_qat_linear(self, x2)
+    # weight: merged QAT-LoRA (_qat_lora_merged.py) passes W + s * B @ A.
+    out = _nvfp4_qat_linear(self, x2, weight)
     if x.dim() != 2:
         out = out.view(*x.shape[:-1], out.shape[-1])
     return out if out_dtype is None or out.dtype == out_dtype else out.to(out_dtype)
@@ -11228,7 +11254,9 @@ def _exclude_lora_adapters_from_qat(model, torchao_config) -> None:
 
 
 def _prepare_model_for_qat(
-    model: torch.nn.Module, qat_scheme: Union[str, TorchAOConfig]
+    model: torch.nn.Module,
+    qat_scheme: Union[str, TorchAOConfig],
+    lora_merged: Optional[bool] = None,
 ) -> torch.nn.Module:
     """Transform a model for Quantization-Aware Training: fake quantize the base (frozen) model during training, simulating quantization numerics in high precision (e.g. bf16) to mitigate post-training quantization degradation. Can be combined with LoRA; see https://dev-discuss.pytorch.org/t/speeding-up-qat-by-1-89x-with-lora/2700"""
     try:
@@ -11466,6 +11494,22 @@ def _prepare_model_for_qat(
     _reinstall_input_require_grads(require_grads_owners)
     _reregister_unowned_require_grads_hooks(model, all_embeddings, unowned_require_grads)
     _patch_microscaling_qat_forwards(model)
+    from ._qat_lora_merged import install_qat_lora_merged, qat_lora_merged_requested
+
+    if qat_lora_merged_requested(lora_merged):
+        # Before the memo and the in-place rounding: both treat the base weight as the quantized one.
+        merged = install_qat_lora_merged(model)
+        if merged:
+            print(
+                f"Unsloth: merged QAT-LoRA on {merged} layers: training fake quantizes "
+                "W + s * B @ A, so the exported quantized model is the trained one."
+            )
+        else:
+            warnings.warn(
+                "Unsloth: qat_lora_merged = True found no LoRA layer over a fake quantized base; "
+                "QAT trains the base only.",
+                stacklevel = 2,
+            )
     from ._qat_weight_memo import install_qat_weight_memo
 
     install_qat_weight_memo(model)
