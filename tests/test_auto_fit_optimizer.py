@@ -468,7 +468,10 @@ class _NormNet(torch.nn.Module):
     def __init__(self):
         super().__init__()
         torch.manual_seed(0)
-        self.a = torch.nn.Linear(6, 8)
+        # No bias before BatchNorm: the norm subtracts it back out, so its gradient is zero up to rounding, and AdamW
+        # turns that rounding into lr-sized steps that differ between two equivalent paths. running_mean includes
+        # it, which made this comparison depend on the CPU's GEMM kernels rather than on the buffers.
+        self.a = torch.nn.Linear(6, 8, bias = False)
         self.norm = torch.nn.BatchNorm1d(8)
         self.b = torch.nn.Linear(8, 1)
 
