@@ -25,10 +25,16 @@ export function makePinRank(
   return (key) => pinIndex.get(key) ?? Number.MAX_SAFE_INTEGER;
 }
 
+// Hub ids match case-insensitively; a local path keeps its case (distinct dirs on case-sensitive filesystems).
+function foldPinId(id: string, local: boolean): string {
+  return local ? id.trim() : id.trim().toLowerCase();
+}
+
 export function pinCoversId(pinned: readonly string[], id: string): boolean {
-  const base = id.trim().toLowerCase();
+  const local = looksLikeLocalPath(id);
+  const base = foldPinId(id, local);
   return pinned.some((key) => {
-    const k = key.trim().toLowerCase();
+    const k = foldPinId(key, local);
     return k === base || k.startsWith(`${base}::`);
   });
 }
@@ -38,19 +44,22 @@ export function makeRepoPinRank(
   pinned: readonly string[],
 ): (repoId: string) => number {
   const own = makePinRank(pinned);
-  const covering = new Map<string, number>();
+  const covering = [new Map<string, number>(), new Map<string, number>()];
   pinned.forEach((key, index) => {
-    const k = key.trim().toLowerCase();
-    for (let at = k.indexOf("::"); at >= 0; at = k.indexOf("::", at + 1)) {
-      if (!covering.has(k.slice(0, at))) covering.set(k.slice(0, at), index);
+    for (const local of [false, true]) {
+      const map = covering[Number(local)];
+      const k = foldPinId(key, local);
+      for (let at = k.indexOf("::"); at >= 0; at = k.indexOf("::", at + 1)) {
+        if (!map.has(k.slice(0, at))) map.set(k.slice(0, at), index);
+      }
+      if (!map.has(k)) map.set(k, index);
     }
-    if (!covering.has(k)) covering.set(k, index);
   });
   return (repoId) => {
     const rank = own(repoId);
-    return rank < Number.MAX_SAFE_INTEGER
-      ? rank
-      : (covering.get(repoId.trim().toLowerCase()) ?? Number.MAX_SAFE_INTEGER);
+    if (rank < Number.MAX_SAFE_INTEGER) return rank;
+    const local = looksLikeLocalPath(repoId);
+    return covering[Number(local)].get(foldPinId(repoId, local)) ?? Number.MAX_SAFE_INTEGER;
   };
 }
 

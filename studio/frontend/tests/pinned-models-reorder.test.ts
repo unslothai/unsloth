@@ -425,12 +425,13 @@ test("the hub's pinned grid never makes a dataset row draggable", async () => {
   const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
   assert.match(
     lists,
-    /const itemPinKey =\s*!isDataset &&\s*item\.row\.repoId &&\s*pinnedSet\.has\(pinKey\(item\.row\.repoId\)\)/,
+    /const itemPinId = isDataset \? null : inventoryPinId\(item\.row\);\s*const itemPinKey =\s*itemPinId && pinnedSet\.has\(pinKey\(itemPinId\)\)/,
   );
   assert.match(
     MODELS_CATALOG_ROWS,
-    /pin=\{\s*isDataset \|\| !deletableRepoId\s*\?\s*undefined/,
+    /const pinId = isDataset \? null : inventoryPinId\(row\);/,
   );
+  assert.match(MODELS_CATALOG_ROWS, /const pinMenu = pinId\s*\?/);
 });
 
 test("favorites read the header picker's keys: a repo or any of its quants", () => {
@@ -445,11 +446,11 @@ test("the hub's Pin menu reads and clears a repo pinned only per quant", () => {
   setPinned([`${repo}::Q4_K_M`, "org/other", `${repo}::Q8_0`]);
   assert.match(
     MODELS_CATALOG_ROWS,
-    /const rowPinned =\s*cacheDeletableRepoId != null &&\s*pinCoversId\(pinnedKeys, cacheDeletableRepoId\);/,
+    /const rowPinned = pinId != null && pinCoversId\(pinnedKeys, pinId\);/,
   );
   assert.ok(
     MODELS_CATALOG_ROWS.includes(
-      "onToggle: () => toggleRepoPinned(deletableRepoId),",
+      "onToggle: () => toggleRepoPinned(pinId),",
     ),
   );
   assert.equal(pinCoversId(usePinnedModelsStore.getState().pinned, repo), true);
@@ -470,11 +471,11 @@ test("the hub ranks a repo pinned only per quant under Pinned", async () => {
   const lists = await readSrcAsync("features/hub/catalog/models-catalog-lists.tsx");
   assert.match(
     lists,
-    /const pinRank = \(item: InventoryItem\) =>\s*item\.row\.repoId \? rank\(item\.row\.repoId\)/,
+    /const pinId = inventoryPinId\(item\.row\);\s*return pinId \? rank\(pinId\)/,
   );
   assert.match(
     lists,
-    /!isDataset &&\s*item\.row\.repoId &&\s*pinCoversId\(pinnedIds, item\.row\.repoId\)/,
+    /const pinId = isDataset \? null : inventoryPinId\(item\.row\);\s*return pinId != null && pinCoversId\(pinnedIds, pinId\)/,
   );
 });
 
@@ -600,4 +601,24 @@ test("the Hub's pin rank matches pinCoversId for every pin, without rescanning t
     const expected = own >= 0 ? own : first >= 0 ? first : Number.MAX_SAFE_INTEGER;
     assert.equal(rank(id), expected, id);
   }
+});
+
+test("local path pins keep their case; Hub ids still fold case", () => {
+  setPinned(["/models/Llama", "Org/Repo::Q4_K_M"]);
+  const pinned = usePinnedModelsStore.getState().pinned;
+  assert.equal(pinCoversId(pinned, "/models/Llama"), true);
+  assert.equal(pinCoversId(pinned, "/models/llama"), false);
+  assert.equal(pinCoversId(pinned, "org/repo"), true);
+  const rank = makeRepoPinRank(pinned);
+  assert.equal(rank("/models/llama"), Number.MAX_SAFE_INTEGER);
+  assert.equal(rank("org/repo"), 1);
+
+  usePinnedModelsStore.getState().toggleRepoPinned("/models/llama");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "/models/llama",
+    "/models/Llama",
+    "Org/Repo::Q4_K_M",
+  ]);
+  usePinnedModelsStore.getState().toggleRepoPinned("/models/llama");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["/models/Llama", "Org/Repo::Q4_K_M"]);
 });
