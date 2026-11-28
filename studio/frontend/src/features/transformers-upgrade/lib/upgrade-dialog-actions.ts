@@ -30,27 +30,43 @@ export function upgradeInstallVersion(
 }
 
 /**
- * Derives the dialog actions from the check that raised it; the custom-code fallback is always
- * offered when it exists, as the only path loading bnb 4-bit (installing activates the 16-bit
- * sidecar).
+ * A PyPI release installs without the dialog unless its scan is not clean (requires_consent);
+ * transformers main and custom-code models always ask, since custom code is the only 4-bit path.
+ */
+export function canAutoInstallUpgrade(
+  upgrade: TransformersUpgradeInfo | null | undefined,
+  trustRemoteCodeFallback: boolean,
+): boolean {
+  return (
+    !trustRemoteCodeFallback &&
+    Boolean(upgrade?.supported_in_pypi && upgrade?.pypi_version)
+  );
+}
+
+/**
+ * The custom-code fallback is always offered when it exists, as the only bnb 4-bit path (installing
+ * activates the 16-bit sidecar).
  */
 export function upgradeDialogActions({
   upgrade,
   phase,
   trustRemoteCodeFallback,
+  installBlocked = false,
 }: {
   upgrade: TransformersUpgradeInfo | null;
   phase: TransformersUpgradePhase;
   trustRemoteCodeFallback: boolean;
+  /** The package scan flagged the release: no install action at all. */
+  installBlocked?: boolean;
 }): UpgradeDialogActions {
   const fromPypi = Boolean(upgrade?.supported_in_pypi && upgrade?.pypi_version);
   const fromMain =
     !fromPypi && Boolean(upgrade?.supported_in_main && upgrade?.main_version);
-  const installable = fromPypi || fromMain;
+  const installable = !installBlocked && (fromPypi || fromMain);
   return {
     installable,
     fromMain,
-    devOnly: !installable && Boolean(upgrade?.supported_in_main),
+    devOnly: !installable && !installBlocked && Boolean(upgrade?.supported_in_main),
     // Never mid-install: this button would abandon it.
     customCode: trustRemoteCodeFallback && phase !== "installing",
   };

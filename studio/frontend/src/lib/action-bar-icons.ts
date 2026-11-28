@@ -30,7 +30,6 @@ export const ContinueArrowIcon = [
   path("M13.25 19.5C13.25 19.5 20.75 13.9764 20.75 12C20.75 10.0235 13.25 4.5 13.25 4.5", "1"),
 ] as unknown as IconSvgElement;
 
-// Plain straight chevrons for the branch picker.
 export const BranchPrevIcon = [path("M15 6L9 12L15 18", "0")] as unknown as IconSvgElement;
 
 export const BranchNextIcon = [path("M9 6L15 12L9 18", "0")] as unknown as IconSvgElement;

@@ -5,8 +5,7 @@
 const dateFormats = new Map<string, Intl.DateTimeFormat>();
 const numberFormats = new Map<string, Intl.NumberFormat>();
 
-// A cached DateTimeFormat keeps its build-time zone; the OS zone can change while the page is open.
-// Two UTC offsets per call, plus the zone name at most once a second for same-offset changes.
+// Cached DateTimeFormats keep their build-time zone; the OS zone can change while open.
 const JAN = Date.UTC(2026, 0, 1);
 const JUL = Date.UTC(2026, 6, 1);
 let zoneOffsets = "";

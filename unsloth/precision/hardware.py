@@ -89,10 +89,9 @@ def check_recipe(
     mode: Optional[str] = None,
     allow_planned: bool = False,
 ) -> Gate:
-    """Refuse `recipe` (a Recipe or a registry name) for this GPU class / activation dtype / training mode.
-
-    Order: a format with no training path at all, then the dtype, then the mode, then the GPU gate, then
-    "not built yet". Unknown GPU or dtype (None) skips that check. Returns the gate that applies."""
+    """Refuse a recipe (Recipe or registry name) for this GPU class, dtype and mode; checks in
+    order: a format with no training path, dtype, mode, GPU gate, then not built yet. Unknown GPU
+    or dtype (None) skips that check; returns the gate that applies."""
     r: Recipe = get_recipe(recipe) if isinstance(recipe, str) else recipe
     if r.status == "refused":
         raise PrecisionRefused(f"Unsloth: {r.name} training is refused: {r.refusal}")

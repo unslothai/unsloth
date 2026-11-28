@@ -27,7 +27,7 @@ const INITIAL: HfPaginatedState<never> = {
 };
 // listModels returns up to 500 per fetch, so a larger batch just walks the in-memory page.
 const BATCH = 48;
-const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
+export const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
 /**
@@ -92,6 +92,11 @@ export function useHubPaginatedSearch<T>(
 } {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const staleFailedRef = useRef(false);
+  const revalidatingRef = useRef(false);
+  const pageAfterRefreshRef = useRef(false);
+  const fetchMoreRef = useRef<() => boolean>(() => false);
   // A thrown async generator is closed, so a failed page can only be restarted.
   const iterDeadRef = useRef(false);
   const queryKey = useMemo(
@@ -148,6 +153,7 @@ export function useHubPaginatedSearch<T>(
     [clearDeferredFetch],
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: refreshTick only reruns a failed stale refresh.
   useEffect(() => {
     if (!enabled) {
       clearDeferredFetch();
@@ -183,6 +189,12 @@ export function useHubPaginatedSearch<T>(
     if (sameQuery && fresh && iterRef.current !== null) {
       return;
     }
+    // A stale refresh keeps its rows until the new page lands; clearing them flashed the list.
+    const revalidate =
+      sameQuery &&
+      stateRef.current.queryKey === queryKey &&
+      stateRef.current.results.length > 0 &&
+      stateRef.current.error === null;
     loadedFactoryRef.current = createIter;
     loadedMapItemRef.current = mapItem;
     loadedNonceRef.current = retryNonce;
@@ -192,16 +204,21 @@ export function useHubPaginatedSearch<T>(
     const busyToken = ++busyTokenRef.current;
     busyRef.current = true;
     busyKindRef.current = "initial";
+    revalidatingRef.current = revalidate;
+    if (!revalidate) pageAfterRefreshRef.current = false;
+    let refreshed = false;
     clearDeferredFetch();
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     lastFireAtRef.current = Date.now();
-    setState({
-      ...(INITIAL as HfPaginatedState<T>),
-      isLoading: true,
-      queryKey,
-    });
+    if (!revalidate) {
+      setState({
+        ...(INITIAL as HfPaginatedState<T>),
+        isLoading: true,
+        queryKey,
+      });
+    }
 
     const iter = createIter(controller.signal);
     iterRef.current = iter;
@@ -211,6 +228,7 @@ export function useHubPaginatedSearch<T>(
       .then(({ items, done, scanned }) => {
         if (versionRef.current !== v) return;
         loadedAtRef.current = Date.now();
+        refreshed = true;
         setState({
           results: items,
           scannedCount: scanned,
@@ -223,6 +241,12 @@ export function useHubPaginatedSearch<T>(
       })
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
+        // Keep the rows; fetchMore reruns it.
+        if (revalidate) {
+          iterDeadRef.current = true;
+          staleFailedRef.current = true;
+          return;
+        }
         setState({
           results: [],
           scannedCount: 0,
@@ -237,6 +261,15 @@ export function useHubPaginatedSearch<T>(
         if (busyTokenRef.current === busyToken) {
           busyRef.current = false;
           busyKindRef.current = null;
+          revalidatingRef.current = false;
+          // A refresh changes no loading flag, so a sentinel already in view would not ask again.
+          // A failed one retries once from a sentinel's request; the page waits for one that lands.
+          const owed = refreshed && pageAfterRefreshRef.current;
+          if (revalidate && (queuedAfterBusyRef.current || owed)) {
+            queuedAfterBusyRef.current = false;
+            if (refreshed) pageAfterRefreshRef.current = false;
+            fetchMoreRef.current();
+          }
         }
       });
 
@@ -248,6 +281,7 @@ export function useHubPaginatedSearch<T>(
     mapItem,
     enabled,
     retryNonce,
+    refreshTick,
     queryKey,
     clearDeferredFetch,
   ]);
@@ -265,6 +299,10 @@ export function useHubPaginatedSearch<T>(
       return false;
     }
     if (busyRef.current) {
+      if (busyKindRef.current === "initial" && revalidatingRef.current) {
+        queuedAfterBusyRef.current = true;
+        return true;
+      }
       if (busyKindRef.current === "more" && stateRef.current.isLoadingMore) {
         if (queuedAfterBusyRef.current) return false;
         queuedAfterBusyRef.current = true;
@@ -277,6 +315,11 @@ export function useHubPaginatedSearch<T>(
     if (iterDeadRef.current) {
       queuedAfterBusyRef.current = false;
       queuedWhileHiddenRef.current = false;
+      if (staleFailedRef.current) {
+        staleFailedRef.current = false;
+        pageAfterRefreshRef.current = true;
+        setRefreshTick((n) => n + 1);
+      }
       return false;
     }
 
@@ -371,6 +414,7 @@ export function useHubPaginatedSearch<T>(
       });
     return true;
   }, [enabled, mapItem, cancelTrailing]);
+  fetchMoreRef.current = fetchMore;
 
   useEffect(() => {
     if (!enabled || typeof document === "undefined") return;

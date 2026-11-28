@@ -10,6 +10,7 @@
 # limitations under the License.
 
 import importlib
+import contextlib
 import os
 import triton
 import ctypes
@@ -30,6 +31,10 @@ from ..device_type import (
 from ..bnb_availability import native_kernels_ready
 from .indexing import long_indexing
 from .fp8 import weight_dequant, fp8_linear, can_use_fp8_rowwise_gemv, fp8_rowwise_gemv
+from .fp8 import _is_transposed_view as _nvfp4_is_transposed_view
+
+# Kill switch for the traced NVFP4 base GEMM routing in matmul_lora (0: the dense-dequantize order).
+_NVFP4_TRACED_OPAQUE = os.environ.get("UNSLOTH_NVFP4_TRACED_OPAQUE", "1") != "0"
 from .nvfp4 import NVFP4QuantState, nvfp4_dequantize, nvfp4_linear
 
 # torch.cuda.amp.custom_fwd is deprecated from 2.4.
@@ -276,19 +281,11 @@ elif DEVICE_TYPE in ("mlx", "npu"):
     ABSMAX_BUFFERS = []
 else:
     if DEVICE_COUNT > 0:
-        _CUDA_STREAMS = {
-            (index := torch.cuda.device(i).idx): ctypes.c_void_p(
-                torch._C._cuda_getCurrentRawStream(index)
-            )
-            for i in range(DEVICE_COUNT)
-        }
-        CUDA_STREAMS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        WEIGHT_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        ABSMAX_BUFFERS = [None] * (max(_CUDA_STREAMS.keys()) + 1)
-        for k, v in _CUDA_STREAMS.items():
-            CUDA_STREAMS[k] = v
-        CUDA_STREAMS = tuple(CUDA_STREAMS)
-        del _CUDA_STREAMS
+        # Each card's default stream at import, which torch represents as a NULL handle. Not queried: the first stream
+        # query opens a CUDA context on the current card, GPU 0 in a worker that picks its card after import.
+        CUDA_STREAMS = tuple(ctypes.c_void_p(None) for _ in range(DEVICE_COUNT))
+        WEIGHT_BUFFERS = [None] * DEVICE_COUNT
+        ABSMAX_BUFFERS = [None] * DEVICE_COUNT
     else:
         CUDA_STREAMS = ()
         WEIGHT_BUFFERS = []
@@ -726,6 +723,21 @@ _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
 _GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
+# gfx1151 ROCm and NVIDIA L4: the Triton skinny decode linear (rocm_skinny_linear.py) where measured.
+_ROCM_SKINNY_LINEAR = False
+if (
+    os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") != "0"
+    if torch.version.hip is not None
+    else os.environ.get("UNSLOTH_CUDA_SKINNY_LINEAR", "1") != "0" and torch.version.cuda is not None
+):
+    try:
+        from . import rocm_skinny_linear as _rocm_skinny
+        if _rocm_skinny.triton is not None:
+            _rocm_skinny_decode_linear = _rocm_skinny.skinny_decode_linear
+            _rocm_skinny_supported = _rocm_skinny.skinny_linear_supported
+            _ROCM_SKINNY_LINEAR = True
+    except Exception:
+        pass
 _current_device = torch.cuda.current_device
 if (
     DEVICE_TYPE in ("cuda", "hip")
@@ -1555,9 +1567,9 @@ def _quant_state_dtype(quant_state):
 # decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
-# Rows from which bnb gemm_4bit replaces the GEMV. Colab T4 eager decode (Qwen3-4B, Llama-3.2-3B): batch 4
-# 13-30% faster at equal NLL vs fp32; batch 2 ~40% slower (host bound), batch 3 a tie.
-_GEMV_ROWS_BNB_FROM_BY_ARCH = {(7, 5): 4}
+# Rows from which bnb gemm_4bit replaces the GEMV (default: above the cap). T4 used it from 4 rows until the
+# GEMV dequantized each tile once for all rows: Colab T4 Llama-3.2-3B decode at 4 rows, 115 vs 92 tok/s.
+_GEMV_ROWS_BNB_FROM_BY_ARCH = {}
 _GEMV_ROWS_BNB_FROM = {}
 
 
@@ -1903,9 +1915,34 @@ def fast_linear_forward(
     bsz, q_len, in_dim = X.shape
     if q_len != 1:
         # A configured lora_dropout keeps the base-then-LoRA order, as the fused training kernels do.
-        return matmul_lora(
+        result = matmul_lora(
             X, W, W_quant, lora_A, lora_B, lora_S, fused = not _has_lora_dropout_module(proj)
         )
+        # matmul_lora is bias-free; the q_len == 1 path below adds the base bias too.
+        if bias is not None:
+            result += bias
+        return result
+
+    lora_cast = None
+    if W_quant is None and temp_lora is None and _ROCM_SKINNY_LINEAR and not _is_compiling():
+        # gfx11 ROCm / L4: base GEMM + LoRA in one launch (rocBLAS skinny GEMMs, cuBLAS rank-r GEMMs are slow
+        # there). Decided before the LoRA cast: other devices cast once below, and trainable adapters under grad
+        # keep the path below (the cached cast is detached). A caller's temp_lora must get X @ A.T: path below.
+        A = B = None
+        take = _rocm_skinny_supported(X.device)
+        if take and lora_A is not None:
+            take = lora_B is not None and not (
+                torch.is_grad_enabled() and (lora_A.requires_grad or lora_B.requires_grad)
+            )
+            if take:
+                A, B = _fast_lora_weights(lora_A, lora_B, X.dtype)
+                # A rejected call reuses this cast below instead of looking it up again.
+                lora_cast = (A, B)
+        fused = _rocm_skinny_decode_linear(X, W, A, B, lora_S, out) if take else None
+        if fused is not None:
+            if bias is not None:
+                fused += bias
+            return fused
 
     if _is_exl3_quant_state(W_quant):
         W = _dequantize_for_lora(W, W_quant, transpose = True, dtype = X.dtype)
@@ -1959,7 +1996,9 @@ def fast_linear_forward(
         out_dim = out.shape[2]
         dtype = X.dtype
 
-        if _is_compiling():
+        if lora_cast is not None:
+            A, B = lora_cast
+        elif _is_compiling():
             A, B = lora_A.to(dtype), lora_B.to(dtype)
         else:
             A, B = _fast_lora_weights(lora_A, lora_B, dtype)
@@ -2110,7 +2149,39 @@ def addmm_(
 # The rank-r product is written first and the base GEMM accumulates onto it (cuBLAS reads it in the
 # epilogue of a compute-bound GEMM), instead of a separate read-modify-write pass over the whole output.
 # UNSLOTH_LORA_FUSED_PASSES=0 restores the base-then-LoRA order everywhere.
-LORA_FUSED_PASSES = os.environ.get("UNSLOTH_LORA_FUSED_PASSES", "1") != "0"
+_LORA_FUSED_PASSES_ENV = os.environ.get("UNSLOTH_LORA_FUSED_PASSES")
+LORA_FUSED_PASSES = (_LORA_FUSED_PASSES_ENV or "1") != "0"
+
+
+_VLLM_LORA_ROUNDING_NOTICE = [False]
+
+
+@contextlib.contextmanager
+def vllm_lora_rounding(on = True):
+    """RL with vLLM rollouts: the base-then-LoRA order inside, so the trainer scores the policy vLLM sampled.
+
+    vLLM rounds the base GEMM output to bf16 before adding the LoRA term, and merged rollouts fold
+    s * B @ A into bf16 weights. Both drop LoRA updates below half a bf16 step. The fused order lets the
+    base GEMM accumulate onto the LoRA term; where cuBLAS does that in fp32 (A100, L4, CPU; not B200) the
+    trainer keeps those updates, its policy runs ahead of the sampler's as the adapter grows, and the
+    trainer / rollout logprob gap grows with it. The gradient math is unchanged, only where the forward
+    rounds. The previous order is restored on exit (nesting safe), and an explicit
+    UNSLOTH_LORA_FUSED_PASSES wins. Yields whether the fused order is off."""
+    global LORA_FUSED_PASSES
+    previous = LORA_FUSED_PASSES
+    if on and _LORA_FUSED_PASSES_ENV is None and LORA_FUSED_PASSES:
+        LORA_FUSED_PASSES = False
+        if not _VLLM_LORA_ROUNDING_NOTICE[0]:
+            _VLLM_LORA_ROUNDING_NOTICE[0] = True
+            print(
+                "Unsloth: vLLM rollouts add LoRA after rounding the base output to bf16, so RL training does "
+                "too (UNSLOTH_LORA_FUSED_PASSES=1 keeps the fused order)."
+            )
+    try:
+        yield not LORA_FUSED_PASSES
+    finally:
+        LORA_FUSED_PASSES = previous
+
 
 try:
     from torch.distributed.tensor import DTensor as _LORA_DTENSOR
@@ -2255,6 +2326,19 @@ def matmul_lora(
     elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
         # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
         out = _int4_matmul(X, W, W_quant, out = out)
+    elif (
+        type(W_quant) is NVFP4QuantState
+        and _is_compiling()
+        and not _nvfp4_is_transposed_view(W)
+        and _NVFP4_TRACED_OPAQUE
+        # NVFP4Linear_matmul has no jvp / vmap rule: torch.func and forward-mode AD keep the dense decode.
+        and not (_functorch_active() or _forward_ad_active())
+    ):
+        # Traced forward: decode inside the opaque NVFP4 op. A dense weight as a graph intermediate is saved by
+        # AOTAutograd for backward in every layer (+2 GB peak at Qwen3-1.7B); the LoRA term is added below.
+        out = nvfp4_linear(X, W, W_quant.scale, W_quant.global_scale)
+        if out.dtype != dtype:
+            out = out.to(dtype)
     elif _is_packed_state(W_quant) and not (
         lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
     ):

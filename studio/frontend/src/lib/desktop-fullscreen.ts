@@ -49,8 +49,7 @@ export async function setDesktopFullscreen(next?: boolean): Promise<void> {
 }
 
 /**
- * Toggle the native desktop window with F11; web pages keep their browser shortcut.
- * `keyTaken` lets a user's own F11 binding from Settings win.
+ * Toggles the desktop window on F11, not in web pages; keyTaken lets a user's own F11 binding win.
  */
 export function watchDesktopFullscreen(
   target: Window,

@@ -25,13 +25,14 @@ import {
 } from "@/features/browser";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
+import { cn } from "@/lib/utils";
 import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 
-type Column = keyof SiteRule;
+type Column = Exclude<keyof SiteRule, "hostOnly">;
 
 export const BROWSER_USE_DOCS_URL = "https://unsloth.ai/docs/basics/browser-use";
 
@@ -105,6 +106,7 @@ function ConfirmAllScripts({ open, onConfirm, onCancel }: { open: boolean; onCon
 
 // Fixed columns, not auto-fit: auto-fit left a choice alone on its own row at odd widths.
 const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2 @[44rem]/perms:grid-cols-3";
+const SITE_LIST = "relative -mx-4 max-h-[min(28rem,55vh)] overflow-y-auto overscroll-contain px-4";
 
 function PermissionsTable() {
   const t = useT();
@@ -113,7 +115,16 @@ function PermissionsTable() {
   const [draft, setDraft] = useState<string | null>(null);
   const [invalid, setInvalid] = useState(false);
   const [confirmDefaultScripts, setConfirmDefaultScripts] = useState(false);
+  const added = useRef<string | null>(null);
+  const siteList = useRef<HTMLDivElement>(null);
   const sites = Object.keys(permissions.sites).sort();
+
+  // Sorted, so a new site can land out of view. "nearest" also scrolls the settings panel: focusing the add form scrolled it.
+  useEffect(() => {
+    const site = added.current;
+    added.current = null;
+    if (site !== null) siteList.current?.querySelector(`[data-site="${CSS.escape(site)}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [permissions.sites]);
   const columns: Array<[Column, string]> = [
     ["browsing", t("browser.agentSettings.browsing")],
     ["actions", t("browser.agentSettings.actions")],
@@ -132,13 +143,25 @@ function PermissionsTable() {
     setSiteRule(site, permissions.sites[site] ?? { ...DEFAULT_AGENT_RULE, browsing: "allow" });
     setDraft(null);
     setInvalid(false);
+    added.current = site;
   };
 
   const row = (name: string, rule: SiteRule, site: string | null) => (
-    <div key={site ?? "default"} className="flex flex-col gap-2.5 border-b border-border/60 py-4 first:pt-3 last:border-b-0 last:pb-5">
+    <div
+      key={site ?? "default"}
+      data-site={site ?? undefined}
+      className={cn(
+        "flex flex-col gap-2.5 border-b border-border/60 py-4",
+        site === null ? "pt-3" : null,
+        draft === null && (site === null ? sites.length === 0 : site === sites[sites.length - 1]) ? "border-b-0 pb-5" : null,
+      )}
+    >
       <div className="flex min-h-8 items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={name}>
-          {name}
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-sm font-medium text-foreground" title={name}>
+            {name}
+          </span>
+          {rule.hostOnly ? <span className="truncate text-xs text-muted-foreground">{t("browser.agentSettings.hostOnly")}</span> : null}
         </span>
         {site === null ? null : (
           <Button
@@ -186,7 +209,11 @@ function PermissionsTable() {
     >
       <div className="@container/perms mt-2 flex flex-col rounded-2xl border border-border/80 px-4">
         {row(t("browser.agentSettings.default"), permissions.defaults, null)}
-        {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
+        {sites.length > 0 ? (
+          <div ref={siteList} className={SITE_LIST}>
+            {sites.map((site) => row(site, permissions.sites[site] ?? DEFAULT_AGENT_RULE, site))}
+          </div>
+        ) : null}
         {draft !== null ? (
           <form
             className="flex items-center gap-2 py-2"

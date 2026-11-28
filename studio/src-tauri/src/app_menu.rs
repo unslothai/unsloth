@@ -81,6 +81,7 @@ const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-keyboard-shortcuts", "Shortcuts", ""),
     Row::Action("settings-data", "Data", ""),
     Row::Action("settings-library", "Library", ""),
+    Row::Action("settings-knowledge", "Knowledge", ""),
     Row::Action("settings-debugging", "Logs", ""),
     Row::Action("settings-about", "About", ""),
 ];

@@ -39,19 +39,14 @@ import {
 	type ImageSizing,
 	SCOPES,
 	type BackgroundScope,
-	normalizedSize,
-	validUpload,
 	type BackgroundEffect,
 } from "./model";
 import {
-	beginBackgroundUpload,
-	failBackgroundUpload,
-	finishBackgroundUpload,
 	patchBackground,
 	resetChatBackground,
 	useChatBackground,
 } from "./storage";
-import { canvasBlob, decodeImage } from "./image";
+import { uploadBackgroundImage } from "./upload";
 import {
 	nativeMaterialAvailable,
 	useGlassStrength,
@@ -125,7 +120,11 @@ export function GlassControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.glassTheme")}
-			badge={<Badge variant="accent">{t("shell.beta")}</Badge>}
+			badge={
+				<Badge variant="accent" className="pt-px pb-0 leading-none">
+					{t("shell.beta")}
+				</Badge>
+			}
 			action={
 				<Switch
 					aria-label={t("chatBackground.glassTheme")}
@@ -277,7 +276,11 @@ export function ChatBackgroundControls() {
 	return (
 		<SettingsSection
 			title={t("chatBackground.title")}
-			badge={<Badge variant="accent">{t("shell.navigation.newBadge")}</Badge>}
+			badge={
+				<Badge variant="accent" className="pt-px pb-0 leading-none">
+					{t("shell.navigation.newBadge")}
+				</Badge>
+			}
 			action={
 				// With an image: one-word, icon-free actions; empty keeps the icon Upload.
 				<div className="flex max-w-full flex-wrap items-center justify-end gap-2">
@@ -336,43 +339,11 @@ export function ChatBackgroundControls() {
 				type="file"
 				accept="image/jpeg,image/png,image/webp"
 				disabled={!ready || busy}
-				onChange={async (event) => {
+				onChange={(event) => {
 					const file = event.target.files?.[0];
 					event.target.value = "";
 					if (!file) return;
-					const ticket = beginBackgroundUpload();
-					if (!validUpload(file)) {
-						failBackgroundUpload(ticket, "file");
-						return;
-					}
-					try {
-						const decoded = await decodeImage(file);
-						try {
-							const [width, height] = normalizedSize(
-								decoded.width,
-								decoded.height,
-							);
-							const canvas = document.createElement("canvas");
-							canvas.width = width;
-							canvas.height = height;
-							const ctx = canvas.getContext("2d");
-							if (!ctx) throw new Error("decode");
-							ctx.drawImage(decoded.source, 0, 0, width, height);
-							await finishBackgroundUpload(ticket, {
-								...DEFAULT_ADJUSTMENTS,
-								blob: await canvasBlob(canvas),
-							});
-						} finally {
-							decoded.close();
-						}
-					} catch (error) {
-						failBackgroundUpload(
-							ticket,
-							error instanceof Error && error.message === "dimensions"
-								? "dimensions"
-								: "decode",
-						);
-					}
+					void uploadBackgroundImage(file, DEFAULT_ADJUSTMENTS);
 				}}
 			/>
 			{error && (
@@ -413,7 +384,7 @@ export function ChatBackgroundControls() {
 									</p>
 								)}
 								<div className="wallpaper-preview-composer rounded-xl p-3">
-									{t("chatBackground.prompt")}
+									<span>{t("chatBackground.prompt")}</span>
 								</div>
 							</div>
 						</div>

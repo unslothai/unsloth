@@ -142,7 +142,8 @@ class TestMatrix:
                 assert cell["smoke_extra"] == cell["smoke_exclude"] == ""
 
     def test_every_torch_minor_has_a_triton_windows_pin(self):
-        """torch 2.10 / 2.11 pin triton 3.6.0, 2.12 3.7.0, 2.13 3.7.1, 2.14 3.8.x; triton-windows follows."""
+        """torch 2.10 / 2.11 pin triton 3.6.0, 2.12 3.7.0, 2.13 3.7.1, 2.14 3.8.x, 2.15 3.9.x;
+        triton-windows follows."""
         minors = {
             prebuilt_wheels.torch_minor(v)
             for platform, target in prebuilt_wheels.PLATFORMS.items()
@@ -155,6 +156,7 @@ class TestMatrix:
         assert prebuilt_wheels.TRITON_WINDOWS["2.12"].startswith("3.7.0.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.13"].startswith("3.7.1.post")
         assert prebuilt_wheels.TRITON_WINDOWS["2.14"].startswith("3.8.0.post")
+        assert prebuilt_wheels.TRITON_WINDOWS["2.15"].startswith("3.9.0.post")
 
     @pytest.mark.parametrize("torch_version", ["2.10.0", "2.11.0", "2.12.0"])
     def test_older_torches_are_opt_in(self, torch_version):
@@ -308,7 +310,7 @@ class TestNames:
                 text = True,
             )
 
-        # win_arm64 builds torch 2.14 only; Linux builds no flash-attn for torch 2.10 to 2.12.
+        # win_arm64 builds torch 2.14 and 2.15 only; Linux builds no flash-attn for torch 2.10 to 2.12.
         for package, platform in (
             ("mamba-ssm", ["--platform", "win_arm64"]),
             ("flash-attn", []),
@@ -617,7 +619,7 @@ MSVC_STEP = "Activate the MSVC ${{ matrix.platform == 'win_arm64' && 'arm64' || 
 WINDOWS_SETUP = {
     "Enable long paths (Windows)": "runner.os == 'Windows'",
     "Install the CUDA ${{ matrix.cuda_tag }} toolkit (Windows)": "matrix.platform == 'win_amd64'",
-    "Install the CUDA 13.4 toolkit (Windows ARM64)": "matrix.platform == 'win_arm64'",
+    "Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)": "matrix.platform == 'win_arm64'",
     MSVC_STEP: "runner.os == 'Windows'",
     "Install ccache (Windows)": "runner.os == 'Windows'",
     "Report memory, page file and disk (Windows)": "runner.os == 'Windows'",

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Images Advanced "Engine" choice for GGUF picks: Auto (the host's own choice), diffusers, or the native
-// sd.cpp engine, remembered per checkpoint. Only a load that landed records its choice, so a refused pick
-// (no native binary, an unsupported family) is never replayed on the next load of that model.
+// GGUF engine pick per checkpoint; a refused load is not recorded, so it never replays.
 
 export type EngineChoice = "auto" | "diffusers" | "sd_cpp";
 
@@ -15,6 +13,9 @@ export const ENGINE_OPTIONS: Array<[EngineChoice, string]> = [
 
 export const ENGINE_HINT =
   "Which engine runs this GGUF. Auto keeps the host's choice: diffusers on a GPU, native sd.cpp on CPU. Native usually needs less VRAM, but has no torch.compile or quantised fast paths and is often slower on CUDA. Applies on the next load (Reapply).";
+
+export const ENGINE_HINT_CPU_ONLY =
+  "Which engine runs this GGUF. This device has no GPU PyTorch can use, so GGUF image models run on the native sd.cpp engine only. Applies on the next load (Reapply).";
 
 const KEY = "unsloth:images:engine-by-model";
 
@@ -72,11 +73,27 @@ interface EngineStatus {
   engine?: string | null;
   engine_forced?: string | null;
   native_engine_eligible?: boolean;
+  /** False on CPU-only torch: GGUF runs on sd.cpp only. */
+  gguf_diffusers_allowed?: boolean;
   lora_via_native?: boolean;
   lora_after_reload?: boolean;
   supports_lora?: boolean;
   lora_unavailable_reason?: string | null;
   resolved?: Record<string, { source: string; requested?: string | boolean | null }> | null;
+}
+
+/** An older backend that omits the flag keeps Diffusers. */
+export function diffusersEngineOffered(status: EngineStatus | null | undefined): boolean {
+  return status?.gguf_diffusers_allowed !== false;
+}
+
+export function engineOptionsFor(status: EngineStatus | null | undefined): Array<[EngineChoice, string]> {
+  return diffusersEngineOffered(status) ? ENGINE_OPTIONS : ENGINE_OPTIONS.filter(([value]) => value !== "diffusers");
+}
+
+/** A Diffusers pick reads as Auto on a CPU-only host (the backend would refuse it). */
+export function hostEngineChoice(choice: EngineChoice | undefined, status: EngineStatus | null | undefined): EngineChoice | undefined {
+  return choice === "diffusers" && !diffusersEngineOffered(status) ? "auto" : choice;
 }
 
 /** The select shows only for a loaded GGUF the native engine can run. */
@@ -91,8 +108,7 @@ export function loadedEngineChoice(status: EngineStatus | null | undefined): Eng
   return "auto";
 }
 
-/** The note under the LoRA slot: LoRA is off on this engine, and a native reload would turn it on. A server pin
- *  (UNSLOTH_DIFFUSION_ENGINE) would ignore the reload's pick, so it offers nothing then. */
+/** Native reload would enable LoRA here; hidden under a server pin (UNSLOTH_DIFFUSION_ENGINE). */
 export function offersNativeLoraReload(status: EngineStatus | null | undefined): boolean {
   return Boolean(
     status?.loaded && status.lora_via_native && !status.supports_lora && !status.engine_forced,
@@ -120,21 +136,18 @@ interface ReloadStatus {
   base_repo?: string | null;
 }
 
-/** The resident GGUF's effective base repo, so a reload from status rebuilds the same companions (an API load may have
- *  named a non-default base). Omitted when status names none. */
+/** Resident GGUF's base repo, so a reload from status keeps its companions; omitted if none. */
 function baseRepoOf(status: ReloadStatus): { baseRepo?: string } {
   return status.base_repo ? { baseRepo: status.base_repo } : {};
 }
 
-/** The page's own GGUF target with the resident's base repo when it names none (one seeded from a status read that
- *  left it out), so the reload keeps the companions it runs with now. ``last`` itself otherwise. */
+/** GGUF target with the resident's base repo when it names none (keeps companions); else last. */
 function withResidentBase<T extends { kind?: string | null }>(last: T, status: ReloadStatus): T {
   if (last.kind !== "gguf" || (last as { baseRepo?: string }).baseRepo || !status.base_repo) return last;
   return { ...last, ...baseRepoOf(status) };
 }
 
-/** The GGUF the native-reload note names: the page's own last load only while it is still the resident model (another
- *  client may have replaced it), else the checkpoint status reports. */
+/** Page's last load while still resident (another client may replace it), else status reports. */
 export function nativeReloadTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
   last: T | null | undefined,
   status: ReloadStatus | null | undefined,
@@ -221,8 +234,7 @@ export function residentReloadTarget(
   return null;
 }
 
-/** What Reapply reloads: the page's own last load while it is still the resident model, else the checkpoint status
- *  reports (another client may have replaced it), never a stale pick the page is no longer showing. */
+/** Page's last load while still resident, else the status checkpoint; never a stale pick. */
 export function reapplyTarget<T extends { repoId: string; kind?: string | null; filename?: string | null }>(
   last: T | null | undefined,
   status: ResidentStatus | null | undefined,

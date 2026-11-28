@@ -490,8 +490,7 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         on_process: Optional[Any] = None,
     ) -> "AudioCppServer":
-        """on_process gets the Popen as soon as it exists, so training can preempt and terminate a
-        start."""
+        """on_process gets the Popen once created: training can preempt and terminate a start."""
         binary = ensure_binary()
         problem = model_runtime_problem(model, binary)
         if problem:
@@ -695,8 +694,7 @@ class AudioCppServer:
         cancel_event: Optional[threading.Event] = None,
         sink: Optional[BinaryIO] = None,
     ) -> tuple[int, str, bytes]:
-        """A sink streams a 2xx body into it and returns b'', since separation answers run to
-        hundreds of MB."""
+        """A sink takes 2xx bodies (returned as b''); separation answers run to hundreds of MB."""
         if cancel_event is not None and cancel_event.is_set():
             raise AudioCppRequestCancelledError("Request cancelled.")
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout = timeout)

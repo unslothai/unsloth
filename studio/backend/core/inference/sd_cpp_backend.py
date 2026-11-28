@@ -49,6 +49,7 @@ from core.inference.diffusion_multigpu import (
     with_load_selection,
 )
 from core.inference.sd_cpp_multigpu import split_for_load
+from core.inference import sd_cpp_replicas
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
@@ -60,6 +61,7 @@ from core.inference.diffusion_families import (
     DiffusionModelReplacedError,
     require_pinned_checkpoint,
     family_for_checkpoint,
+    family_pipeline_class,
     LoadIdentity,
     detect_family_for_pick,
     load_identity,
@@ -113,7 +115,7 @@ from core.inference.sd_cpp_engine import (
     owning_managed_root,
     runtime_env,
 )
-from core.inference.sd_cpp_server import SdCppServer
+from core.inference.sd_cpp_server import SdCppLatentFormatError, SdCppServer
 from loggers import get_logger
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 from utils.account_context import account_thread, current_account_id
@@ -143,8 +145,7 @@ _TREE_WAIT_TICK_S = 0.5
 
 @contextlib.contextmanager
 def _tree_claimed_for_install():
-    """Claim the managed tree for an install. Yields False when something is running in it, in which
-    case the caller keeps what is on disk and retries on a later load."""
+    """Yields False when the tree is busy; caller keeps what is on disk and retries later."""
     global _tree_installing
     with _tree_state:
         if _tree_readers or _tree_installing or _managed_tree_in_use():
@@ -236,9 +237,8 @@ def _base_sample_sigmas(
         elif not explicit_base and named_base:
             # Cache-only (e.g. the OpenAI route's auto-switch) reads no card: the pick's own name decides.
             base = named_base
-        # Read from the repo the plan staged it under (_grid_fetch_repo: the base's unsloth mirror unless the
-        # upstream already holds it), never the vendor id directly. Cache-only reads try both roots, as the plan's
-        # locality check and _fetch_assets do, and the upstream id too, so an index cached under either still counts.
+        # Read the repo the plan staged it under (_grid_fetch_repo: unsloth mirror unless upstream
+        # has it), never the vendor id; cache-only reads try both roots and the upstream id.
         fetch = _grid_fetch_repo(base, hf_token)
         repos = tuple(dict.fromkeys((fetch, base))) if local_files_only else (fetch,)
         roots = (hub_cache_dir(), None) if local_files_only else (hub_cache_dir(),)
@@ -528,6 +528,52 @@ def _explicit_threads() -> Optional[int]:
     return None
 
 
+# Last sd.cpp start / install failure, so a refusal can name the fix. win-cpu-x64 needs the MSVC runtime but ships none.
+NATIVE_FAILURE_DLL = "dll"
+NATIVE_FAILURE_EXEC = "exec"
+NATIVE_FAILURE_INSTALL = "install"
+_native_start_failure: Optional[tuple[str, str]] = None
+
+_WINDOWS_LOADER_STATUS_NAMES = {
+    0xC0000135: "STATUS_DLL_NOT_FOUND",
+    0xC0000139: "STATUS_ENTRYPOINT_NOT_FOUND",
+    0xC0000142: "STATUS_DLL_INIT_FAILED",
+}
+
+
+def note_native_start_failure(kind: str, detail: str) -> None:
+    global _native_start_failure
+    _native_start_failure = (kind, str(detail))
+
+
+def last_native_start_failure() -> Optional[tuple[str, str]]:
+    return _native_start_failure
+
+
+def clear_native_start_failure() -> None:
+    global _native_start_failure
+    _native_start_failure = None
+
+
+def classify_start_status(binary: str, returncode: int) -> Optional[tuple[str, str]]:
+    """``(kind, detail)`` when ``returncode`` from a ``--help`` probe means the executable never started, else None."""
+    name = os.path.basename(str(binary))
+    code = returncode + (1 << 32) if returncode < 0 and returncode < -(1 << 16) else returncode
+    if code in _WINDOWS_IMAGE_LOAD_FAILURE_STATUSES:
+        return (
+            NATIVE_FAILURE_DLL,
+            f"{name} exited 0x{code:08X} ({_WINDOWS_LOADER_STATUS_NAMES.get(code, 'loader failure')})",
+        )
+    if code in (126, 127):
+        return (
+            NATIVE_FAILURE_EXEC,
+            f"{name} exited {code} (a shared library or the loader is missing)",
+        )
+    if code < 0:
+        return NATIVE_FAILURE_EXEC, f"{name} was killed by signal {-code}"
+    return None
+
+
 def _server_binary_runnable(binary: str) -> bool:
     """Probes runnability with the server's env before a multi-GB asset download; only OSError or exit 126/127/0xC0000135 means unrunnable."""
     import subprocess
@@ -541,11 +587,16 @@ def _server_binary_runnable(binary: str) -> bool:
                 env = runtime_env(binary),
                 **windows_hidden_subprocess_kwargs(),
             )
-    except OSError:
-        return False  # cannot exec at all (wrong arch / no execute bit / missing loader)
+    except OSError as exc:
+        # cannot exec at all (wrong arch / no execute bit / missing loader)
+        note_native_start_failure(NATIVE_FAILURE_EXEC, f"{os.path.basename(str(binary))}: {exc}")
+        return False
     except Exception:  # noqa: BLE001 -- don't block on a flaky probe
         return True
     # Negative = signal death (e.g. SIGILL); Windows loader failures are large positive codes.
+    failure = classify_start_status(binary, proc.returncode)
+    if failure is not None:
+        note_native_start_failure(*failure)
     return (
         proc.returncode >= 0
         and proc.returncode not in (126, 127)
@@ -817,9 +868,8 @@ def sd_cpp_cuda_compute_capability(
     *,
     probe: bool = True,
 ) -> Optional[tuple[int, int]]:
-    """Compute capability the CUDA build reports for ``device_name`` (``CUDA<i>``); the lowest card
-    when unpinned. None when unsure (unreadable, non-CUDA build, unlisted device). ``probe = False``
-    only reads the listing the last accelerator verdict took of this file."""
+    """Compute capability of CUDA card device_name (CUDA<i>), or the lowest card when unpinned; None
+    if unreadable, non-CUDA or unlisted; probe = False reads only the cached listing."""
     if not binary:
         return None
     text = _cached_device_listing(binary)
@@ -916,8 +966,7 @@ def _sd_cpp_spawn_env(
     pinned: "tuple[str, ...] | list[str]",
     weight_types: Any,
 ) -> Optional[dict[str, str]]:
-    """The child env for the FINAL placement and argv. The ordinal counts only when the argv carries its pin;
-    without one sd.cpp picks its own default card, so every visible card must qualify."""
+    """Child env; ordinal counts only if argv pins it, else every visible card must qualify."""
     if off_torch is not None:
         return off_torch.child_env()
     if device != "cuda":
@@ -1062,9 +1111,8 @@ def _physical_index_of(ordinal: int, env: Optional[dict] = None) -> "tuple[Optio
 
 
 def _card_lookup_inventory() -> dict:
-    """The physical inventory for naming a selected card. Off the event loop a cold cache is read
-    blocking: the non-blocking read answers "unknown" until its refresh lands, which on a host whose
-    torch works is the first load, so that load's failure was recorded against every card."""
+    """Physical GPU inventory for naming a card; off the event loop a cold read blocks, since a
+    non-blocking read says unknown and the first load's failure is recorded against every card."""
     from utils.hardware.hardware import get_physical_gpu_inventory
 
     inventory = get_physical_gpu_inventory(block = False)
@@ -1079,8 +1127,7 @@ def _card_lookup_inventory() -> dict:
 
 
 def _amd_inventory_rows(inventory: Optional[dict]) -> list:
-    """The inventory's AMD rows. ``index`` is vendor-local, and the ids here come from amd-smi, so an
-    Intel iGPU or NVIDIA card at the same index must not answer for an AMD one."""
+    """AMD rows; index is vendor-local, so other vendors' cards at that index must not match."""
     return [
         device
         for device in ((inventory or {}).get("devices") or [])
@@ -1467,8 +1514,7 @@ def rocm_runtime_resolvable() -> Optional[bool]:
 
 
 def rocm_runtime_missing_sonames() -> Optional[list[str]]:
-    """The ROCm runtime libraries the loader cannot open here: [] when all load, None when it cannot be asked
-    (Windows, macOS, an unexpected probe failure), which says nothing either way."""
+    """Missing ROCm sonames: [] if all load; None if unaskable (Windows, macOS, probe failure)."""
     missing = _rocm_missing_sonames_fresh()
     return None if missing is None else list(missing)
 
@@ -1828,8 +1874,7 @@ def _normalise_failure_record(key: str, value: object) -> Optional[dict]:
 
 
 def _unscoped_evidence(record: Optional[dict]) -> dict:
-    """The part of a record no card was named for. It applies to every card, so a later tally for
-    one card must add to it rather than replace it."""
+    """Evidence no card was named for: applies to every card, so per-card tallies add to it."""
     if not isinstance(record, dict):
         return {"strikes": 0, "proven": False}
     stored = record.get("unscoped")
@@ -1983,8 +2028,7 @@ def _record_diverts(
     fingerprint: Optional[dict] = None,
     card: Optional[str] = None,
 ) -> bool:
-    """Whether one record moves this host off its own accelerator. For a named *card*, evidence from
-    other named cards says nothing; evidence no card was named for still applies."""
+    """Whether it diverts; a named card ignores other cards' evidence; unnamed evidence counts."""
     if not isinstance(record, dict):
         return False
     if not _fingerprint_still_applies(
@@ -2024,8 +2068,7 @@ def accelerator_runtime_failed(accelerator: Optional[str], card: Optional[str] =
 
 
 def _applicable_record(klass: str, record: Optional[dict]) -> Optional[dict]:
-    """The evidence in *record* that still counts on this host: old-rule ambiguous Vulkan strikes are
-    dropped, and outside the CPU-torch route only decisive Vulkan evidence diverts."""
+    """What counts: old-rule ambiguous Vulkan dropped; off CPU-torch, only decisive Vulkan."""
     record = _record_under_current_rule(klass, record)
     if klass == "vulkan" and not _vulkan_cpu_rung_applies():
         return _decisive_evidence_only(record)
@@ -2228,8 +2271,7 @@ _REPEATED_DEVICE_LOSS_HINT = (
 
 
 def _device_loss_cpu_fallback_applies(state: Any) -> bool:
-    """Whether a repeated Vulkan device loss may move this load to the CPU backend: only the CPU-torch Vulkan
-    route (the one with a CPU rung, as on main), the Vulkan-to-CPU fallback enabled, and no user-picked GPU."""
+    """Repeated device loss: CPU-torch Vulkan route only, fallback enabled, no user-picked GPU."""
     if getattr(state, "device", None) != "vulkan" or getattr(state, "off_torch_device", None):
         return False
     if getattr(state, "gpu_explicit", False):
@@ -2373,6 +2415,9 @@ def _tree_in_use(backend: Any) -> bool:
         return True  # a server is starting from that same file
     if getattr(backend, "_stopping_servers", 0):
         return True  # unpublished, but stop() has not returned: the process is still alive
+    pool = getattr(backend, "_replicas", None)
+    if pool is not None and pool.holds_server():
+        return True  # a card replica runs (or starts) from that same file
     return getattr(backend, "_active_generate_cancel", None) is not None
 
 
@@ -2500,9 +2545,8 @@ def binary_carries_marker(
     *,
     unreadable: bool = True,
 ) -> bool:
-    """The binary or the libstable-diffusion beside it (shared builds keep some markers only there) carries the
-    marker. No marker, or an unreadable binary, passes (a failed stat must not refuse a working host) unless the
-    caller passes unreadable=False."""
+    """The binary or the libstable-diffusion beside it has the marker; no marker, or an unreadable
+    binary, passes unless unreadable=False, so a failed stat cannot refuse a working host."""
     if not marker:
         return True
     if not binary:
@@ -2690,9 +2734,7 @@ def note_accelerator_failure_from_output(
     source: str = "diffusion",
     card: Optional[str] = None,
 ) -> None:
-    """Record that the sd.cpp build ``binary`` came from cannot run here, when its own output says
-    so. Never raises. Here rather than in the video module it grew up in: the image path runs the
-    same sd-cli and recorded none of these."""
+    """Records an unrunnable build from its output; never raises; image path records none."""
     if not binary or not output:
         return
     try:
@@ -2723,8 +2765,7 @@ def note_unlaunchable_accelerator_build(
     source: str = "diffusion",
     card: Optional[str] = None,
 ) -> None:
-    """Record that the build ``binary`` came from could not be LAUNCHED here; the other recorder
-    reads output a loader death never writes. Ambiguous: a missing execute bit looks the same."""
+    """Record an unlaunchable build (no output to read); a missing execute bit looks the same."""
     if not binary:
         return
     try:
@@ -2856,10 +2897,17 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-cli installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-cli installer could not be imported: {exc}"
+            )
             return fallback
         # Claim for the whole install incl. download, or a generation is overwritten mid-run.
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 path, _used = _install_down_the_ladder(_install, accelerator)
@@ -2867,6 +2915,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-cli auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 if _incomplete_tree_replacement(exc):
                     # Partial sweep may have removed the fallback; re-find via the usability gate, since a fresh POSIX copy lacks its exec bit until _make_executable runs.
                     refound = find_sd_cpp_binary()
@@ -2904,14 +2953,22 @@ def ensure_sd_server_binary(
             _install = _installer_module().install
         except Exception as exc:  # noqa: BLE001 -- import path / module issues are non-fatal
             logger.warning("sd-server installer import failed: %s", exc)
+            note_native_start_failure(
+                NATIVE_FAILURE_INSTALL, f"the sd-server installer could not be imported: {exc}"
+            )
             return fallback
         with _tree_claimed_for_install() as claimed:
             if not claimed:
+                note_native_start_failure(
+                    NATIVE_FAILURE_INSTALL,
+                    "the native engine folder is in use by a running generation, so it was not installed yet",
+                )
                 return fallback  # something is running in there; retry on a later load
             try:
                 _path, accelerator = _install_down_the_ladder(_install, accelerator)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
+                note_native_start_failure(NATIVE_FAILURE_INSTALL, str(exc))
                 # Also when only the CLI survives: the following ensure_sd_cpp_binary probe would re-download.
                 if _incomplete_tree_replacement(exc):
                     # The fallback may name a copy the partial sweep removed; a fresh extract skipped _make_executable.
@@ -2926,6 +2983,36 @@ def ensure_sd_server_binary(
         if installed and _needs_reinstall(installed, accelerator):
             return None
         return installed or fallback
+
+
+def native_variant_reference_refusal(state: Any) -> Optional[str]:
+    """Why the native engine refuses a reference / edit call on this load, for a checkpoint that needs its own
+    diffusers pipeline (``pipeline_class_variants``: FLUX.2 klein 9B KV), else None. sd.cpp runs such a file through
+    the family's stock graph: the same math without input images, another model with them (the KV checkpoint's
+    reference tokens attend only to themselves at a fixed timestep; sd.cpp has no reference K/V cache,
+    leejet/stable-diffusion.cpp#1341)."""
+    fam = getattr(state, "family", None)
+    if fam is None or not getattr(fam, "pipeline_class_variants", ()):
+        return None
+    try:
+        variant = family_pipeline_class(
+            fam,
+            getattr(state, "repo_id", None),
+            getattr(state, "gguf_filename", None),
+            getattr(state, "display_repo_id", None),
+            # a generic file named KV only by its caller-supplied base
+            getattr(state, "base_repo", None),
+        )
+    except Exception:  # noqa: BLE001 - unreadable: the family's own native gates decide
+        return None
+    if not variant or variant == getattr(fam, "pipeline_class", None):
+        return None
+    return (
+        f"This checkpoint runs reference edits only through diffusers' {variant}: the native sd.cpp engine has no "
+        "support for its reference image cache (leejet/stable-diffusion.cpp#1341) and would run it as a different "
+        "model. Text to image works here. For reference edits, load it with the diffusers engine on a CUDA, ROCm or "
+        "XPU GPU, or use the stock FLUX.2 klein 9B."
+    )
 
 
 @dataclass(frozen = True)
@@ -3099,8 +3186,7 @@ def _resolved_server_physical_gpu_id(
 
 
 def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
-    """Map the diffusers memory knobs onto an sd-cli offload policy. Only meaningful off-CPU (forced
-    sd_cpp / MPS); on CPU everything is resident in RAM anyway."""
+    """Maps memory knobs to sd-cli offload; only meaningful off-CPU (forced sd_cpp / MPS)."""
     mode = (memory_mode or "").strip().lower()
     if mode == "low_vram":
         return OFFLOAD_SEQUENTIAL
@@ -3114,9 +3200,8 @@ def _memory_policy(memory_mode: Optional[str], cpu_offload: bool) -> str:
 def _unmeasured_card_free_mib(
     klass: Optional[str], description: Optional[str], ordinal: Optional[int]
 ) -> "tuple[Optional[int], Optional[int]]":
-    """(free, total) MiB of the card a CPU torch never measured, read without a device context: amdgpu sysfs for an
-    AMD Vulkan device (sole card only), nvidia-smi for the CUDA card the load pins (sd.cpp's first when unpinned).
-    (None, None) when unsure."""
+    """Free/total MiB of unmeasured card read without device context: amdgpu sysfs for sole AMD
+    Vulkan card, nvidia-smi for pinned CUDA card (else sd.cpp's first); (None, None) if unsure."""
     try:
         if klass == "cuda":
             from core.inference.diffusion_device import smi_free_total_mib
@@ -3198,6 +3283,152 @@ def _offload_would_exhaust_host_ram(
     return True
 
 
+def _cpu_vae_tile_size(
+    files: Any,
+    binary: Optional[str],
+    family: Optional[str] = None,
+) -> Optional[int]:
+    """CPU VAE tile from host RAM left by the offloaded weights; None = 256 px. Windows: commit headroom caps it.
+    ``family`` with a measured whole decode first tries a tile covering its largest output."""
+    if not sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+        return None
+    try:
+        from core.inference.diffusion_small_host import (
+            host_commit_mib,
+            host_ram_mib,
+            host_reserve_mib,
+        )
+        from core.inference.sd_cpp_multigpu import TEXT_ENCODER_FIELDS, file_mib
+
+        total, available = host_ram_mib()
+        commit = host_commit_mib()
+        if available is not None and commit is not None:
+            available = min(available, commit)
+        if available is None:
+            spare = None
+        else:
+            weights = sum(
+                file_mib(getattr(files, f, None))
+                for f in ("diffusion_model", "vae", *TEXT_ENCODER_FIELDS)
+            )
+            spare = available - weights - host_reserve_mib(total)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("sd_cpp.vae_tile: host RAM unreadable: %s", exc)
+        spare = None
+    size = sd_cpp_args_mod.cpu_vae_tile_size(
+        spare, whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family)
+    )
+    logger.info("sd_cpp.vae_tile: CPU VAE tile %s px (spare host RAM %s MiB)", size or 256, spare)
+    return size
+
+
+# Card classes whose free VRAM Studio can read without torch (nvidia-smi; amdgpu sysfs for a sole AMD Vulkan card).
+_GPU_VAE_CLASSES = ("cuda", "vulkan")
+
+
+def _offload_card_limit_mib(
+    klass: Optional[str], description: Optional[str], ordinal: Optional[int]
+) -> Optional[int]:
+    """Free VRAM of the card the offload load renders on, less the card reserve (or a larger VRAM Budget reserve),
+    read without a device context; None when unread."""
+    if klass not in _GPU_VAE_CLASSES:
+        return None
+    try:
+        from core.inference.diffusion_memory import _user_budget_reserve_mib
+        from core.inference.sd_cpp_multigpu import CARD_RESERVE_MIB
+
+        free, total = _unmeasured_card_free_mib(klass, description, ordinal)
+        if free is None:
+            return None
+        reserve = max(CARD_RESERVE_MIB, int(_user_budget_reserve_mib(total or free) or 0))
+        return int(free) - reserve
+    except Exception as exc:  # noqa: BLE001 -- a failed reading keeps the CPU VAE
+        logger.debug("sd_cpp.vae_gpu: card unreadable: %s", exc)
+        return None
+
+
+def _offload_vae_flags(
+    policy: str,
+    files: Any,
+    binary: Optional[str],
+    klass: Optional[str],
+    ordinal: Optional[int],
+    description: Optional[str] = None,
+    family: Optional[str] = None,
+) -> list[str]:
+    """Offload flags with the VAE and text encoder placed. Under --offload-to-cpu every weight sits in host RAM and
+    sd.cpp evicts the denoiser's card copies for the decode, so on a CUDA / Vulkan card whose free VRAM Studio reads
+    (an off-torch AMD / Intel card auto-offloads here) the VAE decodes on the card in the largest tile its free VRAM
+    holds, and the text encoder joins it when the card has ``GPU_TE_MIN_FREE_MIB`` free. Otherwise (other
+    accelerators, latent-unit builds, an unread card, too little VRAM) both stay on the CPU, the VAE with a RAM-sized
+    tile. A ``family`` with a measured whole decode first tries a tile covering its largest output (one tile = the
+    untiled decode)."""
+    if policy not in (OFFLOAD_MODEL, OFFLOAD_SEQUENTIAL):
+        return offload_flags(policy)
+    limit = vae = gpu_tile = None
+    if klass in _GPU_VAE_CLASSES and sd_cpp_args_mod.sd_cpp_vae_tile_size_in_pixels(binary):
+        limit = _offload_card_limit_mib(klass, description, ordinal)
+        try:
+            from core.inference.sd_cpp_multigpu import file_mib
+            vae = file_mib(getattr(files, "vae", None))
+        except Exception:  # noqa: BLE001
+            vae = None
+        # whole decodes were measured on CUDA ggml; AMD Vulkan spills one to host RAM and runs it 2-3x slower
+        gpu_tile = sd_cpp_args_mod.gpu_vae_tile_size(
+            limit,
+            vae,
+            whole_tiles = sd_cpp_args_mod.whole_vae_tiles(family) if klass == "cuda" else (),
+        )
+    te_gpu = bool(gpu_tile) and sd_cpp_args_mod.gpu_te_fits(limit)
+    logger.info(
+        "sd_cpp.vae_gpu: offload VAE on %s, text encoder on %s (%s card free after reserve %s MiB, VAE %s MiB)",
+        f"the card, {gpu_tile} px tiles" if gpu_tile else "the CPU",
+        "the card" if te_gpu else "the CPU",
+        klass,
+        limit,
+        vae,
+    )
+    if gpu_tile:
+        return offload_flags(policy, vae_on_cpu = False, vae_tile_size = gpu_tile, te_on_cpu = not te_gpu)
+    ram_tile = (
+        _cpu_vae_tile_size(files, binary, family) if family else _cpu_vae_tile_size(files, binary)
+    )
+    return offload_flags(policy, vae_tile_size = ram_tile)
+
+
+def _cpu_backend_offload(
+    flags: Any,
+    files: Any,
+    binary: Optional[str],
+    family: Optional[str] = None,
+) -> list[str]:
+    """``flags`` without the device pin, for a restart onto the CPU backend. A GPU VAE's tile was sized from the
+    card's free VRAM, so the decode there gets the CPU VAE flags and RAM-sized tile it had before that gate."""
+    flags = without_device_backend_flags(flags)
+    if "--offload-to-cpu" not in flags or "--vae-on-cpu" in flags or "--vae-tile-size" not in flags:
+        return flags
+    out: list[str] = []
+    skip = False
+    for f in flags:
+        if skip:
+            skip = False
+        elif f == "--vae-tile-size":
+            skip = True
+        elif f == "--offload-to-cpu":
+            out += [f, "--clip-on-cpu", "--vae-on-cpu"]
+        elif f != "--clip-on-cpu":
+            out.append(f)
+            if f == "--vae-tiling":
+                size = (
+                    _cpu_vae_tile_size(files, binary, family)
+                    if family
+                    else _cpu_vae_tile_size(files, binary)
+                )
+                if size:
+                    out += ["--vae-tile-size", str(int(size))]
+    return out
+
+
 def _native_speed_for(speed_mode: Optional[str]) -> str:
     mode = (speed_mode or "off").strip().lower()
     return mode if mode in ("default", "max") else "off"
@@ -3245,6 +3476,20 @@ def _family_rng_kwargs(fam: Any) -> dict[str, str]:
     return {"rng": rng} if rng else {}
 
 
+def _family_metal_vae_conv_direct(fam: Any) -> bool:
+    """True on macOS when the family's VAE takes Metal direct conv by default (``sd_cpp_metal_vae_conv_direct``).
+    Always False elsewhere, so other hosts call sd-server / sd-cli with exactly the same kwargs as before."""
+    return sys.platform == "darwin" and bool(getattr(fam, "sd_cpp_metal_vae_conv_direct", False))
+
+
+def _family_start_kwargs(fam: Any) -> dict[str, Any]:
+    """Per-family sd-server start kwargs: ``rng`` (``_family_rng_kwargs``) and the Metal VAE direct conv default."""
+    kwargs: dict[str, Any] = dict(_family_rng_kwargs(fam))
+    if _family_metal_vae_conv_direct(fam):
+        kwargs["metal_vae_conv_direct"] = True
+    return kwargs
+
+
 def _request_extra_sample_args(state: Any) -> Optional[str]:
     """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
     if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
@@ -3254,6 +3499,12 @@ def _request_extra_sample_args(state: Any) -> Optional[str]:
         getattr(state, "display_repo_id", None),
         getattr(state, "base_repo", None),
         getattr(state, "gguf_filename", None),
+    )
+
+
+def _request_ref_image_args(state: Any, has_refs: bool) -> Optional[str]:
+    return sd_cpp_args_mod.ref_image_args_for_family(
+        getattr(getattr(state, "family", None), "name", None), has_refs
     )
 
 
@@ -3364,8 +3615,7 @@ def _colocate_shards(index_path: str, fetched: dict[str, str]) -> None:
             continue
         except OSError:
             pass
-        # The copy lands under a temporary name and is renamed into place only once complete, so a full disk or an
-        # interrupted copy never leaves a truncated shard that the existence check would accept.
+        # Copy to a temp name then rename, so a cut-off copy never passes the existence check.
         partial = target.with_name(f".{target.name}.{os.getpid()}.partial")
         try:
             shutil.copyfile(real, partial)
@@ -3383,8 +3633,7 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        # Both cache roots: _fetch_assets resolves each file through either, so an upstream copy in the pre-change
-        # root keeps the upstream id instead of re-pulling the mirror.
+        # Both roots searched: an upstream copy in the pre-change root is kept, not re-pulled.
         repo: prefer_cached_legacy_source(
             prefer_ungated_mirror(repo, hf_token, files = names, other_root = True), names
         )
@@ -3422,9 +3671,7 @@ def _local_entry_not_found_error() -> type[BaseException]:
 
 
 def _with_mirrors(repo_ids) -> tuple[str, ...]:
-    """``repo_ids`` plus the ungated mirror and the community repack of each, de-duplicated, order
-    preserved. The delete-cached guard must protect whichever of the set the bytes landed in, and
-    that decision is re-taken per load; naming all of them is cheap and cannot under-protect."""
+    """Repo ids, their ungated mirrors and repacks; extras are safe, the guard re-decides."""
     out: list[str] = []
     for rid in repo_ids:
         if not rid:
@@ -3465,6 +3712,8 @@ class SdCppDiffusionBackend:
     # Thread-local like _loading_card: a rejected concurrent load must not move it.
     _loading_families = None
     _loading_family_default: Any = None
+    # This load's card replicas (sd_cpp_replicas.ReplicaPool), None with one server.
+    _replicas: Any = None
 
     def __init__(self, engine: Optional[SdCppEngine] = None) -> None:
         self._lock = threading.Lock()
@@ -3481,8 +3730,7 @@ class SdCppDiffusionBackend:
         self._active_generate_account: Optional[str] = None
         # In-flight load's sd-server before _state commits; unload can stop it mid-startup.
         self._pending_server: Optional[SdCppServer] = None
-        # Server a generation is stopping for a replacement: status() must not reap it as an idle crash, or the
-        # handover reads an unload and kills the healthy replacement.
+        # status() must not reap a server being replaced, or the handover kills its successor.
         self._replacing_server: Optional[SdCppServer] = None
         self._gen: Optional[_SdGen] = None
         # Set when an accelerator install was skipped for a busy tree; the load retries it once free.
@@ -3493,6 +3741,7 @@ class SdCppDiffusionBackend:
         self._stopping_servers = 0
         # Set once the GPU graph is unrunnable (ggml unsupported-op abort); CPU restarts once per load.
         self._cpu_backend_forced = False
+        self._replicas = None
 
     @property
     def is_loaded(self) -> bool:
@@ -3500,8 +3749,7 @@ class SdCppDiffusionBackend:
 
     @property
     def runs_off_torch_device(self) -> bool:
-        """Everything resident or loading sits on a card torch cannot see. A pending load counts, or
-        training would cancel it; a torch-placed resident beside it still has to be freed."""
+        """Pending loads count (training would cancel them); resident state must sit off torch."""
         loading = getattr(self, "_loading", None)
         if loading is not None and loading.error is not None:
             loading = None
@@ -3561,8 +3809,7 @@ class SdCppDiffusionBackend:
         self._stopping_servers += count
 
     def _stop_reserved(self, server: Any) -> None:
-        """Stop a server whose pending stop was already reserved by ``_reserve_stop``. Never raises:
-        a teardown may not fail a load or an unload."""
+        """Stop a reserved server; never raises, as teardown must not fail a load or unload."""
         try:
             server.stop()
         except Exception as exc:  # noqa: BLE001 -- a stop that fails must not fail the caller
@@ -3724,10 +3971,9 @@ class SdCppDiffusionBackend:
         gpu_explicit = bool(gpu_ids) or off_torch is not None
         if off_torch is not None:
             gpu_ids, gpu_ordinal = None, None
-        # Same fallback the diffusers and video backends take: the route ranks the selection and passes the winner,
-        # but a direct caller (an MCP client, a test, a plugin) hands over gpu_ids alone, and without this the native
-        # engine is the one engine that would drop the pick silently. Re-ranked only when nobody has, so a
-        # route-resolved winner is never second-guessed against free VRAM that has moved since.
+        # Same fallback the diffusers and video backends take: direct callers pass gpu_ids alone,
+        # and without resolving them here native would silently drop the pick; a route-resolved
+        # winner is never re-ranked against VRAM that has since moved.
         auto_ordinal = gpu_ordinal is None and not gpu_ids and off_torch is None
         if gpu_ordinal is None and gpu_ids:
             gpu_ordinal = (
@@ -3769,11 +4015,8 @@ class SdCppDiffusionBackend:
         inner_dim = self._flux2_inner_dim(
             repo_id, gguf_filename, fam, hf_token, allow_network = False
         )
-        # Same link the diffusers resolver records, so the delete guard protects a native pick's companions too -- and
-        # here that means the repos _asset_specs actually FETCHES. The native engine does not read the diffusers base:
-        # FLUX.2 takes its VAE from the FLUX.2 base and its encoder from an unsloth GGUF repo, so recording only the
-        # base left every repo the pick really depends on outside the guard, and an unloaded model's encoder could be
-        # deleted while its GGUF stayed installed. Best-effort bookkeeping; never fails a load.
+        # Companion links for _asset_specs repos so the delete guard protects them; FLUX.2's encoder
+        # is in a GGUF repo, not the base (which alone left it deletable); best-effort.
         try:
             from hub.utils.companion_assets import record_companion_link
             for asset_repo in dict.fromkeys(
@@ -3876,8 +4119,7 @@ class SdCppDiffusionBackend:
                         "sd-server at %s is present but not runnable; trying one-shot sd-cli.",
                         server_binary,
                     )
-                    # Resolve ONCE and keep it: two calls can answer with two different binaries if an install lands
-                    # between them, and the state below reads the accelerator off whichever object it ends up holding.
+                    # Resolve once: an install between calls could mean two different binaries.
                     fallback: Optional[SdCppEngine] = None
                     try:
                         fallback = self._resolve_engine()
@@ -4009,14 +4251,12 @@ class SdCppDiffusionBackend:
                 if run_accelerator is None and binary:
                     run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
-                # A CPU torch running a GPU build renders on a card torch never measured, so
-                # auto offloads.
+                # A CPU torch with a GPU build renders on an unmeasured card, so auto offloads.
                 unmeasured = (
                     torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
                 )
                 placed = klass if unmeasured else torch_device
-                # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
-                # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
+                # CUDA/XPU torch may run the CPU build; MPS does not (bundle renders on Metal).
                 if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
                     placed = "cpu"
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
@@ -4029,8 +4269,17 @@ class SdCppDiffusionBackend:
                     gpu_ordinal,
                 ):
                     unmeasured = False
+                policy = _memory_policy(memory_mode, cpu_offload or unmeasured)
                 return placed, tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or unmeasured))
+                    _offload_vae_flags(
+                        policy,
+                        files,
+                        binary,
+                        klass or placed,
+                        gpu_ordinal,
+                        sd_cpp_listed_device(binary)[1] if binary else None,
+                        family = fam.name,
+                    )
                 )
 
             device, offload = _placement(*_running())
@@ -4040,20 +4289,44 @@ class SdCppDiffusionBackend:
             def _diffusion_weight_types() -> Optional[frozenset[str]]:
                 return sd_cpp_args_mod.gguf_quantized_weight_types(files.diffusion_model)
 
-            # The device pin is NOT folded in here: the binary can still change below, through the deferred
-            # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
-            # the ggml device names come from whichever build ends up running. It is added at each point the flags are
-            # handed to a binary instead.
-            # The route's card, applied only while the placement is CUDA: a deferred upgrade can move
-            # a load placed on the CPU bundle back onto the selected GPU.
+            # Device pin is added where flags reach a binary, which can change later (deferred
+            # install, re-resolve, one-shot fallback); the route's card applies only while placement
+            # is CUDA, as a deferred upgrade can move a CPU-bundle load onto the selected GPU.
             selected_ordinal = gpu_ordinal
 
             def _ordinal() -> Optional[int]:
                 return selected_ordinal if device == "cuda" else None
 
             split_memo: dict[tuple, Any] = {}
+            replica_memo: dict[tuple, Any] = {}
+
+            def _replica_plan() -> Any:
+                """Card replicas of this load (None = one server); may drop a companion split for one-card servers."""
+                key = (mode, device, _ordinal(), tuple(offload), _running()[1])
+                if key not in replica_memo:
+                    replica_memo[key] = sd_cpp_replicas.plan_for_load(
+                        files,
+                        primary = _ordinal(),
+                        offload = offload,
+                        split = _raw_split(),
+                        binary = _running()[1],
+                        device = device,
+                        off_torch = off_torch,
+                        server_mode = mode == "server",
+                    )
+                return replica_memo[key]
+
+            def _masked_primary() -> Optional[int]:
+                """The primary's card when a dropped split runs it one-card: masked to it, so its argv carries no pin."""
+                plan = _replica_plan()
+                return plan.primary if plan is not None and plan.drop_split else None
 
             def _split() -> Any:
+                if _masked_primary() is not None:
+                    return None
+                return _raw_split()
+
+            def _raw_split() -> Any:
                 key = (device, _ordinal(), tuple(offload), _running()[1])
                 if key not in split_memo:
                     split_memo[key] = (
@@ -4074,8 +4347,19 @@ class SdCppDiffusionBackend:
                 return () if split is None else (split,)
 
             def _pin_ordinal() -> Optional[int]:
+                if _masked_primary() is not None:
+                    return None
                 split = _split()
                 return int(split.primary) if split is not None else _ordinal()
+
+            def _with_mask(env: Optional[dict[str, str]]) -> Optional[dict[str, str]]:
+                masked = _masked_primary()
+                if masked is None:
+                    return env
+                return {
+                    **(env or {}),
+                    "CUDA_VISIBLE_DEVICES": sd_cpp_replicas.cuda_mask_entry(masked),
+                }
 
             native_speed = _native_speed_for(speed_mode)
 
@@ -4093,8 +4377,10 @@ class SdCppDiffusionBackend:
                     self._state = None  # the old model is being torn down
                     if old_state is not None and old_state.server is not None:
                         self._reserve_stop()
+                    old_replicas = self._close_replicas_locked()
                 if old_state is not None and old_state.server is not None:
                     self._stop_reserved(old_state.server)
+                self._stop_closed_replicas(old_replicas)
                 # Tree is free now, so the deferred install lands; not gated on resolved mode, since a serverless install resolves one-shot because the deferral skipped it.
                 if self._deferred_accelerator_install:
                     self._deferred_accelerator_install = False
@@ -4106,8 +4392,7 @@ class SdCppDiffusionBackend:
                     engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
                     # The upgrade may have landed or kept the old build; place for whichever runs.
                     device, offload = _placement(*_running())
-                # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
-                # this graph.
+                # A new checkpoint gets a fresh GPU try: the old abort says nothing about it.
                 self._cpu_backend_forced = False
                 server: Optional[SdCppServer] = None
                 if mode == "server":
@@ -4163,13 +4448,15 @@ class SdCppDiffusionBackend:
                         server_offload = _offload_with_device_pin_impl(
                             offload, server_binary, _pin_ordinal(), *_split_arg()
                         )
-                        spawn_env = _sd_cpp_spawn_env(
-                            off_torch,
-                            device,
-                            _pin_ordinal(),
-                            offload,
-                            server_offload,
-                            _diffusion_weight_types,
+                        spawn_env = _with_mask(
+                            _sd_cpp_spawn_env(
+                                off_torch,
+                                device,
+                                _pin_ordinal(),
+                                offload,
+                                server_offload,
+                                _diffusion_weight_types,
+                            )
                         )
                         server.start(
                             files,
@@ -4178,7 +4465,7 @@ class SdCppDiffusionBackend:
                             native_speed = native_speed,
                             threads = _default_threads(),
                             env = spawn_env,
-                            **_family_rng_kwargs(fam),
+                            **_family_start_kwargs(fam),
                         )
                         started_ok = True
                     except SdCppCancelled:
@@ -4217,9 +4504,8 @@ class SdCppDiffusionBackend:
                         if not usable or fallback is None:
                             raise start_exc
                         engine = fallback
-                        # Vetted here, so pinned here: this engine was resolved after the download, inside the claim,
-                        # and holding it to the pre-download answer would refuse the fallback on an install this load
-                        # already lived through.
+                        # Pinned here: the fallback was resolved after the download; the
+                        # pre-download answer would refuse it.
                         engine_accelerator = _installed_accelerator_of(
                             getattr(fallback, "binary", None)
                         )
@@ -4257,6 +4543,8 @@ class SdCppDiffusionBackend:
                     committed_offload_flags,
                     _diffusion_weight_types,
                 )
+                if mode == "server":
+                    spawn_env = _with_mask(spawn_env)
                 state = _SdState(
                     repo_id = repo_id,
                     display_repo_id = display_repo_id,
@@ -4288,11 +4576,15 @@ class SdCppDiffusionBackend:
                     sd_accelerator = engine_accelerator if mode == "oneshot" else None,
                     # Never on an off-torch card: the parent-visible ids are torch's, so CUDA0 would name one of them.
                     physical_gpu_id = (
-                        _resolved_server_physical_gpu_id(
-                            server_binary,
-                            device,
-                            _ordinal(),
-                            committed_offload_flags,
+                        (
+                            _split_physical_gpu_id(_masked_primary())
+                            if _masked_primary() is not None
+                            else _resolved_server_physical_gpu_id(
+                                server_binary,
+                                device,
+                                _ordinal(),
+                                committed_offload_flags,
+                            )
                         )
                         if mode == "server" and off_torch is None
                         else None
@@ -4325,6 +4617,12 @@ class SdCppDiffusionBackend:
                             orphan = server
                     else:
                         self._state = state
+                        plan = _replica_plan() if mode == "server" else None
+                        self._replicas = (
+                            sd_cpp_replicas.ReplicaPool(self, state, plan, token = _load_token)
+                            if plan is not None
+                            else None
+                        )
                         # With _state, past the supersession check.
                         self._committed_loading_card = self._loading_card
                         self._loading = None
@@ -4408,9 +4706,7 @@ class SdCppDiffusionBackend:
 
         # Stage from the fetch repo: some asset repos are gated and anonymous staging would 401.
         fetch_repo = _fetch_repo_map(specs, hf_token)
-        # MERGED, not reassigned: two upstream repos can share one fetch repo (a gated vendor id and its unsloth
-        # mirror both stage under the mirror), and a plain comprehension would drop whichever landed first, leaving
-        # its files out of both the staged entry and the footprint.
+        # Merge, don't reassign: two upstreams can share a fetch repo; reassigning drops one.
         merged: dict[str, list[str]] = {}
         for repo, names in by_repo.items():
             into = merged.setdefault(fetch_repo[repo], [])
@@ -4468,8 +4764,7 @@ class SdCppDiffusionBackend:
 
     @staticmethod
     def _assets_by_repo(specs: list[tuple[str, str, str]]) -> dict[str, list[str]]:
-        """repo -> the files this pick needs from it, first-seen order (transformer first), so a
-        family whose VAE and text encoder share a repo yields one entry."""
+        """Repo -> needed files, first-seen (transformer first); shared repos yield one entry."""
         by_repo: dict[str, list[str]] = {}
         for repo, filename, kind in specs:
             # A local GGUF directory is already on disk; nothing to stage or preflight for it.
@@ -4561,9 +4856,7 @@ class SdCppDiffusionBackend:
         *,
         allow_network: bool = True,
     ) -> Optional[int]:
-        """The checkpoint's own FLUX.2 size, or None. Header-only and memoised, so the four
-        ``_asset_specs`` callers share one probe; skipped outright for every other family, which
-        has a single static encoder table and must stay network-free."""
+        """FLUX.2 size or None via memoised header-only probe; others skip it (network-free)."""
         if fam.name != "flux.2-klein":
             return None
         return flux2_inner_dim_for_pick(
@@ -4588,8 +4881,7 @@ class SdCppDiffusionBackend:
         if not offline:
             from utils.utils import hf_env_offline
             offline = hf_env_offline()
-        # Pick the encoder per variant so a 9B GGUF fetches the right one: from the header when the caller read it,
-        # else from the load identity, which a renamed file makes silent.
+        # Encoder per variant: from the header if read, else load identity (renames go silent).
         for terepo, tefile, kind in sd_cpp_text_encoders_for(
             fam, repo_id, gguf_filename, inner_dim = inner_dim
         ):
@@ -4610,8 +4902,7 @@ class SdCppDiffusionBackend:
             from huggingface_hub import HfApi
 
             api = HfApi(token = hf_token)
-            # Sized where _fetch_assets pulls from: a gated vendor id answers an anonymous user with nothing, which
-            # left CLIP / T5 at 0 bytes and the bar finalizing while they downloaded.
+            # Size from the fetch repo: a gated vendor id answers anonymous users with nothing.
             fetch_repo = _fetch_repo_map(assets, hf_token)
             for repo, fn, kind in assets:
                 # Only the transformer can be a local path; others are always HF ids.
@@ -4645,9 +4936,8 @@ class SdCppDiffusionBackend:
         paths: dict[str, str] = {}
         # Shard file name -> where it resolved: the kind repeats per shard, so ``paths`` keeps only the last one.
         shard_paths: dict[str, str] = {}
-        # This backend fetches the ASSET repos, never the base, and some are gated, so the swap goes here. Decided per
-        # REPO over its whole file list, exactly as download_plan does, so the load pulls from the repo the manager
-        # already staged.
+        # Asset repos (some gated, never the base) are swapped per repo over the whole file list, as
+        # download_plan does, so the load pulls from the staged repo.
         fetch_repo = _fetch_repo_map(assets, hf_token)
         assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in assets]
         for repo, fn, kind in assets:
@@ -4731,8 +5021,7 @@ class SdCppDiffusionBackend:
         return _progress("downloading", downloaded, expected, fraction)
 
     def loading_repo_ids(self) -> tuple[str, ...]:
-        """In-flight load repo ids, companions and mirrors included, so the delete-cached guard
-        refuses them."""
+        """In-flight repo ids, companions and mirrors included, for the delete guard to refuse."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
@@ -4741,8 +5030,7 @@ class SdCppDiffusionBackend:
             return _with_mirrors(ids)
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
-        """Companion repos a loaded native model reads from disk, so the delete guard must refuse
-        them too."""
+        """Companion repos a loaded native model reads from disk; delete guard refuses them."""
         with self._lock:
             state = self._state
             if state is None:
@@ -4753,9 +5041,8 @@ class SdCppDiffusionBackend:
                 repos.append(fam.sd_cpp_vae[0])
             if getattr(fam, "sd_cpp_tokenizer", None):
                 repos.append(fam.sd_cpp_tokenizer[0])
-            # Same per-variant selection as _asset_specs (the header dim this load committed, else repo id AND GGUF
-            # filename) so the delete guard protects the encoder repo this load actually downloaded. Read off the
-            # state, never re-probed: this runs under _lock.
+            # Matches _asset_specs (committed header dim, else repo id and GGUF filename) so the
+            # delete guard protects the downloaded encoder; never re-probed, runs under _lock.
             repos.extend(
                 terepo
                 for terepo, _f, _k in sd_cpp_text_encoders_for(
@@ -4782,8 +5069,7 @@ class SdCppDiffusionBackend:
         )
 
     def _native_edit_ready(self, state: Optional[_SdState]) -> bool:
-        """Whether this load can run an edit natively: unified-edit needs its projector and the build's edit marker;
-        edit-only needs its projector if it declares one, and the marker only if it declares one."""
+        """Unified edit needs projector and edit marker; edit-only needs each only if declared."""
         if state is None:
             return False
         fam = state.family
@@ -4810,7 +5096,7 @@ class SdCppDiffusionBackend:
         return workflow in (None, "reference")
 
     @holds_inference
-    def generate(
+    def _generate_impl(
         self,
         *,
         prompt: str,
@@ -4914,6 +5200,7 @@ class SdCppDiffusionBackend:
                     and not state.server.is_alive()
                 ):
                     self._state = None
+                    self._retire_replicas_locked()
                     raise RuntimeError(DIFFUSION_NOT_LOADED_MSG)
                 # Same window as the diffusers engine: a replacement can commit while this waits (#9448)
                 loaded_id = load_identity(state.repo_id, state.base_repo, state.family.name)
@@ -4936,10 +5223,13 @@ class SdCppDiffusionBackend:
                         f"The reference workflow is not supported for the '{state.family.name}' "
                         "model family."
                     )
+                if conditioned or reference_images:
+                    variant_refusal = native_variant_reference_refusal(state)
+                    if variant_refusal:
+                        raise ValueError(variant_refusal)
                 from core.inference.diffusion_conditioning import edit_takes_extra_images
 
-                # sd.cpp's Qwen-Image-Edit conditioner reads every ref image as "Picture N", so a multi-image edit runs
-                # natively too.
+                # Qwen-Image-Edit reads refs as 'Picture N'; multi-image edit runs natively.
                 if (
                     reference_images
                     and not getattr(state.family, "reference", False)
@@ -5135,6 +5425,52 @@ class SdCppDiffusionBackend:
                         self._active_generate_cancel = None
                         self._active_generate_account = None
 
+    # Only __wrapped__: inspect.signature (the routes' keyword probes) then reads _generate_impl's parameters.
+    @functools.wraps(_generate_impl, assigned = ())
+    def generate(self, **kwargs: Any) -> dict[str, Any]:
+        """Today's render on the primary server, unless this load has card replicas: then the FIFO line in front of
+        every server, which still sends a request straight to an idle primary."""
+        pool = getattr(self, "_replicas", None)
+        if pool is None or pool.closed:
+            return self._generate_impl(**kwargs)
+        return self._generate_on_replicas(pool, kwargs)
+
+    @holds_inference
+    def _generate_on_replicas(self, pool: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+        # Held while queued too, as a render waiting on _generate_lock is on the one-server path.
+        return pool.run(kwargs)
+
+    def _start_replica(self, pool: Any, lane: Any, mmap: bool) -> "_SdCppReplicaLane":
+        """Start one more sd-server for ``pool``'s load, masked to ``lane``'s card, and the lane backend driving it."""
+        state = pool.state
+        binary = state.server.binary
+        server = SdCppServer(binary)
+        if not pool.publish_server(lane, server):
+            raise SdCppCancelled("the load was unloaded before the replica started")
+        env = dict(state.child_env)
+        env["CUDA_VISIBLE_DEVICES"] = sd_cpp_replicas.cuda_mask_entry(lane.ordinal)
+        server.start(
+            state.files,
+            vae_format = state.vae_format,
+            # No --backend pin: inside the mask the card is the child's only device (the one-card argv).
+            offload = list(without_device_backend_flags(state.offload_flags)),
+            native_speed = state.native_speed,
+            threads = state.threads,
+            env = env,
+            extra_args = ["--mmap"] if mmap else None,
+            **_family_start_kwargs(state.family),
+        )
+        lane_state = replace(
+            state,
+            server = server,
+            selected_card = selected_card_identity(lane.ordinal),
+            physical_gpu_id = _split_physical_gpu_id(lane.ordinal),
+            multi_gpu = None,
+            split_physical_gpu_id = None,
+            child_env = tuple(sorted(env.items())),
+        )
+        return _SdCppReplicaLane(lane_state)
+
     def _generate_server(
         self,
         state: _SdState,
@@ -5161,17 +5497,66 @@ class SdCppDiffusionBackend:
 
         from PIL import Image
 
-        from core.inference import diffusion_lora
+        from core.inference import diffusion_lora, sd_cpp_torch_vae
 
         assert state.server is not None
         total = max(1, int(batch_size))
+        # CPU-only FLUX.2 renders: the server returns the final latent and torch decodes it (sd_cpp_torch_vae).
+        out_w, out_h = hires_plan.target if hires_plan is not None else (int(width), int(height))
+        torch_vae = {
+            "on": sd_cpp_torch_vae.applies(state, layers = layers)
+            and sd_cpp_torch_vae.fits_host_ram(out_w, out_h)
+        }
+
+        def _torch_decoder_ready() -> bool:
+            # Load the decoder before asking for a latent: a bad file then costs no re-render.
+            try:
+                sd_cpp_torch_vae.prepare(state.files.vae)
+                return True
+            except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                torch_vae["on"] = False
+                sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                return False
+
+        def _render(server: Any, payload: dict, timeout: float) -> list:
+            """One chunk's PIL images, from torch's decode of the server's latents when that applies."""
+            accepts = getattr(server, "img_gen_accepts", None)
+            if (
+                torch_vae["on"]
+                and callable(accepts)
+                and accepts((sd_cpp_torch_vae.SERVER_FEATURE,))
+                and _torch_decoder_ready()
+            ):
+                latents = None
+                try:
+                    latents = server.img_gen_latents(
+                        payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+                    )
+                    return sd_cpp_torch_vae.decode(
+                        latents, state.files.vae, threads = state.threads, cancel_event = cancel
+                    )
+                except SdCppCancelled:
+                    raise
+                except Exception as exc:  # noqa: BLE001 -- sd.cpp's own decode is the fallback
+                    # A failed, timed-out or dead render re-raises; only latents this client cannot use fall back.
+                    if latents is None and not isinstance(exc, SdCppLatentFormatError):
+                        raise
+                    torch_vae["on"] = False
+                    sd_cpp_torch_vae.note_fallback(f"{type(exc).__name__}: {exc}")
+                    if cancel.is_set():
+                        raise SdCppCancelled("sd-server generation was cancelled.") from exc
+                    timeout = max(deadline - time.monotonic(), 1.0)
+            blobs = server.img_gen(
+                payload, on_step = self._on_log, cancel_event = cancel, total_timeout = timeout
+            )
+            return [Image.open(io.BytesIO(b)) for b in blobs]
+
         # sd.cpp's image seed is signed int64; mask base and derived seeds to that range.
         base_seed = int(seed) & ((1 << 63) - 1)
         images: list = []
         seeds: list[int] = []
 
-        # Stage LoRAs into a per-request subdir of the server lora-model-dir (so a prior request's adapters cannot
-        # leak in); removed after.
+        # Stage LoRAs in a per-request subdir of lora-model-dir to stop leaks; removed after.
         lora_payload: Optional[list[dict]] = None
         lora_stages: list[Path] = []
 
@@ -5192,9 +5577,7 @@ class SdCppDiffusionBackend:
                 for m in materialized
             ]
 
-        # One deadline for the whole request, shared by its chunks: a batch is chunked only because the server caps
-        # images per job, so each chunk gets whatever is left rather than its own full budget and a long batch still
-        # ends on time.
+        # One deadline for all chunks (server caps images per job); each gets what is left.
         deadline = time.monotonic() + NATIVE_GENERATION_TIMEOUT_S
         # One same-build respawn per request; a second loss moves this load to CPU where the rung applies. Persists nothing.
         device_respawned = False
@@ -5262,14 +5645,10 @@ class SdCppDiffusionBackend:
                     qwen_image_layers = layers,
                     hires = hires_payload,
                     extra_sample_args = _request_extra_sample_args(state),
+                    ref_image_args = _request_ref_image_args(state, bool(ref_pngs)),
                 )
                 try:
-                    blobs = state.server.img_gen(
-                        payload,
-                        on_step = self._on_log,
-                        cancel_event = cancel,
-                        total_timeout = max(deadline - time.monotonic(), 1.0),
-                    )
+                    rendered = _render(state.server, payload, max(deadline - time.monotonic(), 1.0))
                 except RuntimeError as first_exc:
                     # A ggml unsupported-op abort killed the server: this graph cannot run on the GPU backend at all,
                     # so restart the model on the CPU backend once and retry this chunk. A lost Vulkan device needs a
@@ -5333,11 +5712,8 @@ class SdCppDiffusionBackend:
                             hires_payload = _stage_hires(server)
                             payload["hires"] = dict(hires_payload)
                         try:
-                            blobs = server.img_gen(
-                                payload,
-                                on_step = self._on_log,
-                                cancel_event = cancel,
-                                total_timeout = max(deadline - time.monotonic(), 1.0),
+                            rendered = _render(
+                                server, payload, max(deadline - time.monotonic(), 1.0)
                             )
                             break
                         except RuntimeError as retry_exc:
@@ -5345,14 +5721,12 @@ class SdCppDiffusionBackend:
                 device_losses = 0
                 # All-or-nothing per chunk; a layered generation decodes layers + 1 images.
                 expected = count * ((layers + 1) if layers else 1)
-                if not cancel.is_set() and len(blobs) != expected:
+                if not cancel.is_set() and len(rendered) != expected:
                     raise RuntimeError(
-                        f"sd-server returned {len(blobs)} of {expected} requested images in the batch."
+                        f"sd-server returned {len(rendered)} of {expected} requested images in the batch."
                     )
-                kept = _keep_layers(blobs, layers or 0)
-                images.extend(
-                    _native_output_image(state.family, Image.open(io.BytesIO(b))) for b in kept
-                )
+                kept = _keep_layers(rendered, layers or 0)
+                images.extend(_native_output_image(state.family, im) for im in kept)
                 # sd.cpp advances the seed per generation; every layer of one carries that seed.
                 per = len(kept) // count if count else 1
                 seeds.extend(
@@ -5395,6 +5769,9 @@ class SdCppDiffusionBackend:
             published = self._state is not None and self._state.server is old_server
             if published:
                 self._state = state
+                # The primary restarted (another backend, a VRAM budget, a lost device): replicas started from the
+                # old placement would repeat its failure, so they go.
+                self._retire_replicas_locked()
             else:
                 self._reserve_stop()
         if not published:
@@ -5422,7 +5799,7 @@ class SdCppDiffusionBackend:
         watcher.start()
         failed = False
         try:
-            server.start(state.files, **start_kwargs, **_family_rng_kwargs(state.family))
+            server.start(state.files, **start_kwargs, **_family_start_kwargs(state.family))
         except Exception:  # noqa: BLE001 -- the original server error is the more useful one
             failed = True
         finally:
@@ -5476,9 +5853,8 @@ class SdCppDiffusionBackend:
     def _restart_server_with_vram_headroom(
         self, state: _SdState, error_text: str, cancel: threading.Event
     ) -> tuple[Optional[SdCppServer], Optional[str]]:
-        """Restart sd-server under ``--max-vram`` after sd.cpp refused a render for VRAM; returns the server and its
-        budget, or ``(None, None)``. The budget comes from the first refusing server's plan and is reused: a server
-        restarted while another application held the card planned too little to halve, and keeps refusing."""
+        """Restarts sd-server with --max-vram after a VRAM refusal and returns (server, budget) or
+        (None, None); reuses the first budget since a contended restart plans too little."""
         if not sd_cpp_args_mod.is_vram_refusal_text(error_text):
             return None, None
         if state.device == "cpu" or self._cpu_backend_forced:
@@ -5591,7 +5967,12 @@ class SdCppDiffusionBackend:
             # WITHOUT the device pin. sd.cpp joins repeated --backend values into one spec instead of replacing,
             # and an explicit diffusion=CUDA0 outranks the bare `cpu` default, so leaving the pin on would restart
             # the server onto the very backend that just aborted.
-            offload = without_device_backend_flags(state.offload_flags),
+            offload = _cpu_backend_offload(
+                state.offload_flags,
+                state.files,
+                server_binary,
+                getattr(state.family, "name", None),
+            ),
             native_speed = state.native_speed,
             threads = state.threads,
             env = state.spawn_env(),
@@ -5637,6 +6018,9 @@ class SdCppDiffusionBackend:
         extra_sample_args = _request_extra_sample_args(state)
         if extra_sample_args:
             extra_args += ["--extra-sample-args", extra_sample_args]
+        ref_image_args = _request_ref_image_args(state, bool(ref_pngs))
+        if ref_image_args:
+            extra_args += ["--ref-image-args", ref_image_args]
 
         images = []
         seeds: list[int] = []
@@ -5707,6 +6091,11 @@ class SdCppDiffusionBackend:
                         env = state.spawn_env(),
                         on_log = self._on_log,
                         cancel_event = cancel,
+                        **(
+                            {"metal_vae_conv_direct": True}
+                            if _family_metal_vae_conv_direct(state.family)
+                            else {}
+                        ),
                     )
                 outputs = sd_cli_output_paths(out_path, (layers + 1) if layers else 1)
                 for path in _keep_layers(outputs, layers or 0):
@@ -5724,8 +6113,7 @@ class SdCppDiffusionBackend:
             if gen.passes:
                 i = gen.pass_index
                 nxt = (i + 1) % len(gen.passes)
-                # The next pass (the next image's base pass after the last one) starts once this one completed; a
-                # repeat of this pass's last line is not a start.
+                # Next pass begins when this one completes, not on a repeat of its last line.
                 if (
                     nxt != i
                     and b == gen.passes[nxt]
@@ -5748,6 +6136,16 @@ class SdCppDiffusionBackend:
     def generate_progress(self) -> dict[str, Any]:
         gen = self._gen
         if gen is None or gen.total_steps <= 0:
+            # A render on a card replica when the primary is idle.
+            gen = next(
+                (
+                    g
+                    for g in (getattr(b, "_gen", None) for b in self._replica_backends())
+                    if g is not None and g.total_steps > 0
+                ),
+                None,
+            )
+        if gen is None or gen.total_steps <= 0:
             return {
                 "active": False,
                 "step": 0,
@@ -5763,9 +6161,50 @@ class SdCppDiffusionBackend:
             "eta_seconds": gen.eta_seconds,
         }
 
+    def _close_replicas_locked(self) -> tuple[Any, list[Any]]:
+        """Under ``_lock``: unpublish this load's replicas and reserve their stops in the same step, as for the
+        primary, so the tree never reads idle while one still runs."""
+        pool = getattr(self, "_replicas", None)
+        self._replicas = None
+        if pool is None:
+            return None, []
+        servers = pool.close()
+        self._reserve_stop(len(servers))
+        return pool, servers
+
+    def _reserve_replica_stop(self) -> None:
+        with self._lock:
+            self._reserve_stop()
+
+    def _retire_replicas_locked(self) -> None:
+        """Under ``_lock``, when the primary died: its replicas go with the load, stopped off this thread."""
+        closed = self._close_replicas_locked()
+        if closed[1]:
+            threading.Thread(
+                target = self._stop_closed_replicas,
+                args = (closed,),
+                name = "sd-server-replicas-stop",
+                daemon = True,
+            ).start()
+
+    def _stop_closed_replicas(self, closed: tuple[Any, list[Any]]) -> None:
+        pool, servers = closed
+        for server in servers:
+            self._stop_reserved(server)
+        if pool is not None:
+            pool.wait_idle()
+
+    def _replica_backends(self) -> list[Any]:
+        pool = getattr(self, "_replicas", None)
+        return pool.lane_backends() if pool is not None else []
+
     def cancel_generate(self, expected_account: Optional[str] = None) -> bool:
         """Native runner polls this event and kills the sd-cli process tree, so stop lands within
-        one poll."""
+        one poll. Card replicas' renders for the same account stop too."""
+        replicas = [b.cancel_generate(expected_account) for b in self._replica_backends()]
+        return self._cancel_own_generate(expected_account) or any(replicas)
+
+    def _cancel_own_generate(self, expected_account: Optional[str] = None) -> bool:
         with self._lock:
             cancel = self._active_generate_cancel
             if cancel is None:
@@ -5795,16 +6234,16 @@ class SdCppDiffusionBackend:
                 from .gpu_arbiter import DIFFUSION, GpuBusyForAnotherAccountError
                 from hub.services.models.account_access import require_resident_control
 
-                if (
-                    self._active_generate_cancel is not None
-                    and self._active_generate_account != expected_account
+                if any(
+                    b._active_generate_cancel is not None
+                    and b._active_generate_account != expected_account
+                    for b in (self, *self._replica_backends())
                 ):
                     raise GpuBusyForAnotherAccountError(DIFFUSION, 1)
                 require_resident_control(
                     DIFFUSION, self._state.repo_id if self._state is not None else None
                 )
-            # Under the lock: begin_load rebinds this attribute, so an unlocked read could set an event the current load
-            # no longer watches.
+            # Under lock: begin_load rebinds this attr; unlocked reads may set a stale event.
             self._cancel_event.set()
             if self._active_generate_cancel is not None:
                 self._active_generate_cancel.set()
@@ -5825,14 +6264,39 @@ class SdCppDiffusionBackend:
             if pending is not None and state is not None and pending is state.server:
                 to_stop = to_stop[:1]
             self._reserve_stop(len(to_stop))
+            replicas = self._close_replicas_locked()
         # Stop the resident server outside the lock (terminate can take seconds); a mid-flight generation unwinds as
         # the process goes away.
         for srv in to_stop:
             self._stop_reserved(srv)
+        self._stop_closed_replicas(replicas)
         # Wait for a signalled generation to exit: callers treat return as "device is free".
         with self._generate_lock:
             pass
+        from core.inference import sd_cpp_torch_vae
+
+        sd_cpp_torch_vae.release()
         return self.status()
+
+    def _metal_vae_conv_status(self, state: Any) -> dict[str, Any]:
+        """``metal_vae_conv_direct`` (on Apple Metal only): whether the VAE takes direct conv and why."""
+        from core.inference import sd_cpp_args
+
+        offload = list(state.offload_flags or ())
+        if not sd_cpp_args._runs_on_apple_metal(offload):
+            return {}
+        binary = getattr(state.server, "binary", None) or getattr(self._engine, "binary", None)
+        if "--conv-direct" in offload[:-1]:
+            # A user flag wins over the native speed flags (``native_speed_flags`` drops its own).
+            value = str(offload[offload.index("--conv-direct") + 1]).strip().lower()
+            on = value in ("on", "vae=on") or "vae=on" in value.split(",")
+            return {
+                "metal_vae_conv_direct": {"enabled": on, "reason": f"user --conv-direct {value}"}
+            }
+        on, reason = sd_cpp_args.metal_vae_conv_direct_decision(
+            offload, binary, _family_metal_vae_conv_direct(getattr(state, "family", None))
+        )
+        return {"metal_vae_conv_direct": {"enabled": on, "reason": reason}}
 
     def status(self) -> dict[str, Any]:
         state = self._state
@@ -5850,6 +6314,7 @@ class SdCppDiffusionBackend:
                 if reap:
                     logger.warning("sd-server exited after load; clearing loaded state")
                     self._state = None
+                    self._retire_replicas_locked()
             if reap:
                 state = None
         if state is None:
@@ -5946,6 +6411,7 @@ class SdCppDiffusionBackend:
             "transformer_quant": None,
             "attention_backend": None,
             "transformer_cache": None,
+            **self._metal_vae_conv_status(state),
             "resolved": state.resolved,
             "engine": "sd_cpp",
             "supports_lora": lora_reason is None,
@@ -5969,7 +6435,37 @@ class SdCppDiffusionBackend:
                 if state.multi_gpu is not None and not self._cpu_backend_forced
                 else {}
             ),
+            **self._replica_status(),
         }
+
+    def _replica_status(self) -> dict[str, Any]:
+        """``replicas`` only for a load that has them (one server keeps main's status)."""
+        pool = getattr(self, "_replicas", None)
+        if pool is None or pool.closed:
+            return {}
+        return {"replicas": pool.describe()}
+
+
+class _SdCppReplicaLane(SdCppDiffusionBackend):
+    """One card replica: renders through the backend's own generate code on its own sd-server. It never restarts
+    itself; a failure retires it and the pool sends the request to another server."""
+
+    def __init__(self, state: _SdState) -> None:
+        super().__init__()
+        self._state = state
+
+    def _restart_server_on_cpu_backend(self, *_args: Any, **_kwargs: Any) -> Optional[SdCppServer]:
+        return None
+
+    def _respawn_server_after_device_loss(
+        self, *_args: Any, **_kwargs: Any
+    ) -> Optional[SdCppServer]:
+        return None
+
+    def _restart_server_with_vram_headroom(
+        self, *_args: Any, **_kwargs: Any
+    ) -> tuple[Optional[SdCppServer], Optional[str]]:
+        return None, None
 
 
 def _native_hires_status(state: Any) -> dict[str, Any]:
@@ -6023,4 +6519,8 @@ def get_sd_cpp_backend() -> SdCppDiffusionBackend:
 def generation_in_flight() -> bool:
     """Read the active-generation marker without constructing or locking the backend."""
     backend = _sd_cpp_backend
-    return backend is not None and backend._gen is not None
+    if backend is None:
+        return False
+    return backend._gen is not None or any(
+        getattr(b, "_gen", None) is not None for b in backend._replica_backends()
+    )

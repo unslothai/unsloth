@@ -41,9 +41,8 @@ def hf_env_offline() -> bool:
 
 
 def package_installs_offline() -> bool:
-    """True when installs must stay off the network: an operator-set HF offline, or UV_OFFLINE
-    (install_wheel's pip fallback would reach the index anyway). A Studio auto-set HF offline
-    says nothing about GitHub or PyPI, so only UV_OFFLINE counts."""
+    """True for an operator-set HF offline or UV_OFFLINE (install_wheel's pip fallback reaches the
+    index); auto-set HF offline says nothing of GitHub or PyPI, so only UV_OFFLINE counts."""
     from utils.wheel_utils import hf_offline_auto_set, uv_offline
 
     if hf_offline_auto_set():
@@ -107,7 +106,6 @@ def _stdlib_proxy_for_url(url: str) -> Optional[str]:
         pass
     proxies = {k.lower(): v for k, v in getproxies().items()}
     scheme = (parsed.scheme or "https").lower()
-    # select_proxy order: scheme://host, then scheme, then the all catch-all.
     for key in (f"{scheme}://{host}", scheme, "all"):
         value = proxies.get(key)
         if value:
@@ -368,6 +366,17 @@ def force_hf_offline_active() -> bool:
     return _force_offline_depth > 0
 
 
+def hf_user_offline() -> bool:
+    """The offline mode the user or operator asked for (HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE), read from the
+    values saved before any open force_hf_offline window: such a window is one short operation's, so it must not
+    make an unrelated load that starts inside it cache-only. Lock-free, like force_hf_offline_active."""
+    env = _force_offline_saved_env if _force_offline_depth > 0 else os.environ
+    return any(
+        str(env.get(var) or "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for var in _OFFLINE_ENV_KEYS
+    )
+
+
 def force_hf_offline_state() -> tuple[bool, bool]:
     """Return guard ownership and env presence under one lock."""
     with _force_offline_lock:
@@ -598,7 +607,8 @@ def _snapshot_in_root(cache_root: Path, repo_id: str) -> Optional[Path]:
     """``repo_id``'s main-revision snapshot under exactly ``cache_root``, or None."""
     try:
         return _snapshot_in_repo_dir(cache_root / _repo_folder_name(repo_id))
-    except (OSError, UnicodeDecodeError):
+    # HFValidationError (a ValueError): an audio.cpp ``<namespace>/<repo>/<folder>`` id has no cache dir of its own.
+    except (OSError, ValueError):
         return None
 
 

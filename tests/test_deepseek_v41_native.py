@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Unsloth's native DeepSeek-V4.1 on CPU with tiny random configs."""
 
+import builtins
 import os
 
 import pytest
@@ -36,9 +37,8 @@ def _zoo_resolves_native():
         return False
 
 
-# Capability probes for the companion unsloth_zoo (not version strings): on an unsloth_zoo without them these tests
-# skip; the model falls back (Parameter-backed engram tables, the torch sparse attention, plain-PEFT grouped
-# blocks) or refuses (gradient checkpointing without the replay).
+# unsloth_zoo feature probes, not versions: without them tests skip and the model falls back (engram
+# tables, torch sparse attention, PEFT blocks) or refuses (checkpointing without replay).
 needs_frozen_tables = pytest.mark.skipif(
     not hasattr(_zoo_dsv41(), "make_deepseek_v41_engram_table"),
     reason = "unsloth_zoo without the parameter-free DeepSeek-V4.1 engram table (unsloth-zoo #2510)",
@@ -1340,6 +1340,21 @@ def _zoo_ast_rewriter():
     return module
 
 
+def _free_globals(source):
+    """Names a module source's functions (nested ones included) read from module globals."""
+    import symtable
+
+    found, stack = set(), [symtable.symtable(source, "<rewritten>", "exec")]
+    while stack:
+        table = stack.pop()
+        if table.get_type() != "module":
+            found.update(
+                s.get_name() for s in table.get_symbols() if s.is_global() and s.is_referenced()
+            )
+        stack.extend(table.get_children())
+    return found
+
+
 def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
     """The fused-CE rewrite also handles labels with logits_to_keep."""
     import inspect
@@ -1374,7 +1389,13 @@ def test_kept_position_loss_goes_through_the_fused_ce_rewrite(monkeypatch):
         unsloth_fused_lm_head_loss = fused,
         EMPTY_LOGITS = torch.empty(0),
         _can_fuse_loss = lambda f: True,
+        # unsloth-zoo #2768: the rewrite fuses only models Unsloth loaded.
+        _fuses_model = lambda module: True,
     )
+    missing = _free_globals(rewritten) - set(namespace) - set(dir(builtins))
+    assert (
+        not missing
+    ), f"zoo's rewritten forward reads globals this test does not provide: {sorted(missing)}"
     exec(rewritten, namespace)
     forward = namespace["forward"]
     model = _tiny_model().eval()

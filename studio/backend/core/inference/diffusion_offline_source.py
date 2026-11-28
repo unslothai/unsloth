@@ -66,6 +66,46 @@ def offline_snapshot_source(
     return repo_id
 
 
+def tokenizer_snapshot_source(
+    repo_id: Any,
+    subfolder: Optional[str],
+    *,
+    local_files_only: bool,
+    token: Any = None,
+    cache_dir: Optional[str] = None,
+    revision: Optional[str] = None,
+) -> Any:
+    """Snapshot folder for a tokenizer load; online fetches ``subfolder/*`` with ``token`` first, since
+    transformers 5.x drops ``token=`` when the subfolder has no config.json."""
+    if (
+        not isinstance(repo_id, str)
+        or not repo_id
+        or _offline_requested(local_files_only)
+        or not subfolder
+    ):
+        return offline_snapshot_source(
+            repo_id,
+            subfolder,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+            revision = revision,
+        )
+    try:
+        if Path(repo_id).expanduser().is_dir():
+            return repo_id
+    except (OSError, ValueError):
+        return repo_id
+    from huggingface_hub import snapshot_download
+
+    sub = PurePosixPath(subfolder.replace("\\", "/").strip("/")).as_posix()
+    kwargs: dict[str, Any] = {"allow_patterns": [f"{sub}/*"], "cache_dir": cache_dir}
+    if revision:
+        kwargs["revision"] = revision
+    if token:
+        kwargs["token"] = token
+    return snapshot_download(repo_id, **kwargs)
+
+
 def _is_tokenizer_or_processor(type_hint: Any) -> bool:
     if not isinstance(type_hint, type):
         return False

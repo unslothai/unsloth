@@ -83,17 +83,24 @@ def build(
     lora = True,
     seed = 0,
     train_norms = False,
+    model_class = None,
     **lora_kwargs,
 ):
+    import transformers
     from transformers import AutoConfig, AutoModelForCausalLM
 
-    config = AutoConfig.from_pretrained(repo)
+    from tests._tiny_fixture_revisions import revision
+
+    config = AutoConfig.from_pretrained(repo, revision = revision(repo))
     text = config.get_text_config()
     for key, value in (overrides or {}).items():
         setattr(text, key, value)
     config._attn_implementation = "eager"
     torch.manual_seed(seed)
-    model = AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
+    if model_class is None:  # a class name: families with no causal LM auto class (Qwen3-VL-MoE)
+        model = AutoModelForCausalLM.from_config(config, torch_dtype = torch.float32)
+    else:
+        model = getattr(transformers, model_class)._from_config(config, torch_dtype = torch.float32)
     with torch.no_grad():
         for name, p in model.named_parameters():
             if name.endswith("bias"):

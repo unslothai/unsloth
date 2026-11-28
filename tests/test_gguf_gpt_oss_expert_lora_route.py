@@ -48,6 +48,7 @@ def _routed_save_method(monkeypatch, tmp_path, model):
 
     for name, value in {
         "raise_if_merging_mistral_format_view": lambda *a, **k: None,
+        "raise_if_merging_inkling2": lambda *a, **k: None,
         "_assert_export_target_is_not_base_with_lora_layers": lambda *a, **k: None,
         "_gguf_remote_code_approved": lambda *a, **k: True,
         "_preflight_gguf_disk": lambda **k: (k["save_directory"], True),

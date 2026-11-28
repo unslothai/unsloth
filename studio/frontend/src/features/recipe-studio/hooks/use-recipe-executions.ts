@@ -11,7 +11,7 @@ import {
 } from "@/features/chat";
 import { unpinnedLoadContext } from "@/features/chat/presets/preset-policy";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { isOllamaModelId } from "@/features/hub/lib/model-identity";
+import { isOllamaModelId, withoutNamedQuant } from "@/features/hub/lib/model-identity";
 import { DEFAULT_MAX_SEQ_LENGTH, isServedByMlx } from "@/features/model-picker";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { toastError } from "@/shared/toast";
@@ -284,12 +284,17 @@ export async function isLocalModelAlreadyLoaded(
     reasoningBudgetMessage,
   } = selection;
   try {
-    const status = await getInferenceStatus();
+    const named = `${target}:${ggufVariant}`;
+    const served = ggufVariant && withoutNamedQuant(named, ggufVariant) === target;
+    const status = await getInferenceStatus(undefined, served ? named : undefined);
     if (
       !(await localSelectionMatchesResident({
         target,
         ggufVariant,
-        activeModel: status.model_identifier ?? status.active_model,
+        activeModel: withoutNamedQuant(
+          status.model_identifier ?? status.active_model ?? "",
+          status.gguf_variant,
+        ),
         activeVariant: status.gguf_variant?.trim() ?? "",
       }))
     ) {
@@ -347,7 +352,12 @@ async function loadLocalModelSelection(
         requestedContextLength ??
         unpinnedLoadContext(
           isGguf,
-          isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason),
+          isServedByMlx(
+            isGguf,
+            platform.deviceType,
+            platform.chatOnlyReason,
+            platform.mlxInference,
+          ),
           DEFAULT_MAX_SEQ_LENGTH,
         ),
       // biome-ignore lint/style/useNamingConvention: api schema

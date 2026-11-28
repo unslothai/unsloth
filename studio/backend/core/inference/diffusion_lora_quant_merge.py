@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Merges LoRA / LoKR adapters of a ComfyUI-quantized single file into its fp8 / int8 (ConvRot) / float weights, as
-ComfyUI patches them, and removes the adapter layers. Originals are backed up on the host; a weight change restores
-them into the same tensors and merges again, so compiled code and captured graphs stay valid."""
+"""Merges LoRA/LoKR into ComfyUI-quantized weights and removes adapter layers; originals backed up
+and restored into the same tensors on a weight change, so compiled code and graphs stay valid"""
 
 from __future__ import annotations
 
@@ -96,8 +95,7 @@ def _group(module: Any) -> int:
 
 
 def _mergeable_module(module: Any) -> bool:
-    """A plain or ConvRot Linear whose weight is a registered Parameter: a wrapper or native twin can expose ``weight``
-    as a computed view, where a write would not reach the forward."""
+    """Plain or ConvRot Linear with a registered Parameter weight; computed views drop writes."""
     import torch
 
     from .diffusion_convrot import is_rotated_linear
@@ -130,8 +128,7 @@ def _dequant(module: Any, kind: str, group: int, device: Any) -> Any:
 
 
 def _stochastic_fp8(x: Any, dtype: Any, generator: Any) -> Any:
-    """Stochastic rounding of ``x`` (float32, in range) to e4m3, as ComfyUI rounds a patched fp8 weight: round to
-    nearest drops every delta below half a step."""
+    """Stochastic e4m3 rounding, as ComfyUI does; nearest drops deltas under half a step."""
     import torch
 
     mag = x.abs()

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Pacing and anchor arithmetic for the thread's mount window (progressive-messages.tsx). Which
-// rows are mounted is decided in thread-window.ts.
+// Pacing and anchor math for the mount window; row mounting is decided in thread-window.ts.
 
 /** Messages added per frame while every row is being mounted for a DOM reader (find, print). */
 export const CHUNK_MESSAGES = 32;
@@ -20,8 +19,7 @@ export function watchProgressiveScroll(
   let inputAt = Number.NEGATIVE_INFINITY;
   const pause = () => { resumeAt = now() + 300; };
   const onInput = () => { inputAt = now(); pause(); };
-  // A scroll extends a pause only near the reader's input (momentum runs on after a fling);
-  // the autoscroll following a stream would otherwise hold a full mount off until it ends.
+  // Scroll extends the pause only near input; a stream's autoscroll would block mounting.
   const onScroll = () => { if (now() < resumeAt && now() - inputAt < MOMENTUM_MS) pause(); };
   const onKey = (event: Event) => {
     const key = event as KeyboardEvent;
@@ -55,16 +53,14 @@ export function watchProgressiveScroll(
 }
 
 /**
- * Largest WebKitGTK step for parked history. 32 restored the pre-windowing load time but made single
- * frames up to ~1.4 s on CPU-painted WebKit; 16 keeps the worst frame at the 2-per-step level.
+ * Largest WebKitGTK step for parked history; 32 made CPU-painted frames too slow, so 16 caps it.
  */
 export const FAR_MOUNT_CHUNK = 16;
 
 /**
- * WebKitGTK step size for a full mount. Rows prepended within `reach` px above the viewport top
- * stay unparked and can move what the reader sees, so they mount `near` at a time; past that they
- * are parked as they land, so the step grows fourfold per frame up to `max` (each commit has a
- * fixed cost there). `previous` is 0 before the first step, which stays `near`.
+ * WebKitGTK full mount: prepended rows within reach px above the viewport can move what the reader
+ * sees, so they mount near at a time; past that the step grows fourfold per frame up to max (each
+ * commit has a fixed cost); previous 0 means near.
  */
 export function nextMountChunk(
   previous: number,
@@ -86,17 +82,15 @@ export type AnchorSample = {
 };
 
 /**
- * scrollTop delta keeping the reader on the same content, or null. Document space: correct only
- * because native scroll anchoring is off while the window is open (absent or per-frame
- * suppressed on some engines, so it cannot be trusted).
+ * scrollTop delta keeping the reader on the same content, or null; relies on native scroll
+ * anchoring being off while the window is open (absent or per-frame suppressed on some engines).
  */
 export function anchorCorrection(
   captured: AnchorSample,
   now: AnchorSample,
   minShift = 1,
 ): number | null {
-  // Subtract what the browser already absorbed via the clamp when content above shrank. Exact only
-  // for a reader who did not scroll this frame.
+  // Subtract what the clamp absorbed; exact only for a reader who did not scroll this frame.
   const clamped = Math.max(0, captured.scrollTop - now.maxScrollTop);
   const shift =
     now.viewportOffset +

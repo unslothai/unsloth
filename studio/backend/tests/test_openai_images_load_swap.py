@@ -35,10 +35,8 @@ PIXEL = [{"id": "pixel-lora", "weight": 1.0}]
 
 
 class _ReloadingEngine:
-    """A diffusers-like engine; the first status() read starts a load thread that rebakes ``after``.
-
-    generate() waits for that load to commit before its slot check, which compares the caller's pins
-    with the live load exactly as DiffusionBackend.generate does."""
+    """Its first status() read starts a load that rebakes after; generate() waits for that load to
+    commit before its slot check, which compares pins with the live load."""
 
     def __init__(
         self,
@@ -133,8 +131,7 @@ def _post(cli, **body):
 
 
 def test_a_reload_that_bakes_adapters_retries_with_them(monkeypatch):
-    """Resolved to none on a plain load; a rebake with tarot lands before the slot. Unpinned, the engine
-    would read the missing selection as none and zero the new bake."""
+    """Unpinned, the engine reads the missing selection as none and zeroes the new bake."""
     engine = _ReloadingEngine(before = [], after = TAROT)
     cli, store = _client(monkeypatch, engine)
     resp = _post(cli, seed = 7)
@@ -146,8 +143,7 @@ def test_a_reload_that_bakes_adapters_retries_with_them(monkeypatch):
 
 
 def test_a_reload_with_other_adapters_retries_with_its_own_set(monkeypatch):
-    """Resolved to tarot; the same model is rebaked with pixel. Unpinned, the stale tarot set is refused
-    by the engine as a 400 although the request never named an adapter."""
+    """Unpinned, a stale tarot set is refused with a 400 though no adapter was named."""
     engine = _ReloadingEngine(before = TAROT, after = PIXEL)
     cli, store = _client(monkeypatch, engine)
     resp = _post(cli, seed = 7)
@@ -176,8 +172,7 @@ def test_an_unchanged_load_is_not_refused(monkeypatch):
 
 
 def test_a_batch_waiting_through_a_reload_carries_the_pin(monkeypatch):
-    """Requests queued behind a running generation wait longest, so a reload lands there most often:
-    the batched call carries the adapter pin and every member retries with the new set."""
+    """Queued requests wait longest, so reloads land there; the batch pin lets members retry."""
     monkeypatch.setattr(batching, "batch_max", lambda: 8)
     engine = _ReloadingEngine(before = [], after = TAROT, holder = True, auto = False)
     cli, store = _client(monkeypatch, engine)
@@ -215,8 +210,7 @@ class _RenderReached(Exception):
 
 
 def test_the_real_diffusers_slot_refuses_a_rebake_that_landed_after_the_read(monkeypatch):
-    """Same interleave against DiffusionBackend.generate itself: its slot check decides, and the render is
-    stubbed at the first step past the check."""
+    """Same interleave on DiffusionBackend.generate: its slot check decides; the render is stubbed."""
     import types
 
     engine = diffusion_module.DiffusionBackend()

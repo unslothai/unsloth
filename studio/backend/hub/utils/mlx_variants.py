@@ -43,8 +43,7 @@ def cached_precision_folder(repo_id: str, folder: str) -> Optional[Path]:
 def precision_folder_config_dir(
     repo_id: str, folder: str, hf_token: Optional[str]
 ) -> Optional[Path]:
-    """The local directory holding ``<folder>/config.json`` (fetching only that file), or None
-    when the repo has no such folder, so a GGUF quant name never takes this path."""
+    """Local dir of ``<folder>/config.json`` (fetched alone); None if absent or a GGUF name."""
     if not is_precision_folder(folder):
         return None
     cached = cached_precision_folder(repo_id, folder)
@@ -76,7 +75,6 @@ def precision_folder_config_dir(
 
 
 def download_precision_folder(repo_id: str, folder: str, hf_token: Optional[str]) -> str:
-    """Fetch only ``<folder>/*`` and return its local directory; files already cached are reused."""
     cached = cached_precision_folder(repo_id, folder)
     if cached is not None:
         return str(cached)

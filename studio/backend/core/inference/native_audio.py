@@ -711,6 +711,31 @@ def _native_audio_repo_files(
     return required
 
 
+_GGUF_FLOAT_LABEL = re.compile(r"(?:^|[-_.])(fp(?:8|16|32))$")
+_GGUF_BPW = re.compile(r"-\d+(?:\.\d+)?bpw")
+
+
+def _gguf_quants(siblings: list[Any]) -> dict[str, set[str]]:
+    """Quant labels per GGUF model, parsed like the Hub: split parts count once, mmproj never, a codec/VAE is its own model."""
+    from hub.utils.gguf import _gguf_stem, quant_token_with_bpw
+
+    models: dict[str, set[str]] = {}
+    for sibling in siblings:
+        path = str(getattr(sibling, "rfilename", "")).strip().replace("\\", "/")
+        if not path.lower().endswith(".gguf") or "mmproj" in path.lower():
+            continue
+        stem = _gguf_stem(path).lower()
+        quant = (quant_token_with_bpw(path) or "").lower()
+        if not quant and (floating := _GGUF_FLOAT_LABEL.search(stem)):
+            quant = floating.group(1)
+        token, model = _GGUF_BPW.sub("", quant), _GGUF_BPW.sub("", stem)
+        at = model.rfind(token) if token else -1
+        if at >= 0:
+            model = model[:at] + model[at + len(token) :]
+        models.setdefault(model.strip("-_."), set()).add(quant)
+    return models
+
+
 def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) -> dict[str, Any]:
     """Native models add companion codec repos, and MiniMax skips legacy weights its index never names."""
     normalized = str(model_name or "").strip()
@@ -759,6 +784,14 @@ def native_audio_download_plan(model_name: str, hf_token: Optional[str] = None) 
         )
         if not siblings:
             raise ValueError(f"{repo_id} does not publish files required by its audio loader.")
+        # No audio loader names this repo, so its plan is every file: for a multi-quant GGUF repo, every quant.
+        # Refused even beside a checkpoint: ModelConfig.from_identifier loads a GGUF from such a repo, not the checkpoint.
+        if audio_type is None and any(
+            len(quants) > 1 for quants in _gguf_quants(siblings).values()
+        ):
+            raise ValueError(
+                f"{repo_id} publishes several GGUF quants: pick one of its GGUF files instead of downloading all of them."
+            )
         revision = str(getattr(info, "sha", "") or "") or None
         missing_files = []
         missing_bytes = 0

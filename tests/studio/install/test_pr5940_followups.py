@@ -32,6 +32,13 @@ _INSTALL_PS1 = PACKAGE_ROOT / "install.ps1"
 _SETUP_PS1 = PACKAGE_ROOT / "studio" / "setup.ps1"
 _INSTALL_SH = PACKAGE_ROOT / "install.sh"
 _PYSTACK_PY = PACKAGE_ROOT / "studio" / "install_python_stack.py"
+_STACK_SPEC = importlib.util.spec_from_file_location(
+    "studio_install_python_stack_pr5940", _PYSTACK_PY
+)
+assert _STACK_SPEC is not None and _STACK_SPEC.loader is not None
+stack_mod = importlib.util.module_from_spec(_STACK_SPEC)
+sys.modules[_STACK_SPEC.name] = stack_mod
+_STACK_SPEC.loader.exec_module(stack_mod)
 
 
 def test_hf_resolve_url_parts_valid():
@@ -202,163 +209,56 @@ def test_setup_sh_name_arch_table_in_sync_with_install_sh():
         assert got == expect, f"setup.sh: {name!r} -> {got!r}, expected {expect!r}"
 
 
-# Without a HIP SDK, Windows amd-smi pops a UAC/DiskPart prompt RunAsInvoker cannot suppress.
-def _amd_smi_allowed_under(system, hipinfo_present, env):
-    # A real temp PATH; an external hipinfo.exe outside the venv models a real HIP SDK.
+# Windows amd-smi pops a UAC/DiskPart prompt RunAsInvoker cannot suppress, with or without a HIP SDK.
+def _amd_smi_allowed_under(module, system, hipinfo_present, env):
+    # A real temp PATH; an external hipinfo.exe models a real HIP SDK, which must not open the gate.
     with tempfile.TemporaryDirectory() as tmp:
-        venv_root = os.path.join(tmp, "venv")
-        os.makedirs(venv_root)
         path_env = dict(env)
         if hipinfo_present:
             sdk_bin = os.path.join(tmp, "hipsdk", "bin")
             os.makedirs(sdk_bin)
             open(os.path.join(sdk_bin, "hipinfo.exe"), "w").close()
             path_env["PATH"] = sdk_bin + os.pathsep + path_env.get("PATH", "")
+            path_env["HIP_PATH"] = os.path.dirname(sdk_bin)
         with (
-            patch.object(prebuilt.platform, "system", return_value = system),
-            patch.object(prebuilt.sys, "prefix", venv_root),
-            patch.dict(prebuilt.os.environ, path_env, clear = True),
+            patch.object(module.platform, "system", return_value = system),
+            patch.dict(module.os.environ, path_env, clear = True),
         ):
-            return prebuilt._amd_smi_allowed()
+            return module._amd_smi_allowed()
 
 
-def test_amd_smi_allowed_on_linux_regardless():
-    assert _amd_smi_allowed_under("Linux", hipinfo_present = False, env = {}) is True
+_AMD_SMI_GATE_MODULES = pytest.mark.parametrize(
+    "module", [prebuilt, stack_mod], ids = ["install_llama_prebuilt", "install_python_stack"]
+)
 
 
-def test_amd_smi_skipped_on_windows_without_hip_sdk():
-    assert _amd_smi_allowed_under("Windows", hipinfo_present = False, env = {}) is False
+@_AMD_SMI_GATE_MODULES
+def test_amd_smi_allowed_on_linux_regardless(module):
+    assert _amd_smi_allowed_under(module, "Linux", hipinfo_present = False, env = {}) is True
 
 
-def test_amd_smi_allowed_on_windows_with_hip_sdk():
-    assert _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {}) is True
+@_AMD_SMI_GATE_MODULES
+@pytest.mark.parametrize("hipinfo_present", [False, True], ids = ["no-hip-sdk", "hip-sdk"])
+@pytest.mark.parametrize("flag", [None, "1", "0"], ids = ["unset", "opt-in", "opt-out"])
+def test_amd_smi_never_runs_on_windows(module, hipinfo_present, flag):
+    env = {} if flag is None else {"UNSLOTH_ENABLE_AMD_SMI": flag}
+    assert _amd_smi_allowed_under(module, "Windows", hipinfo_present, env) is False
 
 
-def test_amd_smi_opt_in_forces_on_windows_no_sdk():
-    assert (
-        _amd_smi_allowed_under(
-            "Windows", hipinfo_present = False, env = {"UNSLOTH_ENABLE_AMD_SMI": "1"}
-        )
-        is True
-    )
-
-
-def test_amd_smi_opt_out_overrides_hip_sdk():
-    assert (
-        _amd_smi_allowed_under("Windows", hipinfo_present = True, env = {"UNSLOTH_ENABLE_AMD_SMI": "0"})
-        is False
-    )
-
-
-def test_amd_smi_skipped_when_hipinfo_is_venv_internal(tmp_path):
-    # The venv hipInfo.exe (AMD wheel) is not a HIP SDK and must not reopen the gate.
-    venv_root = tmp_path / "venv"
-    venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents = True)
-    (venv_scripts / "hipinfo.exe").write_text("")
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
-    ):
-        assert prebuilt._amd_smi_allowed() is False
-
-
-def test_amd_smi_allowed_when_hipinfo_outside_venv(tmp_path):
-    sdk_bin = tmp_path / "hipsdk" / "bin"
-    sdk_bin.mkdir(parents = True)
-    (sdk_bin / "hipinfo.exe").write_text("")
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"PATH": str(sdk_bin)}, clear = True),
-    ):
-        assert prebuilt._amd_smi_allowed() is True
-
-
-def test_amd_smi_allowed_when_external_hipinfo_shadowed_by_venv(tmp_path):
-    # A first-hit which stops at the venv copy; every PATH entry must be scanned.
-    venv_root = tmp_path / "venv"
-    venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents = True)
-    (venv_scripts / "hipinfo.exe").write_text("")
-    sdk_bin = tmp_path / "hipsdk" / "bin"
-    sdk_bin.mkdir(parents = True)
-    (sdk_bin / "hipinfo.exe").write_text("")
-    path = str(venv_scripts) + os.pathsep + str(sdk_bin)
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": path}, clear = True),
-    ):
-        assert prebuilt._amd_smi_allowed() is True
-
-
-def test_amd_smi_skipped_when_env_root_hipinfo_is_venv_internal(tmp_path):
-    # The venv exclusion also covers the HIP_PATH/ROCM_PATH fallback.
-    venv_root = tmp_path / "venv"
-    hip_root = venv_root / "_rocm_sdk_core"
-    (hip_root / "bin").mkdir(parents = True)
-    (hip_root / "bin" / "hipinfo.exe").write_text("")
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"ROCM_PATH": str(hip_root)}, clear = True),
-    ):
-        assert prebuilt._amd_smi_allowed() is False
-
-
-def test_amd_smi_allowed_when_env_root_hipinfo_outside_venv(tmp_path):
-    hip_root = tmp_path / "hipsdk"
-    (hip_root / "bin").mkdir(parents = True)
-    (hip_root / "bin" / "hipinfo.exe").write_text("")
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"HIP_PATH": str(hip_root)}, clear = True),
-    ):
-        assert prebuilt._amd_smi_allowed() is True
-
-
-def test_external_hipinfo_on_path_skips_venv_only(tmp_path):
-    venv_root = tmp_path / "venv"
-    venv_scripts = venv_root / "Scripts"
-    venv_scripts.mkdir(parents = True)
-    (venv_scripts / "hipinfo.exe").write_text("")
-    with (
-        patch.object(prebuilt.sys, "prefix", str(venv_root)),
-        patch.dict(prebuilt.os.environ, {"PATH": str(venv_scripts)}, clear = True),
-    ):
-        assert prebuilt._external_hipinfo_on_path() is False
-
-
-def test_python_hipinfo_gates_scan_all_path_entries():
+def test_windows_installers_never_run_amd_smi():
     for src in (_PREBUILT_PATH, _PYSTACK_PY):
         text = src.read_text(encoding = "utf-8")
         assert (
-            "_external_hipinfo_on_path" in text
-        ), f"{src.name} must use the PATH-scanning hipinfo helper"
-
-
-def test_path_inside_venv_resolves_symlinks(tmp_path):
-    # realpath, not abspath: a venv reached via a symlink/junction must still count as inside.
-    real = tmp_path / "real"
-    (real / "Scripts").mkdir(parents = True)
-    (real / "Scripts" / "hipInfo.exe").write_text("")
-    link = tmp_path / "link"
-    try:
-        link.symlink_to(real, target_is_directory = True)
-    except (OSError, NotImplementedError):
-        pytest.skip("symlinks not permitted on this runner")
-    with patch.object(prebuilt.sys, "prefix", str(real)):
-        assert prebuilt._path_inside_venv(str(link / "Scripts" / "hipInfo.exe")) is True
-
-
-def test_ps_installers_gate_amd_smi_on_windows():
+            "_external_hipinfo_on_path" not in text
+        ), f"{src.name} gates amd-smi on a HIP SDK again"
     for ps in (_INSTALL_PS1, _SETUP_PS1):
         text = ps.read_text(encoding = "utf-8")
-        assert "UNSLOTH_ENABLE_AMD_SMI" in text, f"{ps.name} missing amd-smi opt-in gate"
-        assert "amdSmiAllowed" in text, f"{ps.name} missing amd-smi gate variable"
+        assert not re.search(r"(?i)amd-?smi", text), f"{ps.name} runs amd-smi again"
+
+
+def test_ps_installers_skip_the_venv_hipinfo():
+    for ps in (_INSTALL_PS1, _SETUP_PS1):
+        text = ps.read_text(encoding = "utf-8")
         assert (
             "Test-HipinfoIsVenvInternal" in text
         ), f"{ps.name} missing venv-internal hipinfo exclusion helper"
@@ -524,48 +424,6 @@ def test_install_ps1_installs_rocm_torch_for_known_arch():
         "known/name-inferred arch should install ROCm directly to avoid a wasted "
         "CPU PyTorch base that setup.ps1 immediately force-reinstalls."
     )
-
-
-def test_external_hipinfo_strips_quoted_path_entries(tmp_path):
-    # Windows PATH entries can carry surrounding quotes; strip them before os.path.join.
-    sdk_bin = tmp_path / "hip sdk" / "bin"
-    sdk_bin.mkdir(parents = True)
-    (sdk_bin / "hipinfo.exe").write_text("")
-    quoted = '"' + str(sdk_bin) + '"'
-    with (
-        patch.object(prebuilt.platform, "system", return_value = "Windows"),
-        patch.object(prebuilt.sys, "prefix", str(tmp_path / "venv")),
-        patch.dict(prebuilt.os.environ, {"PATH": quoted}, clear = True),
-    ):
-        assert prebuilt._external_hipinfo_on_path() is True
-        assert prebuilt._amd_smi_allowed() is True
-
-
-def test_python_hipinfo_strips_quotes_in_all_copies():
-    for src in (_PREBUILT_PATH, _PYSTACK_PY):
-        text = src.read_text(encoding = "utf-8")
-        assert "strip('\"')" in text, f"{src.name} must strip quotes from PATH entries"
-
-
-def test_python_path_inside_venv_guards_root_prefix_in_all_copies():
-    # A bare-root sys.prefix makes commonpath match every path, disabling amd-smi.
-    for src in (_PREBUILT_PATH, _PYSTACK_PY):
-        text = src.read_text(encoding = "utf-8")
-        assert (
-            "os.path.dirname(" in text and ") == " in text and "return False" in text
-        ), f"{src.name} _path_inside_venv must guard a root-dir sys.prefix"
-
-
-def test_path_inside_venv_returns_false_for_root_prefix():
-    root = "C:\\" if os.name == "nt" else "/"
-    real = os.path.realpath
-    with patch.object(
-        prebuilt.os.path,
-        "realpath",
-        side_effect = lambda p: root if p == prebuilt.sys.prefix else real(p),
-    ):
-        ext = os.path.join(root, "hip", "bin", "hipinfo.exe")
-        assert prebuilt._path_inside_venv(ext) is False
 
 
 @pytest.mark.parametrize("ps", [_INSTALL_PS1, _SETUP_PS1], ids = ["install.ps1", "setup.ps1"])

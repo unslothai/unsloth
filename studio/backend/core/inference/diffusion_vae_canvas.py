@@ -42,8 +42,7 @@ LEVER_TILE_BATCH = "vae_tile_batch"
 LEVER_TILE_GRAPHS = "vae_tile_graphs"
 LEVER_HALF = "vae_fp16"
 
-# sha256[:16] of the stock ``_blend`` / ``_stitch_tiles`` sources the canvas reproduces (diffusers 0.41-0.42 and the
-# vendored H3-Image copy, which carry the same text).
+# Canvas reproduces stock _blend/_stitch_tiles; sha256[:16] pins diffusers 0.41-0.42, H3-Image.
 _BLEND_SHA = frozenset({"2b6df9fb4c3a9c96"})
 _STITCH_SHA = frozenset({"ae481626afa30528"})
 
@@ -115,8 +114,7 @@ def _source_sha(fn: Any) -> Optional[str]:
 
 
 def stock_tiling(vae: Any) -> bool:
-    """Whether ``vae`` tiles with the stock MiniMax loop the canvas reproduces (own overrides on the instance and
-    edited sources keep stock)."""
+    """Whether the VAE has stock MiniMax tiling; instance overrides and edited sources do not."""
     cls = type(vae)
     if not all(
         callable(getattr(cls, n, None)) for n in ("_split_tiles", "_blend", "_stitch_tiles")
@@ -214,8 +212,7 @@ def oracle_stitch(tiles: list, y: tuple, x: tuple) -> Any:
 
 
 def layout(vae: Any, z: Any) -> Optional[tuple]:
-    """((ys, ylens, yoverlaps), (xs, xlens, xoverlaps), ratio) in pixels for ``z``, or None when the canvas does
-    not cover this layout."""
+    """Per-axis tile splits and ratio in pixels for z; None if the canvas does not cover it."""
     ratio = int(vae.spatial_compression_ratio)
     height = z.shape[-2] * ratio
     width = z.shape[-1] * ratio
@@ -581,8 +578,7 @@ def canvas_decode(
         if race.prints is None:
             race.prints = prints
         elif race.prints != prints:
-            # The weights moved (sequential placement re-uploads the VAE per render): a graph would read the old
-            # addresses, and recording per render costs more than it saves, so this load decodes eager.
+            # Weights moved: graphs go stale; recording per render costs more, so decode eager.
             vae._unsloth_canvas_graphs = False
             for r in races.values():
                 if r.graphs is not None:
@@ -833,8 +829,7 @@ def install(
 
 
 def release_graphs(vae: Any) -> None:
-    """Drop the tile graphs and their private pools (an unload: they would outlive the freed weights for as long
-    as anything still references the VAE)."""
+    """Drops the tile graphs and their pools on unload, so they do not outlive freed weights."""
     for r in (vae.__dict__.pop("_unsloth_canvas_races", None) or {}).values():
         if r.graphs is not None:
             r.graphs.drop()

@@ -182,12 +182,6 @@ def _redact_worker_output(text: str) -> str:
     except Exception:  # noqa: BLE001 -- a redactor that cannot run must not lose the others
         pass
     try:
-        from hub.utils.download_registry import scrub_secrets
-        redacted = scrub_secrets(redacted)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        # `redact_log_text` is idempotent, so it runs after `scrub_secrets`.
         from utils.log_redaction import redact_log_text
         redacted = redact_log_text(redacted)
     except Exception:  # noqa: BLE001
@@ -292,6 +286,13 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_fast_verify_requested",
     "mlx_fast_verify_reason",
     "mlx_offload",
+    "disable_vision",
+    "vision_disabled_by_user",
+    "reasoning_budget",
+    "reasoning_budget_message",
+    "n_ubatch",
+    "n_batch",
+    "cache_ram",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -400,6 +401,11 @@ def _summed_tool_loop_stats(total, turn):
     return summed
 
 
+# ((mode, size), png_base64) on a decoded picture; copy() / convert() drop it. Invalid after an
+# in-place edit (paste, ImageDraw, putalpha), which keeps mode and size.
+PNG_B64_STAMP = "_studio_png_b64"
+
+
 def _encoded_images(images, to_base64) -> list:
     """Replayed MCP pictures arrive already PNG-encoded; a caller's decoded list does not."""
     return [one if isinstance(one, str) else to_base64(one) for one in images or ()]
@@ -410,6 +416,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
     return {
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
+        "model_type": model_info.get("model_type"),
         "is_mlx": model_info.get("is_mlx", False),
         "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
@@ -438,6 +445,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_options_by_workflow": model_info.get("audio_options_by_workflow"),
         "audio_workflow_tasks": model_info.get("audio_workflow_tasks"),
         "audio_server_task": model_info.get("audio_server_task"),
+        "audio_separation": model_info.get("audio_separation"),
         "audio_convert": model_info.get("audio_convert"),
         "audio_convert_route": model_info.get("audio_convert_route"),
         "audio_convert_rules": model_info.get("audio_convert_rules"),
@@ -448,6 +456,15 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
     }
+
+
+# MLX settings the worker holding the weights applies as they are; see MLXInferenceBackend.retune.
+_RETUNABLE = {
+    "reasoning_budget": "reasoning_budget",
+    "reasoning_budget_message": "reasoning_budget_message",
+    "mlx_prefill_batch": "prefill_batch",
+    "mlx_prompt_cache_mib": "prompt_cache_mib",
+}
 
 
 def _load_settings(sub_config: dict) -> dict:
@@ -1611,6 +1628,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        generation_progress: bool = False,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -1663,6 +1681,8 @@ class InferenceOrchestrator:
             cmd["tool_protocol_active"] = tool_protocol_active
         if diffusion_frames and not rows:
             cmd["diffusion_frames"] = True
+        if generation_progress and not rows:
+            cmd["generation_progress"] = True
         if prompt_ids is not None:
             cmd["prompt_ids"] = list(prompt_ids)
         if penalty_window is not None:
@@ -1686,8 +1706,10 @@ class InferenceOrchestrator:
         mark_started: bool = True,
         rows: Optional[int] = None,
         frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[Any, None, None]:
-        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts."""
+        """Yield tokens until gen_done/gen_error; with ``frames``, also diffusion_frame event dicts.
+        ``perf_callback`` receives the worker's live progress samples, which are never yielded."""
         # Latch this stream's subprocess/queue: if a wedged worker is torn down and a later load spawns a fresh one,
         # bail rather than re-block on the new queue under _gen_lock (deadlock).
         initial_proc = self._proc
@@ -1782,6 +1804,12 @@ class InferenceOrchestrator:
                     yield {
                         key: value for key, value in resp.items() if key not in ("request_id", "ts")
                     }
+            elif rtype == "generation_progress":
+                if perf_callback is not None and rows is None and not stop_sent:
+                    try:
+                        perf_callback(resp.get("sample") or {})
+                    except Exception:
+                        logger.debug("Ignoring a live progress callback failure", exc_info = True)
             elif rtype == "gen_done":
                 if stats_holder is not None and rows is None:
                     stats_holder["stats"] = resp.get("stats")
@@ -1942,6 +1970,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -1998,6 +2027,7 @@ class InferenceOrchestrator:
             rows = rows,
             videos_b64 = videos,
             diffusion_frames = diffusion_frames,
+            generation_progress = perf_callback is not None,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
             grammar = grammar,
@@ -2075,6 +2105,7 @@ class InferenceOrchestrator:
                     mark_started = False,
                     rows = len(rows) if rows else None,
                     frames = diffusion_frames,
+                    perf_callback = perf_callback,
                 )
         finally:
             # Covers streams that end without a gen_done (never sent, cancel, disconnect, dead worker).
@@ -2224,6 +2255,7 @@ class InferenceOrchestrator:
 
     # Bumped at publish, not load start, so a same-model reload mid-install is detected.
     load_generation: int = 0
+    _image_token_counts: tuple = (None, None)
     # Cleared at each publish; only an explicit UI load sets it, pinning the model against idle unload.
     _loaded_by_user_action: bool = False
 
@@ -2252,6 +2284,12 @@ class InferenceOrchestrator:
         spec_draft_model: Optional[str] = None,
         spec_drafters_allowed: Optional[list] = None,
         chat_template_override: Optional[str] = None,
+        disable_vision: bool = False,
+        reasoning_budget: int = -1,
+        reasoning_budget_message: str = "",
+        mlx_prefill_step: Optional[int] = None,
+        mlx_prefill_batch: Optional[int] = None,
+        mlx_prompt_cache_mib: Optional[int] = None,
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
@@ -2333,6 +2371,12 @@ class InferenceOrchestrator:
                 "spec_draft_model": spec_draft_model,
                 "spec_drafters_allowed": spec_drafters_allowed,
                 "chat_template_override": chat_template_override,
+                "disable_vision": bool(disable_vision),
+                "reasoning_budget": reasoning_budget,
+                "reasoning_budget_message": reasoning_budget_message,
+                "mlx_prefill_step": mlx_prefill_step,
+                "mlx_prefill_batch": mlx_prefill_batch,
+                "mlx_prompt_cache_mib": mlx_prompt_cache_mib,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }
@@ -2347,8 +2391,7 @@ class InferenceOrchestrator:
                 if audio_load_runs_on_cpu(
                     getattr(config, "audio_type", None), audio_device, config.audio_cpp
                 ):
-                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
-                    # is chosen and the worker hides them.
+                    # CPU-only runtimes run Auto on the CPU too; set cpu so no card is chosen.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
@@ -2385,9 +2428,7 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            if self._narrow_context_in_place(
-                sub_config, model_name, parallel_slots, load_cancel_event
-            ):
+            if self._retune_in_place(sub_config, model_name, parallel_slots, load_cancel_event):
                 self.loading_models.discard(model_name)
                 if on_prior_worker_released is not None:
                     on_prior_worker_released()
@@ -2573,6 +2614,12 @@ class InferenceOrchestrator:
                         )
                         self._worker_load_settings = (self._proc, _load_settings(sub_config))
                         self.models[self.active_model_name]["parallel_slots"] = parallel_slots
+                        # Who may share an adapter must also be allowed its base, which is what answers.
+                        self.models[self.active_model_name]["base_model"] = (
+                            getattr(config, "base_model", None)
+                            if getattr(config, "is_lora", False)
+                            else None
+                        )
                         self.models[self.active_model_name]["can_batch"] = model_info.get(
                             "can_batch"
                         )
@@ -2640,25 +2687,33 @@ class InferenceOrchestrator:
         finally:
             self._release_load_downloads()
 
-    def _narrow_context_in_place(
+    def _retune_in_place(
         self,
         sub_config: dict,
         model_name: str,
         parallel_slots,
         cancel_event = None,
     ) -> bool:
-        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        """Whether the idle MLX worker holding this load took the change in place: a smaller
+        context and the settings in _RETUNABLE, everything else as it loaded."""
         proc = self._proc
         entry = self.models.get(model_name)
-        held = getattr(self, "_worker_load_settings", None)
+        held_proc, held = getattr(self, "_worker_load_settings", None) or (None, None)
+        wanted = _load_settings(sub_config)
+        fixed = lambda settings: {k: v for k, v in settings.items() if k not in _RETUNABLE}
+        pinned = sub_config["max_seq_length"] or 0
+        narrows = 0 < pinned < ((entry or {}).get("context_length") or 0)
+        retunes = any(wanted.get(key) != (held or {}).get(key) for key in _RETUNABLE)
         if (
             sub_config["device_backend"] != "mlx"
             or sub_config["mlx_distributed"]
             or entry is None
             or self.active_model_name != model_name
             or entry.get("parallel_slots") != parallel_slots
-            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
-            or held != (proc, _load_settings(sub_config))
+            or not (narrows or (retunes and pinned == (entry.get("requested_context_length") or 0)))
+            or held_proc is not proc
+            or held is None
+            or fixed(held) != fixed(wanted)
             or not proc.is_alive()
             or self._replies_in_flight()
         ):
@@ -2666,7 +2721,7 @@ class InferenceOrchestrator:
         with self._dispatcher_lifecycle_lock:
             if self._worker_reserved_for is not None:
                 return False
-            self._worker_reserved_for = "the context is being narrowed"
+            self._worker_reserved_for = "the settings are being applied in place"
         acquired = False
         try:
             # A running dispatcher would drop the reply.
@@ -2680,9 +2735,13 @@ class InferenceOrchestrator:
                     return False
             with self._send_order_lock:
                 self._send_cmd(
-                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                    {
+                        "type": "retune",
+                        "max_seq_length": pinned if narrows else None,
+                        **{arg: wanted.get(key) for key, arg in _RETUNABLE.items()},
+                    }
                 )
-                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+                fields = self._wait_response("retuned", timeout = 60.0).get("fields")
             if not fields:
                 return False
             from utils.process_lifetime import is_process_shutting_down
@@ -2696,14 +2755,13 @@ class InferenceOrchestrator:
                 ):
                     return False
                 entry.update(fields)
+                self._worker_load_settings = (proc, wanted)
                 self.load_generation += 1
                 self._loaded_by_user_action = False
-            logger.info(
-                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
-            )
+            logger.info("Model '%s' took %s in place", model_name, sorted(fields))
             return True
         except Exception as exc:
-            logger.warning("Could not narrow the context in place: %s", exc)
+            logger.warning("Could not apply the settings in place: %s", exc)
             return False
         finally:
             if acquired:
@@ -3099,6 +3157,62 @@ class InferenceOrchestrator:
             raise RuntimeError(error)
         return int(resp["input_tokens"]), resp.get("model")
 
+    @property
+    def context_length(self) -> Optional[int]:
+        return (self.models.get(self.active_model_name) or {}).get("context_length")
+
+    def image_tokens(
+        self,
+        width: int,
+        height: int,
+        timeout: float = 30.0,
+    ) -> Optional[int]:
+        """Prompt tokens a computer-use screenshot of this size costs the loaded model, cached per
+        load; None while busy or when the worker cannot count it."""
+        if getattr(self, "_managed_engine", None) is not None or self.active_model_name is None:
+            return None
+        generation, counts = self._image_token_counts
+        if generation != self.load_generation:
+            counts = {}
+            self._image_token_counts = (self.load_generation, counts)
+        if (width, height) in counts:
+            return counts[(width, height)]
+        if not self._gen_lock.acquire(blocking = False):
+            return None
+        try:
+            with contextlib.ExitStack() as held:
+                # Reserved before the idle check, so a dispatched chat cannot slip in ahead of the count.
+                try:
+                    held.enter_context(self._reserve_worker("a screenshot is being sized"))
+                except RuntimeError:
+                    return None
+                with self._mailbox_lock:
+                    if self._mailboxes:
+                        return None
+                request_id = str(uuid.uuid4())
+                read_one, _drain, release_mailbox = self._direct_reader(request_id)
+                try:
+                    self._send_cmd(
+                        {
+                            "type": "image_tokens",
+                            "request_id": request_id,
+                            "width": width,
+                            "height": height,
+                        }
+                    )
+                    resp = self._await_reply(
+                        read_one, request_id, "image_tokens_response", "image tokens", timeout
+                    )
+                finally:
+                    release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None or resp.get("error"):
+            return None
+        tokens = resp.get("tokens")
+        counts[(width, height)] = tokens if type(tokens) is int else None
+        return counts[(width, height)]
+
     def compact_chat_context(
         self,
         messages: list,
@@ -3125,12 +3239,14 @@ class InferenceOrchestrator:
         force_reset: bool = False,
         keeps_boundary: bool = False,
         images: Optional[list] = None,
+        on_compacting: Optional[Callable[[], None]] = None,
     ) -> dict:
         """Fit one MLX or managed-engine prompt into the served window under the policy GGUF uses.
 
         A ``tool_loop`` turn carrying tools may reset the epoch; a plain turn only when a later
         one can search (``recall_reachable``). ``request_branch`` is the client's transcript and
         ``live_branch`` that plus the loop's replies and tool results; both default to the prompt.
+        ``on_compacting`` is called once if the fit starts dropping turns, as on GGUF.
         Never raises: a failed fit returns the request unchanged.
         """
         unchanged = {
@@ -3278,7 +3394,10 @@ class InferenceOrchestrator:
                 **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
             )
             fitted, truncation = _fit_with_instruction_pins(
-                conversation, context_length = context_length, **fit_kwargs
+                conversation,
+                context_length = context_length,
+                on_compacting = on_compacting,
+                **fit_kwargs,
             )
             # The bound overprices, so its refusal is served as a rescue: the irreducible suffix, judged by the engine.
             if (
@@ -3565,6 +3684,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
     ) -> Generator[str, None, None]:
         """stats_holder is per request so concurrent streams never read each other stats; presence_penalty 0 disables it."""
         yield from self._generate_inner(
@@ -3597,6 +3717,7 @@ class InferenceOrchestrator:
             reasoning_is_extracted = reasoning_is_extracted,
             videos = videos,
             diffusion_frames = diffusion_frames,
+            perf_callback = perf_callback,
         )
 
     def generate_chat_batch(
@@ -3709,10 +3830,13 @@ class InferenceOrchestrator:
         compact_context: bool = False,
         tool_choice = None,
         disable_parallel_tool_use: bool = False,
+        mcp_match_exchange: Optional[dict] = None,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         **_unused,
     ):
         """Runs the safetensors tool loop in the parent, calling the worker per turn; events match
         GGUF's."""
+        from core.inference.llama_cpp import _compaction_reporter
         from core.inference.safetensors_agentic import run_safetensors_tool_loop
         from core.inference.tools import execute_tool
 
@@ -3763,6 +3887,7 @@ class InferenceOrchestrator:
                 frequency_penalty = frequency_penalty,
                 logit_bias = logit_bias,
                 stop = stop,
+                perf_callback = perf_callback,
             )
             if use_adapter is not None:
                 stream = self.generate_with_adapter_control(
@@ -3801,6 +3926,7 @@ class InferenceOrchestrator:
             mapped_chat_template,
             markup_for_tokenizer,
             renderable_tool_catalog,
+            replays_reasoning_content,
         )
 
         _model_info = self.models.get(self.active_model_name) or {}
@@ -3852,6 +3978,7 @@ class InferenceOrchestrator:
                 live_branch = live_branch,
                 keeps_boundary = _loop_cut,
                 images = loop_images,
+                on_compacting = _compaction_reporter(perf_callback),
             )
             _loop_cut = _loop_cut or any(
                 event.get("dropped_messages") for event in result.get("events") or ()
@@ -3867,6 +3994,9 @@ class InferenceOrchestrator:
 
         yield from run_safetensors_tool_loop(
             markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            split_reasoning_content = replays_reasoning_content(
+                _model_info.get("tokenizer"), _model_info, tools, _mapped_tpl
+            ),
             renderable_tools = renderable_tool_catalog(
                 tools,
                 _model_info.get("tokenizer"),
@@ -3905,6 +4035,7 @@ class InferenceOrchestrator:
             context_fitter = _fit_iteration,
             tool_choice = tool_choice,
             disable_parallel_tool_use = disable_parallel_tool_use,
+            mcp_match_exchange = mcp_match_exchange,
         )
 
     def generate_with_adapter_control(
@@ -3969,6 +4100,7 @@ class InferenceOrchestrator:
         response_format: Optional[dict] = None,
         reasoning_is_extracted: bool = False,
         diffusion_frames: bool = False,
+        perf_callback: Optional[Callable[[dict], None]] = None,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
         grammar: Optional[str] = None,
@@ -3980,7 +4112,14 @@ class InferenceOrchestrator:
         managed = getattr(self, "_managed_engine", None)
         if managed is not None:
             kwargs = dict(locals())
-            for key in ("self", "managed", "kwargs", "diffusion_frames", "n_probs"):
+            for key in (
+                "self",
+                "managed",
+                "kwargs",
+                "diffusion_frames",
+                "perf_callback",
+                "n_probs",
+            ):
                 kwargs.pop(key, None)
             from .engine_transport import EngineHTTPError
 
@@ -4038,6 +4177,7 @@ class InferenceOrchestrator:
                 response_format = response_format,
                 reasoning_is_extracted = reasoning_is_extracted,
                 diffusion_frames = diffusion_frames,
+                perf_callback = perf_callback,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
@@ -4084,6 +4224,7 @@ class InferenceOrchestrator:
                 rows = rows,
                 videos_b64 = videos,
                 diffusion_frames = diffusion_frames,
+                generation_progress = perf_callback is not None,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
                 grammar = grammar,
@@ -4109,6 +4250,7 @@ class InferenceOrchestrator:
                     stats_holder = stats_holder,
                     rows = len(rows) if rows else None,
                     frames = diffusion_frames,
+                    perf_callback = perf_callback,
                 )
             finally:
                 self._release_worker(cancel_event)
@@ -4222,7 +4364,7 @@ class InferenceOrchestrator:
         audio_options: Optional[dict] = None,
         cancel_event = None,
     ) -> list[dict]:
-        """Split a prepared 44.1 kHz WAV into stems under ``output_dir``; the full token budget
+        """Split a prepared WAV into stems under ``output_dir`` (or filter it into one file); the full token budget
         gives the watchdog the same hour the runtime request has."""
         outputs, _sample_rate = self.generate_audio_response(
             text = "",
@@ -4636,8 +4778,7 @@ class InferenceOrchestrator:
         """Resize image preserving aspect ratio (runs locally, no ML imports)."""
         if img is None:
             return None
-        entry = self.models.get(self.active_model_name) or {}
-        max_size = max(max_size, entry.get("max_image_side") or 0)
+        max_size = self.image_max_side(max_size)
         if img.size[0] > max_size or img.size[1] > max_size:
             from PIL import Image
 
@@ -4646,9 +4787,18 @@ class InferenceOrchestrator:
             return img.resize(new_size, Image.Resampling.LANCZOS)
         return img
 
+    def image_max_side(self, max_size: int = 800) -> int:
+        """The longest side resize_image leaves a picture at for the active model."""
+        entry = self.models.get(self.active_model_name) or {}
+        return max(max_size, entry.get("max_image_side") or 0)
+
     @staticmethod
     def _pil_to_base64(img) -> str:
         """Convert a PIL Image to base64 string for IPC."""
+        # A picture the route's history memo handed out carries the PNG it already encoded.
+        stamped = getattr(img, PNG_B64_STAMP, None)
+        if stamped is not None and stamped[0] == (img.mode, img.size):
+            return stamped[1]
         buf = BytesIO()
         img.save(buf, format = "PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")

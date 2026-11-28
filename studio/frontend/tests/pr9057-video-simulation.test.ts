@@ -296,10 +296,46 @@ test("a thread with no video and no user turn returns nothing rather than throwi
 
 const recountSource = readSrc("features/chat/utils/refresh-context-usage.ts");
 
+test("recounts decline historical audio only when the selected model replays it", () => {
+  const state = {
+    params: { checkpoint: "model.gguf" },
+    loadedIsGguf: true,
+    models: [{ id: "model.gguf", hasAudioInput: true }],
+  };
+  const audioGuard = [
+    "const modelVisibleMessage = (message) => message;",
+    "const useChatRuntimeStore = { getState: () => state };",
+    "const isServedByLlamaCpp = ({ loadedIsGguf }) => loadedIsGguf;",
+    "const isAbandonedAssistantTurn = (message) => message.id === 'abandoned';",
+    "const isAnthropicRefusalMessage = () => false;",
+    ...[
+      "pruneOutboundHistory",
+      "extractAudioPartBase64",
+      "userAudioClips",
+      "latestUserAudioClips",
+      "previousAudioTurn",
+      "findLatestUserAudioBase64",
+      "hasUncountableChatAudio",
+    ].map((name) => lift(name, `function ${name}(`)),
+    "return hasUncountableChatAudio;",
+  ].join("\n");
+  const source = ts.transpileModule(audioGuard, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const uncountable = new Function("state", source)(state);
+  const audio = { id: "recording", role: "user", content: [{ type: "audio", audio: "UklGRg==" }] };
+  const followUp = { id: "follow-up", role: "user", content: [{ type: "text", text: "What was said?" }] };
+  assert.equal(uncountable([audio, followUp]), true);
+  assert.equal(uncountable([audio, { id: "abandoned", role: "assistant" }, followUp]), false);
+  state.models[0].hasAudioInput = false;
+  assert.equal(uncountable([audio, followUp]), false);
+  assert.equal(uncountable([audio]), true);
+});
+
 test("the recount declines a video turn, as it already declines image and audio", () => {
   // toOpenAIMessages has no video branch and count_tokens 503s on video, so the recount bails.
   assert.ok(recountSource.includes("messagesContainImage(runMessages)"));
-  assert.ok(recountSource.includes("findLatestUserAudioBase64(runMessages)"));
+  assert.ok(recountSource.includes("hasUncountableChatAudio(runMessages)"));
   assert.ok(
     recountSource.includes("findLatestUserVideoBase64(runMessages)"),
     "refresh-context-usage.ts must decline a turn carrying a video",

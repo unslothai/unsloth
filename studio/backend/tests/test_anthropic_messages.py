@@ -193,6 +193,19 @@ def test_anthropic_emitter_reasoning_only_becomes_thinking_block():
     assert '"signature": ""' in thinking_start
 
 
+def test_anthropic_emitter_new_pass_status_reopens_thinking():
+    # The final-answer retry (#18802) starts a fresh pass without a tool_end.
+    emitter = AnthropicStreamEmitter()
+    events = emitter.start("msg_1", "m")
+    events += emitter.feed({"type": "content", "text": "<think>First.</think>"})
+    events += emitter.feed({"type": "status", "text": "", "new_pass": True})
+    events += emitter.feed({"type": "content", "text": "<think>Second.</think>Answer."})
+    events += emitter.finish()
+
+    assert _emitter_client_thinking(events) == "First.Second."
+    assert _emitter_client_text(events) == "Answer."
+
+
 def test_anthropic_emitter_splits_think_from_answer():
     emitter = AnthropicStreamEmitter()
     events = emitter.start("msg_1", "m")
@@ -249,6 +262,17 @@ def test_think_parsing_expected_gates_on_capability_and_request():
     assert (
         _think_parsing_expected(_EffortBackend(), _basic_payload(reasoning_effort = "none")) is False
     )
+
+    # Inkling's thought still arrives at effort none.
+    from routes.inference import _responses_should_parse_think_markers
+
+    inkling = _EffortBackend()
+    inkling.is_loaded = True
+    inkling._chat_template = "<|message_model|><|content_thinking|>{{ r }}<|end_message|>"
+    off = _basic_payload(reasoning_effort = "none")
+    assert _think_parsing_expected(inkling, off) is True
+    # Responses re-reads text the chat route already split, so it keeps the effort rule.
+    assert _responses_should_parse_think_markers(off, inkling) is False
 
     # _coerce_reasoning_effort rewrites 'none' to 0, so 0 reads as off.
     class _NumericEffortBackend(_Backend):
@@ -1297,6 +1321,51 @@ class TestAnthropicMessagesToOpenAI:
         ]
         result = anthropic_messages_to_openai(msgs)
         assert result[0]["content"] == "Line 1\nLine 2"
+
+    def test_claude_tool_search_result_exposes_the_registered_client_tool(self):
+        tool_name = "mcp__scratch__lookup_mineral_code"
+        schema = {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        }
+        payload = AnthropicMessagesRequest(
+            model = "local",
+            tools = [
+                {"name": "ToolSearch", "input_schema": {"type": "object"}},
+                {"name": tool_name, "input_schema": schema, "defer_loading": True},
+            ],
+            messages = [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_search",
+                            "name": "ToolSearch",
+                            "input": {},
+                        },
+                    ],
+                },
+                _tool_result_turn(
+                    tool_use_id = "toolu_search",
+                    content = [
+                        {"type": "tool_reference", "tool_name": tool_name},
+                        {"type": "tool_reference", "tool_name": "unknown"},
+                        {"type": "text", "text": "Ready."},
+                    ],
+                ),
+            ],
+        )
+        from routes.inference import _anthropic_chat_fields
+
+        fields = _anthropic_chat_fields(payload, reads_images = False)
+        result = fields["messages"][-1]
+        assert result["tool_call_id"] == "toolu_search"
+        assert result["content"] == (
+            f"Tool loaded: {tool_name}. Its schema is available in the tools list.\nReady."
+        )
+        assert fields["tools"][-1]["function"]["parameters"] == schema
 
     @pytest.mark.parametrize(
         "content, expected",
@@ -6163,6 +6232,44 @@ class TestReasoningProvenanceIsBoundToItsSynthesisTurn:
         assert self._reduced(monkeypatch, streams) == expected
         assert self._norm(self._streamed(monkeypatch, streams)) == self._norm(expected)
 
+    def test_call_only_final_answer_retry_keeps_both_traces(self, monkeypatch):
+        """#18802: the final pass answers with only a call, so it is re-asked without tools; that
+        retry is its own turn and its trace must not land in the answer text."""
+        call = "<|tool_call_start|>[get_weather(city='LA')]<|tool_call_end|>"
+        streams = [
+            [self._tool_call_sse("call_1", "SF"), "data: [DONE]\n"],
+            [
+                self._sse({"reasoning_content": "check LA too"}),
+                self._sse({"content": call}),
+                "data: [DONE]\n",
+            ],
+            [
+                self._sse({"reasoning_content": "answer now"}),
+                self._sse({"content": "Sunny."}),
+                "data: [DONE]\n",
+            ],
+        ]
+        monkeypatch.setattr(
+            self,
+            "_generator",
+            lambda mp, st, prov: self._backend(mp, st).generate_chat_completion_with_tools(
+                messages = [{"role": "user", "content": "weather?"}],
+                tools = self.TOOLS,
+                max_tool_iterations = 1,
+                reasoning_provenance = prov,
+            ),
+        )
+        expected = [
+            ("tool_use", "get_weather"),
+            ("thinking", "check LA too"),
+            ("thinking", "answer now"),
+            ("text", "Sunny."),
+        ]
+        assert self._reduced(monkeypatch, [list(x) for x in streams]) == expected
+        assert self._norm(self._streamed(monkeypatch, [list(x) for x in streams])) == self._norm(
+            expected
+        )
+
 
 class TestALiteralTagAfterBlankSpaceIsNotDuplicated:
     """A blank lead before a literal think tag is emitted once, not again by the literal-text fallback."""
@@ -6979,9 +7086,14 @@ class TestInProcessCountTokens:
     @pytest.mark.parametrize(
         "fields, is_mlx, status, detail",
         [
-            ({"enable_tools": True}, False, 503, "No GGUF model loaded"),
+            (
+                {"enable_tools": True},
+                False,
+                503,
+                "Token counting is not available on the transformers backend.",
+            ),
         ],
-        ids = ["not_mlx"],
+        ids = ["transformers_resident"],
     )
     def test_what_it_cannot_price_is_refused(self, monkeypatch, fields, is_mlx, status, detail):
         import routes.inference as inf
@@ -6990,7 +7102,8 @@ class TestInProcessCountTokens:
         with pytest.raises(HTTPException) as exc:
             self._count(monkeypatch, inf.anthropic_count_tokens, payload, is_mlx = is_mlx)
         assert exc.value.status_code == status
-        assert detail in json.dumps(exc.value.detail)
+        assert exc.value.detail == detail
+        assert not exc.value.headers, "no not_loaded problem code for a loaded model"
 
 
 _IP_CHUNKS = [{"delta": {"content": "hi"}}, {"delta": {}, "finish_reason": "stop"}]
@@ -7230,3 +7343,20 @@ class TestInProcessMessages:
             assert body["usage"]["input_tokens"] == 9 and body["stop_reason"] == "end_turn"
         tool_blocks = ["server_tool_use", "web_search_tool_result"]
         assert kinds == ["thinking", "text", *tool_blocks, "thinking", "text"]
+
+
+def test_server_tool_end_then_blank_status_still_ends_the_turn():
+    from routes.inference import _AnthropicToolEventRules
+
+    emitter = AnthropicStreamEmitter()
+    lines = list(emitter.start("msg_1", "m"))
+    rules = _AnthropicToolEventRules(emitter, None, False, None)
+    for event in (
+        {"type": "tool_start", "tool_name": "web_search", "tool_call_id": "c1", "arguments": {}},
+        {"type": "tool_end", "tool_name": "web_search", "tool_call_id": "c1", "result": "r"},
+        {"type": "status", "text": ""},
+        {"type": "metadata", "usage": {}, "finish_reason": "stop"},
+    ):
+        lines.extend(rules.feed(event))
+    lines.extend(rules.finish())
+    assert '"stop_reason": "end_turn"' in "".join(lines)

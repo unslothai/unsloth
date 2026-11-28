@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The ASGI gate in front of the Unsloth Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, before anything about the caller is read. Once on, a browser page from a foreign Origin is refused, and only a valid Unsloth Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
+"""The ASGI gate in front of the Unsloth Studio MCP app. ``/mcp`` is always mounted, so the gate is what keeps it hidden: while the owner's switch is off every request gets the same 404 as an unknown path, except that a valid full-access key is told why. Once on, a browser page from a foreign Origin is refused, and only a valid Unsloth Studio API key gets through; keyless access, UI sessions and workflow keys never do, whatever the keyless scope."""
 
 from __future__ import annotations
 
@@ -31,6 +31,11 @@ WORKFLOW_KEY = "Workflow keys cannot use Unsloth Studio MCP"
 INFERENCE_ONLY_KEY = "Inference only API keys cannot use Unsloth Studio MCP; use a full access key"
 RETIRED_TOKEN = (
     "The MCP static token is no longer supported; use an Unsloth Studio API key (sk-unsloth-…)"
+)
+# Sent only to a valid full-access key while the switch is off; everyone else gets the bare 404.
+OFF_HINT = (
+    "Unsloth Studio MCP is off. The owner turns it on in Settings > Agents > Allow agent connections, "
+    "or starts Unsloth Studio with UNSLOTH_STUDIO_ENABLE_MCP=1."
 )
 # The mcp SDK refuses bodies over 4 MiB from 1.29 on, as a bare 413 before any tool runs. Holding
 # every version to it here keeps the limit the same everywhere and says what to send instead.
@@ -124,6 +129,44 @@ def _is_legacy_token(token: str) -> bool:
     return hmac.compare_digest(token.encode("utf-8"), legacy.encode("utf-8"))
 
 
+def _origin_refused(scope: dict, headers: list) -> bool:
+    origins = [value for name, value in headers if name.lower() == b"origin"]
+    if not origins:
+        return False
+    from utils.origin_policy import mcp_origin_allowed
+
+    outer = URL(scope = scope)
+    return len(origins) > 1 or not mcp_origin_allowed(
+        origins[0].decode("latin-1"),
+        request_scheme = outer.scheme,
+        request_netloc = outer.netloc,
+        app_state = getattr(scope.get("app"), "state", None),
+    )
+
+
+async def _may_see_off_hint(scope: dict) -> bool:
+    """Only one valid full-access key, from no Origin or an allowed one, reads OFF_HINT; anything else, or any error, gets the bare 404."""
+    try:
+        headers = scope.get("headers") or []
+        if _origin_refused(scope, headers):
+            return False
+        authorization = [value for name, value in headers if name.lower() == b"authorization"]
+        if len(authorization) != 1:
+            return False
+        from auth.storage import API_KEY_ACCESS_FULL, API_KEY_PREFIX
+        from utils.keyless_api_access import APPROVED_DUMMY_BEARERS
+
+        scheme, token = get_authorization_scheme_param(authorization[0].decode("latin-1"))
+        if scheme.lower() != "bearer" or token in APPROVED_DUMMY_BEARERS or _is_legacy_token(token):
+            return False
+        if not token.startswith(API_KEY_PREFIX):
+            return False
+        record, _reason = await run_in_threadpool(_validate_key, token)
+    except Exception:
+        return False
+    return record is not None and record.get("key_access") == API_KEY_ACCESS_FULL
+
+
 class StudioMcpGate:
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -143,22 +186,22 @@ class StudioMcpGate:
             return
 
         if not await run_in_threadpool(is_mcp_enabled):
-            await send_json(send, 404, {"detail": "Not Found"})
+            if await _may_see_off_hint(scope):
+                body = {
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": OFF_HINT},
+                    "detail": OFF_HINT,
+                }
+                await send_json(send, 404, body)
+            else:
+                await send_json(send, 404, {"detail": "Not Found"})
             return
 
         headers = scope.get("headers") or []
-        origins = [value for name, value in headers if name.lower() == b"origin"]
-        if origins:
-            from utils.origin_policy import mcp_origin_allowed
-            outer = URL(scope = scope)
-            if len(origins) > 1 or not mcp_origin_allowed(
-                origins[0].decode("latin-1"),
-                request_scheme = outer.scheme,
-                request_netloc = outer.netloc,
-                app_state = getattr(scope.get("app"), "state", None),
-            ):
-                await send_json(send, 403, {"detail": "Origin not allowed for Unsloth Studio MCP"})
-                return
+        if _origin_refused(scope, headers):
+            await send_json(send, 403, {"detail": "Origin not allowed for Unsloth Studio MCP"})
+            return
 
         authorization = [value for name, value in headers if name.lower() == b"authorization"]
         if len(authorization) > 1:

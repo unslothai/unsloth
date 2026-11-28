@@ -39,8 +39,7 @@ def _two_cards(monkeypatch, mig):
     monkeypatch.setattr(hw, "_nvidia_mig_gpu_indices_or_none", lambda: mig)
 
 
-# G2-1: media auto placement ranks a MIG card by its whole-card row and returns a nonzero
-# ordinal that CUDA does not map to that card (pre-R570: does not exist at all).
+# G2-1: MIG cards rank by whole-card row, a nonzero ordinal CUDA does not map (pre-R570: none).
 @pytest.mark.parametrize(
     "mig", [frozenset({1}), frozenset({0}), None], ids = ["card1_mig", "card0_mig", "mig_unknown"]
 )

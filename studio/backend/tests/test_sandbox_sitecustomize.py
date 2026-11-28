@@ -587,3 +587,183 @@ def test_a_raw_connect_to_a_name_resolving_to_a_metadata_host_is_refused(monkeyp
         mod._metadata_connect_hook("socket.connect", (None, ("alias.test", 80)))
     assert mod._metadata_connect_hook("socket.connect", (None, ("plain.test", 80))) is None
     assert mod._metadata_connect_hook("socket.connect", (None, ("127.0.0.1", 80))) is None
+
+
+def _child(
+    code,
+    cwd,
+    *,
+    shim = True,
+    flags = (),
+):
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    if shim:
+        env["PYTHONPATH"] = str(_SHIM.parent)
+    proc = subprocess.run(
+        [sys.executable, *flags, "-c", code],
+        cwd = cwd,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.strip()
+
+
+def test_the_shim_imports_neither_json_nor_pathlib_at_startup(tmp_path):
+    """They pull re, enum, functools and more: most of every sandboxed Python launch. Loaded on first use instead.
+    Run with -S and the shim imported directly, so no .pth file (an editable install's finder) preloads them."""
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "before = set(sys.modules)\n"
+        "import sitecustomize\n"
+        "print(' '.join(sorted(set(sys.modules) - before)))\n"
+    )
+    added = set(_child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert "sitecustomize" in added
+    assert not added & {"json", "pathlib", "re", "enum"}, sorted(added)
+
+
+def test_the_shim_resolves_the_stdlib_paths_once_at_startup(tmp_path):
+    """realpath of every sys.path entry is slow on Windows (more inside the container): one pass per launch."""
+    code = (
+        "import os, sys\n"
+        f"sys.path.insert(0, {str(_SHIM.parent)!r})\n"
+        "real = os.path.realpath\n"
+        "calls = []\n"
+        "os.path.realpath = lambda *a, **k: calls.append(a) or real(*a, **k)\n"
+        "entries = len(sys.path)\n"
+        "import sitecustomize\n"
+        "os.path.realpath = real\n"
+        "print(len(calls), entries)\n"
+    )
+    calls, entries = map(int, _child(code, tmp_path, shim = False, flags = ("-S",)).split())
+    assert calls <= entries + 1, (calls, entries)
+
+
+@pytest.mark.skipif(
+    os.path.exists("/mnt/data"),
+    reason = "the host has a real /mnt/data, which the shim never shadows",
+)
+@pytest.mark.parametrize(
+    "spelling", ["import pathlib\nP = pathlib.Path", "from pathlib import Path as P"]
+)
+def test_path_mkdir_is_remapped_when_pathlib_is_imported_after_startup(tmp_path, spelling):
+    code = (
+        f"{spelling}\n"
+        "import os, sys\n"
+        "P('/mnt/data/made/inner').mkdir(parents = True, exist_ok = True)\n"
+        "print(os.path.isdir('made/inner'), 'pathlib._local' in sys.modules or True)\n"
+    )
+    assert _child(code, tmp_path).split()[0] == "True"
+    assert (tmp_path / "made" / "inner").is_dir()
+
+
+@pytest.mark.parametrize("name", ["pathlib", "json"])
+def test_a_find_spec_probe_does_not_use_up_the_lazy_stdlib_import(tmp_path, name):
+    """importlib.util.find_spec only probes: the import after it must still be answered (and pathlib patched)."""
+    code = (
+        "import importlib.util, sys, sysconfig, os\n"
+        f"assert importlib.util.find_spec({name!r}) is not None\n"
+        f"import {name}\n"
+        "stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"patched = {name!r} != 'pathlib' or '_path_mkdir' in {name}.Path.mkdir.__qualname__\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib), patched)\n"
+    )
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    assert _child(code, tmp_path).split() == ["True", "True"]
+
+
+def test_modules_that_import_pathlib_get_the_patched_one(tmp_path):
+    code = "import zipfile, pathlib\nprint(pathlib.Path.mkdir.__qualname__)\n"
+    assert "_path_mkdir" in _child(code, tmp_path)
+
+
+@pytest.mark.parametrize("name", ["json", "pathlib"])
+def test_a_planted_copy_in_the_cwd_does_not_replace_the_stdlib_module(tmp_path, name):
+    (tmp_path / f"{name}.py").write_text("raise SystemExit('planted copy ran')\n")
+    code = (
+        f"import {name}, sys, sysconfig, os\n"
+        f"stdlib = os.path.realpath(sysconfig.get_paths()['stdlib'])\n"
+        f"print(os.path.realpath({name}.__file__).startswith(stdlib))\n"
+    )
+    assert _child(code, tmp_path) == "True"
+
+
+def test_the_lazy_finder_resolves_from_the_stdlib_and_hands_back_the_real_loader(tmp_path):
+    code = (
+        "import sys\n"
+        "finder = sys.meta_path[0]\n"
+        "print(type(finder).__name__)\n"
+        "import pathlib, json\n"
+        "print(type(pathlib.__loader__).__name__, type(json.__spec__.loader).__name__)\n"
+        "print(any(type(f).__name__ == '_StdlibLazyFinder' for f in sys.meta_path))\n"
+        "import helper_mod\n"
+        "print(helper_mod.VALUE)\n"
+    )
+    (tmp_path / "helper_mod.py").write_text("VALUE = 'cwd-module'\n")
+    first, loaders, still_there, helper = _child(code, tmp_path).splitlines()
+    assert first == "_StdlibLazyFinder"
+    assert "_StdlibLoader" not in loaders
+    # Never removed (importlib walks the live meta_path), and inert after: cwd modules import as usual.
+    assert still_there == "True"
+    assert helper == "cwd-module"
+
+
+def test_imports_on_other_threads_never_miss_a_module_while_the_lazy_import_runs(tmp_path):
+    """meta_path is not edited after startup, so a thread importing during the first json/pathlib import still
+    finds every finder (an insert/remove there could make importlib skip one)."""
+    for i in range(20):
+        (tmp_path / f"cwd_mod_{i}.py").write_text(f"V = {i}\n")
+    code = (
+        "import sys, threading, importlib\n"
+        "errors = []\n"
+        "go = threading.Event()\n"
+        "def worker(i):\n"
+        "    go.wait()\n"
+        "    try:\n"
+        "        assert importlib.import_module(f'cwd_mod_{i}').V == i\n"
+        "    except Exception as exc:\n"
+        "        errors.append(repr(exc))\n"
+        "threads = [threading.Thread(target = worker, args = (i,)) for i in range(20)]\n"
+        "[t.start() for t in threads]\n"
+        "go.set()\n"
+        "import pathlib, json\n"
+        "[t.join() for t in threads]\n"
+        "print(len(errors), '_path_mkdir' in pathlib.Path.mkdir.__qualname__)\n"
+    )
+    assert _child(code, tmp_path).split() == ["0", "True"]
+
+
+def test_the_sidecar_round_trips_in_a_child_without_json_preloaded(tmp_path):
+    code = (
+        "with open('/no/such/dir/healed.txt', 'w') as fh: fh.write('x')\n"
+        "import json\n"
+        "print(json.load(open('.unsloth_sandbox_remap.json')))\n"
+    )
+    out = _child(code, tmp_path)
+    assert "/no/such/dir/healed.txt" in out and "healed.txt" in out
+    assert (tmp_path / "healed.txt").read_text() == "x"
+
+
+def test_the_sidecar_is_skipped_when_a_planted_json_is_already_loaded(monkeypatch, tmp_path):
+    import sys
+    import types
+
+    mod = _load_shim()
+    monkeypatch.chdir(tmp_path)
+    planted = types.ModuleType("json")
+    planted.__file__ = str(tmp_path / "json.py")
+    planted.load = planted.dump = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("planted json used")
+    )
+    monkeypatch.setitem(sys.modules, "json", planted)
+    assert mod._stdlib_json() is None
+    assert mod._load_sidecar(str(tmp_path)) == {}
+    mod._record_sidecar(str(tmp_path), "/a/b.txt", str(tmp_path / "b.txt"))
+    assert not (tmp_path / ".unsloth_sandbox_remap.json").exists()

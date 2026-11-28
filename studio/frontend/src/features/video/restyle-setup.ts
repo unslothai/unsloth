@@ -89,7 +89,7 @@ export function restyleSetupView(
         : "downloads the model (about 35 GB; needs about 67 GB of free disk while it runs, 31 GB after)",
     );
   }
-  const message = `Set up Restyle ${parts.join(" and ")}. Tested on Linux with an NVIDIA GPU.`;
+  const message = `Set up Restyle ${parts.join(" and ")}. Tested on Linux with an NVIDIA GPU and on an Apple Silicon Mac.`;
   const error =
     setup?.phase === "error" ? (setup.error ?? "Restyle setup failed.") : null;
   return { kind: "offer", message, error };

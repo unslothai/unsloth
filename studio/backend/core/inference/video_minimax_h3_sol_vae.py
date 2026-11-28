@@ -277,9 +277,7 @@ def _build_module_classes():
         def _window_attn(
             self, q: Any, k: Any, v: Any, kgw: Any, vgw: Any, gvalid: Any, k0: int, s: int
         ) -> Any:
-            """Attention over every spatial window of one temporal window. q/k/v (n, H, W, D) start ``k0`` latents into
-            the padded window; kgw / vgw (G, D) are the global tokens of the blocks it overlaps, gvalid (G,) bool or
-            None when all are valid."""
+            """Spatial-window attention in one temporal window; kgw/vgw are its global tokens."""
             n, H, W, D = q.shape
             ws, tb, hd, dh = self.window, self.block, self.heads, self.dh
             Hp = -(-(H + s) // ws) * ws
@@ -658,8 +656,7 @@ def build_sol_decoder(
     device: Any = "cpu",
     **overrides: Any,
 ) -> Any:
-    """A SolH3Decoder from a vendor-layout state dict (tensors may be float32 on any device); ``overrides`` replace
-    module sizes (tests shrink the window)."""
+    """SolH3Decoder from a vendor state dict; overrides replace sizes (tests shrink window)."""
     import torch
 
     dtype = dtype or torch.float32
@@ -765,8 +762,7 @@ def install_h3_sol_vae(
             hf_token = hf_token, local_files_only = local_files_only
         )
         free_gb = _free_device_gb(device)
-        # resident on the card when it has room for the weights plus a long clip's decode; else parked on the host and
-        # moved on for each decode (a streamed / low-VRAM placement)
+        # On the card if weights plus a long decode fit; else parked on host, moved per decode.
         resident = free_gb is None or free_gb >= SOL_WEIGHTS_GB + _RESIDENT_MARGIN_GB + 4.0
         home = torch.device(device) if resident else torch.device("cpu")
         model = load_sol_decoder(

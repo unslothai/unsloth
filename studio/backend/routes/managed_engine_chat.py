@@ -134,7 +134,7 @@ def _message_fitter(
     tools,
     studio_loop = False,
 ):
-    """Auto-compact to the managed engine's window; the exact count refuses tools, so this estimates."""
+    """Fit the rendered tool conversation to the managed engine's context window."""
     from routes import inference as api
 
     if (
@@ -143,23 +143,38 @@ def _message_fitter(
         or not engine.context
     ):
         return None
+    limit = api._effective_max_tokens(payload)
+    capped = bool(limit) and 0 < limit < engine.context
+    # A window-sized cap would reserve half the window; prompt_budget already keeps reply room.
     fit_payload = payload.model_copy(
         update = {
             "context_window": engine.context,
-            "compaction_threshold": min(
-                api._EXTERNAL_COMPACTION_THRESHOLD_MAX,
-                int(engine.context * (1 - api._EXTERNAL_COMPACTION_HEADROOM)),
-            ),
+            "compaction_threshold": min(api._EXTERNAL_COMPACTION_THRESHOLD_MAX, engine.context),
+            "max_tokens": limit if capped else None,
+            "max_completion_tokens": None,
         }
     )
+    estimate = api._external_token_counter(fit_payload, tools)
+    continuing = api._continue_final_message(payload)
 
-    # The first fit sees the client's branch; later ones see the loop's conversation, which can end
-    # on a controller re-prompt that recall must not query for.
+    def count_tokens(messages):
+        if not _has_image(messages):
+            try:
+                return engine.count_tokens(
+                    messages,
+                    tools = tools,
+                    enable_thinking = payload.enable_thinking,
+                    reasoning_effort = payload.reasoning_effort,
+                    preserve_thinking = payload.preserve_thinking,
+                    continue_final_message = continuing,
+                )[0]
+            except (httpx.HTTPError, RuntimeError, ValueError, KeyError, TypeError):
+                pass
+        return estimate(messages)
+
+    # Recall uses the original branch, even on later tool-loop passes.
     branch: list = []
     tool_loop = studio_loop and not api._tool_calls_are_disabled(payload)
-    # An uncapped reply is sized by the engine; a cap from the estimate can push the prompt over.
-    limit = api._effective_max_tokens(payload)
-    capped = bool(limit) and limit < engine.context
 
     async def fit(messages):
         if not branch:
@@ -169,6 +184,7 @@ def _message_fitter(
             messages,
             fit_payload,
             tools = tools,
+            count_tokens = count_tokens,
             branch = branch,
             tool_loop = tool_loop,
         )
@@ -262,6 +278,9 @@ async def managed_tool_chat(
             mcp_allowed = mcp_on,
             supports_vision = bool(info.get("is_vision")),
             ui_events = ui_events,
+            encoder = await asyncio.to_thread(
+                api._loaded_model_type, backend.active_model_name, info
+            ),
         )
         if tools_on or mcp_on
         else []

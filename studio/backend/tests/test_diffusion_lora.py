@@ -172,6 +172,76 @@ def test_lora_unavailable_reason_names_the_cause():
     )
 
 
+def test_nvfp4_bakes_loras_like_int8_and_fp8_except_on_a_policy_base():
+    """The load bakes adapters before an NVFP4 quantize (diffusion._apply_loras routes nvfp4 to the baked path, the
+    Images page lists nvfp4 as a baking scheme), so the status must not say LoRAs are unavailable there."""
+    pipeline = dict(engine = "diffusers", model_kind = "pipeline", transformer_quant = "nvfp4")
+    assert dl.lora_unavailable_reason(family = "flux.2-klein", **pipeline) is None
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.2-klein", base_repo = "black-forest-labs/FLUX.2-klein-4B", **pipeline
+        )
+        is None
+    )
+    assert dl.supports_lora(family = "flux.2-klein", compiled = True, **pipeline)
+    # A per-layer policy names Linears that PEFT's wrapping renames: refused with the way out.
+    for family, base in (
+        ("z-image", "Tongyi-MAI/Z-Image-Turbo"),
+        ("flux.1", "black-forest-labs/FLUX.1-schnell"),
+        ("qwen-image-2.1", "Qwen/Qwen-Image-2.1"),
+        ("qwen-image", None),
+    ):
+        reason = dl.lora_unavailable_reason(family = family, base_repo = base, **pipeline)
+        assert reason and "NVFP4" in reason and "FP8" in reason, (family, base)
+    # The policy is per base: another base of a policy family takes the whole-model build, which bakes.
+    assert (
+        dl.lora_unavailable_reason(
+            family = "flux.1", base_repo = "black-forest-labs/FLUX.1-dev", **pipeline
+        )
+        is None
+    )
+    assert "MXFP8" in dl.lora_unavailable_reason(
+        engine = "diffusers", family = "flux.2-klein", model_kind = "pipeline", transformer_quant = "mxfp8"
+    )
+
+
+def test_generate_on_a_policy_nvfp4_base_gives_the_status_reason_not_a_reload():
+    """A reload with the adapter cannot work on a per-layer NVFP4 policy base, so generate must say what status says."""
+    import threading
+
+    from core.inference import diffusion as D
+
+    backend = D.DiffusionBackend.__new__(D.DiffusionBackend)
+
+    def state(family, base):
+        return types.SimpleNamespace(
+            pipe = types.SimpleNamespace(),
+            family = types.SimpleNamespace(name = family),
+            kind = "pipeline",
+            transformer_quant = "nvfp4",
+            base_repo = base,
+        )
+
+    policy = state("flux.1", "black-forest-labs/FLUX.1-schnell")
+    with pytest.raises(dl.LoraSelectionError) as err:
+        backend._apply_loras(policy, [("adapter", 1.0)], threading.Event())
+    assert not isinstance(err.value, dl.LoraReloadRequiredError)
+    assert str(err.value) == dl.lora_unavailable_reason(
+        engine = "diffusers",
+        family = "flux.1",
+        model_kind = "pipeline",
+        transformer_quant = "nvfp4",
+        base_repo = "black-forest-labs/FLUX.1-schnell",
+    )
+    # A whole-model NVFP4 base still asks for the reload that bakes the adapter.
+    with pytest.raises(dl.LoraReloadRequiredError):
+        backend._apply_loras(
+            state("flux.2-klein", "black-forest-labs/FLUX.2-klein-4B"),
+            [("adapter", 1.0)],
+            threading.Event(),
+        )
+
+
 def test_resolve_specs_maps_cancelled_to_diffusion_sentinel(tmp_path, monkeypatch):
     # A cancelled Hub download raises RuntimeError("Cancelled"); it maps to the sentinel so the route returns 409.
     def _boom(spec_id, weight, **kw):
@@ -403,6 +473,16 @@ def _backend():
     return DiffusionBackend()
 
 
+def _inductor_builds_cpu_kernels() -> bool:
+    """Inductor compiles CPU kernels with the host C++ compiler; a Windows runner without MSVC on PATH has none."""
+    try:
+        from torch._inductor.cpp_builder import get_cpp_compiler
+        get_cpp_compiler()
+    except Exception:  # noqa: BLE001 -- InvalidCxxCompiler, or a torch without cpp_builder
+        return False
+    return True
+
+
 def test_diffusers_apply_loads_and_sets_adapters(monkeypatch):
     import threading
 
@@ -467,7 +547,7 @@ def test_diffusers_apply_rejects_unsupported_quant():
     import threading
 
     pipe = _FakePipe()
-    with pytest.raises(ValueError, match = "Reload the model with the adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         _backend()._apply_loras(
             _fake_state(pipe, kind = "single_file", quant = "fp8"),
             [("styleA", 1.0)],
@@ -505,7 +585,7 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
     assert pipe.loaded == []  # never reloaded or re-attached
     # A file the bake does not hold still needs a reload with the new selection.
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter selection"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("styleA", 1.0), ("styleC", 1.0)], threading.Event())
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
 
@@ -558,7 +638,7 @@ def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode
     b._apply_loras(state, [("styleA", 1.0), ("styleB", 1.0)], threading.Event())
     for loras in ([("styleA", 1.0)], [("styleA", 0.5), ("styleB", 1.0)], []):
         if refused:
-            with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+            with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
                 b._apply_loras(state, loras, threading.Event())
             assert pipe._unsloth_loras == baked and pipe.active is None
         else:
@@ -802,6 +882,8 @@ def test_baked_lora_at_weight_zero_compiles_to_the_plain_load(monkeypatch):
 
     from core.inference import diffusion as diff
 
+    if not _inductor_builds_cpu_kernels():
+        pytest.skip("inductor needs a host C++ compiler to build CPU kernels")
     monkeypatch.setattr(
         dl,
         "resolve_specs",
@@ -1228,9 +1310,8 @@ def _roomy_host(monkeypatch):
 
 
 def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
-    """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
-    re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
-    and weight 0 is the base weights exactly."""
+    """Quantized single-file adapters merged at load change weight in place: no recompile, no
+    dropped graph; weight 0 is exactly the base weights."""
     import threading
 
     import torch
@@ -1362,7 +1443,7 @@ def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
 
     b, state, pipe, _net = _merged_lokr_pipe(monkeypatch)
     state.offload_policy = "group"
-    with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+    with pytest.raises(ValueError, match = "Reload the model with the LoRA selection"):
         b._apply_loras(state, [("a", 0.5)], threading.Event())
     assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
 

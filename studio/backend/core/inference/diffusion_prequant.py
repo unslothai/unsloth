@@ -7,6 +7,7 @@ files return None so the caller falls back to dense quantise"""
 from __future__ import annotations
 
 import contextvars
+import os
 import functools
 import re as _re
 import threading as _threading
@@ -19,8 +20,7 @@ from .diffusion_nvfp4_flag import nvfp4_blocked
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# v2 = rotated weights; old builds must refuse it (they would render wrong pixels).
-# v2 MUST declare a rotation and v1 must NOT.
+# v2 = rotated; old builds must refuse (wrong pixels); v2 MUST declare rotation, v1 must NOT.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 # Own tag, else an older build reads it as whole-model nvfp4. v3 MUST declare a policy, v1/v2 must NOT.
@@ -106,7 +106,6 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
-# Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
 # Globals each scheme's checkpoints name, read via pickletools; unused names are not required.
@@ -392,7 +391,6 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
-    # Studio's own pre-quant cache root only.
     try:
         from .diffusion_prequant_cache import path_in_cache
         if path_in_cache(path):
@@ -410,8 +408,7 @@ def _local_prequant_path_allowed(path: str) -> bool:
 
 
 def local_prequant_path_ready(path: str) -> bool:
-    """True only if the path is allowlisted and present, so planning never drops dense for a refused
-    file."""
+    """True only if allowlisted and present; planning never drops dense for a refused file."""
     import os
 
     if not _local_prequant_path_allowed(path):
@@ -531,8 +528,7 @@ COMFY_TWIN_LEADS = frozenset({"int8"})
 
 
 def with_comfy_twins(names: Sequence[str], *, lead: bool = True) -> list:
-    """Adds each name's ComfyUI-format twin; with lead the twin comes first, older names stay as
-    fallback."""
+    """Adds each name's ComfyUI-format twin, first when lead; older names stay as fallback."""
     names = [n for n in names if n]
     out: list = []
     for index, name in enumerate(names):
@@ -592,8 +588,7 @@ def explain_container_choice(
     readable: Any = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Log once per file why a ``.pt`` was resolved although the chain names its safetensors twin
-    (cached twin, twin not hosted yet, or safetensors unreadable here). Returns the reason. Never raises."""
+    """Logs once per file and returns why a .pt beat its safetensors twin; never raises."""
     try:
         if not repo_id or not chosen or not chosen.lower().endswith(_PICKLE_SUFFIXES):
             return None
@@ -640,9 +635,8 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
-    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
-    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors first, except a sha256-verified cached .pt/.pth precedes its uncached twin (twin
+    stays 404 fallback); unverified pickles stay behind; PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -683,7 +677,6 @@ def prefer_cached_pickle_twins(
         def _reusable(name: str) -> bool:
             if not _ok(name) or not _cached(name):
                 return False
-            # same pickle trust rule as below
             if name.lower().endswith(_PICKLE_SUFFIXES):
                 return not prefer_safetensors and _verified(name)
             return True
@@ -904,8 +897,7 @@ class PrequantSource:
 
     @property
     def candidate_filenames(self) -> tuple[str, ...]:
-        """Every name this source may resolve, best first. The single place that ordering lives, so
-        the downloader, the cache probe and the planner cannot disagree about which file wins."""
+        """Names this source may resolve, best first; shared by downloader, probe and planner."""
         return tuple(n for n in (self.filename, *self.fallback_filenames) if n)
 
 
@@ -971,22 +963,8 @@ def resolve_prequant_source(
     base_repo: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Optional[PrequantSource]:
-    """Resolve where the checkpoint for ``(fam, scheme)`` comes from.
-
-    Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
-    (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the memoised local cache lookup
-    (safetensors headers), reached only when nothing is hosted.
-
-    ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
-    host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
-    denoisers). It only ever selects a more specific filename: unset, or set to a task the family
-    declares nothing for, resolves exactly what it resolved before.
-
-    Both names are repo-ROOT names. Every hosted prequant repo, image and video alike, keeps its
-    checkpoints at the root, so there is no directory to prepend; a repo that nested them would 404
-    on the primary AND on the fallback and the load would silently fall back to dense.
-    """
+    """Path override, else hosted repo (variant per base_repo), else None to quantise dense; task
+    only selects a more specific filename; a nested name would 404 and silently go dense."""
     if nvfp4_blocked(scheme):
         return None
     override = (path_override or "").strip()
@@ -1076,13 +1054,14 @@ def resolve_prequant_source(
             names = with_comfy_twins(names, lead = scheme in COMFY_TWIN_LEADS)
         names = without_nvfp4_pickles(scheme, names)
         if names:
-            return PrequantSource(
+            hosted = PrequantSource(
                 kind = "repo",
                 location = repo_id,
                 filename = names[0],
                 fallback_filenames = tuple(names[1:]),
                 declared_filenames = declared,
             )
+            return _offline_local_build(fam, scheme, base_repo, task, hosted) or hosted
         if not (rotated and convrot_drops_plain_hosted(scheme, fam_name)):
             return None
     # Nothing hosted: try this machine's cache of an earlier build; task names the component (MoE transformer_2).
@@ -1099,6 +1078,45 @@ def resolve_prequant_source(
     if cached and not nvfp4_pickle_name(scheme, cached):
         return PrequantSource(kind = "path", location = cached, filename = None)
     return None
+
+
+# "0": an offline load whose hosted checkpoint is not on disk quantises the dense shards again, as before.
+OFFLINE_LOCAL_BUILD_ENV = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_OFFLINE"
+
+
+def _offline_local_build(
+    fam: Any, scheme: str, base_repo: Optional[str], task: Optional[str], hosted: PrequantSource
+) -> Optional[PrequantSource]:
+    """Returns this machine's cached build when offline and hosted is not on disk, else None, and
+    never raises; an uncached hosted name cannot be fetched offline, so the load would quantise
+    dense shards at runtime; the cache holds that same build from an earlier load."""
+    if (os.environ.get(OFFLINE_LOCAL_BUILD_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return None
+    try:
+        if not (_LOCAL_FILES_ONLY.get() or hub_offline()):
+            return None
+        from .diffusion_prequant_cache import CACHEABLE_SCHEMES, lookup
+
+        if scheme not in CACHEABLE_SCHEMES:
+            return None
+        if cached_checkpoint_path(hosted, online = False) is not None:
+            return None
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+        if not cached or nvfp4_pickle_name(scheme, cached):
+            return None
+        return PrequantSource(kind = "path", location = cached, filename = None)
+    except Exception:  # noqa: BLE001 - a cache problem keeps the hosted source, today's behaviour
+        return None
 
 
 def _is_variant_prequant_repo(fam: Any, repo_id: Optional[str]) -> bool:
@@ -1511,9 +1529,7 @@ def _fingerprint_threads() -> int:
 
 
 def _digest_weights(state_dict: Any, select: Any, digest_of: Any) -> tuple:
-    """({fqn: digest}, [uncovered fqns]) over the ``.weight`` entries ``select`` keeps, in state-dict order.
-
-    ``digest_of`` returns None for an uncovered weight; a raise counts as uncovered. Runs on a thread pool."""
+    """Digests selected .weight entries; a None or raised digest marks one uncovered. Uses a thread pool."""
     items = state_dict.items() if hasattr(state_dict, "items") else ()
     picked = [
         (key, tensor)
@@ -1734,6 +1750,10 @@ def _verify_packed_fingerprint(
         else:
             actual = packed_weight_fingerprint(state_dict, select = select).get("modules") or {}
     except Exception as exc:  # noqa: BLE001 -- an uncomputable fingerprint checks nothing
+        from .diffusion_native_hosted import raise_if_allocation_failure
+
+        # Out of memory is not an uncomputable fingerprint: the load cannot proceed either.
+        raise_if_allocation_failure(exc)
         _warn(logger, "fingerprint", exc)
         return True
     if not actual:
@@ -2059,31 +2079,13 @@ def usable_prequant_source(
     cache_dir: Optional[str] = None,
     min_features: Optional[int] = None,
 ) -> Optional[PrequantSource]:
-    """``resolve_prequant_source``, but a local path counts only when the loader would accept it:
-    inside the allowlist AND present on disk AND baked for THIS scheme. Otherwise resolves to None
-    so memory planning falls back to dense-fit checks up front, instead of the loader refusing the
-    path only after the resident pipeline was evicted and dense bf16 materialises under a plan that
-    never budgeted for it (evict-then-OOM). Hosted-repo sources are unaffected.
+    """``resolve_prequant_source``, but a local path counts only if the loader would accept it
+    (allowlisted, on disk, baked for THIS scheme); else None, so planning budgets dense up front
+    instead of evict-then-OOM. An unreadable scheme is unusable (``auto`` must not pick it).
 
-    The scheme check matters most under ``auto``, which picks a scheme the user never named: an int8
-    override must not read as an available fp8 pre-quant just because the file exists. A checkpoint
-    whose scheme cannot be read is treated as not usable, matching every other unknown here, since
-    the loader would reject it too.
-
-    An install that cannot restrict the load has no usable source AT ALL, hosted included: the
-    loader refuses every checkpoint there, and a plan that had already dropped the dense shards for
-    one would find that out after the eviction. That question is asked of the RESOLVED names rather
-    than of the scheme alone, because it has different answers for the two containers: a repo whose
-    primary artifact is safetensors is usable on an install that could not open a pickle at all, and
-    resolving first is what lets the source say so. Any one loadable name is enough, since the
-    resolver tries them in order and the first that exists wins.
-
-    ``local_files_only`` / ``hf_token`` / ``cache_dir`` are the load's own, handed to the hosted header
-    probe so planning asks exactly what the loader will: an offline load makes no Hub request here
-    either, and a gated repo is read with the caller's token. ``base_repo`` doubles as the base the
-    probe checks ``base_model_id`` against, as ``load_prequantized_transformer`` does. ``min_features``
-    defaults to ``DEFAULT_MIN_LINEAR_FEATURES``, the Linear filter every loader of these checkpoints
-    enforces, so a header baked under another filter is refused here rather than after its download.
+    An install that cannot restrict the load has no usable source at all; checked on the RESOLVED
+    names, since a safetensors primary is loadable where a pickle is not. Any loadable name suffices.
+    Load kwargs are passed to the header probe so planning asks exactly what the loader will.
     """
     src = resolve_prequant_source(fam, scheme, path_override = path_override, base_repo = base_repo)
     if src is None:
@@ -2252,8 +2254,7 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
 
 
 def _reports_rejected_cache_entry(fn: Any) -> Any:
-    """Report an unusable cache entry so the dense fallback build replaces it; a forced fp8 accumulate mismatch is
-    the request's choice, not a fault, and leaves the entry alone."""
+    """Flags a bad cache entry for rebuild; a forced fp8 accumulate mismatch leaves it alone."""
 
     @functools.wraps(fn)
     def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
@@ -2282,9 +2283,13 @@ def _engage_nvfp4_backend(
     logger: Any = None,
 ) -> int:
     """Moves the NVFP4 transformer to its backend; the flashinfer warning fires here, not in planning."""
-    from .diffusion_nvfp4_linear import convert_nvfp4_backend
+    from .diffusion_nvfp4_linear import _baked_activation_scales, convert_nvfp4_backend
     from .diffusion_nvfp4_ops import select_nvfp4_backend
 
+    if _baked_activation_scales(metadata) is None:
+        # Nothing to move: only baked activation scales run on flashinfer (a runtime build, as the local prequant cache
+        # holds it, has none), so skip the backend preflight the fresh build never runs.
+        return 0
     converted = convert_nvfp4_backend(
         transformer, metadata, select_nvfp4_backend(device), logger = logger
     )
@@ -2328,26 +2333,13 @@ def load_prequantized_transformer(
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
-    ``into``: an already-built DENSE transformer to load the checkpoint into instead of a fresh ``from_config``
-    skeleton (the pipeline-quant path, whose denoiser came with the pipeline). Its key set must equal the
-    checkpoint's; it stays where its weights already are, and on a refusal before assignment it is left dense.
+    ``into``: a built DENSE transformer whose key set equals the checkpoint's; left dense on refusal.
+    ``family`` picks layers for ComfyUI-format artifacts. ``placement_device`` (default ``device``)
+    is where weights land; ``device`` selects kernels. ``cache_dir`` must be the live Hub cache root.
+    ``prepare_model`` runs between ``from_config`` and ``load_state_dict``. A declared rotation is
+    always installed: a miss renders wrong pixels silently.
 
-    ``family`` (the Studio family name) is what a ComfyUI-format artifact needs to pick the layers Studio's
-    own ``scheme`` quantizes; Studio's own checkpoints record it themselves.
-
-    ``placement_device`` (default ``device``) is where the module is materialised; ``device`` selects kernels.
-
-    ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
-    lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
-    into a root Unsloth no longer reads.
-
-    ``component`` must match the checkpoint's (MoE experts share every other field); ``prepare_model``
-    runs between ``from_config`` and ``load_state_dict``, the one window to reshape the skeleton. A
-    declared activation rotation is installed unconditionally: a miss renders wrong pixels silently.
-
-    Returns the placed transformer, or None on any problem (missing / mismatched / unreadable
-    checkpoint, unsupported meta-init, or a rotation this build cannot apply exactly) so the caller
-    falls back to dense-quantise. Best-effort: never raises for an unavailable artifact.
+    Returns None on any problem so the caller quantises dense; never raises for a missing artifact.
     """
     _LAST_FAILURE.text = None
     try:
@@ -2443,8 +2435,7 @@ def load_prequantized_transformer(
                 "comfy_format": True,
             }
         else:
-            # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
-            # not run.
+            # Pickles load only under ALLOWLIST, never free-running; a mutated file must fail.
             ckpt = _read_prequant_for(
                 path,
                 placement_device or device,
@@ -2471,8 +2462,7 @@ def load_prequantized_transformer(
             _repair_legacy_checkpoint(ckpt, scheme, logger)
             _pin_kernel_preference(state_dict, logger)
 
-            # Read from the root that supplied the checkpoint; a pinned root may be gone after a
-            # cache change.
+            # Read from the supplying root; a pinned root may be gone after a cache change.
             config = (
                 None
                 if into is not None
@@ -2503,8 +2493,7 @@ def load_prequantized_transformer(
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
                 # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
                 transformer = transformer_cls.from_config(config)
-                # The retry builds a new module, so prepare_model must run again or the state dict
-                # mismatches.
+                # Retry builds a new module: re-run prepare_model or the state dict mismatches.
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
                 _prepare_outlier_buffers(transformer, state_dict)
@@ -2758,8 +2747,7 @@ def _resolve_checkpoint_path(
                 )
                 return path
             except LocalEntryNotFoundError:
-                # Before its base class: online, this means the Hub is unreachable, not that the name
-                # is absent. Offline, treat it as a 404.
+                # Before its base class: online this means an unreachable Hub; offline it is a 404.
                 if not local_files_only or last:
                     cached = (
                         None
@@ -2891,8 +2879,7 @@ def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
 
 
 def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
-    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
-    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
+    """Floor each unfloored Float8Tensor; a pickle may share kwargs, so copy them per tensor."""
     import copy
     import dataclasses
 
@@ -3131,8 +3118,7 @@ def _validate_checkpoint(
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
             )
             return False
-    # Reject quantised layers the runtime now excludes; a stale baked set would crash the first
-    # denoise.
+    # Reject quantised layers the runtime now excludes; a stale baked set crashes denoising.
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
@@ -3227,16 +3213,28 @@ def _validate_checkpoint(
     return True
 
 
+_HUB_REPO_ID = _re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+")
+
+
 def _same_base_model(a: str, b: str) -> bool:
-    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download."""
-    from .diffusion_families import canonical_base
+    """Both sides normalise via canonical_base, so a mirror id cannot force the multi-GB dense download.
+    Two Hub ids must be the same repo: ``someone/Qwen-Image-2.1`` is a fine-tune, not the official base.
+    A local path keeps the name compare (a downloaded copy of the base)."""
+    from .diffusion_families import _is_local_path, canonical_base, retired_full_copy_base
 
-    a, b = canonical_base(a), canonical_base(b)
+    def _canon(x: str) -> str:
+        x = canonical_base(x)
+        return (retired_full_copy_base(x) or x).replace("\\", "/").rstrip("/")
 
-    def _tail(x: str) -> str:
-        return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+    def _hub(x: str) -> bool:
+        return bool(_HUB_REPO_ID.fullmatch(x)) and not _is_local_path(x)
 
-    return a == b or _tail(a) == _tail(b)
+    a, b = _canon(a), _canon(b)
+    if a.lower() == b.lower():
+        return True
+    if _hub(a) and _hub(b):
+        return False
+    return a.split("/")[-1].lower() == b.split("/")[-1].lower()
 
 
 def _unhook_from_manager(
@@ -3273,8 +3271,7 @@ def pin_prequantized_module(
     logger: Any = None,
     label: str = "pre-quantized denoiser",
 ) -> bool:
-    """Keeps a torchao module resident, since auto-offload's mid-forward move breaks its storage
-    aliasing."""
+    """Keep a torchao module resident; auto-offload's mid-forward move breaks storage aliasing."""
     pinned = _unhook_from_manager(manager, module, logger = logger, what = "pin:hook")
     module.to(device)
     if logger is not None:
@@ -3305,9 +3302,10 @@ def torchao_group_offload_supported() -> bool:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 -- no group offloading at all
         return False
-    return callable(getattr(go, "_is_torchao_tensor", None)) and callable(
-        getattr(go, "_swap_torchao_tensor", None)
-    )
+    from . import diffusion_go_compat as go_compat
+
+    # torchao helpers on diffusers 0.40-0.42; any traceable wrapper subclass after huggingface/diffusers#15383
+    return go_compat.wrapper_swap_supported(go)
 
 
 def _weights_pinnable(module: Any) -> bool:

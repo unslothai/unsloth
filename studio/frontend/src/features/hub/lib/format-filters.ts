@@ -68,6 +68,43 @@ export function isMlxId(id: string, hintedIsMlx?: boolean): boolean {
   return MLX_NAME_RE.test(leaf);
 }
 
+export function cachedRepoIsMlx(repo: {
+  repo_id: string;
+  tags?: readonly string[] | null;
+  library_name?: string | null;
+}): boolean {
+  return isMlxId(
+    repo.repo_id,
+    hasMlxCardTag({ tags: repo.tags, libraryName: repo.library_name }),
+  );
+}
+
+export function namedOrTaggedMlx(model: {
+  names: readonly string[];
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  omlx?: boolean;
+}): boolean {
+  return (
+    hasMlxCardTag(model) ||
+    Boolean(model.omlx) ||
+    model.names.some((name) => isMlxId(name))
+  );
+}
+
+export function localRowIsMlx(row: {
+  id: string;
+  display_name?: string | null;
+  model_id?: string | null;
+  path?: string | null;
+  source?: string | null;
+}): boolean {
+  return namedOrTaggedMlx({
+    names: [row.id, row.display_name ?? "", row.model_id ?? "", row.path ?? ""],
+    omlx: row.source === "omlx",
+  });
+}
+
 export function detectResultFormat(result: {
   id: string;
   isGguf: boolean;
@@ -111,6 +148,19 @@ export function checkpointQuantFormat(result: {
     if (pattern.test(result.id)) return format;
   }
   return result.quantMethod?.toLowerCase() === "fp8" ? "fp8" : null;
+}
+
+/** True for an FP8 checkpoint on a host whose torch build runs per-channel (row-wise scaled) FP8 only by
+ *  dequantizing to 16-bit (`checkpoint_quant_dequant_only` from /api/system). It still loads; block-scaled FP8
+ *  keeps its own GEMM, so the note is worded as conditional on the checkpoint's scaling. */
+export function fp8MayRunDequantized(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantDequantOnly: readonly string[] | undefined,
+): boolean {
+  return (
+    (checkpointQuantDequantOnly ?? []).includes("fp8_rowwise") &&
+    checkpointQuantFormat(result) === "fp8"
+  );
 }
 
 /** Recommended: every GGUF, plus FP8 / NVFP4 checkpoints only where every GPU runs them natively. */

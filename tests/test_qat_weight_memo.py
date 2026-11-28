@@ -193,9 +193,8 @@ def test_compile_trace_unchanged(scheme, monkeypatch):
     try:
         frames, out = _compile_count(model, x)
     except Exception as error:
-        # Some torchao / torch pairs cannot trace their own quantizers with fullgraph (torchao 0.17 +
-        # torch 2.11 skips _per_token_quant_qparam_dim_check). That is only this PR's problem if the
-        # unwrapped quantizer forward does trace there.
+        # Some torchao/torch pairs cannot trace quantizers fullgraph (torchao 0.17 + torch 2.11
+        # skips the qparam check); only unwrapped forward tracing matters
         owners = {
             owner
             for m in model.modules()
@@ -356,6 +355,25 @@ def test_batch_size_seen_by_the_model(monkeypatch):
     model.eval()
     memo._record_batch(model, (), {"input_ids": torch.zeros(8, 2048, dtype = torch.long)})
     assert memo._STATE["tokens"] == 300  # evaluation batches do not count
+
+
+def test_waits_while_a_checkpoint_skip_plan_is_pending(monkeypatch):
+    from unsloth.kernels import dequant_cache as dc
+
+    monkeypatch.delenv("UNSLOTH_GC_KEEP_LAYERS", raising = False)
+    pending = [True]
+    monkeypatch.setattr(dc, "_checkpoint_skip_pending", lambda: pending[0])
+    model = _model("int8", monkeypatch, arm = False)
+    x = torch.randn(4, DIM)
+    _run(model, x)
+    _arm()
+    _run(model, x)
+    assert _memo_of(model).out is None
+    pending[0] = False
+    _arm()
+    _run(model, x)
+    assert _memo_of(model).out is not None
+    memo._STATE.pop("gc_skip_waits", None)
 
 
 def test_checkpoint_skip_planner_arms_one_step_later(monkeypatch):

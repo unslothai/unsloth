@@ -10,6 +10,7 @@ import io
 import json
 import os
 import re
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -143,26 +144,34 @@ def file_times_ms(path: Path) -> tuple[int, int]:
 
 
 def _zstd_reader(raw):
+    """(stream, mid-read decode errors): each backend has its own ZstdError; a truncated frame is EOFError."""
     try:
-        # novermin -- 3.14; the ImportError fallback to zstandard below is the guard, which vermin cannot see.
+        # novermin -- 3.14; the ImportError fallbacks below are the guard, which vermin cannot see.
         from compression import zstd  # novermin
-        return zstd.ZstdFile(raw)
     except ImportError:
-        import zstandard  # ImportError here means the caller skips the file
-        return zstandard.ZstdDecompressor().stream_reader(raw)
+        try:
+            from backports import zstd  # what Studio installs below 3.14
+        except ImportError:
+            import zstandard  # ImportError here means the caller skips the file
+            return zstandard.ZstdDecompressor().stream_reader(raw), (EOFError, zstandard.ZstdError)
+    return zstd.ZstdFile(raw), (EOFError, zstd.ZstdError)
 
 
 def read_jsonl(path: Path) -> Iterator[dict]:
     """Records of a JSONL(.zst) file; a half-written last line is normal for a live session."""
     with path.open("rb") as raw:
-        stream = _zstd_reader(raw) if path.suffix == ".zst" else raw
-        for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(record, dict):
-                yield record
+        # Plain files catch nothing: the except clause also runs on GeneratorExit for every early close.
+        stream, corrupt = _zstd_reader(raw) if path.suffix == ".zst" else (raw, ())
+        try:
+            for line in io.TextIOWrapper(stream, encoding = "utf-8", errors = "replace"):
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    yield record
+        except corrupt as exc:
+            logger.warning("external_import_corrupt_archive", path = str(path), error = str(exc))
 
 
 def iso_ms(value) -> Optional[int]:
@@ -203,8 +212,7 @@ def first_user_text(messages: list[dict]) -> str:
 
 
 def _thread_row(transcript: Transcript, existing: dict, project_id: str) -> dict:
-    # upsert_chat_thread nulls columns it is not handed, so the stored row is the base:
-    # sandbox container, compare pair and fork origin survive a re-import.
+    # Upsert nulls unset columns; stored row is the base, so sandbox, compare, fork survive.
     return {
         **existing,
         "id": transcript.thread_id,
@@ -246,19 +254,17 @@ def _reread_messages(
 
 
 def _reader(revision: str) -> str:
-    # ":images" only says the file has image-only turns; it reads completed items like ":items".
+    # ":images" and ":generated" only mark image turns; both read completed items like ":items".
     tag = revision.partition(":")[2]
-    return "items" if tag == "images" else tag
+    return "items" if tag in ("images", "generated") else tag
 
 
 def _pending_messages(
-    source: Source, transcript: Transcript, existing: bool, stored: list[dict]
+    transcript: Transcript, existing: bool, stored: list[dict], mark: Optional[tuple[int, str]]
 ) -> list[dict]:
-    # Only turns appended since the last import. The ledger count, not the message rows,
-    # says which those are: a message deleted in Studio leaves no row behind.
+    # Only turns past the ledger count are new; a message deleted in Studio leaves no row.
     if not existing:
         return list(transcript.messages)
-    mark = studio_db.get_external_import_mark(source.key, transcript.session_id)
     if mark is None:
         # No rows and no mark = shell thread from an interrupted import.
         return [] if stored else list(transcript.messages)
@@ -274,22 +280,32 @@ def _pending_messages(
         pending = transcript.messages[turns:]
     else:
         pending = transcript.messages[transcript.inherited :]
-    # Hang each new turn off its nearest ancestor that exists, so a parent deleted in Studio
-    # does not orphan it (the frontend refuses a thread with a missing parent).
+    # Hang new turns off the nearest existing ancestor (frontend refuses a missing parent).
     present = {message["id"] for message in stored}
     by_id = {message["id"]: message for message in transcript.messages}
     reseated = []
     for message in pending:
         parent = message.get("parentId")
-        while parent and parent not in present:
+        seen = set()
+        while parent and parent not in present and parent not in seen:
+            seen.add(parent)
             parent = by_id.get(parent, {}).get("parentId")
+        if parent in seen:
+            parent = None  # cycle: no surviving ancestor
         reseated.append({**message, "parentId": parent})
         present.add(message["id"])
     return reseated
 
 
+def _stale_result(part: dict, result: object) -> bool:
+    # A stored string equal to the new text was imported before tool images were kept.
+    return "result" not in part or (
+        isinstance(result, dict) and part["result"] == result.get("text")
+    )
+
+
 def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[dict]:
-    """Stored messages whose tool calls were imported while open and have a result now."""
+    """Stored messages whose tool calls were imported open or without images and have a result now."""
     stored = {m["id"]: m for m in stored_rows}
     patched = []
     for message in transcript.messages:
@@ -304,14 +320,26 @@ def _late_tool_results(transcript: Transcript, stored_rows: list[dict]) -> list[
         content = [
             {**part, "result": results[part["toolCallId"]]}
             if part.get("type") == "tool-call"
-            and "result" not in part
             and part.get("toolCallId") in results
+            and _stale_result(part, results[part["toolCallId"]])
             else part
             for part in current["content"]
         ]
         if content != current["content"]:
             patched.append({**current, "content": content})
     return patched
+
+
+def _mark_write_is_noop(
+    stored: Optional[tuple[int, str]], mark: studio_db.ExternalImportMark
+) -> bool:
+    # record_external_import_mark keeps the larger count under the same revision.
+    return (
+        stored is not None
+        and stored[1] == mark.revision
+        and type(stored[0]) is int
+        and stored[0] >= mark.turns
+    )
 
 
 def _import_session(source: Source, path: Path, project_id: str, summary: ImportSummary) -> bool:
@@ -329,18 +357,23 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
         summary.skipped += 1
         return False
 
-    existing = studio_db.get_chat_thread(thread_id) or {}
-    try:
-        studio_db.upsert_chat_thread(
-            _thread_row(transcript, existing, project_id),
-            external_import_session = (source.key, session_id) if not existing else None,
-        )
-    except studio_db.ChatThreadDeletedError:
-        summary.skipped += 1
-        return False
+    existing, stored_row = studio_db.get_chat_thread_with_row(thread_id)
+    existing = existing or {}
+    thread = _thread_row(transcript, existing, project_id)
+    # Rewriting an identical row still fires the revision triggers, so every open tab re-reads.
+    if not existing or not studio_db.chat_thread_upsert_is_noop(thread, stored_row):
+        try:
+            studio_db.upsert_chat_thread(
+                thread,
+                external_import_session = (source.key, session_id) if not existing else None,
+            )
+        except studio_db.ChatThreadDeletedError:
+            summary.skipped += 1
+            return False
     # One read of the thread's rows serves both passes; nothing writes between them.
     stored = studio_db.list_chat_messages(thread_id) if existing else []
-    pending = _pending_messages(source, transcript, bool(existing), stored)
+    stored_mark = studio_db.get_external_import_mark(source.key, session_id) if existing else None
+    pending = _pending_messages(transcript, bool(existing), stored, stored_mark)
     if existing:
         pending = _late_tool_results(transcript, stored) + pending
     mark = studio_db.ExternalImportMark(
@@ -351,9 +384,13 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
     )
     if pending:
         studio_db.sync_chat_messages(
-            thread_id, pending, prune_missing = False, external_import_mark = mark
+            thread_id,
+            pending,
+            prune_missing = False,
+            external_import_mark = mark,
+            return_rows = False,
         )
-    else:
+    elif not _mark_write_is_noop(stored_mark, mark):
         studio_db.record_external_import_mark(*mark)
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)
@@ -376,7 +413,14 @@ def _import_project(
         }
     )
     before = (summary.new_chats, summary.messages)
-    imported = sum(_import_session(source, path, project_id, summary) for path in project.sessions)
+    imported = 0
+    for path in project.sessions:
+        try:
+            imported += _import_session(source, path, project_id, summary)
+        except sqlite3.Error:
+            raise  # storage failure, not a corrupt file
+        except Exception as exc:
+            summary.warnings.append(f"{path.name}: could not be imported ({exc}).")
     if studio_db.list_chat_threads(project_id = project_id):
         # updatedAt only moves when something landed, so a no-op click does not re-sort the sidebar.
         if (summary.new_chats, summary.messages) != before:
@@ -391,8 +435,7 @@ def run_import(source: Source, *, home: Optional[Path] = None) -> ImportSummary:
     summary = ImportSummary()
     now_ms = int(time.time() * 1000)
     projects = source.list_projects(source.home(home))
-    # An empty Studio (clear-all, fresh database) is a blank slate for this source's chats only:
-    # other tombstones still stop a stale tab resurrecting a chat the user deleted.
+    # Empty Studio lifts only this source's tombstones; others still stop stale-tab revival.
     if not studio_db.list_chat_threads():
         studio_db.lift_chat_thread_tombstones(
             thread_id_for(source, source.session_id(p))

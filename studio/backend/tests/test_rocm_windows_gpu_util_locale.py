@@ -56,12 +56,15 @@ def test_de_de_host_reports_fractional_utilization(windows, combined):
     assert ("Get-Counter -Counter" in calls[0]) is combined
 
 
-def test_de_de_host_sums_only_the_selected_adapter(windows):
-    windows(
-        _ENGINES + (("pid_44_luid_0x00000000_0x0000beef_phys_0_eng_0_engtype_3D", "50.5"),), False
-    )
+def test_one_adapter_reads_in_process_doubles_on_any_culture(windows, monkeypatch):
+    calls = windows((), False)
+    samples = [(n, float(v)) for n, v in _ENGINES] + [
+        ("pid_44_luid_0x00000000_0x0000beef_phys_0_eng_0_engtype_3D", 50.5)
+    ]
+    monkeypatch.setattr(hw, "_rocm_windows_adapter_engine_samples", lambda luid: samples)
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xD1A2) == 37.8
     assert hw._rocm_windows_perf_counter_gpu_util_pct(0xBEEF) == 50.5
+    assert calls == []
 
 
 def test_comma_decimal_output_is_skipped_not_misread():

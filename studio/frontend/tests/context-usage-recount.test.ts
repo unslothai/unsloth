@@ -107,7 +107,7 @@ function harness() {
         },
         buildLocalTokenCountExtras: async () => world.extras,
         buildLocalTokenCountReasoning: () => world.reasoning,
-        findLatestUserAudioBase64: () => null,
+        hasUncountableChatAudio: () => false,
         findLatestUserVideoBase64: () => null,
         messagesContainImage: () => false,
       },

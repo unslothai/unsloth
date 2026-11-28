@@ -7,6 +7,7 @@ logsumexp its backward needs)."""
 
 import pytest
 import torch
+import torch.utils.checkpoint
 from torch.utils._python_dispatch import TorchDispatchMode
 
 ad = pytest.importorskip("unsloth.utils.attention_dispatch")
@@ -102,12 +103,22 @@ def _grads(weights, attend):
     return loss.detach(), [w.grad.clone() for w in weights], counter.n
 
 
+def _force_saved_attention(monkeypatch):
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    # The explicit route (every call). Import on a GPU with a measured automatic length (gfx1151, sm75,
+    # sm80, sm89) binds that length instead, which these short CPU calls are below.
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    # A ROCm build keeps the explicit setting off (its GPU SDPA kernels are not intercepted); these tests
+    # run the CPU kernel, which is intercepted on every build.
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+
+
 def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
     weights = _weights()
     full = _grads(weights, _attend())
-    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
-    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
-    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    _force_saved_attention(monkeypatch)
     saved = _grads(weights, _attend())
     torch.testing.assert_close(saved[0], full[0])
     for a, b in zip(saved[1], full[1]):
@@ -119,7 +130,11 @@ def test_replay_reuses_the_attention_output(monkeypatch, checkpointing):
 
 def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing):
     calls = []
+    # The explicit route inside a frame (a frameless call stays plain: tested below).
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", False)
     monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
+    monkeypatch.setattr(ad, "_saved_attention_active", lambda: True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
     q = torch.randn(1, H, S, D)
     k = torch.randn(1, KV, S, D)
     monkeypatch.setattr(ad, "_SAVE_ATTENTION", False)
@@ -133,9 +148,7 @@ def test_inference_and_unset_flag_take_the_plain_call(monkeypatch, checkpointing
 def test_a_traced_caller_keeps_its_traced_backend_choice(monkeypatch, checkpointing):
     """Under compile, plain causal xformers calls take SDPA; the saving call graph breaks into eager code,
     which must still take SDPA (xformers' grad layout has no kernel on some GPUs, none on CPU)."""
-    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
-    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
-    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    _force_saved_attention(monkeypatch)
     seen = []
     original = ad._run_attention
 
@@ -175,3 +188,459 @@ def test_eager_saving_call_keeps_the_operand_device_guard(monkeypatch):
     monkeypatch.setattr(ad, "_AS_TRACED", [True])
     assert ad._compiling()
     assert ad._on_tensor_device(_X()) == "guard" and entered == [1]
+
+
+# Automatic mode (UNSLOTH_GC_SAVE_ATTENTION unset / =auto): long SDPA training calls only.
+
+
+def _fake_gpu(monkeypatch, capability = (8, 0)):
+    import types
+
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
+    monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: capability)
+    # A faked ROCm build reads gcnArchName: an unmeasured arch unless a test sets its own, so the
+    # host's real GPU (gfx1151 is measured) never decides the answer.
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
+
+
+def test_auto_mode_routes_long_calls_on_a_measured_gpu(monkeypatch):
+    _fake_gpu(monkeypatch)
+    call, min_seq = ad._load_saved_attention()
+    assert call is SA.saved_attention_call
+    assert min_seq == SA._AUTO_MIN_SEQ[(8, 0)] == 8192
+    assert SA._AUTO_ACTIVE[0] is True
+
+
+@pytest.mark.parametrize("setting", ["0", "false"])
+def test_auto_mode_kill_switch(monkeypatch, setting):
+    _fake_gpu(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", setting)
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._AUTO_ACTIVE[0] is False
+
+
+def test_auto_mode_off_on_unmeasured_gpu_and_rocm(monkeypatch):
+    _fake_gpu(monkeypatch, (10, 0))
+    assert ad._load_saved_attention() == (None, None)
+    _fake_gpu(monkeypatch, (8, 0))
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    assert ad._load_saved_attention() == (None, None)
+
+
+def test_auto_mode_on_measured_rocm_registers_the_selector(monkeypatch):
+    if not hasattr(SA, "_AUTO_MIN_SEQ_ROCM"):
+        pytest.skip("unsloth_zoo without automatic mode on ROCm")
+    import types
+
+    _fake_gpu(monkeypatch, (11, 5))
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1151")
+    )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    assert ad._load_saved_attention() == (SA.saved_attention_call, 8192)
+    assert SA._AUTO_ACTIVE[0] is True
+    assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
+    monkeypatch.setattr(SA, "_ROCM_SDPA_SELECT", SA._default_rocm_sdpa_selector)
+    monkeypatch.setattr(
+        torch.cuda, "get_device_properties", lambda *a: types.SimpleNamespace(gcnArchName = "gfx1100")
+    )
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [False])
+    assert ad._load_saved_attention() == (None, None)
+    assert SA._ROCM_SDPA_SELECT is SA._default_rocm_sdpa_selector
+
+
+# (6, 1) is never measured, so the off branch runs whatever the zoo table holds.
+@pytest.mark.parametrize(
+    "capability", [(6, 1), (7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)]
+)
+def test_auto_mode_follows_the_zoo_measured_table_on_nvidia(monkeypatch, capability):
+    """unsloth_zoo decides which cards were measured (``_AUTO_MIN_SEQ``; sm120 joined in zoo #2796), so the
+    expectation is read from that table: a measured card routes from its threshold, every other one stays off."""
+    _fake_gpu(monkeypatch, capability)
+    if capability in SA._AUTO_MIN_SEQ:
+        assert ad._load_saved_attention() == (SA.saved_attention_call, SA._AUTO_MIN_SEQ[capability])
+        assert SA._AUTO_ACTIVE[0] is True
+    else:
+        assert ad._load_saved_attention() == (None, None)
+        assert SA._AUTO_ACTIVE[0] is False
+
+
+def test_explicit_setting_routes_every_call(monkeypatch):
+    _fake_gpu(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    assert ad._load_saved_attention() == (SA.saved_attention_call, None)
+
+
+def test_an_unsloth_zoo_without_auto_mode_stays_off(monkeypatch):
+    import sys
+    import types
+
+    old = types.ModuleType("unsloth_zoo.saved_attention")
+    old.save_attention_enabled = lambda: False
+    old.saved_attention_call = SA.saved_attention_call
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.saved_attention", old)
+    _fake_gpu(monkeypatch)
+    assert ad._load_saved_attention() == (None, None)
+
+
+def _routed(
+    monkeypatch,
+    q_len,
+    backend = None,
+    packed = False,
+):
+    calls = []
+    # Automatic mode only routes where a frame can exist: under Unsloth's smart checkpoint.
+    monkeypatch.setattr(torch.utils.checkpoint, "CheckpointFunction", G.UnslothCheckpointFunction)
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", 16)
+    monkeypatch.setattr(ad, "_saved_attention_call", lambda fn, *t: calls.append(1) or fn(*t))
+    q = torch.randn(1, H, q_len, D)
+    k = torch.randn(1, KV, q_len, D)
+    config = ad.AttentionConfig(backend = backend or ad.SDPA, n_kv_heads = KV, n_groups = H // KV)
+    context = ad.AttentionContext(
+        bsz = 1,
+        q_len = q_len,
+        kv_seq_len = q_len,
+        n_heads = H,
+        head_dim = D,
+        requires_grad = True,
+        seq_info = (None, None, q_len) if packed else None,
+        attention_mask = None,
+        causal_mask = None,
+        training = True,
+    )
+    routed = ad._auto_saves_attention(config, context)
+    if not packed and config.backend == ad.SDPA:
+        ad.run_attention(config = config, context = context, Q = q, K = k, V = k)
+        assert bool(calls) == routed
+    return routed
+
+
+def test_auto_mode_routes_only_long_unpacked_sdpa_calls(monkeypatch):
+    assert _routed(monkeypatch, 32) is True
+    assert _routed(monkeypatch, 16) is True
+    # Shorter calls keep the plain (traceable) call: no graph break.
+    assert _routed(monkeypatch, 15) is False
+    assert _routed(monkeypatch, 32, backend = ad.XFORMERS) is False
+    assert _routed(monkeypatch, 32, packed = True) is False
+
+
+def test_auto_mode_reuses_through_run_attention(monkeypatch, checkpointing):
+    """End to end on CPU: first step measured, second step kept and reused, same grads."""
+    weights = _weights()
+    full = [_grads(weights, _attend()) for _ in range(2)]
+    monkeypatch.setattr(torch.utils.checkpoint, "CheckpointFunction", G.UnslothCheckpointFunction)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", S)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setattr(SA, "_AUTO_ACTIVE", [True])
+    monkeypatch.setattr(SA, "_BUDGETS", {})
+    monkeypatch.setattr(SA, "_device_peak", lambda device: 1 << 20)
+    monkeypatch.setattr(SA, "_device_capacity", lambda device: 1 << 30)
+    monkeypatch.setattr(SA, "_AUTO_MARGIN_BYTES", 0)
+    monkeypatch.delenv("UNSLOTH_GC_SAVE_ATTENTION", raising = False)
+    saved = [_grads(weights, _attend()) for _ in range(2)]
+    for a, b in zip(saved, full):
+        torch.testing.assert_close(a[0], b[0])
+        for x, y in zip(a[1], b[1]):
+            torch.testing.assert_close(x, y)
+    assert [s[2] for s in full] == [4, 4] and [s[2] for s in saved] == [4, 2], dict(
+        SA.SAVED_ATTENTION_STATS
+    )
+    assert SA.SAVED_ATTENTION_STATS["declined_unmeasured"] == 2
+    assert SA.SAVED_ATTENTION_STATS["reused"] == 2
+
+
+# ROCm with UNSLOTH_GC_SAVE_ATTENTION=1: unsloth_zoo decides per checkpoint frame and device.
+
+
+def test_rocm_explicit_setting_binds_from_configuration(monkeypatch):
+    """Routing is bound from the setting at import, never from the current GPU's eligibility (which
+    would freeze the first GPU's answer and allocate on it before ranks are placed)."""
+    if not hasattr(SA, "save_attention_requested"):
+        pytest.skip(
+            "unsloth_zoo without per-device ROCm eligibility: the setting is read as before"
+        )
+    monkeypatch.setattr(
+        SA, "_ROCM_SDPA_SELECT", getattr(SA, "_ROCM_SDPA_SELECT", None), raising = False
+    )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0", raising = False)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    touched = []
+    monkeypatch.setattr(SA, "save_attention_enabled", lambda *a: touched.append(a) or False)
+    monkeypatch.setattr(
+        SA, "_rocm_sdpa_is_kept", lambda *a, **k: touched.append(a) or False, raising = False
+    )
+    assert ad._load_saved_attention() == (SA.saved_attention_call, None)
+    assert touched == []
+    assert SA._ROCM_SDPA_SELECT is ad._select_rocm_saved_sdpa
+
+
+@pytest.fixture(params = [True, False], ids = ["rocm", "not_rocm"])
+def rocm(request):
+    """The explicit route is the same on every build: these tests run as ROCm and as CUDA / CPU."""
+    return request.param
+
+
+def test_explicit_routing_without_a_frame_compiles_fullgraph(monkeypatch, checkpointing, rocm):
+    """No frame (no Unsloth checkpoint, or a device whose SDPA keeps nothing): the call stays in the
+    caller's graph, so fullgraph=True training compiles; inside a checkpoint the replay still reuses."""
+    if not hasattr(SA, "save_attention_requested"):
+        pytest.skip(
+            "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
+        )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0" if rocm else None, raising = False)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    torch._dynamo.reset()
+    try:
+        out = torch.compile(_attend(), backend = "eager", fullgraph = True)(q, k, k)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, _attend()(q, k, k))
+    weights = _weights()
+    full = _grads(weights, _attend())
+    saved = _grads(weights, _attend())
+    torch.testing.assert_close(saved[0], full[0])
+    assert SA.SAVED_ATTENTION_STATS["reused"] == 4 and saved[2] == 2
+
+
+def _explicit_routing(monkeypatch, rocm):
+    if not hasattr(SA, "save_attention_requested"):
+        pytest.skip(
+            "unsloth_zoo without per-device ROCm eligibility keeps ROCm saved attention off"
+        )
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(torch.version, "hip", "7.13.0" if rocm else None, raising = False)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION", True)
+    monkeypatch.setattr(ad, "_SAVE_ATTENTION_MIN_SEQ", None)
+    monkeypatch.setattr(ad, "_saved_attention_call", SA.saved_attention_call)
+    monkeypatch.setenv("UNSLOTH_GC_SAVE_ATTENTION", "1")
+
+
+def test_explicit_routing_inside_a_frame_compiles_fullgraph(monkeypatch, checkpointing, rocm):
+    """A live checkpoint frame on an eligible device (CPU tensors are kept): a user's fullgraph=True
+    training compile must not reach the compiler-disabled saved_attention_call. Both checkpoint passes
+    stay in the graph, so forward + backward compile and the frame keeps nothing."""
+    _explicit_routing(monkeypatch, rocm)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    assert frame is not None
+    ref_q, ref_k = q.detach().requires_grad_(), k.detach().requires_grad_()
+    ref = _attend()(ref_q, ref_k, ref_k)
+    ref.sum().backward()
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = True)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            first = compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+            out.sum().backward()
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(first, ref.detach())
+    torch.testing.assert_close(out, ref)
+    torch.testing.assert_close(q.grad, ref_q.grad)
+    torch.testing.assert_close(k.grad, ref_k.grad)
+    assert frame.entries == [] and SA.SAVED_ATTENTION_STATS.get("stored", 0) == 0
+
+
+def test_explicit_routing_inside_an_unsloth_block_still_reuses(monkeypatch, checkpointing, rocm):
+    """Unsloth's own block compile (fullgraph=False) may break the graph: there a live frame keeps the
+    first pass's kernel output and the replay reuses it."""
+    import sys
+    import types
+
+    _explicit_routing(monkeypatch, rocm)
+    block = types.ModuleType("unsloth.models._block_compile")
+    block._IN_COMPILED_REGION = [True]
+    monkeypatch.setitem(sys.modules, "unsloth.models._block_compile", block)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = False)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, _attend()(q, k, k))
+    assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
+
+
+def test_explicit_routing_inside_a_frame_user_compile_may_break_the_graph(
+    monkeypatch, checkpointing, rocm
+):
+    """A user's fullgraph=False compile inside a frame may graph break, so it keeps the first pass's
+    kernel output like eager code does and the replay reuses it."""
+    _explicit_routing(monkeypatch, rocm)
+    q = torch.randn(1, H, S, D, requires_grad = True)
+    k = torch.randn(1, KV, S, D, requires_grad = True)
+    frame = SA.new_saved_attention_frame([q])
+    torch._dynamo.reset()
+    try:
+        compiled = torch.compile(_attend(), backend = "eager", fullgraph = False)
+        with SA.saved_attention_scope(frame, False), torch.no_grad():
+            compiled(q, k, k)
+        with SA.saved_attention_scope(frame, True):
+            out = compiled(q, k, k)
+    finally:
+        torch._dynamo.reset()
+    torch.testing.assert_close(out, _attend()(q, k, k))
+    assert SA.SAVED_ATTENTION_STATS["stored"] >= 1 and SA.SAVED_ATTENTION_STATS["reused"] >= 1
+
+
+@pytest.mark.parametrize("fullgraph", [False, True])
+def test_explicit_routing_first_pass_compiled_replay_eager(
+    monkeypatch, checkpointing, rocm, fullgraph
+):
+    """A checkpoint whose first pass is traced by a fullgraph=False compile and whose replay runs eager
+    (two same-shaped calls): both passes must route alike, or the replay of the first call consumes
+    the second call's kept output (zoo matches by position) and the gradients are wrong."""
+    _explicit_routing(monkeypatch, rocm)
+    attend = _attend()
+    if fullgraph and not hasattr(SA, "saved_attention_skip_slot"):
+        pytest.skip("unsloth_zoo without saved_attention_skip_slot")
+    compiled = torch.compile(attend, backend = "eager", fullgraph = fullgraph)
+
+    def layer(q, k, v):
+        first = (attend if torch.is_grad_enabled() else compiled)(q, k, v)
+        second = attend(q + 0.7, k * 0.4, v + 3.0)
+        return (first + 2 * second).square().mean()
+
+    g = torch.Generator().manual_seed(0)
+    inputs = (
+        torch.randn(1, H, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+    )
+    ref_args = [x.clone().requires_grad_() for x in inputs]
+    layer(*ref_args).backward()
+    args = [x.clone().requires_grad_() for x in inputs]
+    torch._dynamo.reset()
+    try:
+        G.UnslothCheckpointFunction.apply(layer, True, *args).backward()
+    finally:
+        torch._dynamo.reset()
+    for got, ref in zip(args, ref_args):
+        torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
+
+
+def test_explicit_routing_strict_compile_falls_back_on_replay(monkeypatch, checkpointing, rocm):
+    """A fullgraph=False compile under error_on_graph_break keeps the call in the graph; at its
+    recompile limit the grad replay falls back to eager and enters the saving helpers. The in-graph
+    pass must still fill that call's entry, or the replay takes the second call's kept output."""
+    if not hasattr(SA, "saved_attention_skip_slot"):
+        pytest.skip("unsloth_zoo without saved_attention_skip_slot")
+    if not hasattr(torch._dynamo, "error_on_graph_break"):
+        pytest.skip("torch without error_on_graph_break")
+    _explicit_routing(monkeypatch, rocm)
+    attend = _attend()
+
+    def strict(q, k, v):
+        with torch._dynamo.error_on_graph_break(True):
+            return attend(q, k, v)
+
+    compiled = torch.compile(strict, backend = "eager", fullgraph = False)
+
+    def layer(q, k, v):
+        first = compiled(q, k, v)
+        second = attend(q + 0.7, k * 0.4, v + 3.0)
+        return (first + 2 * second).square().mean()
+
+    g = torch.Generator().manual_seed(0)
+    inputs = (
+        torch.randn(1, H, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+        torch.randn(1, KV, S, D, generator = g),
+    )
+    ref_args = [x.clone().requires_grad_() for x in inputs]
+    ref_loss = (
+        (attend(*ref_args) + 2 * attend(ref_args[0] + 0.7, ref_args[1] * 0.4, ref_args[2] + 3.0))
+        .square()
+        .mean()
+    )
+    ref_loss.backward()
+    args = [x.clone().requires_grad_() for x in inputs]
+    torch._dynamo.reset()
+    try:
+        with torch._dynamo.config.patch(recompile_limit = 1):
+            G.UnslothCheckpointFunction.apply(layer, True, *args).backward()
+    finally:
+        torch._dynamo.reset()
+    for got, ref in zip(args, ref_args):
+        torch.testing.assert_close(got.grad, ref.grad, rtol = 1e-4, atol = 1e-6)
+
+
+@pytest.mark.parametrize("rocm", [True, False])
+def test_explicit_routing_with_an_older_zoo_routes_as_before(monkeypatch, rocm):
+    """A zoo without saved_attention_skip_slot: ROCm keeps the plain call, other builds always route."""
+    import sys
+    import types
+
+    old = types.ModuleType("unsloth_zoo.saved_attention")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.saved_attention", old)
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", rocm)
+    monkeypatch.setattr(ad, "_saved_attention_active", lambda: False)
+    assert ad._explicit_saves_attention() is (not rocm)
+
+
+def test_graph_break_is_fatal_reads_the_compile_mode():
+    seen = []
+
+    def probe(x):
+        seen.append(ad._graph_break_is_fatal())
+        return x + 1
+
+    x = torch.randn(4)
+    for fullgraph in (True, False):
+        torch._dynamo.reset()
+        try:
+            torch.compile(probe, backend = "eager", fullgraph = fullgraph)(x)
+        finally:
+            torch._dynamo.reset()
+    assert seen == [True, False]
+
+
+def test_rocm_saved_attention_selector_applies_the_sdpa_check(monkeypatch):
+    from torch.nn.attention import SDPBackend
+
+    import unsloth.utils.rocm_sdpa_check as check
+
+    monkeypatch.setattr(ad, "_ROCM_SDPA_GUARD", True)
+    q = torch.empty(1, 2, 16, 64, dtype = torch.bfloat16, requires_grad = True)
+    verdict = {"flash": True, "efficient": True}
+    monkeypatch.setattr(check, "rocm_sdpa_verdict", lambda index = 0: verdict)
+    assert ad._select_rocm_saved_sdpa(q) == int(SDPBackend.FLASH_ATTENTION)
+    # Flash failed rocm_sdpa_check: never reported as a kept kernel, even when it is the only one enabled.
+    verdict = {"flash": False, "efficient": True}
+    assert ad._select_rocm_saved_sdpa(q) not in (
+        int(SDPBackend.FLASH_ATTENTION),
+        int(SDPBackend.EFFICIENT_ATTENTION),
+    )
+    from torch.nn.attention import sdpa_kernel
+
+    with sdpa_kernel(SDPBackend.FLASH_ATTENTION):
+        assert ad._select_rocm_saved_sdpa(q) == int(SDPBackend.ERROR)

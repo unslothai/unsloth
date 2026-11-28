@@ -25,6 +25,8 @@ import {
 import { isMobileViewport, useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { getHubWebEndpoint } from "@/lib/hf-endpoint";
+import { openLink } from "@/lib/open-link";
 import { snapInlinePadding } from "@/lib/snap-padding";
 import { cn } from "@/lib/utils";
 import {
@@ -76,6 +78,7 @@ import {
   resolveHubSection,
 } from "./model-selector/hub-section";
 import { PillTabs } from "./model-selector/pill-tabs";
+import { withLoadedPrecision } from "./model-selector/loaded-precision-trigger";
 import type {
   ExternalModelOption,
   ModelDownloadFootprintResolver,
@@ -102,6 +105,9 @@ interface ModelSelectorProps {
   loadedModelIdOverride?: string;
   /** Task-owned loaded quant, paired with `loadedModelIdOverride`; null means none. */
   loadedGgufVariantOverride?: string | null;
+  /** The precision the resident build runs at ("INT8", "BF16", "GGUF · Q4_K_M"), paired with
+   *  `loadedModelIdOverride`: the trigger names it instead of the catalog row's stored precision. */
+  loadedPrecisionOverride?: string | null;
   externalModels?: ExternalModelOption[];
   value?: string;
   /** Whether the selection is actually resident. Omitted means a selection is a load. */
@@ -134,8 +140,8 @@ interface ModelSelectorProps {
   };
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: HubCapabilityFilter;
-  /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
-  hubTask?: HfTaskFilter;
+  /** Repo Search Hub opens as a page instead of a Hub search, for models no Hub filter lists. */
+  hubRepo?: string;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -316,6 +322,7 @@ function ModelSelectorContent({
   resolveDownloadFootprint,
   onEject,
   onBrowseHub,
+  browseHubHint,
   onConfigureConnection,
   task,
   catalog,
@@ -338,6 +345,7 @@ function ModelSelectorContent({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onEject?: (modelId?: string) => void;
   onBrowseHub?: () => void;
+  browseHubHint?: string;
   onConfigureConnection?: (providerId: string) => void;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
@@ -589,6 +597,7 @@ function ModelSelectorContent({
               onSelect={handlePick}
               resolveDownloadFootprint={resolveDownloadFootprint}
               onBrowseHub={onBrowseHub}
+              browseHubHint={browseHubHint}
               onConfigureConnection={onConfigureConnection}
               onConfigure={openConfigPage}
               onEject={hasSelection && onEject ? onEject : undefined}
@@ -631,6 +640,7 @@ export function ModelSelector({
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
   loadedGgufVariantOverride,
+  loadedPrecisionOverride,
   externalModels = [],
   value,
   activeGgufVariant,
@@ -650,7 +660,7 @@ export function ModelSelector({
   cpuLoad,
   moreModels,
   hubCapability,
-  hubTask,
+  hubRepo,
   placeholder,
   loaded,
 }: ModelSelectorProps) {
@@ -718,6 +728,15 @@ export function ModelSelector({
       : missingExternalModel(selected, externalModels);
     // A cached GGUF's checkpoint is a snapshot path; the leaf matches the later catalog row.
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
+    const showsLoaded =
+      Boolean(loadedModelIdOverride) && selected.toLowerCase() === loadedModelIdOverride?.toLowerCase();
+    if (loadedPrecisionOverride && showsLoaded) {
+      // The resident build, not the row: an INT8 load of a BF16 row reads INT8.
+      return withLoadedPrecision(
+        found ?? { id: selected, name: fallbackName },
+        loadedPrecisionOverride,
+      );
+    }
     if (triggerGgufVariant) {
       // The variant is the quant, so it goes in the suffix.
       const desc = `GGUF · ${triggerGgufVariant}`;
@@ -747,6 +766,8 @@ export function ModelSelector({
     optionById,
     catalog,
     triggerGgufVariant,
+    loadedModelIdOverride,
+    loadedPrecisionOverride,
     externalModels,
     t,
   ]);
@@ -767,14 +788,17 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
-    const linkedTask = hubTask ?? task;
+    if (hubRepo) {
+      openLink(`${getHubWebEndpoint()}/${hubRepo}`);
+      return;
+    }
     void navigate({
       to: "/hub",
       search: {
         tab: "discover",
         capability: hubCapability,
         audioTask:
-          hubCapability === "audio" && linkedTask ? [linkedTask].flat() : undefined,
+          hubCapability === "audio" && task ? [task].flat() : undefined,
       },
     });
   }
@@ -813,6 +837,7 @@ export function ModelSelector({
         onSelect={handleSelect}
         resolveDownloadFootprint={resolveDownloadFootprint}
         onEject={onEject ? handleEject : undefined}
+        browseHubHint={hubRepo ? `Open ${hubRepo} in a new tab` : undefined}
         onBrowseHub={
           task && communityModelPolicy === "none" && !hubCapability
             ? undefined

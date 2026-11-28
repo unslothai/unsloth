@@ -606,7 +606,7 @@ def _npu_load_payload(
         payload = None,
         timeout = None,
     ):
-        if path == "/api/inference/status":
+        if path.startswith("/api/inference/status"):
             return io.BytesIO(json.dumps(status).encode())
         sent.append(payload)
         return io.BytesIO(b'{"status": "already_loaded"}')
@@ -633,12 +633,12 @@ def test_chat_keeps_the_context_run_loaded_the_npu_model_with(monkeypatch):
 
 def test_chat_keeps_an_npu_model_loaded_under_auto(monkeypatch):
     status = _npu_status("lemonade:qwen3-0.6b-FLM", None)
-    assert _npu_load_payload(monkeypatch, status)["max_seq_length"] == 0
+    assert _npu_load_payload(monkeypatch, status).get("max_seq_length", 0) == 0
 
 
 def test_chat_loads_a_different_npu_model_at_auto(monkeypatch):
     status = _npu_status("lemonade:gemma3-1b-FLM", 16384)
-    assert _npu_load_payload(monkeypatch, status)["max_seq_length"] == 0
+    assert _npu_load_payload(monkeypatch, status).get("max_seq_length", 0) == 0
 
 
 def test_a_typed_context_length_wins_over_the_resident_one(monkeypatch):
@@ -646,14 +646,14 @@ def test_a_typed_context_length_wins_over_the_resident_one(monkeypatch):
     assert _npu_load_payload(monkeypatch, status, max_seq_length = 8192)["max_seq_length"] == 8192
 
 
-def test_a_gguf_resident_never_lends_its_context(monkeypatch):
+def test_a_gguf_resident_keeps_its_context(monkeypatch):
     status = {
         "is_gguf": True,
         "model_identifier": "unsloth/Qwen3-0.6B-GGUF",
         "requested_context_length": 4096,
     }
     payload = _npu_load_payload(monkeypatch, status, model = "unsloth/Qwen3-0.6B-GGUF")
-    assert payload["max_seq_length"] == 0
+    assert payload["max_seq_length"] == 4096
 
 
 @pytest.mark.parametrize(

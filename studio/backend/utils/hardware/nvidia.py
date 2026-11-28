@@ -376,20 +376,26 @@ def get_visible_gpu_utilization(
         "utilization.gpu,temperature.gpu,memory.used,memory.total,power.draw,power.limit"
     )
     try:
-        result = gpu_query.run_nvidia_smi(
-            [
-                _nvidia_smi_executable(),
-                f"--query-gpu={query_fields}",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output = True,
-            text = True,
-            encoding = "utf-8",
-            errors = "replace",
-            timeout = 5,
-            env = child_env_without_native_path_secret(),
-            **_windows_hidden_subprocess_kwargs(),
-        )
+        # .max, not .current: an idle GPU downshifts its link (a T4 reads Gen1 at rest).
+        extended_fields = query_fields + ",memory.free,pcie.link.width.max,pcie.link.gen.max"
+        for fields in (extended_fields, query_fields):
+            result = gpu_query.run_nvidia_smi(
+                [
+                    _nvidia_smi_executable(),
+                    f"--query-gpu={fields}",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5,
+                env = child_env_without_native_path_secret(),
+                **_windows_hidden_subprocess_kwargs(),
+            )
+            # Retry the base query unless the driver itself is down (9 not loaded, 12 no NVML, 15 GPU lost).
+            if result.returncode in (0, 9, 12, 15):
+                break
     except (OSError, subprocess.TimeoutExpired) as e:
         logger.warning("nvidia-smi query failed in get_visible_gpu_utilization: %s", e)
         return {
@@ -441,6 +447,19 @@ def get_visible_gpu_utilization(
             continue
 
         visible_ordinal = visible_ordinals[idx] if visible_ordinals is not None else len(devices)
+        optional = {}
+        extra_fields = (
+            ("vram_free_bytes", 1024**2, 0),
+            ("pcie_link_width", 1, 1),
+            ("pcie_link_gen", 1, 1),
+        )
+        for (key, scale, minimum), raw in zip(extra_fields, parts[7 + field_offset :]):
+            try:
+                value = int(raw)
+            except ValueError:  # [N/A] on unsupported hardware.
+                continue
+            if value >= minimum:
+                optional[key] = value * scale
         devices.append(
             _build_gpu_metrics(
                 vram_used_mb = _parse_smi_value(parts[3 + field_offset]),
@@ -452,6 +471,7 @@ def get_visible_gpu_utilization(
                 visible_ordinal = visible_ordinal,
                 gpu_utilization_pct = _parse_smi_value(parts[1 + field_offset]),
                 temperature_c = _parse_smi_value(parts[2 + field_offset]),
+                **optional,
             )
         )
 
@@ -598,7 +618,12 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     capabilities: list[tuple[int, int]] = []
     for line in result.stdout.strip().splitlines():
-        major, _, minor = line.strip().partition(".")
+        cap = line.strip()
+        # A device with no compute capability (an NPU nvidia-smi lists beside the GPU) runs no CUDA
+        # kernels, so no load lands there; skip it rather than reading the whole host as unknown.
+        if cap.strip("[]").upper() == "N/A":
+            continue
+        major, _, minor = cap.partition(".")
         if not (major.isdigit() and minor.isdigit()):
             return []
         capabilities.append((int(major), int(minor)))
@@ -606,6 +631,55 @@ def get_checkpoint_quant_formats() -> list[str]:
         return []
     floor = min(capabilities)
     return [fmt for fmt, needed in _CHECKPOINT_QUANT_MIN_CAPABILITY if floor >= needed]
+
+
+def _fp8_rowwise_gemm_runs() -> bool:
+    """Whether torch's row-wise fp8 ``_scaled_mm`` runs here. Torch-free: a verdict this process already
+    probed wins (any card without it answers False); else the platform, since the Windows torch wheels ship
+    no row-wise kernel ("Rowwise scaling is not currently supported on your device")."""
+    import sys
+
+    probed = sys.modules.get("core.inference.diffusion_fp8_unit_scale")
+    verdicts = [v for v in getattr(probed, "_ROWWISE", {}).values() if isinstance(v, bool)]
+    if verdicts:
+        return all(verdicts)
+    return sys.platform != "win32"
+
+
+def _fp8_tensorwise_backend_available() -> bool:
+    """Whether the installed core library runs FP8 checkpoints on the tensorwise ``_scaled_mm`` when the
+    row-wise one is missing. Read from its source, so the polled route imports neither unsloth nor torch."""
+    try:
+        import importlib.util
+        import re
+        from pathlib import Path
+
+        spec = importlib.util.find_spec("unsloth")
+        roots = list(spec.submodule_search_locations or ()) if spec else []
+        for root in roots:
+            source = Path(root, "kernels", "fp8.py")
+            if source.is_file():
+                match = re.search(
+                    r"^_FP8_ROWWISE_BACKENDS\s*=\s*\(([^)]*)\)",
+                    source.read_text(encoding = "utf-8", errors = "replace"),
+                    re.M,
+                )
+                return bool(match and "tensorwise" in match.group(1))
+    except Exception:  # noqa: BLE001 -- unknown counts as absent
+        pass
+    return False
+
+
+def get_checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Checkpoint kinds that load here but run dequantized to 16-bit. ``fp8_rowwise``: per-channel (row-wise
+    scaled) FP8 checkpoints, when torch has no row-wise fp8 GEMM and the core library has no tensorwise
+    fallback. Block-scaled FP8 checkpoints run their own Triton GEMM and are not covered. The checkpoints stay
+    listed in ``formats``; this only says the FP8 speedup is not delivered for that kind."""
+    if "fp8" not in formats:
+        return []
+    if _fp8_rowwise_gemm_runs() or _fp8_tensorwise_backend_available():
+        return []
+    return ["fp8_rowwise"]
 
 
 def get_compute_capabilities() -> dict[int, tuple[int, int]]:

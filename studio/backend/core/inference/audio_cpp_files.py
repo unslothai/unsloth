@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Weights are HF cache files (Model Hub and deletion see them); materialize hardlinks them by real
-name into a farm beside the cache, since audio.cpp picks loaders by extension after resolving
-symlinks. Real-file caches skip it, except on Windows, where the short farm path avoids the
-260-char limit."""
+"""Hardlinks weights by real name into a farm beside the cache, as audio.cpp picks loaders by
+extension after resolving symlinks; real-file caches skip it except on Windows (260-char limit)."""
 
 from __future__ import annotations
 
@@ -102,11 +100,17 @@ def missing_files(
 
 
 def _relative(model: AudioCppModel, repo_path: str) -> Path:
-    """A variant file's path below the model's own folder: the umbrella folder prefix dropped."""
+    """A variant file's path below the model root: the spec package's root directory dropped, else
+    the umbrella folder prefix."""
     path = repo_path.replace("\\", "/")
-    prefix = f"{model.folder}/" if model.folder else ""
+    root = model.variant.root.strip("/")
+    prefix = f"{root}/" if root else (f"{model.folder}/" if model.folder else "")
     if prefix and path.startswith(prefix):
         path = path[len(prefix) :]
+    elif root:
+        # The runtime reads a package's files beside its primary GGUF: one outside the root has no place.
+        from core.inference.audio_cpp_server import AudioCppUnavailableError
+        raise AudioCppUnavailableError(f"Refusing the model file path {repo_path!r}.")
     parts = path.split("/")
     # Repo file names are untrusted: "embeddings/..\\..\\x" would land outside the farm.
     if any(p in ("", ".", "..") or ":" in p for p in parts):
@@ -195,8 +199,7 @@ def materialize(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> st
 
 
 def served_path_problem(model: AudioCppModel, *, hub_cache: Optional[Path] = None) -> Optional[str]:
-    """Why the Windows server could not open the path ``materialize`` would hand it, or None. Checked
-    before any download or eviction, so a refused model costs nothing."""
+    """Why Windows cannot open the path, or None; checked before any download or eviction."""
     if sys.platform != "win32":
         return None
     if model.local_path:

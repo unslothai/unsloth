@@ -6,8 +6,7 @@ import { createContext, useContext } from "react";
 export type TauriRepairController = {
   /** Reruns the bundled installer over the managed environment, then restarts the backend. */
   repairInstall: () => Promise<void>;
-  /** Attached to a terminal-started backend: startRepair would switch to the repair screen before
-   * start_managed_repair refuses, so the consumer hides itself. */
+  /** Terminal-started backend: startRepair would switch screens before refusing, so hide it. */
   isExternalServer: boolean;
 };
 
@@ -34,4 +33,17 @@ export function canUpgradeToFullInstall(
     repair !== null &&
     !repair.isExternalServer
   );
+}
+
+/** Not on a GPU-less host (no video device). On a Mac the MLX floor blocks training only: PyTorch MPS still runs video. */
+export function canUpgradeForVideo(
+  chatOnlyReason: string | null,
+  chatOnlyHint: string | null,
+  verdictMeasured: boolean,
+  repair: TauriRepairController | null,
+  host: { deviceType: string | null; cpuTraining: boolean },
+): boolean {
+  if (host.cpuTraining) return false;
+  const hint = host.deviceType === "mac" ? null : chatOnlyHint;
+  return canUpgradeToFullInstall(chatOnlyReason, hint, verdictMeasured, repair);
 }

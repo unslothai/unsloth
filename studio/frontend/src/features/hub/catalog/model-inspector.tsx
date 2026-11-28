@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
+import {
+  isServedByMlx,
+  useVllmAvailable,
+  useVllmPlatform,
+} from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -9,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
+import { useGpuInfo } from "@/hooks/use-gpu-info";
 import {
   type UnslothSupport,
   classifyUnslothSupport,
@@ -53,7 +58,13 @@ import {
   isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
-import { hasMlxCardTag, isMlxId } from "../lib/format-filters";
+import {
+  fp8MayRunDequantized,
+  hasMlxCardTag,
+  isMlxId,
+  namedOrTaggedMlx,
+} from "../lib/format-filters";
+import { useHubPageUrl } from "../lib/hub-page-url";
 import { studioPageForTask } from "../lib/unsloth-support";
 import {
   formatLibrary,
@@ -82,7 +93,7 @@ export function ViewRepositoryButton({
   const online = useOnlineStatus();
   const hfEndpoint = useHfEndpoint();
   const hubName = useHubName();
-  const url = `${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`;
+  const url = useHubPageUrl(`${hfEndpoint}/${isDataset ? "datasets/" : ""}${repoId}`);
   const baseClass =
     "inline-flex size-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors";
   const icon = (
@@ -281,12 +292,15 @@ function ModelStatusChips({
   chatOnly,
   unslothSupport,
   vramInfo,
+  fp8DequantOnly = false,
 }: {
   isDataset: boolean;
   isGguf: boolean;
   chatOnly: boolean;
   unslothSupport: UnslothSupport;
   vramInfo: VramInfo;
+  /** An FP8 checkpoint this torch build may run only by dequantizing per-channel FP8 to 16-bit. */
+  fp8DequantOnly?: boolean;
 }) {
   // Images/Video pages run these, so they are not unsupported even though chat cannot.
   const showUnsupported =
@@ -298,7 +312,9 @@ function ModelStatusChips({
   // supported-format model a chat-only host still can't run.
   const showChatOnly = !isDataset && !isGguf && chatOnly && !showUnsupported && !showVllm;
   const showVram = !isDataset && vramInfo && !isGguf;
-  if (!showUnsupported && !showChatOnly && !showVram && !showVllm) return null;
+  const showFp8Dequant = !isDataset && !isGguf && fp8DequantOnly && !showUnsupported;
+  if (!showUnsupported && !showChatOnly && !showVram && !showVllm && !showFp8Dequant)
+    return null;
 
   const vramTone = vramInfo
     ? vramInfo.status === "exceeds"
@@ -391,6 +407,27 @@ function ModelStatusChips({
           </TooltipContent>
         </Tooltip>
       )}
+      {showFp8Dequant && (
+        <Tooltip>
+          <TooltipTrigger asChild={true}>
+            <span tabIndex={0} className="inline-flex outline-none">
+              <StatusChip tone="warning" label="FP8 may run via dequant" />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            sideOffset={6}
+            className="tooltip-compact max-w-xs"
+          >
+            This torch build has no row-wise FP8 GEMM, so a per-channel FP8
+            checkpoint runs via dequant to 16-bit here: it loads, without the
+            FP8 speed or memory saving.
+            <span className="mt-1 block text-ui-10p5 font-normal text-(--tooltip-muted)">
+              Block-scaled FP8 checkpoints keep their own FP8 kernel.
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
       {showVram && vramInfo && (
         <Tooltip>
           <TooltipTrigger asChild={true}>
@@ -478,9 +515,12 @@ export const ModelInspector = memo(function ModelInspector({
   } = actions;
   const deviceType = usePlatformStore((s) => s.deviceType);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
+  const checkpointQuantDequantOnly = useGpuInfo().checkpointQuantDequantOnly;
   const chatOnlyMeasured = usePlatformStore(
     (s) => s.isChatOnly() && !s.capabilitiesUnknown(),
   );
+  const mlxInference = usePlatformStore((s) => s.mlxInference);
+  const chatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const hfToken = useHfTokenStore((s) => s.token);
   const datasetRepoId = isDataset && model?.hubRepoId ? model.hubRepoId : null;
   const datasetSize = useDatasetSize(datasetRepoId, {
@@ -593,28 +633,41 @@ export const ModelInspector = memo(function ModelInspector({
   const audioPage =
     mediaPage === undefined && hubModelRunsOnAudioPage(model, mediaTask);
   const runsOnMediaRuntime = mediaPage !== undefined || audioPage;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
+  // A local folder has no hubRepoId: classify it as its inventory row does (inventoryRowFormat).
+  const runsAsMlx =
+    isMlx ||
+    (!model.isGguf &&
+      model.isLocal &&
+      namedOrTaggedMlx({
+        names: [model.path ?? "", model.title, model.displayId],
+        omlx: model.localSource === "omlx",
+      }));
+  const mlxRunsHere =
+    runsAsMlx &&
+    isServedByMlx(false, deviceType, chatOnlyReason, mlxInference);
   const runEligible = isHubModelRunEligible({
     model,
     isDataset,
     mediaRuntime: runsOnMediaRuntime,
     nonGgufRuntimeAvailable:
-      !chatOnlyMeasured && unslothSupport.status !== "unsupported",
+      (!chatOnlyMeasured || mlxRunsHere) &&
+      unslothSupport.status !== "unsupported",
   });
   const runAction =
     runEligible && onRun
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
       : undefined;
-  // A precision folder downloads as it loads, so it need not be on device.
-  const isMlx =
-    !model.isGguf && isMlxId(model.hubRepoId ?? "", hasMlxCardTag(model));
   const precisionRunAction =
     isMlx &&
     onRun &&
     !isDataset &&
     !isEmbeddingOnly(model) &&
     !runsOnMediaRuntime &&
-    !chatOnlyMeasured &&
+    (!chatOnlyMeasured || mlxRunsHere) &&
     unslothSupport.status !== "unsupported"
       ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
@@ -880,9 +933,20 @@ export const ModelInspector = memo(function ModelInspector({
         <ModelStatusChips
           isDataset={isDataset}
           isGguf={model.isGguf}
-          chatOnly={chatOnly}
+          chatOnly={chatOnly && !mlxRunsHere}
           unslothSupport={unslothSupport}
           vramInfo={vramInfo}
+          fp8DequantOnly={
+            !isDataset &&
+            fp8MayRunDequantized(
+              {
+                id: model.hubRepoId ?? model.id,
+                isGguf: model.isGguf,
+                quantMethod: model.quantMethod,
+              },
+              checkpointQuantDequantOnly,
+            )
+          }
         />
       </div>
 

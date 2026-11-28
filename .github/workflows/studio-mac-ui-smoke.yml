@@ -14,6 +14,8 @@ on:
     paths:
       # Not studio/** or unsloth/**: the install is --no-torch and src-tauri is never built.
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -49,6 +51,8 @@ on:
     # Same list as the PR filter, to spare the account-wide macOS slots.
     paths:
       - 'studio/backend/**'
+      # Backend unit tests are not part of the running Studio this smoke drives.
+      - '!studio/backend/tests/**'
       - 'studio/frontend/**'
       - 'studio/setup.sh'
       - 'studio/install_*.py'
@@ -338,8 +342,7 @@ jobs:
           kill "${STUDIO_PID}" 2>/dev/null || true
           sleep 2
 
-      # Model-free suites on their own ports and home (the scripts wipe auth/ per boot). Started
-      # after the chat UI, which ran ~2x slower when sharing the runner.
+      # Own ports and home, since the scripts wipe auth/ per boot; starts after the chat UI.
       - name: Cross-browser permission controls + loaded-models indicator (WebKit)
         id: webkit_lane
         background: true

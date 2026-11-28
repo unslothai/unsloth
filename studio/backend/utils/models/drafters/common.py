@@ -17,7 +17,6 @@ def is_published_drafter_filename(
     kind: str,
     allow_legacy_suffix: bool = True,
 ) -> bool:
-    """Whether *name* uses an allowed published sidecar form for this layout."""
     lower = Path(name).name.lower()
     if not lower.endswith(".gguf"):
         return False
@@ -31,6 +30,8 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
     if stem.startswith(f"{kind}-"):
         stem = stem[len(kind) + 1 :]
     stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", stem)
+    # A previous drafter kept beside its replacement (dspark-<model>-Q8_0_Old.gguf) pairs like the original.
+    stem = re.sub(r"_old$", "", stem)
     if stem.endswith(f"-{kind}"):
         stem = stem[: -(len(kind) + 1)]
     from utils.models.model_config import _GGUF_KNOWN_QUANT_RE

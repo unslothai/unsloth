@@ -224,9 +224,7 @@ def test_layer_split_probes_every_secondary_card(monkeypatch, secondary_ok):
 
 
 def test_layer_split_keeps_native_int8_processors_where_cudnn_cannot_run(monkeypatch):
-    """T4 (sm75): no card runs cuDNN attention, so the load picks native and the strided processors exist only to carry
-    the INT8 kernel. The split's per-card cuDNN probe must leave them alone (on 2x T4 it reset all 43 to stock, so
-    INT8 ran on neither card)."""
+    """On T4 (sm75) cuDNN never runs: the split's cuDNN probe must leave strided INT8 processors alone."""
     from core.inference import diffusion_layer_split_plan as lsp
 
     pipe = SimpleNamespace(transformer = _tiny())

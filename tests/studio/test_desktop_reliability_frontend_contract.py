@@ -70,6 +70,7 @@ CHAT_HEADER_MENU = FRONTEND / "features/chat/components/chat-header-menu.tsx"
 BROWSER_TOGGLE = FRONTEND / "features/browser/browser-toggle.tsx"
 TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
+CODE_FILENAME = FRONTEND / "components/assistant-ui/code-filename.ts"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
 
@@ -225,7 +226,10 @@ def test_file_actions_route_through_native_commands_only_in_tauri():
     assert "return savedPath !== null" not in helper
 
     assert helper.index("if (isTauri)") < helper.index("  const blob =")
-    assert "downloadFile(" in history
+    # Chat backups stream through bounded IPC chunks (#19372); either native-files helper is the native boundary.
+    assert 'from "@/lib/native-files"' in history
+    assert "downloadFile(" in history or "downloadBlobStreaming(" in history
+    assert 'invoke<string | null>("begin_native_file_save"' in helper
     assert "downloadFile(" in prompt_storage
     assert "pickNativeChatImport" in data_tab
     assert "if (!isTauri)" in data_tab
@@ -371,8 +375,12 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "if (!isTauri)" in helper
     assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
-    assert "fallbackExt" in markdown
-    assert 'rust: "rs"' in markdown
+    # Snippet names are shared with the chat Files menu, so they live in code-filename.ts.
+    code_filename = _ui_source(CODE_FILENAME)
+    assert 'import { getCodeFilename } from "./code-filename";' in markdown
+    assert "getCodeFilename(language)" in markdown
+    assert "fallbackExt" in code_filename
+    assert 'rust: "rs"' in code_filename
     assert "downloadUrl(part.image, filename)" in image
     assert "urlToBlob(part.image)" in image
     assert "downloadUrl(src, filename)" in audio
@@ -2111,8 +2119,7 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "pointer-events-none" in header_opening
     assert "relative" in header_opening
     assert "z-40" in header_opening
-    # The rail continues the sidebar surface: no divider between rail and preview.
-    assert "@[50rem]:border-r" not in header
+    assert "@[50rem]:border-r @[50rem]:border-border/60" in header
     # The media model picker shares Chat's control height (scaled in index.css), see _MEDIA_PICKER_CLASS.
     assert _MEDIA_PICKER_CLASS in header
     # No label override: the trigger reads exactly like Chat's.
@@ -2121,18 +2128,18 @@ def test_audio_page_matches_the_image_rail_header_and_action_footer():
     assert "<LibraryPageLink" in links
     assert "absolute" not in header.split("<PillTabs", 1)[0]
 
-    assert "@[50rem]:flex-row @[50rem]:gap-0 @[50rem]:overflow-hidden" in layout
+    assert "@[50rem]:flex-row @[50rem]:overflow-hidden" in layout
     assert RAIL_WIDTH in layout
     assert RAIL_WIDTH_SCALED in AUDIO_PAGE.read_text(encoding = "utf-8"), "the rail stopped scaling"
-    assert "@[50rem]:border-r" not in layout
-    assert "gap-4 px-6 pt-6 pb-4 @[50rem]:mt-[60px] @[50rem]:overflow-y-auto" in layout
+    assert "@[50rem]:border-r @[50rem]:border-b-0" in layout
+    assert "gap-4 px-10 max-sm:px-5 pt-9 pb-6 @[50rem]:overflow-y-auto" in layout
     assert 'mode === "speak"' in layout
     assert '"panel-scroll-fade-action"' in layout
     assert '"panel-scroll-fade"' in layout
-    assert "relative z-10 flex shrink-0 justify-center px-6 pt-3 pb-5" in layout
+    assert "relative z-10 flex shrink-0 justify-center px-10 pt-3 pb-5 max-sm:px-5" in layout
     assert "btn-float-action" not in layout
     assert "absolute inset-x-0 bottom-0" not in layout
-    assert layout.count("p-6 @[50rem]:mt-[52px] @[50rem]:pt-4") == 2
+    assert layout.count("px-10 pt-7 pb-6 max-sm:px-5") == 2
 
 
 TRAIN_SCROLLER_LAYOUT = (
@@ -2310,12 +2317,6 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     (VIDEO_PAGE, "", "h", "48px", 1),
     (CHAT_PAGE, "", "h", "48px", 1),
     (IMAGES_PAGE, "@[50rem]:", "pt", "60px", 1),
-    # The header overlays the panes (-mt cancels its 64px); rail and preview then clear it.
-    (AUDIO_PAGE, "@[50rem]:", "h", "64px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "-mt", "64px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "pt", "22px", 3),
-    (AUDIO_PAGE, "@[50rem]:", "mt", "60px", 1),
-    (AUDIO_PAGE, "@[50rem]:", "mt", "52px", 2),
     (DIFFUSION_TRAIN_PANEL, "@[50rem]:", "pt", "42px", 1),
     (DIFFUSION_TRAIN_PANEL, "", "pt", "42px", 1),
     # Hand-set sidebar lengths stay put as labels grow, so rows clip their text; seven 30px rows

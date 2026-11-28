@@ -278,20 +278,36 @@ def _loaded_local_model_identity() -> tuple[bool, str, str]:
     return False, "", ""
 
 
+def _names_quant(variant: str) -> bool:
+    from core.inference.openai_auto_download import looks_like_quant
+    return looks_like_quant(variant)
+
+
 def _ensure_selected_local_model_loaded(
     recipe: dict[str, Any], local_provider_names: set[str]
-) -> None:
+) -> tuple[Optional[str], Any]:
+    from core.inference import model_slots
+
     model_loaded, active_model, active_variant = _loaded_local_model_identity()
-    if not model_loaded:
+    copies = [
+        (slot, model, variant)
+        for slot in model_slots.visible()
+        for loaded, model, variant in [model_slots.in_slot(slot, _loaded_local_model_identity)]
+        if loaded
+    ]
+    if model_loaded:
+        copies.insert(0, (None, active_model, active_variant))
+    if not copies:
         raise ValueError("No model loaded in Chat. Load a model first, then run the recipe.")
 
     selection = _single_used_local_model_selection(recipe, local_provider_names)
     if selection is None:
-        return
+        return None, None
 
     target, gguf_variant = selection
-    variant_matches = not gguf_variant or active_variant == gguf_variant
-    if active_model.lower() != target.lower() or not variant_matches:
+    same_repo = [(slot, v) for slot, model, v in copies if model.lower() == target.lower()]
+    match = [slot for slot, v in same_repo if not gguf_variant or v == gguf_variant]
+    if not match:
         selected = f"{target} ({gguf_variant})" if gguf_variant else target
         active = f"{active_model} ({active_variant})" if active_variant else active_model
         raise ValueError(
@@ -299,6 +315,10 @@ def _ensure_selected_local_model_loaded(
             f"Selected {selected}; active {active or 'none'}. "
             "Load the selected model again, then run the recipe."
         )
+    # Named for the job's lifetime: a sibling quant loaded later would take a bare repo id.
+    pin = gguf_variant and (len(same_repo) > 1 or _names_quant(gguf_variant))
+    served = f"{target}:{gguf_variant}" if pin else None
+    return served, match[0]
 
 
 def _inject_local_structured_response_format(
@@ -371,6 +391,42 @@ def _inject_local_structured_response_format(
         model_configs.extend(new_configs)
 
 
+# Generation settings a recipe may send to the loaded model. Every other field Studio's own /v1 chat
+# request declares (tools, permission / sandbox level, provider rerouting, MCP) is control, not sampling:
+# a shared recipe must not set it behind a "Local model" label, nor a keyless caller reach it this way.
+_LOCAL_EXTRA_BODY_GENERATION_KEYS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "presence_penalty",
+        "frequency_penalty",
+        "repetition_penalty",
+        "logit_bias",
+        "stop",
+        "seed",
+        "n",
+        "logprobs",
+        "top_logprobs",
+        "response_format",
+        "enable_thinking",
+        "reasoning_effort",
+        "preserve_thinking",
+        "thinking",
+        "continue_final_message",
+        "use_adapter",
+    }
+)
+
+
+def _local_extra_body_control_keys() -> frozenset[str]:
+    from models.inference import ChatCompletionRequest
+    return frozenset(ChatCompletionRequest.model_fields) - _LOCAL_EXTRA_BODY_GENERATION_KEYS
+
+
 def _inject_local_providers(
     recipe: dict[str, Any],
     request: Request,
@@ -407,9 +463,10 @@ def _inject_local_providers(
 
     token = ""
     internal_key_id: Optional[int] = None
+    served, slot = None, None
     if local_names & referenced_providers:
         # Point-in-time check; /v1 still returns a clear 400 if the model changes later.
-        _ensure_selected_local_model_loaded(recipe, local_names)
+        served, slot = _ensure_selected_local_model_loaded(recipe, local_names)
 
         from auth import storage
 
@@ -433,12 +490,18 @@ def _inject_local_providers(
         providers[i].pop("extra_headers", None)
         providers[i].pop("extra_body", None)
 
+    # Data Designer sends a provider-less model config to the first provider, which can be local.
+    first = providers[0] if isinstance(providers[0], dict) else {}
+    default_name = first.get("name")
+
     # llama-server's /v1/models ids can differ from the selection, so skip the health check.
     for mc in recipe.get("model_configs", []):
         if not isinstance(mc, dict):
             continue
-        if mc.get("provider") in local_names:
+        if (mc.get("provider") or default_name) in local_names:
             mc["skip_health_check"] = True
+            if served:
+                mc["model"] = served
             # Disable thinking: <think> doubles tokens and breaks data_designer's json-fence regex.
             params = mc.get("inference_parameters")
             if not isinstance(params, dict):
@@ -447,6 +510,8 @@ def _inject_local_providers(
             extra_body = params.get("extra_body")
             if not isinstance(extra_body, dict):
                 extra_body = {}
+            control = _local_extra_body_control_keys()
+            extra_body = {key: value for key, value in extra_body.items() if key not in control}
             tpl_kwargs = extra_body.get("chat_template_kwargs")
             if not isinstance(tpl_kwargs, dict):
                 tpl_kwargs = {}
@@ -455,7 +520,9 @@ def _inject_local_providers(
             params["extra_body"] = extra_body
 
     # Only llama.cpp has a grammar engine; other backends refuse response_format.
-    if _local_chat_serves_gguf():
+    from core.inference import model_slots
+
+    if model_slots.in_slot(slot, _local_chat_serves_gguf):
         _inject_local_structured_response_format(recipe, local_names)
 
     return internal_key_id

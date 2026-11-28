@@ -36,14 +36,13 @@ export function turnRequiresLegacyStream(requestPayload: unknown): boolean {
 
 /** Plain values the adapter already resolved, so the gate is a truth table. */
 export type DurableRunCandidate = {
-  /** A passthrough/external-provider turn: its own client owns the stream, so there is nothing to make durable. */
-  externalProvider?: boolean;
+  /** A connection turn whose key or headers live only in this browser: a run persists its request, so it cannot carry them. */
+  externalKeyInBrowser?: boolean;
   /** The resolved model is an audio model - it runs on its own legacy path regardless of the gate. */
   modelIsAudio?: boolean;
   /** A diffusion model is loaded: that path has no durable run to join. */
   loadedIsDiffusion?: boolean;
-  /** THIS turn carries an attachment (image/audio/video), scanned out of the current turn's message alone.
-   * A media turn stays on the subscriber-owned stream; a text follow-up to an earlier screenshot does not. */
+  /** Media in this turn's own message only; such turns stay on the subscriber-owned stream. */
   turnCarriesMedia?: boolean;
   /** The seeded partial is autosaved first and admission 409s a placeholder with content. */
   continuation?: unknown;
@@ -59,7 +58,7 @@ export type DurableRunCandidate = {
 /** The adapter's durability conjunction, extracted unchanged so it can be tested as a truth table. */
 export function isDurableRunCandidate(input: DurableRunCandidate): boolean {
   return Boolean(
-    !input.externalProvider &&
+    !input.externalKeyInBrowser &&
       input.modelIsAudio !== true &&
       input.loadedIsDiffusion !== true &&
       // Turn-scoped, not thread-scoped: a stale blob from an earlier turn must not refuse this one.

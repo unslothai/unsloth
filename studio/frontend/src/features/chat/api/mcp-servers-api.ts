@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 
 import {
   getMcpServerMutationEpoch,
@@ -60,10 +60,13 @@ export interface BlenderMcpSettings {
   blender_path: string;
 }
 
+// detect: the one app to look up (a disk read); the rest report installed: null.
 export function listMcpBuiltins(
   waitForPendingMutations = true,
+  detect?: string,
 ): Promise<McpBuiltinConfig[]> {
-  const read = () => mcpRequest<McpBuiltinConfig[]>("/builtins");
+  const path = detect === undefined ? "/builtins" : `/builtins?detect=${encodeURIComponent(detect)}`;
+  const read = () => mcpRequest<McpBuiltinConfig[]>(path);
   return waitForPendingMutations
     ? readAfterPendingMcpServerMutations(read)
     : readMcpServerMutationSnapshot(read);
@@ -82,6 +85,7 @@ export function testBlenderMcp(
 ): Promise<
   McpServerProbeResult & {
     blender_ready?: boolean;
+    blender_path?: string | null;
     blender_error?: string | null;
   }
 > {
@@ -144,16 +148,6 @@ let mcpServerSettlementListRequest: {
   promise: Promise<McpServerConfig[]>;
 } | null = null;
 
-function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const { detail, message } = body as { detail?: unknown; message?: unknown };
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
-}
-
 async function mcpRequest<T>(
   path: string,
   init?: { method?: string; body?: object },
@@ -166,7 +160,9 @@ async function mcpRequest<T>(
   // 204 No Content (DELETE) has no body — calling .json() would throw.
   if (response.status === 204) return undefined as T;
   const json = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(parseErrorText(response.status, json));
+  if (!response.ok) {
+    throw new Error(formatApiErrorBody(json) ?? `Request failed (${response.status})`);
+  }
   return json as T;
 }
 

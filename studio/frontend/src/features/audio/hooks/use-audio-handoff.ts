@@ -4,9 +4,11 @@
 import { useEffect, useRef } from "react";
 import { translate } from "@/i18n";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
+import { confirmLinkedModel, modelLinkedFromOutside } from "@/lib/linked-model-arrival";
 import { toast } from "@/lib/toast";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
+  type AudioRouteSearch,
   audioRouteIntent,
   audioWorkflowForPick,
   audioWorkflowUrlAction,
@@ -20,6 +22,8 @@ import {
 import type { AudioHostState } from "./audio-host-state";
 import { type AudioGallery, galleryCache } from "./use-audio-gallery";
 import type { AudioModelSlot } from "./use-audio-model-slot";
+
+const NO_AUDIO_SEARCH: AudioRouteSearch = {};
 
 export function useAudioHandoff({
   active,
@@ -38,17 +42,10 @@ export function useAudioHandoff({
     "refreshGallery" | "loadMore" | "loadingMoreRef" | "selectClip"
   >) {
   const navigateSelf = useNavigate();
-  const routeSearch = useSearch({ strict: false }) as {
-    model?: string;
-    quant?: string;
-    ggufQuant?: string;
-    task?: string;
-    workflow?: string;
-    audioType?: string;
-    loadId?: string;
-    gguf?: boolean;
-    item?: string;
-  };
+  // Own match: `strict: false` resolves the root match, still the Hub's ?model= while /audio's guard runs.
+  const audioSearch = useSearch({ from: "/audio", shouldThrow: false });
+  const routeResolved = audioSearch !== undefined;
+  const routeSearch: AudioRouteSearch = audioSearch ?? NO_AUDIO_SEARCH;
   const committedWorkflow = useAudioWorkspaceStore((state) => state.workflow);
   const handledRouteModel = useRef<string | null>(null);
   // The workflow the URL and the page last agreed on; cleared while hidden, so back/forward
@@ -62,6 +59,7 @@ export function useAudioHandoff({
       pendingWrite.current = null;
       return;
     }
+    if (!routeResolved) return;
     const wanted = routeSearch.model;
     if (!wanted) {
       handledRouteModel.current = null;
@@ -109,6 +107,17 @@ export function useAudioHandoff({
     const key = `${wanted}|${routeSearch.quant ?? ""}|${routeSearch.ggufQuant ?? ""}|${routeSearch.task ?? ""}|${routeSearch.audioType ?? ""}|${routeSearch.loadId ?? ""}|${routeSearch.gguf ? "gguf" : ""}|${routeSearch.workflow ?? ""}`;
     if (handledRouteModel.current === key) return;
     if (busyRef.current !== null) return;
+    if (modelLinkedFromOutside(wanted)) {
+      handledRouteModel.current = key;
+      const linked = {
+        ...routeSearch,
+        workflow: isAudioWorkflowId(routeSearch.workflow) ? routeSearch.workflow : undefined,
+      };
+      // The page stays; the pick waits for the toast's action.
+      void navigateSelf({ to: "/audio", search: { workflow: committedWorkflow }, replace: true });
+      confirmLinkedModel(wanted, () => void navigateSelf({ to: "/audio", search: linked, replace: true }));
+      return;
+    }
     // Open the named page first, or a staged or failed load leaves the user on another page.
     const routedWorkflow = isAudioWorkflowId(routeSearch.workflow)
       ? routeSearch.workflow
@@ -150,6 +159,7 @@ export function useAudioHandoff({
     });
   }, [
     active,
+    routeResolved,
     busy,
     committedWorkflow,
     routeSearch.model,

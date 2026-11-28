@@ -15,6 +15,7 @@ import threading
 import time
 from typing import Any, AsyncIterator, Iterator
 
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 
 from core.inference.llama_keepwarm import InferenceActivityReservation
@@ -53,7 +54,16 @@ def _background_request(
     timezone_headers: dict[str, str] | None = None,
     *,
     via_api_key: bool | None = None,
+    external: bool = False,
 ) -> Request:
+    state: dict[str, Any] = {
+        "generation_cancel_event": cancel_event,
+        "api_monitor_via_api_key": via_api_key,
+    }
+    if external:
+        # Admission refused keyless creators of connection runs; this request carries no credential to re-check.
+        from utils.keyless_api_access import KEYLESS_ADMISSION_STATE_KEY
+        state[KEYLESS_ADMISSION_STATE_KEY] = False
     scope = {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -75,10 +85,7 @@ def _background_request(
         "client": ("127.0.0.1", 0),
         "server": ("127.0.0.1", 0),
         "app": app,
-        "state": {
-            "generation_cancel_event": cancel_event,
-            "api_monitor_via_api_key": via_api_key,
-        },
+        "state": state,
     }
 
     async def receive():
@@ -95,6 +102,18 @@ def _chunk_finish_reason(chunk: dict[str, Any]) -> str | None:
         if isinstance(choice, dict) and choice.get("finish_reason") is not None:
             return str(choice["finish_reason"])
     return None
+
+
+def _exception_text(exc: BaseException) -> str:
+    """A refusal raised before streaming, as the live stream shows it rather than ``400: {...}``."""
+    if not isinstance(exc, HTTPException):
+        return str(exc)
+    detail = exc.detail
+    if isinstance(detail, dict):
+        nested = detail.get("error")
+        detail = nested if isinstance(nested, dict) else detail
+        detail = detail.get("message") or detail.get("detail") or detail
+    return detail if isinstance(detail, str) else json.dumps(detail, default = str)
 
 
 def _chunk_error(chunk: dict[str, Any]) -> str | None:
@@ -408,35 +427,41 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
-def _image_urls(request_payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+def _embedded_media_slots(request_payload: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str]]:
     for message in request_payload.get("messages", []):
         content = message.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
-                    yield part["image_url"]
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
+                url = part["image_url"]
+                if isinstance(url.get("url"), str):
+                    yield url, "url"
+            elif part.get("type") == "input_audio" and part.get("studio_replay") is True:
+                yield part["input_audio"], "data"
 
 
-def detach_embedded_images(request_payload: dict[str, Any]) -> dict[str, str]:
-    images: dict[str, str] = {}
-    for image_url in _image_urls(request_payload):
-        url = image_url.get("url")
-        if isinstance(url, str) and url.startswith("data:"):
-            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
-            images[digest] = url
-            image_url["url"] = digest
-    return images
+def detach_embedded_media(request_payload: dict[str, Any]) -> dict[str, str]:
+    media: dict[str, str] = {}
+    for slot, key in _embedded_media_slots(request_payload):
+        value = slot[key]
+        if key == "url" and not value.startswith("data:"):
+            continue
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        media[digest] = value
+        slot[key] = digest
+    return media
 
 
-def _attach_embedded_images(request_payload: dict[str, Any], images: dict[str, str]) -> None:
-    for image_url in _image_urls(request_payload):
-        image_url["url"] = images.get(image_url.get("url"), image_url.get("url"))
+def _attach_embedded_media(request_payload: dict[str, Any], media: dict[str, str]) -> None:
+    for slot, key in _embedded_media_slots(request_payload):
+        slot[key] = media.get(slot[key], slot[key])
 
 
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
-        self._detached_images: dict[str, dict[str, str]] = {}
+        self._detached_media: dict[str, dict[str, str]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
@@ -450,6 +475,7 @@ class ChatGenerationSupervisor:
         *,
         thread_id: str | None = None,
         model: str | None = None,
+        external: bool = False,
     ) -> bool:
         if self._stopping:
             return False
@@ -460,6 +486,7 @@ class ChatGenerationSupervisor:
                 run_id = run_id,
                 thread_id = thread_id,
                 model = model,
+                external = external,
             ):
                 pass
             return True
@@ -473,11 +500,13 @@ class ChatGenerationSupervisor:
         cancel_event.renew_lease = lambda: db.touch_progress(run_id)
         activity = InferenceActivityReservation()
         activity.reserve()
+        # External runs stay out of the local swap guard, as the legacy proxy's registration does.
         registration = active_generations.ActiveGeneration(
             cancel_event,
             run_id = run_id,
             thread_id = thread_id,
             model = model,
+            external = external,
         )
         registration.__enter__()
         self._cancel_events[run_id] = cancel_event
@@ -491,16 +520,19 @@ class ChatGenerationSupervisor:
         *,
         thread_id: str | None = None,
         model: str | None = None,
-        images: dict[str, str] | None = None,
+        media: dict[str, str] | None = None,
+        external: bool = False,
     ) -> None:
         if (
             self._stopping
             or run_id in self._tasks
-            or not self._ensure_reservation(run_id, thread_id = thread_id, model = model)
+            or not self._ensure_reservation(
+                run_id, thread_id = thread_id, model = model, external = external
+            )
         ):
             return
-        if images:
-            self._detached_images[run_id] = images
+        if media:
+            self._detached_media[run_id] = media
         cancel_event = self._cancel_events[run_id]
         activity = self._activities[run_id]
         try:
@@ -515,7 +547,7 @@ class ChatGenerationSupervisor:
         task.add_done_callback(lambda completed, rid = run_id: self._task_done(rid, completed))
 
     def _cleanup_registration(self, run_id: str) -> None:
-        self._detached_images.pop(run_id, None)
+        self._detached_media.pop(run_id, None)
         self._cancel_events.pop(run_id, None)
         activity = self._activities.pop(run_id, None)
         if activity is not None:
@@ -642,8 +674,11 @@ class ChatGenerationSupervisor:
         # Sent on its own chunk, since the finish chunk still reads `stop`.
         quote_cut = False
         saw_done = False
+        # Read as each chunk lands, before the next pull resumes the stream: the provider proxy sets the shared event in its own teardown.
+        stopped = False
         worker_token: str | None = None
         next_raw_task: asyncio.Task | None = None
+        background_scope: dict[str, Any] | None = None
 
         def start_write() -> None:
             nonlocal writing, pending, write_task, last_flush
@@ -720,14 +755,21 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
-                _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
+                _attach_embedded_media(request_payload, self._detached_media.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
+                background = _background_request(
+                    self.app,
+                    run_id,
+                    cancel_event,
+                    timezone_headers,
+                    via_api_key = via_api_key,
+                    external = bool(payload.provider_id),
+                )
+                background_scope = background.scope
                 # Prep runs before the first-token budget; one later touch cannot cover prep longer than the lease
                 response = await produce_openai_chat_completions(
                     payload,
-                    _background_request(
-                        self.app, run_id, cancel_event, timezone_headers, via_api_key = via_api_key
-                    ),
+                    background,
                     owner,
                     cancel_on_disconnect = False,
                 )
@@ -774,6 +816,7 @@ class ChatGenerationSupervisor:
                 except StopAsyncIteration:
                     next_raw_task = None
                     raw = None
+                stopped = cancel_event.is_set()
                 if raw is None:
                     events = decoder.flush()
                 else:
@@ -822,7 +865,7 @@ class ChatGenerationSupervisor:
                 status = "failed"
                 finish_reason = "interrupted"
                 error = "Unsloth shut down during generation"
-            elif current["cancelRequested"] or (cancel_event.is_set() and error is None):
+            elif current["cancelRequested"] or (stopped and error is None):
                 # The streaming paths set this event after an in-band error too, so a parsed failure outranks it.
                 status = "cancelled"
                 finish_reason = "cancelled"
@@ -879,7 +922,7 @@ class ChatGenerationSupervisor:
                         if cancelled
                         else "Unsloth shut down during generation"
                         if shutting_down
-                        else str(exc)[:1000]
+                        else _exception_text(exc)[:1000]
                     ),
                     pending_events = pending,
                 )
@@ -892,4 +935,5 @@ class ChatGenerationSupervisor:
                     next_raw_task.cancel()
                 await asyncio.gather(next_raw_task, return_exceptions = True)
             await _close_iterator(iterator)
-            activity.finish()
+            # The provider proxy untracks its scope and drops the started count itself.
+            activity.finish(background_scope)

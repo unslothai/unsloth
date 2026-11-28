@@ -109,10 +109,6 @@ KNOWN_DEFAULT = ",".join(
     + [f"{m}:thread_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:settings_scroll=7" for m in _GLASS_MODES]
     + [f"{m}:type=6" for m in _GLASS_MODES]
-    # Opening Settings restyles elements across the thread, on main too (fresh pages, default
-    # appearance: 1,975 -> 9,721 elements at 40 -> 200 turns, 4.9x). Reduce motion's blanket
-    # transitions used to add ~3,800 elements to the gate's 40 turn reading, which hid the growth.
-    + ["length:settings=5"]
 )
 KNOWN = os.environ.get("LONG_THREAD_AREAS_KNOWN", KNOWN_DEFAULT)
 
@@ -276,9 +272,7 @@ STREAMED = """(end) => {
   return !!a && (a.textContent || '').includes(end) && !document.querySelector('.aui-composer-cancel');
 }"""
 
-# Answers /v1/chat/completions from the page with STREAM's frames, one per STREAM_MS.
-# The thread mounts only the rows near the reader, so "loaded" is the length its rows publish
-# (aria-setsize); a thread short enough to mount whole publishes none and is counted instead.
+# Only near rows mount, so loaded is the aria-setsize; a thread mounted whole publishes none.
 THREAD_LOADED = """(n) => {
   const rows = document.querySelectorAll('[data-role]');
   if (rows.length >= n) return true;
@@ -548,14 +542,14 @@ AREAS: dict[str, dict] = {
     },
 }
 
-# Popup triggers on the chat page that are not measured, with why. A trigger that is neither here
-# nor in an area's `covers` fails the coverage check.
+# Unmeasured chat-page popup triggers, with why; a trigger in neither here nor covers fails.
 NOT_AREAS = {
     "popover-trigger:Request failed": "the gate's API stub has no model runtime; this chip only shows a failed status call",
     "dropdown-menu-trigger:Open preset list": "inside the run settings panel, measured as run_settings",
     "dropdown-menu-trigger:Run settings for this model": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "select-trigger:Inference engine": "in the run settings sheet (mounted off screen once a model is resident), measured as run_settings",
     "message-timing-trigger:Message timing": "a hover readout on the reply the stream area streamed; the seeded turns carry no timing",
+    "popover-trigger:Files in this chat": "new in #19172, so the base arm has no control to open; its inventory is built in the chat render every area already measures",
 }
 
 # Keyboard shortcuts (features/settings/lib/keyboard-shortcuts.ts): the area that measures what it
@@ -745,10 +739,8 @@ class Api:
             "/api/hub/local": {"models": []},
             "/api/hub/hidden-models": {"hidden": []},
             "/api/settings/pinned-models": {"pinned": []},
-            # A settled hardware verdict, as the real backend gives once detection ends. Without
-            # `version` / `chat_only` the app keeps capabilities "unknown" and the sidebar Train row
-            # spins for the whole run: an always-running animation, and Chromium then recomputes every
-            # IntersectionObserver target on each frame, so every action's cost grew with the chat.
+            # Without version and chat_only, the Train row spins for the run and costs grow with the
+            # chat.
             "/api/health": {
                 "status": "healthy",
                 "version": "2026.11.1",
@@ -763,6 +755,7 @@ class Api:
                 "is_gguf": False,
             },
             "/api/chat/settings": {"settings": {}},
+            "/api/rag/knowledge-bases": {"knowledgeBases": [], "ragAvailable": True},
         }
 
     def handle(self, route) -> None:
@@ -1248,8 +1241,7 @@ class Page:
             self.hovered = False
 
     def sweep(self, areas: list[str]) -> dict[str, dict]:
-        """Run the areas inside one trace; a failure part way still ends the browser-wide trace, so
-        the next page can start its own."""
+        """A failure still ends the browser-wide trace, so the next page can start its own."""
         try:
             return self._sweep(areas)
         except BaseException:
@@ -2028,9 +2020,8 @@ def run(
     if again and RECHECKS:
         _in_thread(remeasure, result, again, log)
         verdicts = judge(result)
-        # A recheck that lowers one side of a comparison (the short chat, or the base appearance) can
-        # make a failure appear only now, judged on a reading that was never measured again: those
-        # cells get the same fresh-page rechecks once.
+        # A recheck can lower one side of a comparison and expose a new failure, so recheck those
+        # once.
         late = sorted(set(recheck_keys(verdicts)) - set(again))
         if late:
             _in_thread(remeasure, result, late, log)

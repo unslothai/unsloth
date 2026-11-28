@@ -27,8 +27,7 @@ export interface TrainingTransformersUpgradeNotice {
   installSwitchesTo16Bit: boolean;
 }
 
-/** With custom code and an installable release, the fallback keeps 4-bit while Install trains
- * 16-bit. `installable && !forces16Bit` is exactly that case. */
+/** Installable custom code: fallback 4-bit; Install trains 16-bit unless sidecar keeps 4-bit. */
 export function trainingTransformersUpgradeNotice(
   check: TransformersUpgradeCheck,
   loadsIn4Bit: boolean,
@@ -38,7 +37,11 @@ export function trainingTransformersUpgradeNotice(
   return {
     installVersion,
     fourBitUnavailable: check.forces16Bit && loadsIn4Bit,
-    installSwitchesTo16Bit: installable && !check.forces16Bit && loadsIn4Bit,
+    installSwitchesTo16Bit:
+      installable &&
+      !check.forces16Bit &&
+      !check.sidecarKeeps4Bit &&
+      loadsIn4Bit,
   };
 }
 
@@ -63,8 +66,7 @@ export function getTrainingResumeUpgradeWouldStrandMessage(
   return `${modelName} is not supported yet by the installed transformers, and installing the release it needs would permanently retire the 4-bit model load this checkpoint was attested with, so the resume would still fail. Start a new run on this model instead.`;
 }
 
-/** Raise chat's upgrade dialog before a run starts instead of failing at model load. Additive:
- * a backend without the check leaves the start unchanged. */
+/** Raises chat's upgrade dialog before a run, not at model load; old backends are unchanged. */
 export async function confirmTrainingTransformersUpgrade({
   modelName,
   hfToken,
@@ -113,8 +115,7 @@ export async function confirmTrainingTransformersUpgrade({
       };
     }
     if (installable) {
-      // Installing activates the latest tier, after which effective_training_load_in_4bit raises
-      // (provenance.py), so consent buys only an irreversible overlay.
+      // Install is irreversible: makes effective_training_load_in_4bit raise (provenance.py).
       return {
         proceed: false,
         error: getTrainingResumeUpgradeWouldStrandMessage(modelName),
@@ -153,11 +154,11 @@ export async function confirmTrainingTransformersUpgrade({
       requiresTrustRemoteCode,
     };
   }
-  // Installed: the latest sidecar trains 16-bit. The custom-code fallback still loads 4-bit.
+  // Installed: 16-bit on the sidecar unless it keeps 4-bit; the custom-code fallback loads 4-bit.
   return {
     proceed: true,
     error: null,
-    forces16Bit: installRan,
+    forces16Bit: installRan && !check.sidecarKeeps4Bit,
     requiresTrustRemoteCode,
   };
 }

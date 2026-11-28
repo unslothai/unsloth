@@ -1287,8 +1287,7 @@ else:
 
 
 def _install_share_pass(logger: Any = None) -> bool:
-    """Set the post-grad pass (Q / K / V share + the folds switched on) unless all are off or another pass already
-    holds the slot."""
+    """Set the post-grad Q/K/V share/folds pass unless all off or another pass holds the slot."""
     if ShareRotqPass is None:
         return False
     want = ShareRotqPass()

@@ -31,8 +31,7 @@ _INT8PACK_ALIGN = 32
 # chip's own bf16 GEMM by this much (M1: about 1.3x; M3 parity; M5 4x behind, as its 16-bit GEMM uses matrix units).
 _INT8PACK_MIN_SPEEDUP = 1.10
 _INT8PACK_PROBE_ROWS = 1024
-# (dtype, in_features, out_features) of the probed layer -> verdict for this process (one chip per process). Each
-# quantised transformer's layers carry their own verdict, so a later model with other shapes is probed afresh.
+# Per (dtype, in_features, out_features) verdict, per process; other shapes are probed afresh.
 _INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
@@ -143,7 +142,9 @@ def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
     scale = layer.weight_scale.view(torch.float32).to(device).to(dtype).contiguous()
     w = (w_q.to(dtype) * scale.unsqueeze(1)).contiguous()
     x = torch.randn(_INT8PACK_PROBE_ROWS, layer.in_features, dtype = dtype, device = device)
-    sync = torch.mps.synchronize if device.type == "mps" else (lambda: None)
+    from .diffusion_device import mps_synchronize
+
+    sync = mps_synchronize if device.type == "mps" else (lambda: None)
     kernel = lambda: torch._weight_int8pack_mm(x, w_q, scale)
     dense = lambda: torch.nn.functional.linear(x, w)
     kernel()
@@ -164,9 +165,8 @@ def probe_mps_int8pack(
     device: Any = "mps",
     logger: Any = None,
 ) -> bool:
-    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer and stamp
-    the verdict on every eligible layer of ``module``. Verdicts are cached per (dtype, probed shape), so another model
-    with the same largest layer reuses it and one with a different shape is probed. The env override skips the probe."""
+    """Times the Metal kernel against dense GEMM on the largest eligible layer; the verdict covers
+    all eligible layers, cached per (dtype, probed shape); an env override skips the probe."""
     import torch
 
     if mps_int8pack_disabled() or mps_int8pack_forced():
@@ -216,8 +216,7 @@ def probe_mps_int8pack(
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
-    """``scale`` rounded up to a ``dtype``-exact fp32 value: the Metal kernel takes ``dtype`` scales, so a call-time
-    cast would add per-row gain error (up to 2**-9 in bf16); rounding up never clips a code."""
+    """Scale rounded up to dtype-exact fp32 (never clips); a call-time cast adds gain error."""
     import torch
 
     # nextafter is not implemented on every backend.
@@ -274,8 +273,8 @@ def _own_rotation(h: Any, dtype: Any) -> Any:
     return h.to(dtype, copy = True)
 
 
-def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
-    """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
+def _w8a8_codes(x2: Any, rot_h: Any) -> tuple:
+    """``_w8a8_rows``' rotation + act quant: (row-major int8 codes [M, K], fp32 row scales [M, 1])."""
     import torch
 
     if rot_h is not None:
@@ -291,6 +290,14 @@ def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any)
     if rot_h is None:
         op = _FUSED_STATE.get("row_major")
         xq = op(xq) if op is not None else xq.contiguous()
+    return xq, x_scale
+
+
+def _w8a8_rows(x2: Any, rot_h: Any, weight_q: Any, weight_scale: Any, bias: Any) -> Any:
+    """Eager ``_rotate`` + ``_int_mm_rows`` maths on tensors only, so offload hooks never invalidate the graph."""
+    import torch
+
+    xq, x_scale = _w8a8_codes(x2, rot_h)
     acc = torch._int_mm(xq, weight_q.t())
     out = torch.mul(acc, x_scale)
     w_scale = weight_scale.view(torch.float32)
@@ -310,6 +317,8 @@ def _w8a8_rows_into(
 
 # "devices": per card, None once it may run the compiled linear, else why not (its arch, or its compile failed).
 _FUSED_STATE: dict = {"fn": None, "failed": None, "devices": {}}
+# sm75 fp16 no-bias calls served by the CUTLASS GEMM (epilogue bit-equal to ``_w8a8_rows``).
+_CUT16_CALLS = [0]
 _UNSEEN = object()
 
 
@@ -370,8 +379,7 @@ def rocm_rdna_w8a8_ready(ordinal: Optional[int] = None) -> bool:
 
 
 def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
-    """Compiled ``_w8a8_rows`` for an input on ``device`` (current card when None), or None if disabled, no inductor
-    runtime, a ROCm arch other than RDNA3 / RDNA4, or already failed on that card."""
+    """Compiled fn or None if disabled, no inductor, non-RDNA3/4 ROCm, or failed on that card."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return None
     devices = _FUSED_STATE.get("devices")
@@ -419,12 +427,12 @@ def _fused_w8a8(device: Any = None) -> Optional[Callable[..., Any]]:
         return fn
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
-    # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
-    # "calls" after the first call would recompile each compiled function once.
+    # Older dynamo guards on len(_FUSED_STATE), so every key must exist before first trace.
     _FUSED_STATE.setdefault("calls", 0)
     fn = torch.compile(_w8a8_rows, dynamic = True, fullgraph = True)
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
     _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
+    _FUSED_STATE["codes"] = torch.compile(_w8a8_codes, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
     log.info("diffusion.native_quant: int8 W8A8 linear runs as one compiled function")
     return fn
@@ -458,9 +466,8 @@ def _autocast_on(x: Any) -> bool:
 
 
 def fused_w8a8_serves(module: Any) -> bool:
-    """Whether ``module`` holds native int8 W8A8 linears that the compiled function serves (CUDA, not ROCm, an
-    inductor runtime, not disabled and not failed). It never runs inside a CUDA-graph capture, so a captured step
-    bakes those linears' eager kernels instead. Never raises."""
+    """Whether int8 W8A8 linears run the compiled function (CUDA, not ROCm, inductor, not disabled
+    or failed); never inside CUDA-graph capture (eager kernels baked); never raises"""
     try:
         if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
             return False
@@ -494,6 +501,7 @@ def fused_w8a8_state() -> dict:
         failed = next((why for why in devices.values() if why is not None), None)
     return {
         "calls": _FUSED_STATE.get("calls", 0),
+        "cutlass16_calls": _CUT16_CALLS[0],
         "failed": failed,
         "devices": {_key_label(k): why for k, why in devices.items()},
     }
@@ -538,10 +546,9 @@ def native_linear_class():
             scale: Any = None,
             scale_dtype: Any = None,
         ):
-            """``codes`` / ``scale``: int8 (or, for the fp8 scheme, float8_e4m3fn) codes [out, in] and per-row
-            scales made elsewhere, stored as given (``linear`` then supplies only the shapes, dtype and bias).
-            With ``rot_group`` int8 codes are already ConvRot-rotated, so the rotation is installed whether or
-            not activations go int8. ``scale_dtype``: snap int8 scales exact in that dtype (``snap_scale_up``)."""
+            """Codes [out, in] (int8 or float8_e4m3fn) and per-row scale are stored as given; linear
+            gives shapes, dtype, bias. With rot_group, codes are ConvRot-rotated, so rotation is
+            installed even for non-int8 activations; scale_dtype snaps int8 scales exact."""
             super().__init__()
             if scheme not in _QMAX:
                 raise ValueError(f"unsupported native scheme {scheme!r}")
@@ -593,9 +600,7 @@ def native_linear_class():
                     and weight.is_floating_point()
                     and weight.dtype != cast
                 ):
-                    # A manual-cast Linear stores bf16 for a float16 / float32 compute: round to the compute dtype
-                    # first, as a load widened on the host would have (bf16 -> float16 is not exact), so the
-                    # codes are the same either way.
+                    # Round to compute dtype first, like a host-widened load, so codes match.
                     weight = weight.to(cast)
                 with torch.no_grad():
                     w = weight.float()
@@ -638,11 +643,22 @@ def native_linear_class():
             self._int8pack_scales: dict = {}
             # ROCm RDNA: fused rotate+quant and int8 GEMM kernels, probed per card here, in eager, before any trace.
             self._rdna = False
+            # ROCm, shape the kernels take: ``_rdna_on`` then follows the operand's card, not the build card.
+            self._rdna_rocm = False
             if self.act_int8:
-                self._rdna = (
-                    rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
-                    and rdna.prepare()
+                shape_ok = rdna.shape_supported(self.in_features, self.out_features, self.rot_group)
+                # Probe the card the weight is on (the load's device), not whichever card is current.
+                src = getattr(linear, "weight", None)
+                weight_device = (
+                    src.device if isinstance(src, torch.Tensor) and src.is_cuda else None
                 )
+                self._rdna = shape_ok and rdna.prepare(weight_device)
+                if shape_ok and not self._rdna and not rdna.rdna_triton_disabled():
+                    try:
+                        from .rocm_bf16 import is_rocm_torch
+                        self._rdna_rocm = bool(is_rocm_torch(torch))
+                    except Exception:  # noqa: BLE001
+                        self._rdna_rocm = False
                 # NVIDIA: the fused rotation + act quant compiled forwards take, probed once per card in eager. Only
                 # on a live CUDA context (diffusion_speed probes the denoiser's card again before the compile).
                 if (
@@ -719,8 +735,7 @@ def native_linear_class():
 
         @property
         def weight(self) -> Any:
-            """The dense weight, rebuilt on each read. Code that reads a wrapped Linear's weight directly
-            (PEFT's DoRA forward reads ``base_layer.weight``) keeps working; nothing holds it."""
+            """Rebuilt on each read and never held, so direct readers (PEFT DoRA) still work."""
             return self.dequantized_weight(self.compute_dtype)
 
         def _int_mm_ok(self, rows: int) -> bool:
@@ -757,6 +772,8 @@ def native_linear_class():
                 if tile is not None:
                     try:
                         return _cut.native_gemm(xq, self.weight_q, x_scale, w_scale, tile)
+                    except torch.cuda.OutOfMemoryError:
+                        raise  # _int_mm's int32 accumulator is larger; the plan is not at fault
                     except Exception:  # noqa: BLE001 - the stock maths below
                         _cut._NATIVE_PLAN.clear()
             acc = torch._int_mm(xq, self.weight_q.t())
@@ -810,7 +827,11 @@ def native_linear_class():
             return out.reshape(*x.shape[:-1], self.out_features)
 
         def _rdna_on(self, x: Any) -> bool:
-            if not (self._rdna and x.is_cuda and x.dtype in (torch.bfloat16, torch.float16)):
+            if not (
+                (self._rdna or self._rdna_rocm)
+                and x.is_cuda
+                and x.dtype in (torch.bfloat16, torch.float16)
+            ):
                 return False
             # The custom ops have no backward: a graph that needs input gradients keeps the stock maths.
             if x.requires_grad and torch.is_grad_enabled():
@@ -838,6 +859,76 @@ def native_linear_class():
                 )
             return out.reshape(*x.shape[:-1], self.out_features)
 
+        def _forward_cutlass16(self, x2: Any, rot_h: Any, rows: int) -> Any:
+            """sm75 fp16, no bias: compiled codes + CUTLASS GEMM; None where its race kept cuBLAS or autocast is on."""
+            if self.bias is not None or x2.dtype != torch.float16:
+                return None
+            codes = _FUSED_STATE.get("codes")
+            if codes is None or _autocast_on(x2):
+                return None
+            from . import diffusion_int8_cutlass as _cut  # noqa: PLC0415
+
+            entry = _cut._NATIVE_PLAN.get(
+                (x2.device.index, int(self.weight_q.shape[0]), int(self.weight_q.shape[1]))
+            )
+            if not entry:
+                return None
+            # Same row budget as the fused path: never codes for every row at once.
+            chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(self.in_features, self.out_features)
+            parts = (
+                (x2,)
+                if rows <= chunk or chunk < 2 * _INT_MM_MIN_ROWS
+                else torch.tensor_split(x2, -(-rows // chunk))
+            )
+            if any(
+                entry.get(
+                    max(_cut._RACE_M)
+                    if part.shape[0] >= _cut._NATIVE_LARGE_M
+                    else min(_cut._RACE_M)
+                )
+                is None
+                for part in parts
+            ):
+                return None
+            if len(parts) == 1:
+                return self._cutlass16_rows(codes, x2, rot_h, _cut)
+            out = None
+            start = 0
+            for part in parts:
+                got = self._cutlass16_rows(codes, part, rot_h, _cut)
+                if got is None:
+                    return None
+                if out is None:
+                    out = got.new_empty(rows, self.out_features)
+                stop = start + part.shape[0]
+                out[start:stop].copy_(got)
+                del got
+                start = stop
+            return out
+
+        def _cutlass16_rows(self, codes: Any, x2: Any, rot_h: Any, _cut: Any) -> Any:
+            try:
+                xq, xs = codes(x2, rot_h)
+            except torch.cuda.OutOfMemoryError:
+                raise
+            except Exception:  # noqa: BLE001 - a compile failure keeps the compiled ``_w8a8_rows``
+                _FUSED_STATE["codes"] = None
+                return None
+            ws = self.weight_scale.view(torch.float32)
+            tile = _cut.native_tile(xq, self.weight_q, xs, ws)
+            if tile is not None:
+                try:
+                    out = _cut.native_gemm(xq, self.weight_q, xs, ws, tile)
+                    _CUT16_CALLS[0] += 1
+                    _FUSED_STATE["calls"] = _FUSED_STATE.get("calls", 0) + 1
+                    return out
+                except torch.cuda.OutOfMemoryError:
+                    raise  # as for the codes: _int_mm needs more, and every plan stays valid
+                except Exception:  # noqa: BLE001 - the same maths in eager below
+                    _cut._NATIVE_PLAN.clear()
+            acc = torch._int_mm(xq, self.weight_q.t())
+            return torch.mul(acc, xs).mul_(ws).to(x2.dtype)
+
         def _forward_fused(self, x: Any) -> Any:
             """Chunked compiled forward; None = use eager kernels (also during CUDA graph capture)."""
             in_f = self.in_features
@@ -857,6 +948,9 @@ def native_linear_class():
             # Detached: guards on a view's base / Parameter shape would recompile per layout / layer.
             x2 = x.reshape(-1, in_f).detach()
             rot_h = self.rot_h if self.rot_group else None
+            out = self._forward_cutlass16(x2, rot_h, rows)
+            if out is not None:
+                return out.reshape(*x.shape[:-1], self.out_features)
             bias = self.bias.detach() if self.bias is not None else None
             chunk = _INT_MM_FUSED_CHUNK_ELEMS // max(in_f, self.out_features)
             try:
@@ -936,7 +1030,6 @@ def native_linear_class():
             return x.device.type == "mps" and x.numel() > 0 and self._int8pack_layer_ok(x.dtype)
 
         def int8pack_engaged(self, dtype: Any) -> bool:
-            """Whether a ``dtype`` forward on the stored device takes the Metal int8 kernel."""
             device = self.weight_q.device
             return (
                 device.type == "mps"
@@ -1005,7 +1098,6 @@ def is_native_linear(module: Any) -> bool:
 
 
 def is_native_quantised(module: Any) -> bool:
-    """Whether any layer of ``module`` has been swapped for a native weight-only Linear."""
     try:
         return any(is_native_linear(sub) for sub in module.modules())
     except Exception:  # noqa: BLE001 -- a probe must never replace the failure it describes
@@ -1021,8 +1113,7 @@ def apply_native_weight_quant(
     logger: Any = None,
     scale_dtype: Any = None,
 ) -> int:
-    """Swap every Linear ``filter_fn`` keeps for a native weight-only twin; returns layers swapped. One layer
-    at a time; a failure part-way leaves a partial conversion the caller must refuse."""
+    """Returns layers swapped; a failure leaves a partial conversion the caller must refuse."""
     cls = native_linear_class()
     act_int8 = scheme == NATIVE_INT8 and bool(act_int8)
     rot_group = int8_rotation_group() if act_int8 else 0

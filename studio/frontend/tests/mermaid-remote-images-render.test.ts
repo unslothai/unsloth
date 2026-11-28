@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The render call Streamdown makes once a diagram scrolls into view, on the real mermaid, with
-// an Image that records the address a browser would request instead of fetching it.
+// Streamdown's render on real mermaid; an Image records the address a browser would request.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DOMImplementation } from "@xmldom/xmldom";
@@ -86,4 +85,25 @@ test("an init directive cannot write a url() into the diagram's CSS", async () =
   assert.match(String((await applied(stock)).themeCSS), /attacker/, "the harness should see the stock plugin take the directive");
   // The plugin's own font still applies; only the diagram's directive is refused.
   assert.deepEqual(await applied(guarded), { themeCSS: undefined, fontFamily: "monospace" });
+});
+
+// Mermaid rewrites the text before parsing: a quoted newline folds into <br/> (the shape data becomes a
+// flow mapping), every %%{...}%% is deleted, and #code; references are decoded.
+const REWRITTEN = [
+  'flowchart LR\n  A@{ shape: rect, "img":"https://attacker.example/newline", "label":"Quarterly\n    report" }',
+  'flowchart LR\n  A@%%{init: {}}%%{ shape: rect, "img":"https://attacker.example/directive", "label":"Quarterly report" }',
+  'flowchart LR\n  A@{ shape: rect, "#105;mg":"https://attacker.example/entity", "label":"Quarterly report" }',
+];
+
+test("the stock plugin requests the image of each rewritten diagram (the harness sees it)", async () => {
+  for (const [index, source] of REWRITTEN.slice(0, 2).entries()) {
+    const seen = await imagesRequestedBy(stock, source, `r${index}`);
+    assert.ok(seen.some((url) => url.includes("attacker.example")), source);
+  }
+});
+
+test("the guarded plugin requests none of them", async () => {
+  for (const [index, source] of REWRITTEN.entries()) {
+    assert.deepEqual(await imagesRequestedBy(guarded, source, `g${index}`), [], source);
+  }
 });

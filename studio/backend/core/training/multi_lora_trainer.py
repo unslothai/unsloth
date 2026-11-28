@@ -99,6 +99,7 @@ def _format_dataset(trainer, config: dict, hf_token):
     result = trainer.load_and_format_dataset(
         dataset_source = hf_dataset if hf_dataset and hf_dataset.strip() else None,
         format_type = config.get("format_type", ""),
+        prefer_native_alpaca = config.get("prefer_native_alpaca", False),
         local_datasets = config.get("local_datasets") or None,
         custom_format_mapping = config.get("custom_format_mapping"),
         subset = config.get("subset"),
@@ -387,6 +388,10 @@ def _member_tokenizer(tokenizer, model_name: str, final_format: str):
     return get_training_chat_template(copy.deepcopy(tokenizer), model_name, final_format)
 
 
+def _is_raw_text(final_format: str, config: dict) -> bool:
+    return final_format == "raw_text" or config.get("format_type") == "raw"
+
+
 def _tokenize_member(
     dataset_info,
     tokenizer,
@@ -394,6 +399,7 @@ def _tokenize_member(
     model_name: str,
     max_length: int,
     vocab_size = None,
+    wrapped: bool = False,
 ):
     """(tokenizer to save, [(input_ids, labels)]) with the single SFT path's tokenization and masking."""
     from datasets import Dataset
@@ -442,9 +448,15 @@ def _tokenize_member(
         add_special_tokens = resolve_add_special_tokens(
             member_tok, first_sample_text(dataset, "text")
         )
-        encode = build_tokenizing_transform(member_tok, "text", max_length, add_special_tokens)
-        input_ids = [list(x) for x in encode({"text": list(dataset["text"])})["input_ids"]]
-    raw = final_format == "raw_text" or config.get("format_type") == "raw"
+        texts = list(dataset["text"])
+        if wrapped:
+            # Wrapped packing carries a long document into the next row, so it is not cut here.
+            encoded = member_tok(texts, add_special_tokens = add_special_tokens)
+        else:
+            encode = build_tokenizing_transform(member_tok, "text", max_length, add_special_tokens)
+            encoded = encode({"text": texts})
+        input_ids = [list(x) for x in encoded["input_ids"]]
+    raw = _is_raw_text(final_format, config)
     if labels is None and config.get("train_on_completions") and not raw:
 
         def build_masker(holder, **kwargs):
@@ -466,7 +478,9 @@ def _tokenize_member(
             model_name,
             build_masker,
             notify = lambda level, message: logger.info(message),
-            dataset_template = "alpaca" if final_format == "alpaca" else None,
+            dataset_template = dataset_info.get("dataset_template")
+            if isinstance(dataset_info, dict)
+            else None,
         )
         if applied:
             labels = [list(x) for x in holder.train_dataset["labels"]]
@@ -699,8 +713,9 @@ def _pack_rows(
     rows: list,
     max_length: int,
     num_proc: Optional[int] = None,
+    wrapped: bool = False,
 ) -> tuple[list, list]:
-    """The single job's packing (TRL's default strategy) of one member's documents into rows of max_length."""
+    """The single job's packing (wrapped, else TRL's default strategy) of one member's documents into rows of max_length."""
     import dataclasses
     import inspect
 
@@ -714,13 +729,15 @@ def _pack_rows(
             (f.default for f in dataclasses.fields(SFTConfig) if f.name == "packing_strategy"),
             "bfd",
         )
+        if wrapped:
+            strategy = "wrapped"
         packed = pack_dataset(
             dataset, max_length, strategy = strategy, map_kwargs = {"num_proc": num_proc}
         )
     else:
         packed = pack_dataset(dataset, max_length, map_kwargs = {"num_proc": num_proc})
     ids = [list(x) for x in packed["input_ids"]]
-    # Wrapped packing (TRL < 0.20) keeps no boundaries: one sequence per row, as the single job trains it.
+    # Wrapped packing (also TRL < 0.20's only strategy) keeps no boundaries: one sequence per row, as the single job trains it.
     lengths = (
         [list(n) for n in packed["seq_lengths"]]
         if "seq_lengths" in packed.column_names
@@ -730,7 +747,7 @@ def _pack_rows(
 
 
 def _collate_packed(rows: list, slots: list, lengths: list) -> dict:
-    """One padding-free row as the single job packs it, each token routed to its member, no label across documents."""
+    """One padding-free row as the single job packs it, each token routed to its member, no label across packed sequences."""
     import torch
 
     seq = [n for row in lengths for n in row]
@@ -1013,6 +1030,12 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
             final_format = (
                 str(info.get("final_format", "")).lower() if isinstance(info, dict) else ""
             )
+            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
+            packing = member.config.get("packing") and final_format != PRETOKENIZED_FORMAT
+            if packing and packs is None:
+                packs = _packs(model)
+                pack_workers = _pack_num_proc(processor, trainer) if packs else None
+            wrapped = bool(packing and packs) and _is_raw_text(final_format, member.config)
             member_tok, member.rows = _tokenize_member(
                 info,
                 tokenizer,
@@ -1020,25 +1043,21 @@ def _run(event_queue, stop_queue, config: dict, members: list) -> None:
                 model_name,
                 max_length,
                 vocab_size = int(model.get_input_embeddings().num_embeddings),
+                wrapped = wrapped,
             )
             # Saved as the single job saves it: the full processor (preprocessor_config.json for export).
             member.tokenizer = processor if member_tok is tokenizer else member_tok
-            # The single job turns packing off for pre-tokenized rows, whose labels packing would drop.
-            if member.config.get("packing") and final_format != PRETOKENIZED_FORMAT:
-                if packs is None:
-                    packs = _packs(model)
-                    pack_workers = _pack_num_proc(processor, trainer) if packs else None
-                if packs:
-                    documents = len(member.rows)
-                    member.rows, member.seq_lengths = _pack_rows(
-                        member.rows, max_length, pack_workers
-                    )
-                    logger.info(
-                        "Batched training: %s packs %d documents into %d rows",
-                        member.run_id,
-                        documents,
-                        len(member.rows),
-                    )
+            if packing and packs:
+                documents = len(member.rows)
+                member.rows, member.seq_lengths = _pack_rows(
+                    member.rows, max_length, pack_workers, wrapped = wrapped
+                )
+                logger.info(
+                    "Batched training: %s packs %d documents into %d rows",
+                    member.run_id,
+                    documents,
+                    len(member.rows),
+                )
         except Exception as exc:
             member.done = True
             _send(

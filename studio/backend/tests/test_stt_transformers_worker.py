@@ -1056,3 +1056,31 @@ def test_a_crashed_child_whose_ready_word_was_lost_is_still_not_read_as_a_bad_ho
 
     assert faulted.is_set()
     assert isinstance(caught.value, worker_module.SttWorkerSpawnError) is False
+
+
+def test_child_installs_the_tokenizer_backports_before_the_processor_load(monkeypatch):
+    # The spawn child never imports unsloth, so a Hub repo's tokenizer files could name a host
+    # file as the vocabulary and have the transcript spell it out.
+    import utils.transformers_backports as backports
+
+    calls, _model, _processor = _install_fake_transformers(monkeypatch)
+    monkeypatch.setattr(backports, "install", lambda: calls.append(("backports", None, {})))
+
+    worker_module.load_whisper("/cached/model", "cpu", "float32")
+
+    kinds = [kind for kind, _, _ in calls]
+    assert kinds.index("backports") < kinds.index("processor")
+
+
+def test_child_load_fails_when_the_backports_cannot_be_installed(monkeypatch):
+    import utils.transformers_backports as backports
+
+    calls, _model, _processor = _install_fake_transformers(monkeypatch)
+
+    def _missing():
+        raise ImportError("unsloth/import_fixes.py was not found")
+
+    monkeypatch.setattr(backports, "install", _missing)
+    with pytest.raises(ImportError):
+        worker_module.load_whisper("/cached/model", "cpu", "float32")
+    assert calls == []

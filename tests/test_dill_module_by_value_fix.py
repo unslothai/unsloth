@@ -218,23 +218,20 @@ def test_a_root_with_no_installed_metadata_is_left_alone(tmp_path):
 
 
 def test_it_is_idempotent(tmp_path):
-    """Applied twice, dill must not end up wrapping the wrapper: a second layer
-    is invisible until something recurses."""
+    """Applied twice, dill must not wrap the wrapper; the second layer hides until recursion."""
     got = _run_on_hostile_tree(tmp_path, apply = True)
     assert got["second_call"] is False, "the patch re-applied itself"
 
 
 def test_the_env_switch_turns_it_off(tmp_path):
-    """A user whose environment this misjudges needs a way out that does not
-    involve editing site-packages."""
+    """UNSLOTH_DISABLE_DILL_FIX=1 is the escape hatch when the check misjudges an environment."""
     got = _run_on_hostile_tree(tmp_path, apply = True, extra_env = {"UNSLOTH_DISABLE_DILL_FIX": "1"})
     assert got["applied"] is False
     assert got["dumps"].startswith("PicklingError")
 
 
 def test_an_ordinary_site_packages_install_is_a_no_op():
-    """dill's behaviour, fingerprints included, must be identical where it already works, so the
-    gate is asserted against the environment this test suite runs in."""
+    """Ordinary site-packages installs must keep dill's behaviour and fingerprints identical."""
     from unsloth.import_fixes import _dill_path_pickles_by_value
 
     assert not _dill_path_pickles_by_value("/usr/lib/python3.12/site-packages/pyarrow/__init__.py")
@@ -334,8 +331,7 @@ def test_the_fix_is_called_on_every_import_path():
 
 
 def test_that_rule_rejects_a_one_sided_conditional():
-    """The negative control for the rule above, because a walk that recurses
-    into `if` bodies passes on the very placement being rejected."""
+    """Negative control: a walk that recurses into `if` bodies passes the rejected placement."""
     import ast
 
     hidden = ast.parse(

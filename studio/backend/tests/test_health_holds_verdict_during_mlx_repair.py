@@ -44,7 +44,6 @@ def apple_silicon(monkeypatch):
     monkeypatch.setattr(mlx_repair, "_repair_started_at", None, raising = False)
     # The real check imports mlx_vlm, which is not installed here.
     monkeypatch.setattr(mlx_repair, "mlx_stack_available", lambda: False)
-    # Self-heal declines on --no-torch installs; pin the mode instead of inheriting the venv's.
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: False)
     # The pre-start hold is stamped on first use; reset so earlier tests cannot leak in.
     import main as main_mod
@@ -109,11 +108,10 @@ def test_the_opt_out_settles_the_verdict_immediately(apple_silicon, monkeypatch)
     assert mlx_repair.mlx_repair_in_flight() is False
 
 
-def test_a_no_torch_install_settles_the_verdict_immediately(apple_silicon, monkeypatch):
-    """A --no-torch install declines the self-heal the way the kill switch does, so no repair
-    is coming and the not-yet-started half must not hold the verdict for the grace."""
+def test_a_no_torch_install_holds_the_verdict_for_its_repair(apple_silicon, monkeypatch):
+    """Chat only serves MLX models, so a --no-torch Mac is repaired like any other."""
     monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: True)
-    assert mlx_repair.mlx_repair_in_flight() is False
+    assert mlx_repair.mlx_repair_in_flight() is True
 
 
 def test_a_non_apple_host_is_never_in_flight(apple_silicon, monkeypatch):
@@ -198,8 +196,7 @@ def _spend_the_handoff_grace(monkeypatch, clock) -> None:
 def test_a_repair_that_has_not_started_holds_the_verdict_while_the_warm_runs(
     apple_silicon, clock, monkeypatch
 ):
-    """The normal case, and the one no timeout could serve: the warm imports transformers
-    and datasets before the scheduler gets its turn, which is minutes on a cold Mac."""
+    """The scheduler waits on the warm's imports: minutes on a cold Mac, so no timeout serves."""
     assert _superseded(monkeypatch, warming = True) is True
     import main as main_mod
 
@@ -237,8 +234,7 @@ def test_a_gap_in_polling_does_not_spend_the_grace_before_the_handoff(
 
 
 def test_a_warm_that_resumes_reopens_the_handoff_grace(apple_silicon, clock, monkeypatch):
-    """A stopped reading between two running ones was a lull, not the handoff, so it must
-    not leave a countdown running that expires while the warm is still working."""
+    """A stopped reading between running ones is a lull: no countdown may expire mid-warm."""
     import main as main_mod
 
     assert _superseded(monkeypatch, warming = True) is True
@@ -259,8 +255,7 @@ def test_a_warm_that_never_ends_hits_the_ceiling(apple_silicon, clock, monkeypat
 
 
 def test_a_live_worker_holds_the_verdict_past_every_window(apple_silicon, clock, monkeypatch):
-    """A real reinstall is capped by _REPAIR_TIMEOUT_S, not by these windows. Expiring under
-    a working install would grey the rows moments before the repair flips them back."""
+    """A real reinstall is capped by _REPAIR_TIMEOUT_S; expiry under it would grey rows early."""
     import main as main_mod
 
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -289,8 +284,7 @@ def test_a_worker_parked_past_its_budget_stops_holding_the_verdict(
 
 
 def test_a_worker_inside_its_budget_is_never_cut_short(apple_silicon, monkeypatch):
-    """The budget is a backstop for a parked worker, not a cap on a working reinstall: a
-    slow but healthy uv install must keep the verdict held for its whole run."""
+    """Budget backstops parked workers only; a slow healthy uv install stays held for its run."""
     worker_clock = _Clock()
     monkeypatch.setattr(mlx_repair, "_repair_clock", worker_clock, raising = False)
     monkeypatch.setattr(mlx_repair, "_attempted", True, raising = False)
@@ -334,8 +328,7 @@ def test_a_spent_window_does_not_revive_a_settled_host(apple_silicon, clock, mon
 
 
 def test_health_settles_the_verdict_once_the_window_is_spent(apple_silicon, clock, monkeypatch):
-    """End to end: the held-back reply must not be permanent on a host whose repair never
-    arrives, or Train and Video spin for the session instead of explaining themselves."""
+    """Without a repair the held reply must settle, or Train and Video spin for the session."""
     import main as main_mod
 
     monkeypatch.setattr(main_mod, "_torch_warm_in_progress", lambda: False)
@@ -343,21 +336,6 @@ def test_health_settles_the_verdict_once_the_window_is_spent(apple_silicon, cloc
     assert body["hardware_detecting"] is True
 
     clock.advance(main_mod._MLX_PRESTART_GRACE_AFTER_WARM_S + 1)
-    body = _health(monkeypatch, chat_only = True, reason = "mlx_unavailable")
-
-    assert "hardware_detecting" not in body
-    assert body["device_type"]
-    assert body["chat_only"] is True
-    assert body["chat_only_reason"] == "mlx_unavailable"
-
-
-def test_health_settles_the_verdict_at_once_on_a_no_torch_install(apple_silicon, monkeypatch):
-    """End to end: the opt-out recorded at install time settles health on the first reply,
-    exactly as the kill switch does, rather than after the 30s handoff grace."""
-    import main as main_mod
-
-    monkeypatch.setattr(mlx_repair, "_installed_without_torch", lambda: True)
-    monkeypatch.setattr(main_mod, "_torch_warm_in_progress", lambda: False)
     body = _health(monkeypatch, chat_only = True, reason = "mlx_unavailable")
 
     assert "hardware_detecting" not in body

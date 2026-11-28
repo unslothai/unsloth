@@ -35,6 +35,7 @@ from .llama import (
     LlamaLinearScalingRotaryEmbedding,
     _gqa_decode_scores,
     _gqa_decode_values,
+    _grouped_decode_batched,
     _LlamaModel_fast_forward_inference,
     original_apply_qkv,
     original_apply_o,
@@ -277,8 +278,7 @@ def Qwen3Attention_fast_forward_inference(
         Kn.addcmul_(RH_K, sin)
 
     if static is not None:
-        # Captured step: the cache slot is on the device; the attention itself runs eagerly
-        # between two captured segments (static.attention), over the true length.
+        # Slot on device; attention runs eagerly between captured segments over true length.
         self.paged_attention_K.index_copy_(0, static.slot, Kn.permute(2, 0, 1, 3))
         self.paged_attention_V.index_copy_(0, static.slot, Vn.permute(2, 0, 1, 3))
         if static.span is not None:
@@ -330,18 +330,23 @@ def Qwen3Attention_fast_forward_inference(
         # Avoid SDPA GQA drift for batched masked decode.
         use_sdpa_gqa = False
 
-    # Grouped query attention; bsz == 1 reads the KV heads in place below.
+    # GQA reads KV heads in place at bsz == 1, or bsz > 1 past the card's crossover.
     _, _, cached_len, _ = Knn.shape
-    if bsz != 1 and (not use_sdpa_gqa) and n_groups != 1:
+    grouped = bsz == 1 or (
+        n_groups != 1
+        and _grouped_decode_batched(
+            bsz, cached_len, not use_sdpa_gqa, attention_mask is not None, Qn.device
+        )
+    )
+    if not grouped and (not use_sdpa_gqa) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
         Vnn = Vnn.reshape(bsz, n_heads, cached_len, head_dim)
 
-    if bsz == 1:
+    if grouped:
         Qn *= self.scalar
-        # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
-        # (comment 2153349963).
+        # Scale Q before Q @ K to avoid overflow; ggerganov/llama.cpp#7805 (comment 2153349963)
         A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         if attention_mask is not None:
             A.masked_fill_(~attention_mask, float("-inf"))

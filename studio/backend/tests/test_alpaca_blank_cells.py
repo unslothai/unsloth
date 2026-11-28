@@ -6,19 +6,26 @@ from datasets import Dataset, load_dataset
 from utils.datasets import convert_alpaca_to_chatml, format_and_template_dataset
 from utils.datasets.cells import cell_text
 
+from utils.datasets.chat_templates import STUDIO_ALPACA_CHAT_TEMPLATE
+
 
 class _Tokenizer:
-    chat_template = "{{ messages }}"
+    chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
     eos_token = "</s>"
 
 
-def _format_result(dataset, tokenizer = None):
+def _format_result(
+    dataset,
+    tokenizer = None,
+    **format_options,
+):
     result = format_and_template_dataset(
         dataset,
         model_name = "Qwen2ForCausalLM",
         tokenizer = tokenizer or _Tokenizer(),
         batch_size = 2,
         num_proc = 1,
+        **format_options,
     )
     assert result["success"] is True
     assert result["final_format"] == "alpaca"
@@ -65,7 +72,7 @@ def test_alpaca_rows_do_not_get_a_second_eos():
 
 def test_alpaca_rows_take_eos_from_a_processors_tokenizer():
     class _Processor:
-        chat_template = "{{ messages }}"
+        chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
         tokenizer = _Tokenizer()
 
     dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
@@ -75,7 +82,7 @@ def test_alpaca_rows_take_eos_from_a_processors_tokenizer():
 
 def test_alpaca_warns_when_tokenizer_has_no_eos():
     class _NoEosTokenizer:
-        chat_template = "{{ messages }}"
+        chat_template = STUDIO_ALPACA_CHAT_TEMPLATE
 
     dataset = Dataset.from_dict({"instruction": ["Add 2+2"], "input": [""], "output": ["4"]})
     result = _format_result(dataset, _NoEosTokenizer())
@@ -198,3 +205,54 @@ def test_alpaca_system_column_formats_from_a_numpy_formatted_dataset():
 
     assert texts[0].startswith("Be brief.\n\n### Instruction:\na\n")
     assert texts[1].endswith("### Instruction:\nb\n\n### Input:\n\n\n### Response:\n2</s>")
+
+
+def test_alpaca_rows_use_the_existing_instruct_template():
+    class InstructTokenizer:
+        chat_template = "native"
+        eos_token = "<end>"
+
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+            assert not tokenize and not add_generation_prompt
+            return "".join(f'<{m["role"]}>{m["content"]}<end>' for m in messages)
+
+    result = _format_result(
+        Dataset.from_list(
+            [
+                {
+                    "instruction": "Say hello",
+                    "input": "  in French",
+                    "system": "Be brief.",
+                    "output": "Bonjour",
+                }
+            ]
+        ),
+        InstructTokenizer(),
+        prefer_native_alpaca = True,
+    )
+    assert result["dataset"][0]["text"] == (
+        "<system>Be brief.<end><user>Say hello\n\n  in French<end><assistant>Bonjour<end>"
+    )
+    assert result["dataset_template"] is None
+
+
+def test_explicit_alpaca_and_older_runs_keep_legacy_headings():
+    class InstructTokenizer:
+        chat_template = "native"
+        eos_token = "<end>"
+
+        def apply_chat_template(self, *args, **kwargs):
+            raise AssertionError("legacy Alpaca should keep its selected serialization")
+
+    dataset = Dataset.from_list(
+        [{"instruction": "Question", "input": "  context", "output": "Answer"}]
+    )
+    for options in (
+        {"format_type": "alpaca", "prefer_native_alpaca": True},
+        {"prefer_native_alpaca": False},
+    ):
+        result = _format_result(dataset, InstructTokenizer(), **options)
+        assert result["dataset_template"] == "alpaca"
+        assert result["dataset"][0]["text"].endswith(
+            "### Instruction:\nQuestion\n\n### Input:\n  context\n\n### Response:\nAnswer<end>"
+        )

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS, where no fused SDPA takes head dim 384/512; exact. On ROCm a bf16 VAE's
-math SDPA keeps bf16 (what ``allow_fp16_bf16_reduction_math_sdp`` runs, computed per call without that process-wide
-flag) instead of upcasting q / k / v and the score matrix to fp32 (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps the fp32
-upcast). fp16 always upcasts: the FLUX.1 / Z-Image VAE's mid-block scores reach 1e6 to 5e7, past fp16's 65504."""
+"""Exact query-chunked VAE attention on ROCm/MPS (no fused SDPA takes head dim 384/512); fp16
+upcasts (scores reach 5e7 past 65504); ROCm bf16 stays bf16 unless UNSLOTH_VAE_ATTN_HALF_MATH=0."""
 
 from __future__ import annotations
 
@@ -55,7 +53,11 @@ def fp32_math_sdpa(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """Math SDPA in fp32 (what ROCm's math kernel upcasts a half call to), returned in ``q``'s dtype."""
+    """Half inputs upcast to fp32, returned in q's dtype; fp32 and fp64 keep their precision."""
+    import torch
+
+    if q.dtype not in (torch.float16, torch.bfloat16):
+        return half_math_sdpa(q, k, v, scale)
     return half_math_sdpa(q.float(), k.float(), v.float(), scale).to(q.dtype)
 
 
@@ -72,8 +74,7 @@ def _autocast_dtype(device_type: str) -> Any:
 
 
 def _half_math_call(q: Any) -> bool:
-    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
-    # cards without native bf16, gfx103x and older, run the VAE in fp16).
+    # bf16 only: fp16 VAE scores overflow to inf (NaN softmax); gfx103x and older run fp16.
     import torch
     return (
         getattr(getattr(q, "device", None), "type", None) == "cuda"
@@ -119,9 +120,33 @@ def _windows_rocm_untrusted_head(q: Any, torch: Any) -> bool:
     )
 
 
+def _attention_head_dim(module: Any) -> Optional[int]:
+    # diffusers Attention; the single-head blocks (Wan, Qwen-Image, HunyuanImage) carry no ``heads``: unknown.
+    heads, inner = getattr(module, "heads", None), getattr(module, "inner_dim", None)
+    try:
+        return int(inner) // int(heads) if heads and inner else None
+    except (TypeError, ValueError):
+        return None
+
+
+def vae_has_untrusted_head(vae: Any) -> bool:
+    """True if a head is wider than Windows ROCm fused kernels handle; uninspectable is True."""
+    named = getattr(vae, "named_modules", None)
+    if not callable(named):
+        return True
+    try:
+        for _, module in named():
+            if _is_attention_module(module):
+                head = _attention_head_dim(module)
+                if head is None or head > WINDOWS_ROCM_FUSED_MAX_HEAD_DIM:
+                    return True
+    except Exception:  # noqa: BLE001
+        return True
+    return False
+
+
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
-    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
+    """True on CUDA or MPS prefill; Windows ROCm heads over 256 no; other devices/errors yes."""
     import torch
 
     device_type = getattr(getattr(q, "device", None), "type", None)
@@ -237,11 +262,12 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
+                        # Gate on the dtype autocast gives SDPA inputs (fp16 scores overflow).
+                        cast = _autocast_dtype(q.device.type)
+                        if cast is not None:
+                            q, k, v = (t.to(cast) for t in (q, k, v))
                         if _half_math_call(q):
                             self.half += 1
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1
@@ -250,9 +276,6 @@ def _mode_class() -> Any:
                         if _windows_rocm_untrusted_head(q, torch):
                             # fp32, or half with UNSLOTH_VAE_ATTN_HALF_MATH=0: the default dispatch would still pick the
                             # fused kernels that miscompute this head, so run the math (fp32, as ROCm's math kernel does).
-                            cast = _autocast_dtype(q.device.type)
-                            if cast is not None:
-                                q, k, v = (t.to(cast) for t in (q, k, v))
                             with torch.autocast(q.device.type, enabled = False):
                                 if _score_bytes(q, k) > self.budget:
                                     self.chunked += 1

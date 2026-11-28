@@ -17,9 +17,18 @@ from pathlib import Path
 _TESTS = Path(__file__).resolve().parent
 
 
+def _statements(tree: ast.Module):
+    """Skips expressions (they never contain statements), so the imports found match ast.walk."""
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.expr))
+
+
 def _sibling_imports(tree: ast.Module) -> set[str]:
     names = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if (
             isinstance(node, ast.ImportFrom)
             and node.level == 0
@@ -48,18 +57,17 @@ def _bare_relative_imports(tree: ast.Module) -> list[int]:
 
 
 def test_modules_imported_top_level_import_their_helpers_without_a_package():
-    trees = {
-        path.stem: ast.parse(path.read_text(encoding = "utf-8")) for path in _TESTS.glob("test_*.py")
-    }
-    imported = set().union(*(_sibling_imports(tree) for tree in trees.values()))
+    # Keeps only what checks need; holding every tree at once cost most of the test's time.
+    siblings, relative = {}, {}
+    for path in _TESTS.glob("test_*.py"):
+        tree = ast.parse(path.read_text(encoding = "utf-8"))
+        siblings[path.stem] = _sibling_imports(tree)
+        relative[path.stem] = _bare_relative_imports(tree)
+    imported = set().union(*siblings.values())
     assert (
         "test_diffusion_backend" in imported
     ), "the sibling-import scan found none of the known importers"
-    bad = {
-        name: lines
-        for name in sorted(imported & trees.keys())
-        if (lines := _bare_relative_imports(trees[name]))
-    }
+    bad = {name: lines for name in sorted(imported & relative.keys()) if (lines := relative[name])}
     assert (
         not bad
     ), f"bare relative imports in modules other tests import top-level (line numbers): {bad}"

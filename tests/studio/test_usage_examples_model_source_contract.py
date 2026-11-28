@@ -42,8 +42,7 @@ def test_examples_never_print_a_hardcoded_model_id():
     assert re.search(r'"unsloth/[^"]+"', src) is None
     assert "function useExampleModelName(keylessOnly: boolean): string | null" in src
     assert "useState<OpenAIModel[] | null>(null)" in src
-    # No servable model: the snippet names an obvious placeholder (#14914) instead of a repo id,
-    # and the note under the pickers says why, so a copied curl cannot silently 404.
+    # No servable model: the snippet shows a placeholder (#14914); the picker note says why.
     assert 'const MODEL_PLACEHOLDER = "YOUR_MODEL";' in src
     assert "buildSnippets(base, key, toolsKey, model ?? MODEL_PLACEHOLDER, os)" in src
     assert len(re.findall(r"\bbuildSnippets\(", src)) == 2, "one definition, one call site"
@@ -59,8 +58,7 @@ def test_examples_never_print_a_hardcoded_model_id():
 
 
 def test_catalog_refresh_follows_the_loaded_model():
-    # Without these deps a finished load kept the first fetch's name; the store keeps a
-    # checkpoint across idle unloads, so it cannot gate on having none.
+    # Missing deps keep the first fetch's name; checkpoints survive idle unloads, so no gating.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
     assert "}, [checkpoint, ggufVariant]);" in hook
@@ -76,7 +74,8 @@ def test_a_stored_checkpoint_needs_catalog_evidence():
     # The store keeps a checkpoint across idle unloads and deletions, so it must be in the catalog.
     src = USAGE_EXAMPLES_TSX.read_text(encoding = "utf-8")
     hook = src[src.find("function useExampleModelName") : src.find(AFTER_HOOK)]
-    assert 'const entry = catalog?.find((m) => sameBaseModelId(m.id, checkpoint ?? ""));' in hook
+    assert 'catalog?.filter((m) => sameBaseModelId(m.id, checkpoint ?? "")) ?? [];' in hook
+    assert ") ?? sameBase[0];" in hook
     assert "entry.loaded || (!keylessOnly && autoSwitch)" in hook
     assert "autoSwitch ||\n" not in hook
 
@@ -185,8 +184,7 @@ def test_monitor_can_unload_the_loaded_model():
     assert "const unloadActiveModel = async" in src
     assert "onUnloadActive={unloadActiveModel}" in src
     assert "onUnloadActive();" in controls
-    # #11223: no unload while a model loads, or while one is already unloading. Read busy= as a set
-    # of || terms, so the guard is that both stay among them, not the exact spelling.
+    # 11223: no unload while loading or unloading; busy= needs both || terms, not exact text.
     busy = re.search(r"const busy = ([^;]+);", controls)
     assert busy, "the load controls no longer compute busy"
     assert {"modelLoading", "unloading"} <= {term.strip() for term in busy.group(1).split("||")}
@@ -195,7 +193,7 @@ def test_monitor_can_unload_the_loaded_model():
         r"eject: \(modelId\) => \{\s*if \(!busy\) \{\s*handleEject\(modelId\);", controls
     )
     # /unload matches on the internal id, omitted here (a host path), so read it from status.
-    assert "resolveInferenceCheckpointId(status)" in src
+    assert "servedInferenceCheckpointId(status)" in src
     assert "unloadModel({ model_path: checkpoint })" in src
 
 

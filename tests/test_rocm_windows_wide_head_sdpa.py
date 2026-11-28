@@ -23,8 +23,11 @@ FLAG = "_unsloth_windows_rocm_wide_head_guard"  # Studio's #17960 module checks 
 
 @pytest.fixture
 def stock_sdpa(monkeypatch):
-    """Restore whatever F.scaled_dot_product_attention was, whatever a test installs."""
+    """Restore whatever F.scaled_dot_product_attention was, whatever a test installs. On a real
+    Windows ROCm box unsloth already wrapped it at import, so peel guards carrying FLAG first."""
     stock = F.scaled_dot_product_attention
+    while getattr(stock, FLAG, False) and getattr(stock, "__wrapped__", None) is not None:
+        stock = stock.__wrapped__
     monkeypatch.setattr(F, "scaled_dot_product_attention", stock)
     monkeypatch.delenv("UNSLOTH_ALLOW_ROCM_WIDE_HEAD_FUSED_SDPA", raising = False)
     return stock
@@ -144,7 +147,6 @@ def test_studio_guard_first_makes_core_a_noop(stock_sdpa, windows_rocm):
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
     assert F.scaled_dot_product_attention is studio
 
-    # Still a no-op when another wrapper (functools.wraps) sits on top of Studio's guard.
     on_top = functools.wraps(studio)(lambda *a, **kw: studio(*a, **kw))
     F.scaled_dot_product_attention = on_top
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
@@ -276,8 +278,7 @@ def test_torch_function_modes_still_match_f_sdpa(stock_sdpa, windows_rocm, cpu_c
 
 
 def test_compiled_call_restores_the_callers_backends(stock_sdpa, windows_rocm, cpu_counts_as_gpu):
-    """The math switch is one graph node: its exit restores the backends live at run time, not the
-    ones Dynamo saw while tracing (an inlined sdpa_kernel bakes those in as constants)."""
+    """Exit restores the live backends; an inlined sdpa_kernel would bake the traced ones in."""
     from torch._dynamo.testing import EagerAndRecordGraphs
 
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
@@ -304,8 +305,7 @@ def test_compiled_call_restores_the_callers_backends(stock_sdpa, windows_rocm, c
 def test_overlapping_wide_head_calls_restore_the_callers_backends_once(
     windows_rocm, cpu_counts_as_gpu
 ):
-    """Two wide-head calls in flight (two threads), the first returning first: the second must not see the fused
-    kernels back, and the caller's backends come back only after the last one returns."""
+    """Overlapping calls: the 2nd must not see fused kernels; backends return after the last."""
     from torch.nn.attention import _cur_sdpa_kernel_backends
 
     seen = {}
@@ -352,8 +352,7 @@ def _jagged(head_dim):
 
 @pytest.mark.parametrize("head_dim", [64, 512])
 def test_nested_jagged_tensors_keep_working(stock_sdpa, windows_rocm, cpu_counts_as_gpu, head_dim):
-    """Nested jagged tensors route SDPA only when their __torch_function__ sees torch's builtin: re-dispatching
-    with func = the wrapper falls through to the dense kernel, which refuses them."""
+    """Nested jagged tensors route only if __torch_function__ is builtin; else dense refuses."""
     from torch.nn.attention import SDPBackend, sdpa_kernel
 
     assert fixes.fix_rocm_windows_wide_head_sdpa() is True
@@ -392,8 +391,7 @@ def test_nested_jagged_tensors_under_a_mode(stock_sdpa, windows_rocm, cpu_counts
 def test_a_wide_call_entering_after_another_thread_moved_the_flags_still_runs_math(
     windows_rocm, cpu_counts_as_gpu
 ):
-    """Flags are process-wide: if another thread's sdpa_kernel changes them while a wide call holds the pin, a wide call
-    starting after that is pinned to math again rather than running under the other thread's choice."""
+    """Flags are process-wide: a wide call after another thread moved them is pinned to math."""
     from torch.nn.attention import SDPBackend, _cur_sdpa_kernel_backends, _sdpa_kernel
 
     seen = {}

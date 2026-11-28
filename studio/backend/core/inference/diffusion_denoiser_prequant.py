@@ -20,7 +20,6 @@ _UNSEEDABLE_PIPELINE_FAMILIES = (IDEOGRAM4_FAMILY_NAME,)
 
 
 def pipeline_seed_supported(fam: Any) -> bool:
-    """Whether a seeded denoiser reaches this family's pipeline assembly at all."""
     name = str(getattr(fam, "name", "") or "")
     return bool(name) and name not in _UNSEEDABLE_PIPELINE_FAMILIES
 
@@ -123,10 +122,15 @@ def denoiser_prequant_pipe_kwargs(
         )
         if source is None:
             return {}
+        rocm_hosted = False
         if target is not None:
             from .diffusion_transformer_quant import dense_transformer_supported
             if not dense_transformer_supported(target):
-                return {}
+                # ROCm has no torchao path: only an explicit int8 RDNA pick seeds, read as native W8A8 Linears.
+                from .diffusion_rocm_hosted_int8 import rocm_image_hosted_int8_reason
+                if rocm_image_hosted_int8_reason(fam, scheme, target) is None:
+                    return {}
+                rocm_hosted = True
         import diffusers
 
         from .diffusion_prequant import load_prequantized_transformer
@@ -147,6 +151,35 @@ def denoiser_prequant_pipe_kwargs(
                 ),
             )
             return {}
+        if rocm_hosted:
+            from .diffusion_rocm_hosted_int8 import load_rocm_hosted_transformer
+
+            module = load_rocm_hosted_transformer(
+                fam,
+                transformer_cls,
+                base_repo,
+                source,
+                hf_token = hf_token,
+                cache_dir = cache_dir,
+                local_files_only = local_files_only,
+                logger = logger,
+            )
+            if module is None:
+                if logger is not None:
+                    logger.info(
+                        "diffusion.denoiser_prequant: the hosted int8 ConvRot checkpoint for %s was not read "
+                        "as native W8A8 Linears, so the released denoiser is loaded and quantised at load",
+                        getattr(fam, "name", None),
+                    )
+                return {}
+            if logger is not None:
+                logger.info(
+                    "diffusion.denoiser_prequant: seeded the int8 denoiser for %s from the hosted ConvRot "
+                    "checkpoint as native W8A8 Linears on this ROCm GPU (%s)",
+                    getattr(fam, "name", None),
+                    source.location,
+                )
+            return {DENOISER_COMPONENT: module}
         module = load_prequantized_transformer(
             transformer_cls,
             base_repo,

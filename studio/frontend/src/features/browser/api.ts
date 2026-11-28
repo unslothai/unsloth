@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type { PageRequest } from "./frame-message";
 import { onPageStorageWrite, pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
 
@@ -66,8 +67,7 @@ export type SiteCookies = Array<[string, string]>;
 /** [process epoch, cookie store version] when the snapshot was taken. */
 export type CookiesVersion = [string, number];
 
-// Cookie writes and clears run one at a time, so writes land in order and none queued before a
-// clear lands after it.
+// Cookie writes and clears run one at a time, so none queued before a clear lands after it.
 let lastCookieWrite: Promise<unknown> | null = null;
 let cookieClears = 0;
 
@@ -158,8 +158,7 @@ export async function fetchBrowserPage(request: BrowserRequest, signal: AbortSig
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
     const detail = payload?.detail;
     const botCheck = typeof detail === "object" && detail !== null && (detail as { botCheck?: unknown }).botCheck === true;
-    const raw = botCheck ? (detail as { message?: unknown }).message : detail;
-    const message = typeof raw === "string" ? raw : `HTTP ${response.status}`;
+    const message = formatApiErrorBody(payload) ?? `HTTP ${response.status}`;
     throw new BrowserFetchError(message.replace(/^Failed to fetch URL:\s*/, ""), botCheck);
   }
   if (response.headers.get("X-Unsloth-Browser-Kind") === "html") {

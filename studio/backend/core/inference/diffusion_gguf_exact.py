@@ -154,8 +154,14 @@ def dequantize_blocks_Q8_0(
 
 
 def _k_codes(blocks: Any, at: int) -> Any:
-    """``(n, chunk c, shift j, half h, 16)`` = ``(q[32c + 16h + l] >> 2j) & 3``; scale group ``8c + 2j + h``."""
-    return (_field(blocks, at, at + 64, (2, 1, 2, 16)) >> _shifts(blocks, 0, 8, 2, (4, 1, 1))) & 3
+    """``(n, chunk c, shift j, 32)`` = ``(q[32c + l] >> 2j) & 3``; scale group ``8c + 2j + l // 16``."""
+    return (_field(blocks, at, at + 64, (2, 1, 32)) >> _shifts(blocks, 0, 8, 2, (4, 1))) & 3
+
+
+def _groups16(x: Any, n: int) -> Any:
+    """``(n, 256)`` codes in output order as ``(n, scale group, 16)``, a free view of the contiguous ``x``; keeps
+    every tensor at rank <= 4, as in Q4_K / Q5_K (the rank-6 Q6_K path was Z-Image's slow MPS dequant)."""
+    return x.reshape(n, 16, 16)
 
 
 def dequantize_blocks_Q2_K(
@@ -168,9 +174,9 @@ def dequantize_blocks_Q2_K(
     scales = blocks[:, :16]
     d = _scale(blocks, 40)
     dmin = _scale(blocks, 41)
-    dl = (d * (scales & 0x0F)).reshape(n, 2, 4, 2, 1)
-    ml = (dmin * (scales >> 4)).reshape(n, 2, 4, 2, 1)
-    return _emit(dl, _k_codes(blocks, 16), ml, "-", n, _QK_K, dtype)
+    dl = (d * (scales & 0x0F)).reshape(n, 16, 1)
+    ml = (dmin * (scales >> 4)).reshape(n, 16, 1)
+    return _emit(dl, _groups16(_k_codes(blocks, 16), n), ml, "-", n, _QK_K, dtype)
 
 
 def dequantize_blocks_Q3_K(
@@ -188,11 +194,11 @@ def dequantize_blocks_Q3_K(
     low = (scales[:, :8].unsqueeze(1) >> _shifts(blocks, 0, 8, 4, (2, 1))) & 0x0F
     high = (scales[:, 8:].unsqueeze(1) >> _shifts(blocks, 0, 8, 2, (4, 1))) & 3
     sc = (low.reshape(n, 16) | (high.reshape(n, 16) << 4)).to(torch.int8) - 32
-    dl = (d * sc).reshape(n, 2, 4, 2, 1)
+    dl = (d * sc).reshape(n, 16, 1)
     # hmask bit 4c + j clear -> subtract 4
-    hb = (_field(blocks, 0, 32, (1, 1, 2, 16)) >> _shifts(blocks, 0, 8, 1, (2, 4, 1, 1))) & 1
+    hb = (_field(blocks, 0, 32, (1, 1, 32)) >> _shifts(blocks, 0, 8, 1, (2, 4, 1))) & 1
     q = _k_codes(blocks, 32).to(torch.int8) - ((hb ^ 1) << 2).to(torch.int8)
-    return _emit(dl, q, None, "", n, _QK_K, dtype)
+    return _emit(dl, _groups16(q, n), None, "", n, _QK_K, dtype)
 
 
 def _scale_min_k4(scales: Any) -> tuple:
@@ -252,11 +258,11 @@ def dequantize_blocks_Q6_K(
     n = blocks.shape[0]
     d = _scale(blocks, 104)
     sc = blocks[:, 192:208].view(torch.int8)
-    # (n, chunk, nibble, half, 2, 16): quarter t = 2 * nibble + half, ggml's q1..q4
-    ql = (_field(blocks, 0, 128, (2, 1, 2, 2, 16)) >> _shifts(blocks, 0, 8, 4, (2, 1, 1, 1))) & 0x0F
-    qh = (_field(blocks, 128, 192, (2, 1, 1, 2, 16)) >> _shifts(blocks, 0, 8, 2, (2, 2, 1, 1))) & 3
-    q = (ql | (qh << 4)).to(torch.int8) - 32
-    return _emit((d * sc).reshape(n, 2, 2, 2, 2, 1), q, None, "", n, _QK_K, dtype)
+    # (n, chunk, nibble, 64) is (n, chunk, quarter t, 32): t = 2 * nibble + half, ggml's q1..q4
+    ql = (_field(blocks, 0, 128, (2, 1, 64)) >> _shifts(blocks, 0, 8, 4, (2, 1))) & 0x0F
+    qh = (_field(blocks, 128, 192, (2, 1, 32)) >> _shifts(blocks, 0, 8, 2, (4, 1))) & 3
+    q = (ql.reshape(n, 2, 4, 32) | (qh << 4)).to(torch.int8) - 32
+    return _emit((d * sc).reshape(n, 16, 1), _groups16(q, n), None, "", n, _QK_K, dtype)
 
 
 def dequantize_blocks_IQ4_XS(

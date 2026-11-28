@@ -14,6 +14,7 @@
 
 """Flex attention must not be chosen on sm75: its uncompiled backward dies on Half vs Float."""
 
+import contextlib
 import sys
 import types
 from unittest import mock
@@ -31,6 +32,17 @@ def _supports(model_type = "gemma3"):
     return U._supports_flex_attention(_Model, {}, model_type)
 
 
+@contextlib.contextmanager
+def _vendor(hip):
+    """_is_hip_build also reads the +rocm wheel tag, so an NVIDIA simulation drops it too."""
+    version = U.torch.__version__
+    if hip is None:
+        version = type(version)(str(version).split("+")[0])
+    with mock.patch.object(U.torch.version, "hip", hip, create = True):
+        with mock.patch.object(U.torch, "__version__", version):
+            yield
+
+
 def _cuda(capabilities, hip = None):
     """Patch just enough of torch for the vendor/capability probe."""
     return mock.patch.multiple(
@@ -38,7 +50,7 @@ def _cuda(capabilities, hip = None):
         is_available = lambda: bool(capabilities),
         device_count = lambda: len(capabilities),
         get_device_capability = lambda index = 0: capabilities[index],
-    ), mock.patch.object(U.torch.version, "hip", hip, create = True)
+    ), _vendor(hip)
 
 
 @pytest.mark.parametrize("capability", [(7, 0), (7, 5)])
@@ -52,8 +64,7 @@ def test_a_pre_ampere_card_does_not_get_flex(capability):
 
 @pytest.mark.parametrize("capability", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)])
 def test_ampere_and_newer_are_untouched(capability):
-    """A100, A10, L4, H100, B200, RTX 50xx. The notebook passes on A100 with flex
-    on, so this must not take it away from them."""
+    """A100, A10, L4, H100, B200, RTX 50xx keep flex; the notebook passes on A100 with it on."""
     cuda, hip = _cuda([capability])
     with cuda, hip:
         assert U._flex_attention_gpu_is_supported() is True
@@ -94,8 +105,7 @@ def test_an_unreadable_device_fails_open():
 
 
 def test_the_gate_runs_before_the_torch_version_check():
-    """It answers yes on a T4, so consulting it first would mean the card check
-    could never refuse."""
+    """is_torch_flex_attn_available answers yes on a T4, so the card check must run before it."""
     stub = types.ModuleType("transformers.utils.import_utils")
     stub.is_torch_flex_attn_available = lambda: True
     cuda, hip = _cuda([(7, 5)])

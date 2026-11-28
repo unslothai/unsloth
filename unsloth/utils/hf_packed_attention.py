@@ -22,8 +22,7 @@ _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
-# efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens;
-# int32_split: fast calls run in document groups to keep flash's varlen backward under int32.
+# efficient: fast SDPA mem-efficient calls; int32_split: doc groups keep flash under int32.
 HF_PACKED_ATTENTION_STATS = {
     "fast": 0,
     "fallback": 0,
@@ -455,6 +454,19 @@ def _sdpa_policy_requested(device, dtype, head_dim, n_heads, n_kv_heads) -> bool
     return not flash or choice == math
 
 
+def _eager_varlen_rejects(module, kwargs, head_dim) -> bool:
+    """The layer-level conditions under which _static_window refuses every call of this layer (no tensors
+    needed): leaving a compiled block for such a layer only adds a graph break before the dense path."""
+    dropout = getattr(module, "attention_dropout", 0) if getattr(module, "training", False) else 0
+    return bool(
+        head_dim % 8 != 0
+        or dropout
+        or getattr(module, "is_causal", True) is False
+        or kwargs.get("position_bias") is not None
+        or _softcapped(module, kwargs)
+    )
+
+
 def _static_window(module, query, key, value, dropout, is_causal, kwargs):
     """The window for a call a varlen kernel can take (shapes, dtypes, masking), else _NO_WINDOW.
     Only shapes, dtypes and attributes: also safe while tracing."""
@@ -517,8 +529,7 @@ def _flash_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     with a C++ backward (varlen_attn's Python custom op cost ~37 us of host time per call in a
     compiled step) that takes grouped K / V heads as they are."""
     query, key, value = (x[0].transpose(0, 1) for x in (query, key, value))
-    # torch's FA4 / FA3 impls return a contiguous output and grads where the op's fake kernel follows
-    # the input layout, so a compiled graph fails its stride check: give them contiguous rows.
+    # Op's fake kernel follows input layout, so FA4 / FA3 need contiguous rows under compile.
     if torch.compiler.is_compiling() and active_flash_impl() is not None:
         query, key, value = query.contiguous(), key.contiguous(), value.contiguous()
     out = torch.ops.aten._flash_attention_forward(
@@ -721,7 +732,6 @@ def _sdpa_packed_varlen(
                 )
                 if groups is None:
                     torch_varlen, backend = None, None
-            # Refused shape and no flash-attn / xformers: the efficient kernel.
             if refused and backend not in (FLASH_VARLEN, XFORMERS):
                 efficient = _efficient_varlen_takes(query, window)
         if efficient or torch_varlen is not None or backend in (FLASH_VARLEN, XFORMERS):
@@ -831,8 +841,7 @@ def _sdpa_packed_varlen(
             kv_seq_len = query.shape[2],
             n_heads = n_heads,
             head_dim = head_dim,
-            # Not grad mode: xformers needs a backward op for grad tensors even under no_grad
-            # (reentrant checkpointing), and that op rejects the grouped 5D layout.
+            # xformers' backward (reentrant checkpoint, even under no_grad) rejects grouped 5D.
             requires_grad = query.requires_grad or key.requires_grad or value.requires_grad,
             seq_info = seq_info,
             attention_mask = None,
@@ -940,8 +949,13 @@ def _no_saved_tensor_hooks():
     # Only the innermost pair applies. Pushing raises while torch has hooks disabled: keep the ambient state.
     enabled = getattr(torch._C._autograd, "_saved_tensors_hooks_is_enabled", lambda: True)
     if enabled():
-        return torch.autograd.graph.saved_tensors_hooks(_identity, _identity)
+        return torch.autograd.graph.saved_tensors_hooks(_detach_saved, _identity)
     return contextlib.nullcontext()
+
+
+def _detach_saved(tensor):
+    # Pack hook returning its input forms a cycle gc cannot break; an unrun probe graph leaks.
+    return tensor.detach()
 
 
 def _identity(tensor):
@@ -1021,7 +1035,14 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
     attention = getattr(layer, "self_attn", None)
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
     window = _sliding_window(attention, kwargs) if attention is not None else None
-    entry = _BLOCK_PREP.get(window)
+    # Per-layer eligibility (head_dim, dropout, sinks, softcap) changes the result on ROCm: key on it too.
+    head_dim = getattr(attention, "head_dim", None)
+    key = (
+        window,
+        head_dim,
+        isinstance(head_dim, int) and _eager_varlen_rejects(attention, kwargs, head_dim),
+    )
+    entry = _BLOCK_PREP.get(key)
     if (
         entry is not None
         # Live tensors only: a dead weakref is None, and so is a missing mask.
@@ -1048,7 +1069,7 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and not _disabled()
     ):
         # Weak: the T x T mask must not outlive its step.
-        _BLOCK_PREP[window] = (
+        _BLOCK_PREP[key] = (
             weakref.ref(seq_lengths),
             weakref.ref(mask),
             (hidden_states.device, seq_lengths._version, mask._version),
@@ -1139,12 +1160,29 @@ def _block_varlen_prepare(
         kwargs.get("attention_mask"), seq_info[1], total, window
     ):
         return None
+    if (
+        torch.version.hip is not None
+        and dtype in (torch.float16, torch.bfloat16)
+        and head_dim <= 256
+        and not _varlen_in_graph(
+            hidden_states.device.index,
+            dtype,
+            head_dim,
+            n_heads,
+            n_kv_heads,
+            window,
+            active_flash_impl(),
+        )
+    ):
+        # ROCm builds whose flash varlen disagrees with its fake kernel (gfx1151, torch 2.11) cannot run it
+        # in the graph, and a traced call would attend over the dense mask: the eager wrapper runs varlen.
+        # A layer the eager wrapper rejects anyway (_static_window) keeps the dense path inside the graph.
+        return None if _eager_varlen_rejects(attention, kwargs, head_dim) else _LEAVE_BLOCK
     _, cu_seqlens, max_seqlen = seq_info
     # The segment count changes every step: one graph for all of them.
     torch._dynamo.maybe_mark_dynamic(cu_seqlens, 0)
-    # The longest document as a dynamic tensor length (prepare_packed_block's carrier): a Python int
-    # was guarded on, so every new longest document recompiled the block. 2+: a length of 1 would
-    # specialise; an upper bound is still exact for varlen.
+    # Longest document as a dynamic length (prepare_packed_block's carrier): a guarded Python int
+    # recompiled per new max; min 2 avoids specialising on 1; upper bound is exact for varlen.
     carrier = torch.empty(max(int(max_seqlen), 2), dtype = torch.uint8, device = hidden_states.device)
     torch._dynamo.maybe_mark_dynamic(carrier, 0)
     HF_PACKED_ATTENTION_STATS["compiled"] += 1

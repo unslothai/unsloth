@@ -44,7 +44,6 @@ class _Model(torch.nn.Module):
 
 def test_engages_only_on_cuda_auto_and_diffusers_models(monkeypatch):
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     model = _Model()
     budget = gb.enable_budgeted_checkpointing(model, "cuda")
     assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
@@ -56,16 +55,58 @@ def test_engages_only_on_cuda_auto_and_diffusers_models(monkeypatch):
 @pytest.mark.parametrize("mode", ["plain", "partial"])
 def test_kill_switch_keeps_the_old_path(mode, monkeypatch):
     monkeypatch.setenv(gb.GC_MODE_ENV, mode)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     model = _Model()
     assert gb.enable_budgeted_checkpointing(model, "cuda") is None
     assert model.func is None
 
 
-def test_rocm_keeps_the_old_path(monkeypatch):
+def test_rocm_uses_the_budget_too(monkeypatch):
+    # gfx1151 Linux + Windows: 1.40x / 2.18x bf16 klein LoRA steps, Linux losses bitwise equal to every block checkpointed
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: True)
+    monkeypatch.setattr(torch, "__version__", "2.11.0+rocm7.13.0")
+    model = _Model()
+    budget = gb.enable_budgeted_checkpointing(model, "cuda")
+    assert isinstance(budget, gb.BudgetedCheckpoint) and model.func is budget
+    monkeypatch.setenv(gb.GC_MODE_ENV, "plain")
     assert gb.enable_budgeted_checkpointing(_Model(), "cuda") is None
+
+
+def test_budget_reads_trusted_free(monkeypatch):
+    # Windows ROCm's WDDM free over-report is capped (utils.hardware.trusted_mem_get_info) before any plan
+    import utils.hardware as hw
+    monkeypatch.setattr(hw, "trusted_mem_get_info", lambda *a, **k: (7, 9))
+    assert gb._mem_get_info() == (7, 9)
+
+
+@pytest.mark.parametrize(
+    "platform, hip, device, capped",
+    [
+        ("win32", "6.4.0", None, True),  # the spawned trainer: detection never ran, a ROCm torch
+        ("win32", None, None, False),  # Windows NVIDIA
+        ("linux", "6.4.0", None, False),  # Linux ROCm: the driver figure is trusted
+        ("win32", "6.4.0", "cuda", False),  # detection ran and did not say ROCm
+    ],
+)
+def test_trainer_child_caps_windows_rocm_free(platform, hip, device, capped, monkeypatch):
+    # The trainer is a spawned process that never runs detect_hardware(), so IS_ROCM stays False there
+    import types
+
+    import utils.hardware.hardware as hwmod
+    import core.training.diffusion_lora_fast as fl
+
+    gib = 1 << 30
+    fake = types.ModuleType("torch")
+    fake.version = types.SimpleNamespace(hip = hip)
+    fake.__version__ = "2.9.1"
+    fake.cuda = types.SimpleNamespace(
+        mem_get_info = lambda *a: (16 * gib, 16 * gib), memory_reserved = lambda *a: 6 * gib
+    )
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake)
+    monkeypatch.setattr(hwmod.sys, "platform", platform)
+    monkeypatch.setattr(hwmod, "IS_ROCM", False)
+    monkeypatch.setattr(hwmod, "DEVICE", device)
+    want = (10 * gib if capped else 16 * gib, 16 * gib)
+    assert gb._mem_get_info() == want and fl._mem_get_info() == want
 
 
 def _planned(
@@ -109,9 +150,33 @@ def test_plan_scales_to_the_largest_bucket():
     assert (plain, scaled) == (10, 5)
 
 
-def test_plan_stops_at_an_unmeasured_class():
+def test_plan_skips_an_unmeasured_class():
     budget = _planned({"A": 1.0}, [("A", GIB), ("A", GIB), ("B", GIB), ("A", GIB)])
-    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 2
+    assert budget.plan(0, 80 * GIB, 0, 80 * GIB) == 3
+    assert budget.keep == frozenset({0, 1, 3})
+
+
+def test_spare_bytes_now_gives_up_what_another_load_took(monkeypatch):
+    budget = _planned({"B": 1.0}, [("B", GIB)] * 4)
+    # 80 GiB card, margin 8 GiB: headroom (80 - 8) * 0.85 = 61.2 GiB, 4 GiB kept.
+    budget.plan(0, 80 * GIB, 0, 80 * GIB)
+    spare = budget.spare_bytes
+    assert spare > 50 * GIB
+    state = {"free": 80 * GIB, "reserved": 0}
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (state["free"], 80 * GIB))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda: state["reserved"])
+    assert budget.spare_bytes_now() == spare
+    # This process emptying its cache moves bytes from reserved to free: nothing lost.
+    state.update(free = 70 * GIB, reserved = 10 * GIB)
+    assert budget.spare_bytes_now() == spare
+    # Another load took 20 GiB since the plan.
+    state.update(free = 50 * GIB, reserved = 10 * GIB)
+    assert budget.spare_bytes_now() == spare - 20 * GIB
+    state.update(free = 0, reserved = 0)
+    assert budget.spare_bytes_now() == 0
+    budget.step_down()
+    state.update(free = 80 * GIB, reserved = 0)
+    assert budget.spare_bytes_now() == 0
 
 
 def test_fall_back_clears_the_plan():
@@ -171,7 +236,6 @@ def _lora_grads(model):
 
 def test_every_state_matches_uncheckpointed_grads(monkeypatch):
     monkeypatch.delenv(gb.GC_MODE_ENV, raising = False)
-    monkeypatch.setattr(gb, "_is_rocm", lambda: False)
     # CPU stand-in for the CUDA allocator counter: grows by 1 MiB per read, so a measured block keeps ~1 MiB.
     counter = iter(range(0, 1 << 40, 1 << 20))
     monkeypatch.setattr(gb, "_memory_allocated", lambda: next(counter))

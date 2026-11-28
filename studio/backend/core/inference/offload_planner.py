@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import struct
 from dataclasses import dataclass, field
@@ -402,6 +403,96 @@ def _device_slots(n_slots: int, split_weights: Sequence[float]) -> list[list[int
     return slots
 
 
+@dataclass(frozen = True)
+class DeviceLayerEstimate:
+    layer_count: int
+    has_output_layer: bool
+    weights_bytes: int
+    kv_bytes: Optional[int]
+    recurrent_bytes: Optional[int]
+
+
+def estimate_layer_split(
+    layout: ModelLayout,
+    gpu_layers: int,
+    split_weights: Sequence[float],
+    *,
+    kv_bytes: Optional[int],
+    n_parallel: int = 1,
+) -> list[DeviceLayerEstimate]:
+    """Price fixed layer offload in llama.cpp device order for a target without tensor overrides.
+
+    kv_bytes is the full target cache, including live recurrent state and excluding host
+    checkpoints. Pass zero for host cache and None when the size is unknown.
+    """
+    # llama.cpp bounds block_count by LLAMA_MAX_LAYERS before allocating the slot array.
+    n_slots = layout.n_layers + layout.n_nextn_layers + 1
+    if (
+        not layout.complete
+        or layout.has_unplaced_tensors
+        or layout.per_layer_embd_bytes
+        or layout.n_layers <= 0
+        or len(layout.blocks) != layout.n_layers
+        or any(b.index != i for i, b in enumerate(layout.blocks))
+        or layout.n_nextn_layers < 0
+        or n_slots > 513
+        or not split_weights
+        or not all(math.isfinite(w) and w >= 0 for w in split_weights)
+        or not any(split_weights)
+    ):
+        return []
+    # gpu_layers includes the output slot. Blocks below the suffix stay on CPU.
+    active = n_slots if gpu_layers < 0 else min(gpu_layers, n_slots)
+    start = n_slots - active
+    try:
+        slots = _device_slots(active, split_weights)
+    except (OverflowError, ZeroDivisionError):
+        return []
+
+    mask = layout.attention_layers
+    attn_per_layer = recurrent_per_layer = None
+    if (
+        mask is not None
+        and len(mask) == layout.n_layers
+        and kv_bytes is not None
+        and n_parallel > 0
+    ):
+        attention = sum(mask)
+        recurrent = layout.recurrent_bytes * n_parallel
+        recurrent_layers = layout.n_layers - attention
+        if (
+            attention > 0
+            and kv_bytes >= recurrent
+            and (kv_bytes - recurrent) % attention == 0
+            and (not recurrent or recurrent_layers > 0)
+        ):
+            attn_per_layer = (kv_bytes - recurrent) // attention
+            recurrent_per_layer = recurrent // recurrent_layers if recurrent_layers else 0
+
+    estimates = []
+    for rows in slots:
+        target_layers = [start + r for r in rows if start + r < layout.n_layers]
+        has_output = bool(rows and rows[-1] + start == n_slots - 1)
+        weights = sum(
+            layout.blocks[i].resident_bytes + layout.blocks[i].spillable_bytes
+            for i in target_layers
+        )
+        if has_output:
+            weights += layout.lm_head_bytes + layout.other_resident_bytes
+        if not target_layers or kv_bytes == 0:
+            attn_bytes = state_bytes = 0
+        elif attn_per_layer is None or mask is None:
+            attn_bytes = state_bytes = None
+        else:
+            n_attn = sum(mask[i] for i in target_layers)
+            attn_bytes = n_attn * attn_per_layer
+            state_bytes = (len(target_layers) - n_attn) * recurrent_per_layer
+        estimates.append(
+            DeviceLayerEstimate(len(target_layers), has_output, weights, attn_bytes, state_bytes)
+        )
+    return estimates
+
+
 def _per_device_usage(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -418,18 +509,20 @@ def _per_device_usage(
     if len(vram_bytes_per_device) <= 1:
         return None, [], []
     # Recurrent, partial-attention or SWA layouts matter only for an even split; no vector means abstain.
+    # A looped GGUF has more cache slots than layer rows; each slot's cache follows its physical layer.
+    n_cache = layout.n_cache_slots
     uneven_cache = (
-        layout.recurrent_bytes > 0 or layout.n_attention_layers != layout.n_layers or layout.has_swa
+        layout.recurrent_bytes > 0 or layout.n_attention_layers != n_cache or layout.has_swa
     )
     weights = [max(0, int(w)) for w in kv_layer_weights]
-    if len(weights) != layout.n_layers or not any(weights):
+    if len(weights) != n_cache or not any(weights):
         weights = []
     if uneven_cache and not weights:
         if layout.recurrent_bytes > 0:
             return "the recurrent state's per-layer split is not visible in the layout", [], []
-        if layout.n_attention_layers != layout.n_layers:
+        if layout.n_attention_layers != n_cache:
             return (
-                f"only {layout.n_attention_layers} of {layout.n_layers} layers hold a cache "
+                f"only {layout.n_attention_layers} of {n_cache} layers hold a cache "
                 "and the layout does not say which",
                 [],
                 [],
@@ -456,8 +549,14 @@ def _per_device_usage(
     if weights and total_weight > 0:
         kv_by_layer = [(cache * w + total_weight - 1) // total_weight for w in weights]
     else:
-        per = (cache + layout.n_layers - 1) // layout.n_layers if layout.n_layers else 0
-        kv_by_layer = [per] * layout.n_layers
+        per = (cache + n_cache - 1) // n_cache if n_cache else 0
+        kv_by_layer = [per] * n_cache
+    if layout.cache_slot_rows:
+        by_row = [0] * layout.n_layers
+        for slot, row in enumerate(layout.cache_slot_rows):
+            if slot < len(kv_by_layer) and row < len(by_row):
+                by_row[row] += kv_by_layer[slot]
+        kv_by_layer = by_row
     by_index = {b.index: b for b in layout.blocks}
     output_row_bytes = layout.other_resident_bytes + (0 if spill_lm_head else layout.lm_head_bytes)
 

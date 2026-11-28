@@ -2,6 +2,9 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import contextvars
+from concurrent.futures import ThreadPoolExecutor
+import functools
 import json
 import os
 import shutil
@@ -2592,23 +2595,31 @@ async def get_model_config(
             except Exception:
                 pass
 
-            # Fallback: raw config.json (declarative fields only) -- must never run a repo's auto_map.
-            if max_position_embeddings is None:
-                try:
-                    from utils.transformers_version import _load_config_json
-                    from types import SimpleNamespace
+            selected_snapshot = prefer_local_cache and inspection_target != model_name
+            bnb_4bit = False
+            # Raw config.json of the target the worker loads: declarative fields only, never a repo's auto_map.
+            try:
+                from utils.transformers_version import _load_config_json
+                from types import SimpleNamespace
 
-                    _cfg = _load_config_json(inspection_target, hf_token = hf_token)
-                    if _cfg is not None:
+                _cfg = _load_config_json(inspection_target, hf_token = hf_token)
+                if isinstance(_cfg, dict):
+                    quant = _cfg.get("quantization_config")
+                    bnb_4bit = (
+                        isinstance(quant, dict)
+                        and quant.get("quant_method") == "bitsandbytes"
+                        and quant.get("load_in_4bit", quant.get("_load_in_4bit")) is True
+                    )
+                if max_position_embeddings is None and _cfg is not None:
 
-                        def _to_ns(d):
-                            if isinstance(d, dict):
-                                return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
-                            return d
+                    def _to_ns(d):
+                        if isinstance(d, dict):
+                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                        return d
 
-                        max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
-                except Exception:
-                    pass
+                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+            except Exception:
+                pass
 
             if (
                 as_decision
@@ -2651,9 +2662,10 @@ async def get_model_config(
                 # Keyed on the target, not the flag: an anonymous caller's bare repo id sizes as None.
                 model_size_bytes = (
                     _get_snapshot_model_size_bytes(inspection_target)
-                    if prefer_local_cache and inspection_target != model_name
+                    if selected_snapshot
                     else _get_model_size_bytes(model_name, hf_token)
                 ),
+                bnb_4bit = bnb_4bit,
             )
 
     try:
@@ -2727,6 +2739,38 @@ async def scan_model_remote_code(
             if isinstance(ref, str) and ref:
                 await asyncio.to_thread(account_access.require_model_access, ref)
         allow_ambient_token = False
+    # Blocking Hub listing / downloads / scan: own pool, off the event loop and the shared default executor.
+    return await asyncio.get_running_loop().run_in_executor(
+        _remote_code_scan_pool,
+        contextvars.copy_context().run,
+        functools.partial(
+            _scan_model_remote_code_sync,
+            model_name = model_name,
+            hf_token = hf_token,
+            prefer_local_cache = prefer_local_cache,
+            model_local_path = model_local_path,
+            model_snapshot_path = model_snapshot_path,
+            model_snapshot_repo_id = model_snapshot_repo_id,
+            allow_ambient_token = allow_ambient_token,
+            current_subject = current_subject,
+        ),
+    )
+
+
+_remote_code_scan_pool = ThreadPoolExecutor(max_workers = 4, thread_name_prefix = "remote-code-scan")
+
+
+def _scan_model_remote_code_sync(
+    *,
+    model_name: str,
+    hf_token: Optional[str],
+    prefer_local_cache: bool,
+    model_local_path: Optional[str],
+    model_snapshot_path: Optional[str],
+    model_snapshot_repo_id: Optional[str],
+    allow_ambient_token: bool,
+    current_subject: str,
+):
     # An absent token would read as ambient-authorized and leak private cached source.
     hf_token = hf_token_arg(hf_token, allow_ambient_token = allow_ambient_token)
     # Offline the scanner reads cached config/Python and returns source snippets.
@@ -3071,7 +3115,9 @@ async def discard_remote_code_download(
         revision_hashes = [rev.commit_hash for rev in target_repo.revisions]
         if not revision_hashes:
             return {"deleted": False, "reason": "not_cached"}
-        hf_cache.delete_revisions(*revision_hashes).execute()
+        from hub.utils.inventory_scan import scan_of_repo
+
+        scan_of_repo(hf_cache, target_repo).delete_revisions(*revision_hashes).execute()
         logger.info("Discarded declined remote-code download: %s", model_name)
         return {"deleted": True}
     except Exception as e:
@@ -3230,6 +3276,9 @@ async def scan_diffusion_loras(
     from core.inference import diffusion_lora
 
     entries = await asyncio.to_thread(diffusion_lora.list_loras, family = family)
+    # Two-expert video models take only high/low-noise pairs, others only single adapters.
+    two_expert = diffusion_lora.two_expert_family(family)
+    entries = [e for e in entries if bool(e.weight_name_2) == two_expert]
     if account_access.managed_account():
         entries = await asyncio.to_thread(account_access.filter_model_rows, entries)
     return {
@@ -3243,6 +3292,11 @@ async def scan_diffusion_loras(
                 "size_bytes": e.size_bytes,
                 "weight_default": e.weight_default,
                 "fine_tuned": e.fine_tuned,
+                # Step-distilled adapters: the publisher's steps / guidance, set as the defaults when picked.
+                "recommended_steps": e.recommended_steps,
+                "recommended_guidance": e.recommended_guidance,
+                # A two-expert pair (high- and low-noise files), baked one per expert.
+                "expert_pair": e.weight_name_2 is not None,
             }
             for e in entries
         ],

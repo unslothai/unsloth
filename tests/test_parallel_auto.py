@@ -190,6 +190,37 @@ def test_child_process_inherits_the_decision(clean):
         env.apply_parallel_env({**environ, "UNSLOTH_PARALLEL_AUTO_RESOLVED": "fsdp2"})
 
 
+@pytest.mark.parametrize(
+    "axis", ["UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE", "UNSLOTH_EP_SIZE"]
+)
+def test_inherited_decision_still_refuses_another_axis(clean, axis, monkeypatch):
+    _, _, auto = clean
+    monkeypatch.delenv(axis, raising = False)
+    environ = {
+        "UNSLOTH_PARALLEL": "auto",
+        "UNSLOTH_FSDP2": "0",
+        "UNSLOTH_PARALLEL_AUTO_RESOLVED": "ddp",
+        "WORLD_SIZE": "2",
+        axis: "2",
+    }
+    with pytest.raises(ValueError, match = axis):
+        auto.check_auto_env(environ)
+
+
+def test_inherited_fsdp2_keeps_the_accelerate_env_its_parent_exported(clean):
+    _, _, auto = clean
+    environ = {
+        "UNSLOTH_PARALLEL": "auto",
+        "UNSLOTH_FSDP2": "1",
+        "UNSLOTH_PARALLEL_AUTO_RESOLVED": "fsdp2",
+        "ACCELERATE_USE_FSDP": "true",
+        "FSDP_VERSION": "2",
+        "WORLD_SIZE": "2",
+    }
+    auto.check_auto_env(environ)
+    assert auto.resolved_choice() == "fsdp2"
+
+
 def test_decision_and_state_arithmetic(clean):
     _, _, auto = clean
     gib = 1024**3
@@ -522,12 +553,30 @@ def test_float_weights_count_at_the_loaded_dtype(clean):
     assert auto.checkpoint_estimate(packed, dtype_bytes = 2)[0] == 1024 + 4 * 256
 
 
+def _loader_unc_guard_module():
+    """unsloth.models.loader with only the real network-share guard: importing the whole loader would need the
+    _utils module _auto_env stubs out, so the guard is taken from the loader's source instead."""
+    import ast
+
+    source = open(os.path.join(REPO, "unsloth", "models", "loader.py"), encoding = "utf-8").read()
+    fn = next(
+        node
+        for node in ast.parse(source).body
+        if isinstance(node, ast.FunctionDef) and node.name == "_refuse_network_share_adapter_base"
+    )
+    module = types.ModuleType("unsloth.models.loader")
+    module.os = os
+    exec(compile(ast.Module(body = [fn], type_ignores = []), "loader.py", "exec"), module.__dict__)
+    return module
+
+
 def _auto_env(mp, auto, budget_mib):
     mp.setattr(auto, "_world", lambda environ: 2)
     mp.setattr(auto, "_gather", lambda entry: [entry, entry])
     utils = types.ModuleType("unsloth.models._utils")
     utils.patch_gradient_accumulation_fix = lambda cls: None
     mp.setitem(sys.modules, "unsloth.models._utils", utils)
+    mp.setitem(sys.modules, "unsloth.models.loader", _loader_unc_guard_module())
     for key in ("UNSLOTH_FSDP2", "UNSLOTH_PARALLEL_AUTO_RESOLVED"):
         mp.setenv(key, "")
         mp.delenv(key)
@@ -876,3 +925,239 @@ def test_auto_trains_like_the_explicit_layout_it_picked(tmp_path, budget_gb, exp
         assert a["ddp"] == b["ddp"] == (expected == "ddp"), r
         assert len(a["losses"]) == STEPS and a["losses"] == b["losses"], r
         assert r["n_params"] > 0 and r["max_diff"] == 0.0, r
+
+
+@pytest.mark.parametrize("base", [r"\\evil.example\share\model", "//evil.example/share/model"])
+def test_hub_adapter_network_share_base_is_refused_before_any_probe(clean, base):
+    """A Hub adapter's UNC base_model_name_or_path must not reach get_model_name / a filesystem probe while
+    sizing (Windows: SMB + NTLM to a host the repo chose); the loaders refuse it the same way."""
+    mp, _, auto = clean
+    windows_share = lambda p: p.replace("\\", "/").startswith(
+        "//"
+    )  # the Windows answer, on any host
+    mp.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        types.SimpleNamespace(_is_network_share = windows_share),
+    )
+    calls, fetched = [], []
+    mp.setitem(sys.modules, "unsloth.models.loader_utils", _stub_name_mapping(calls = calls))
+    mp.setattr(auto, "_peft_base", lambda name, call, revision: base)
+
+    def tensors(name, **kwargs):
+        fetched.append(name)
+        return [("model.layers.0.mlp.up_proj.weight", "BF16", (64, 64))]
+
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(auto, "_checkpoint_tensors", tensors)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("someone/adapter",), {"load_in_4bit": False})
+    assert base not in fetched and all(name != base for name, _ in calls), (fetched, calls)
+    assert got == "fsdp2" and "network share" in auto._STATE["reason"], auto._STATE["reason"]
+
+
+_MOE_TINY = (
+    "trl-internal-testing/tiny-Qwen3MoeForCausalLM",
+    "hf-internal-testing/tiny-random-OlmoeForCausalLM",
+    "hf-internal-testing/tiny-random-MixtralForCausalLM",
+    "trl-internal-testing/tiny-GptOssForCausalLM",
+)
+
+
+def _meta_checkpoint(repo):
+    """(name, "BF16", shape) for every tensor of `repo`'s config built on the meta device: the layout a
+    checkpoint saved by this transformers has (3-D expert stacks on 5.x, and gpt-oss on 4.x too)."""
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from tests._tiny_fixture_revisions import revision
+
+    config = AutoConfig.from_pretrained(repo, revision = revision(repo))
+    with torch.device("meta"):
+        model = AutoModelForCausalLM.from_config(config, torch_dtype = torch.bfloat16)
+    return [(k, "BF16", tuple(v.shape)) for k, v in model.state_dict().items()]
+
+
+@pytest.mark.parametrize("repo", _MOE_TINY, ids = lambda r: r.split("tiny-")[-1])
+def test_fused_expert_stacks_size_like_per_expert_linears(clean, repo):
+    """A 3-D expert stack [E, a, b] is E linears: it quantizes on a 4-bit load and its expert LoRA is
+    r * E * (a + b), exactly what the same checkpoint saved as E 2-D weights is sized at. It was priced at
+    2 bytes per element in 4-bit (about 3.6x a Qwen3-30B-A3B-like checkpoint) with no LoRA."""
+    _, _, auto = clean
+    fused = _meta_checkpoint(repo)
+    stacks = {k for k, _, s in fused if len(s) == 3 and "expert" in k.lower()}
+    if not stacks:
+        pytest.skip(f"{repo} has per-expert 2-D weights under this transformers")
+    split = []
+    for key, dt, shape in fused:
+        if key in stacks:
+            stem = key[: -len(".weight")] if key.endswith(".weight") else key
+            split += [(f"{stem}.{e}.weight", dt, shape[1:]) for e in range(shape[0])]
+        else:
+            split.append((key, dt, shape))
+    for kwargs in (
+        {},
+        {"load_in_4bit": True, "skip_modules": []},
+        # bnb 8-bit replaces nn.Linear only: a fused stack stays dense, like split experts it skips.
+        {"load_in_8bit": True, "skip_modules": []},
+    ):
+        w_fused, lora_fused = auto.checkpoint_estimate(fused, **kwargs)
+        split_kwargs = dict(kwargs)
+        if kwargs.get("load_in_8bit"):
+            split_kwargs["skip_modules"] = sorted(stacks)
+        w_split, lora_split = auto.checkpoint_estimate(split, **split_kwargs)
+        assert lora_fused == lora_split > 0, kwargs
+        # int() per tensor: at most one byte per expert apart.
+        assert abs(w_fused - w_split) <= sum(1 for k, _, _ in split if k not in dict.fromkeys(
+            k for k, _, _ in fused)), (kwargs, w_fused, w_split)  # fmt: skip
+
+
+def test_fp8_and_int8_checkpoints_count_their_stored_bytes(clean):
+    """F8_* weights load as FP8 (1 byte) and keep their own quantization on a 4-bit request; an explicit
+    16-bit or full finetuning load dequantizes them. I8 (bitsandbytes 8-bit) holds one code per byte."""
+    _, _, auto = clean
+    n = 4096 * 4096
+    fp8 = [
+        ("model.layers.0.mlp.down_proj.weight", "F8_E4M3", (4096, 4096)),
+        ("model.layers.0.mlp.down_proj.weight_scale_inv", "F32", (32, 32)),
+        ("model.layers.0.self_attn.q_proj.weight", "BF16", (4096, 4096)),
+    ]
+    scale = 4 * 32 * 32  # the block scales stay float32
+    w16, lora = auto.checkpoint_estimate(fp8)
+    assert w16 == n + scale + 2 * n
+    assert lora == 2 * 16 * (4096 + 4096)
+    # bitsandbytes is off for an FP8 checkpoint: the BF16 linear is not quantized either.
+    assert auto.checkpoint_estimate(fp8, load_in_4bit = True, skip_modules = [])[0] == w16
+    assert auto.checkpoint_estimate(fp8, fp8 = "dequantized")[0] == 2 * n + 2 * 32 * 32 + 2 * n
+    # A dequantizing device keeps bitsandbytes off too: nothing is NF4.
+    assert (
+        auto.checkpoint_estimate(fp8, fp8 = "dequantized", load_in_4bit = True, skip_modules = [])[0]
+        == 2 * n + 2 * 32 * 32 + 2 * n
+    )
+    # fp8 -> NF4: the FP8 linear quantizes, the checkpoint's BF16 linear stays dense unless "nf4_all".
+    nf4 = dict(load_in_4bit = True, skip_modules = [])
+    assert auto.checkpoint_estimate(fp8, fp8 = "nf4", **nf4)[0] == int(n * 0.53) + 2 * 32 * 32 + 2 * n
+    assert auto.checkpoint_estimate(fp8, fp8 = "nf4_all", **nf4)[0] == 2 * int(n * 0.53) + 2 * 32 * 32
+    # A 3-D FP8 expert stack: its block scales are float32 tensors, not linears with LoRA.
+    stack = [
+        ("model.layers.0.mlp.experts.down_proj", "F8_E4M3", (8, 256, 128)),
+        ("model.layers.0.mlp.experts.down_proj_scale_inv", "F32", (8, 2, 1)),
+    ]
+    w_stack, lora_stack = auto.checkpoint_estimate(stack, load_in_4bit = True, skip_modules = [])
+    assert w_stack == 8 * 256 * 128 + 4 * 8 * 2
+    assert lora_stack == 16 * 8 * (256 + 128)
+    int8 = [
+        ("model.layers.0.mlp.up_proj.weight", "I8", (4096, 4096)),
+        ("model.layers.0.mlp.up_proj.SCB", "F32", (4096,)),
+    ]
+    w8, lora8 = auto.checkpoint_estimate(int8, hidden_size = 4096)
+    assert w8 == n + 4 * 4096
+    assert lora8 == 16 * (4096 + 4096)
+    assert auto.checkpoint_estimate(int8, full_finetuning = True)[1] == n + 4096
+
+
+@pytest.mark.parametrize(
+    "kept, extra, want",
+    [
+        (True, {}, "ddp"),  # FP8 compute: 16 MiB of FP8 weights fit 25 MiB
+        (False, {}, "fsdp2"),  # below sm89 / CPU: transformers dequantizes to 32 MiB of 16-bit
+        (True, {"load_in_16bit": True}, "fsdp2"),  # an explicit 16-bit load dequantizes
+    ],
+    ids = ["fp8_device", "dequantizing_device", "load_in_16bit"],
+)
+def test_fp8_load_sizing_follows_the_device(clean, kept, extra, want):
+    mp, _, auto = clean
+    _auto_env(mp, auto, budget_mib = 25)
+    mp.setattr(
+        auto,
+        "_checkpoint_tensors",
+        lambda name, **kwargs: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 4096))],
+    )
+    mp.setattr(auto, "_fp8_kept_on_load", lambda: kept, raising = False)
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kwargs,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(
+        from_pretrained, ("org/model-fp8",), {"load_in_4bit": False, **extra}
+    )
+    assert got == want, auto._STATE["reason"]
+
+
+@pytest.mark.parametrize(
+    "kwargs, env, want",
+    [
+        ({"load_in_4bit": True}, None, "ddp"),  # explicit 4bit: fp8 -> NF4, 17 MiB fits 30 MiB
+        ({}, None, "fsdp2"),  # the default 4bit flag keeps the 32 MiB of FP8 weights
+        ({}, "1", "ddp"),  # UNSLOTH_FP8_TO_NF4=1 arms it without an explicit flag
+        ({"load_in_4bit": True}, "0", "fsdp2"),  # turned off: FP8 kept
+        ({"load_in_4bit": True, "_kept": False}, None, "ddp"),  # NF4 needs no FP8 compute (A100)
+        (
+            {"load_in_4bit": True, "_quant": None},
+            None,
+            "fsdp2",
+        ),  # not block FP8: the loader keeps FP8
+        (
+            {"load_in_4bit": True, "_quant": {"expert_dtype": "mxfp4"}},
+            None,
+            "fsdp2",
+        ),  # packed experts
+    ],
+    ids = [
+        "explicit_4bit",
+        "default_flag",
+        "env_force",
+        "env_off",
+        "no_fp8_compute",
+        "not_block_fp8",
+        "packed_experts",
+    ],
+)
+def test_fp8_to_nf4_load_is_sized_in_4bit(clean, kwargs, env, want):
+    mp, _, auto = clean
+    _auto_env(mp, auto, budget_mib = 30)
+    if env is None:
+        mp.delenv("UNSLOTH_FP8_TO_NF4", raising = False)
+    else:
+        mp.setenv("UNSLOTH_FP8_TO_NF4", env)
+    mp.setattr(
+        auto,
+        "_checkpoint_tensors",
+        lambda name, **kw: [("model.layers.0.mlp.up_proj.weight", "F8_E4M3", (4096, 8192))],
+    )
+    mp.setattr(auto, "_fp8_kept_on_load", lambda: kept, raising = False)
+    kwargs = dict(kwargs)
+    quant = kwargs.pop("_quant", {"quant_method": "fp8", "weight_block_size": [128, 128]})
+    kept = kwargs.pop("_kept", True)
+    stub = types.ModuleType("unsloth.models.fp8_to_nf4")
+    stub.fp8_to_nf4_unavailable_reason = lambda: None
+    stub.fp8_block_quantization_config = lambda config: quant
+    stub._PACKED_EXPERT_DTYPES = ("fp4", "mxfp4", "nvfp4", "int4")
+    mp.setitem(sys.modules, "unsloth.models.fp8_to_nf4", stub)
+    mistral = types.ModuleType("unsloth.models.mistral_format")
+    mistral.mistral_format_conversions_active = lambda: False
+    mp.setitem(sys.modules, "unsloth.models.mistral_format", mistral)
+    mp.setattr(auto, "_config", lambda name, call, revision: object())
+
+    def from_pretrained(
+        model_name = "x",
+        load_in_4bit = True,
+        load_in_16bit = False,
+        **kw,
+    ):
+        return model_name
+
+    got = auto.resolve_for_load(from_pretrained, ("org/model-fp8",), kwargs)
+    assert got == want, auto._STATE["reason"]

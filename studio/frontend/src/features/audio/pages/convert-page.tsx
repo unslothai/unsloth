@@ -32,6 +32,7 @@ import {
 } from "../hooks/use-convert-generation";
 import { useAudioConvertStore } from "../stores/audio-convert-store";
 import { AudioToolPanels } from "../tools/tool-panel-host";
+import { RecommendedModelPicks } from "../components/recommended-model-picks";
 import { TtsFooter, TtsOutput, TtsRailFields } from "./tts-workspace";
 
 type RailProps = Omit<
@@ -342,6 +343,7 @@ export function ConvertFooter({
 
 function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
+  fileUrl?: string;
   unavailable?: string;
 } {
   const savedUrl = clip?.source_saved
@@ -349,7 +351,11 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     : null;
   const sourceId = clip?.source_clip_id ?? clip?.source_input_id ?? null;
   const kind = clip?.source_clip_id ? "clip" : "input";
-  const [side, setSide] = useState<{ src?: string; unavailable?: string }>({});
+  const [side, setSide] = useState<{
+    src?: string;
+    fileUrl?: string;
+    unavailable?: string;
+  }>({});
   useEffect(() => {
     if (!savedUrl && !sourceId) {
       setSide({ unavailable: "The source is not saved with this clip." });
@@ -362,10 +368,14 @@ function useSourceSide(clip: AudioGalleryClip | null): {
     const original = sourceId
       ? sourceFileUrl({ kind, id: sourceId, name: "", durationS: null })
       : null;
+    let fileUrl = original ?? (savedUrl as string);
     const fetchSide = (): Promise<Blob> =>
       original
         ? fetchAudioBlob(original).catch((error) => {
-            if (savedUrl) return fetchAudioBlob(savedUrl);
+            if (savedUrl) {
+              fileUrl = savedUrl;
+              return fetchAudioBlob(savedUrl);
+            }
             throw error;
           })
         : fetchAudioBlob(savedUrl as string);
@@ -373,7 +383,7 @@ function useSourceSide(clip: AudioGalleryClip | null): {
       .then((blob) => {
         if (cancelled) return;
         url = URL.createObjectURL(blob);
-        setSide({ src: url });
+        setSide({ src: url, fileUrl });
       })
       .catch(() => {
         if (!cancelled)
@@ -402,7 +412,6 @@ export function ConvertOutput({
   recommendedModels?: readonly ModelOption[];
   onPickModel?: (id: string) => void;
 }) {
-  const picks = modelReady || !onPickModel ? [] : recommendedModels.slice(0, 3);
   const compareSide = useAudioConvertStore((state) => state.compareSide);
   const setCompareSide = useAudioConvertStore((state) => state.setCompareSide);
   const sourceSide = useSourceSide(props.selectedClip);
@@ -418,7 +427,11 @@ export function ConvertOutput({
           key={clip.id}
           ariaLabel="Compare the source and the converted voice"
           a={{ label: "Source", ...sourceSide }}
-          b={{ label: "Converted", src }}
+          b={{
+            label: "Converted",
+            src,
+            fileUrl: `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/file`,
+          }}
           side={compareSide === "source" ? "a" : "b"}
           onSideChange={(side) =>
             setCompareSide(side === "a" ? "source" : "converted")
@@ -427,29 +440,15 @@ export function ConvertOutput({
         />
       )}
       emptyActions={
-        picks.length > 0 ? (
-          <div
-            className="flex flex-wrap justify-center gap-2"
-            aria-label="Recommended models"
-          >
-            {picks.map((model) => (
-              <Button
-                key={model.id}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => onPickModel?.(model.id)}
-              >
-                Use {model.name}
-              </Button>
-            ))}
-          </div>
-        ) : null
+        modelReady ? null : (
+          <RecommendedModelPicks models={recommendedModels} onPick={onPickModel} />
+        )
       }
+      emptyTitle="Converted recordings will appear here"
       emptyText={
         modelReady
-          ? "Converted recordings land here. Add a recording and the target voice, and press Generate."
-          : "Converted recordings land here. Load a model that can convert a voice, add a recording, and press Generate."
+          ? "Add a recording and the target voice, and press Generate."
+          : "Load a model that can convert a voice, add a recording and a target voice, and press Generate."
       }
     />
   );

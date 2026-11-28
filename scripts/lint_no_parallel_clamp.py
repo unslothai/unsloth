@@ -113,8 +113,7 @@ def _findings_for_tree(
                     what = "pinned to a single slot by an expression"
                 else:
                     continue
-                # The formatter moves a trailing comment inside the parentheses when it wraps a long
-                # assignment, so the marker counts on any line the statement spans.
+                # Formatter moves the marker into wrapped parens; any spanned line counts.
                 span = lines[node.lineno - 1 : (node.end_lineno or node.lineno)]
                 if any(ALLOW_MARKER in line for line in span):
                     continue

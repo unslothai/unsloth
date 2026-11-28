@@ -23,7 +23,7 @@ _REFUSERS = [
     ("diffusion.py", "_apply_loras"),
     ("diffusion.py", "_adjust_baked_loras"),
     ("diffusion.py", "_check_h3_image_loras"),
-    ("sd_cpp_backend.py", "generate"),
+    ("sd_cpp_backend.py", "_generate_impl"),  # generate() routes to it or to the card replicas
 ]
 
 
@@ -65,7 +65,7 @@ def test_lora_refusals_are_typed(filename, function):
     assert (
         not plain
     ), f"{filename}:{function} still refuses a LoRA selection with a plain ValueError: {plain}"
-    assert "LoraSelectionError" in _raised_names(fn)
+    assert {"LoraSelectionError", "LoraReloadRequiredError"} & set(_raised_names(fn))
 
 
 def test_the_typed_refusal_is_still_a_value_error():

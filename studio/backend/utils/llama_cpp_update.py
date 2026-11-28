@@ -31,6 +31,7 @@ from utils.llama_cpp_changelog import (
     release_page_url,
     unavailable_reason,
 )
+from utils.prebuilt import freshness_flow as _freshness_flow
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -38,6 +39,7 @@ from utils.prebuilt.llama_backend import (
     marker_backend,
     marker_backend_request,
     normalize_backend,
+    normalize_backend_request,
 )
 from utils.update_status import update_checks_disabled
 
@@ -406,9 +408,10 @@ def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
-    status = _llama_only_status(force_refresh = force_refresh)
-    status = _merge_whisper_status(status, force_refresh = force_refresh)
-    status = _merge_audio_status(status, force_refresh = force_refresh)
+    with _freshness_flow.shared_release_fetches():
+        status = _llama_only_status(force_refresh = force_refresh)
+        status = _merge_whisper_status(status, force_refresh = force_refresh)
+        status = _merge_audio_status(status, force_refresh = force_refresh)
     return _settle_whisper_rider(status)
 
 
@@ -607,7 +610,8 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
     """Normalize a resolver payload into the options the picker and the switch planner both read, so both judge a request against the same list."""
     options = []
     for entry in (resolved or {}).get("backends") or []:
-        backend = normalize_backend(entry.get("backend"))
+        # Options must be switchable; actual-only backends (metal, sycl) surface as resolved_backend.
+        backend = normalize_backend_request(entry.get("backend"))
         if backend is None:
             continue
         asset = entry.get("asset")
@@ -616,12 +620,51 @@ def _backend_options(resolved: Optional[dict], assets: Optional[dict] = None) ->
                 "backend": backend,
                 "available": bool(entry.get("available")),
                 "unavailable_reason": entry.get("reason"),
+                "unavailable_detail": entry.get("detail"),
                 "resolved_backend": normalize_backend(entry.get("resolved_backend")),
                 "release_tag": entry.get("release_tag"),
                 "download_size_bytes": (assets or {}).get(asset) if asset else None,
             }
         )
     return options
+
+
+_BACKEND_GPU_VENDOR = {"cuda": "nvidia", "rocm": "amd"}
+
+
+def _explain_unavailable_options(options: list[dict]) -> None:
+    """Mark which unavailable backends this host's GPUs make worth showing (ROCm on an AMD
+    card, not on an NVIDIA-only one) and, for ROCm, why it cannot install: the resolver only
+    says no bundle matched."""
+    from utils.hardware.amd import rocm_runtime_blocker
+    from utils.llama_cpp_path_settings import host_gpu_vendors
+
+    vendors = None
+    try:
+        vendors = host_gpu_vendors(reachable = False)
+    except Exception as exc:  # pragma: no cover - probe defensive
+        logger.debug("llama backend: GPU vendor probe failed", error = str(exc))
+    for option in options:
+        option["unavailable_hint"] = None
+        if option["available"]:
+            option["applies_to_host"] = True
+            continue
+        backend = option["backend"]
+        if backend in ("auto", "cpu"):
+            applies = True
+        elif backend == "vulkan":
+            applies = bool(vendors)
+        else:
+            applies = vendors is not None and _BACKEND_GPU_VENDOR.get(backend) in vendors
+        option["applies_to_host"] = applies
+        if applies and backend == "rocm":
+            try:
+                blocker = rocm_runtime_blocker()
+            except Exception as exc:  # pragma: no cover - probe defensive
+                logger.debug("llama backend: ROCm blocker probe failed", error = str(exc))
+                blocker = None
+            if blocker is not None:
+                option["unavailable_reason"], option["unavailable_hint"] = blocker
 
 
 def _selection_applied(
@@ -726,6 +769,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
     except Exception as exc:  # pragma: no cover - network defensive
         logger.debug("llama backend: asset size lookup failed", error = str(exc))
     options = _backend_options(resolved, assets)
+    _explain_unavailable_options(options)
     status["options"] = options
     status["selection_applied"] = _selection_applied(
         status["backend_request"], status["backend"], options

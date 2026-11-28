@@ -26,7 +26,7 @@ import {
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { TrashIcon } from "@/lib/hugeicons-derived";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
-import { withTimeFormat } from "@/lib/time-format";
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -38,14 +38,15 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { ArrowDownIcon } from "lucide-react";
-import { useMemo, useState } from "react";
-import { CHAT_HANDOFF_ENTRIES, chatAboutTranslations } from "./chat-handoff";
+import { memo, useMemo, useState } from "react";
+import { chatAboutTranslations } from "./chat-handoff";
 import { IconAction } from "./icon-action";
 import { findTranslateLanguage, translateLanguageLabel } from "./languages";
 import {
   TRANSLATE_HISTORY_FILE_NAME,
   type TranslateHistoryEntry,
   exportHistory,
+  recentForChat,
   searchHistory,
 } from "./translate-history";
 import { useTranslateStore } from "./translate-store";
@@ -66,9 +67,12 @@ const BUCKET_LABELS: Record<
   month: "library.chats.groups.month",
 };
 
-export function TranslateHistoryList() {
+// No props, so memo keeps the page's per-keystroke and per-streamed-frame renders off these rows.
+export const TranslateHistoryList = memo(function TranslateHistoryList() {
   const t = useT();
   const locale = useLocale();
+  // formatWhen reads the 12h/24h setting; subscribe so a Settings change still reaches the rows.
+  useTimeFormat();
   const history = useTranslateStore((state) => state.history);
   const restore = useTranslateStore((state) => state.restore);
   const removeHistory = useTranslateStore((state) => state.removeHistory);
@@ -163,7 +167,7 @@ export function TranslateHistoryList() {
               <IconAction
                 icon={Message01Icon}
                 label={t("translate.history.chatRecent")}
-                onClick={() => chat(history.slice(0, CHAT_HANDOFF_ENTRIES))}
+                onClick={() => chat(recentForChat(history))}
               />
               <IconAction
                 icon={Download01Icon}
@@ -322,4 +326,4 @@ export function TranslateHistoryList() {
       </AlertDialog>
     </section>
   );
-}
+});

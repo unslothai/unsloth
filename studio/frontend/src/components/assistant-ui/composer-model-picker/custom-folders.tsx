@@ -135,23 +135,24 @@ export function useCustomFolders({
     [onFoldersChange],
   );
 
-  const actions = (
-    <Hint label="Add a folder to scan for models">
-      <button
-        type="button"
-        aria-label="Add a custom folder"
-        onClick={() => void browse()}
-        disabled={busy}
-        className={cn(ICON_BUTTON, "disabled:opacity-40")}
-      >
-        <HugeiconsIcon
-          icon={PlusSignIcon}
-          strokeWidth={1.75}
-          className="size-3"
-        />
-      </button>
-    </Hint>
-  );
+  const actions =
+    folders.length === 0 ? null : (
+      <Hint label="Add a folder to scan for models">
+        <button
+          type="button"
+          aria-label="Add a custom folder"
+          onClick={() => void browse()}
+          disabled={busy}
+          className={cn(ICON_BUTTON, "disabled:opacity-40")}
+        >
+          <HugeiconsIcon
+            icon={PlusSignIcon}
+            strokeWidth={1.75}
+            className="size-3"
+          />
+        </button>
+      </Hint>
+    );
 
   const registered = new Set(folders.map((f) => f.path));
   const suggestions = recommended.filter((p) => !registered.has(p));

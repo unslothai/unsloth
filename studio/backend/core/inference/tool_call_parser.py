@@ -6,6 +6,7 @@
 # Lazy annotations keep the standalone python 3.9 import working.
 from __future__ import annotations
 
+import ast
 import json
 import bisect
 import re
@@ -42,6 +43,7 @@ TOOL_XML_SIGNALS = (
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
     "<minimax:tool_call>",
+    "<|tool_call_start|>",
 )
 
 
@@ -211,8 +213,7 @@ def _normalize_for_repeat(text: str) -> str:
     return " ".join(words)
 
 
-# Exact after normalisation: every fuzzy relaxation tried lost real corrections. A missed
-# repeat costs one nudge; a false one strands the plan.
+# Exact after normalisation: fuzzy matches lost corrections; a false repeat strands the plan.
 def is_reprompt_repeat(text: str, previous: str) -> bool:
     return is_reprompt_restatement(text, previous)
 
@@ -256,9 +257,7 @@ def starved_result_message(tool_name: str, result: str) -> str:
 
 
 def repeated_result_message(tool_name: str, times: int, last_result: str) -> str:
-    """Appended to a result the tool has now returned unchanged several times. The last result is
-    kept rather than replaced: it may be the truncation notice that caused the repeats, and
-    dropping it would leave the model with less than it had."""
+    """Appended to an unchanged repeat; keeps the last, which may be the truncation notice."""
     return (
         f"{last_result}\n\n"
         f"[{tool_name} returned exactly this {times} times; it will not change. Continue "
@@ -293,10 +292,7 @@ def reasoning_cap_spent_message(max_tokens: Optional[int] = None) -> str:
 
 
 def continue_after_length_message() -> str:
-    """The user message appended when a turn ended inside its own reasoning. The instruction is to
-    ACT, not to think more carefully: the previous turn ended with nothing to show because
-    thinking consumed the whole window, so asking for more deliberation is asking for the same
-    ending a second time."""
+    """Appended when a turn ends mid-reasoning: act now; more thinking would repeat the ending."""
     return (
         "You ran out of room while thinking, so nothing was produced. Stop thinking and "
         "act: call a tool or answer now. If it will not all fit, deliver the first part "
@@ -377,6 +373,10 @@ _MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
 _MINIMAX_BLOCK_CLOSE = "</minimax:tool_call>"
 _MINIMAX_INVOKE_OPEN_RE = re.compile(r'<invoke\s+name="([\w\.\-]+)">')
 _MINIMAX_INVOKE_CLOSE = "</invoke>"
+
+# LFM2 / LFM2.5: ``<|tool_call_start|>[name(key='value', n=1), other(...)]<|tool_call_end|>``.
+_LFM_CALL_START = "<|tool_call_start|>"
+_LFM_CALL_END = "<|tool_call_end|>"
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -752,8 +752,7 @@ def _escaped_string_content_spans(text: str, start: int, end: int) -> list:
     return spans
 
 
-# A wrapper immediately before makes the call trusted. ``[CALL_ID]`` is not one: alone it
-# would grant trust no wrapper gave.
+# A wrapper right before makes a call trusted; bare [CALL_ID] is not one, or it grants trust.
 _MARKERLESS_TRUSTED_PREFIXES = (
     "<|tool_call>",
     "[TOOL_CALLS]",
@@ -799,6 +798,7 @@ _CONTAINING_WRAPPERS = (
     '<function name="',
     "[TOOL_CALLS]",
     "<minimax:tool_call>",
+    _LFM_CALL_START,
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -839,8 +839,7 @@ def _only_a_code_fence(between: str) -> bool:
 _FENCE_ONLY_RE = re.compile(r"[\w.\-]*[ \t]*\n?[ \t]*`{3,}[a-zA-Z0-9_+-]*")
 
 
-# Caps only the non-blank gap a code fence could fill; the blank part is unbounded. Refusing
-# a real fence wrongly would mask the wrapper body with U+E000.
+# Caps only the non-blank gap, not blanks; a refused real fence masks the body with U+E000.
 _MAX_FENCE_CHARS = 4096
 
 
@@ -885,8 +884,7 @@ def _inference_wrapper_spans(text: str) -> list:
     for m in _LLAMA3_PY_CALL_RE.finditer(text):
         end = _balanced_paren_end(text, m.end() - 1)
         spans.append((m.end(), len(text) if end is None else end))
-    # Attribute-form calls have no JSON body; protect the element interior so a genuine call's
-    # arguments are not masked.
+    # Attribute-form calls have no JSON body; protect the interior so arguments are not masked.
     close = -2  # Not yet sought, as ``brace`` above.
     for m in _ATTR_FUNC_OPEN_RE.finditer(text):
         # Re-seek only once the close falls behind this opener; seeking per opener is quadratic.
@@ -1066,9 +1064,7 @@ def _mask_blocked_bodies(
     think: bool = False,
     mentions: bool = False,
 ) -> tuple:
-    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. With
-    mentions (display strips), a tag alone in backticks is masked so no strip arm reads it as an opener or closer.
-    Returns (masked_text, bodies), restored in order."""
+    """Masks reasoning under think so rehearsed calls can't run; mentions mask backticked tags."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
     if mentions:
         mention_spans = _tool_healing.tag_mention_spans(text)
@@ -1101,8 +1097,7 @@ def _mask_blocked_bodies(
 
 
 def _unmask_blocked_bodies(text: str, bodies: list) -> Optional[str]:
-    """Put the bodies back, or ``None`` when a pass disturbed the runs and the caller
-    should fall back to the unmasked result rather than emit a mangled body."""
+    """Restores bodies, or None if a pass disturbed the runs; callers use the unmasked text."""
     if not bodies:
         return text
     restored = iter(bodies)
@@ -1303,6 +1298,25 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_lfm_calls(text: str, *, final: bool) -> str:
+    """Strip call-shaped LFM blocks; ``final`` also drops a trailing unclosed call-shaped or empty block."""
+    if _LFM_CALL_START not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end, closed in _lfm_block_spans(text):
+        body = text[start + len(_LFM_CALL_START) : end - len(_LFM_CALL_END) if closed else end]
+        if closed:
+            if not _LFM_CALL_SHAPE_RE.match(body):
+                continue
+        elif not (final and (_LFM_CALL_SHAPE_RE.match(body) or not body.strip())):
+            break
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _strip_minimax_calls(text: str, *, final: bool) -> str:
     """Strip ``<minimax:tool_call>`` blocks at the close the parser uses; ``final`` drops a trailing unclosed block."""
     if _MINIMAX_BLOCK_OPEN not in text:
@@ -1327,6 +1341,7 @@ def strip_segment(
     """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
     seg = _strip_mistral_closed_calls(segment)
     seg = _strip_minimax_calls(seg, final = seg_final)
+    seg = _strip_lfm_calls(seg, final = seg_final)
     # Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
@@ -1531,8 +1546,7 @@ def _safe_cut(text: str, first: int) -> int:
     head = text[:cut]
     if "`" in head or "~" in head:
         return 0
-    # An unmatched closer makes everything before it reasoning, decided from offset 0; cut only
-    # when nothing precedes it.
+    # An unmatched closer makes the text before it reasoning; cut only if nothing precedes it.
     close_at = _unmatched_think_closer(text)
     if 0 <= close_at and first < close_at:
         return 0
@@ -1791,8 +1805,7 @@ class StreamingMarkupStripper:
                 enabled_tool_names = self._enabled_tool_names,
             )
 
-        # Mask as strip_tool_markup does: consumers get append-only snapshots, so a corrupted one
-        # emitted earlier could never be repaired.
+        # Mask like strip_tool_markup; emitted snapshots are append-only and can't be repaired.
         masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names, mentions = True)
         result = _tool_healing.strip_outside_think(masked, _seg)
         if not bodies:
@@ -1801,8 +1814,7 @@ class StreamingMarkupStripper:
         return restored if restored is not None else _tool_healing.strip_outside_think(text, _seg)
 
     def reset(self):
-        """Required before a new buffer: _is_extension only samples the ends, so a different buffer
-        can pass."""
+        """Call before new buffers: _is_extension samples the ends, so another buffer can pass."""
         self._reset()
 
     def _note(self, text: str):
@@ -1912,6 +1924,8 @@ _EMBEDDED_MARKER_RE = re.compile(
     + re.escape(_KIMI_CALL_BEGIN)
     + "|"
     + re.escape(_MINIMAX_BLOCK_OPEN)
+    + "|"
+    + re.escape(_LFM_CALL_START)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -2034,9 +2048,8 @@ def _xml_signal_inside_leading_mistral(content: str) -> bool:
     first_xml = _first_foreign_tool_signal(content)
     if first_xml is not None and first_xml < trig:
         return False
-    # Only plain prose precedes the trigger: a visible preface must not hand the turn to a later XML literal
-    # (preamble-tolerant, like the wrapperless-Gemma guard). Prose that merely mentions the marker has no parseable
-    # region and keeps the normal order.
+    # Only plain prose may precede the trigger (a visible preface must not hand the turn to a later
+    # XML literal, like the wrapperless-Gemma guard); a mere mention keeps the normal order.
     return _mistral_region_end(content, trig, open_envelope_runs_to_eof = True) is not None
 
 
@@ -2186,10 +2199,9 @@ def _inside_leading_markerless_body(
 def _disabled_gemma_call_end_containing_signal(
     content: str, enabled_tool_names: Optional[set]
 ) -> int | None:
-    """End offset (exclusive) of the earliest PROSE (non-promotable) wrapper-less Gemma call whose
-    balanced body holds the first foreign signal, else None. A prose name makes the quoted literal
-    data, so the caller drops the span and parses the tail; a promotable call defers to the
-    enabled-call guard."""
+    """Exclusive end of the earliest prose (non-promotable) wrapper-less Gemma call whose body holds
+    the first foreign signal, else None; a prose name makes the quoted literal data, so the
+    caller drops the span and parses the tail; promotable ones defer to enabled-call guard."""
     first = _first_foreign_tool_signal(content)
     trig = content.find(_MISTRAL_TRIGGER)
     if trig >= 0 and (first is None or trig < first):
@@ -2233,13 +2245,10 @@ def parse_tool_calls_from_text(
         # the parse path must agree with the display strip.
         content = _strip_mistral_reasoning(content)
 
-        # Equal-length mask, so the spans this returns still index the caller's text: a blocked
-        # call's arguments are quoted prose, and a wrapped call nested there was promoted.
+        # Equal-length mask keeps spans valid; wrapped calls nested in blocked args stay data.
         content, _blocked_bodies = _mask_blocked_bodies(content, enabled_tool_names, think = True)
 
-        # A leading bare-JSON value is decided FIRST: a string argument quoting tool markup (XML or a Mistral trigger)
-        # must stay data, so the bare-JSON parser takes the outer call before any other pass. Precedes the Mistral
-        # guard, whose preamble tolerance would otherwise claim a trigger quoted inside the leading object.
+        # Decide a leading bare-JSON value first so quoted XML or Mistral markup stays data.
         skipped = False
         while _xml_signal_inside_leading_bare_json(content):
             calls = _parse_llama3_bare_json(
@@ -2257,8 +2266,7 @@ def parse_tool_calls_from_text(
         if skipped:
             continue
 
-        # A leading enabled wrapper-less Gemma call is decided BEFORE the Mistral guard: its body reads as prose to
-        # the preamble tolerance below, so a quoted [TOOL_CALLS] would otherwise steal the turn.
+        # Runs before the Mistral guard, or a quoted [TOOL_CALLS] in its body steals the turn.
         if _signal_inside_leading_wrapperless_gemma(content, enabled_tool_names):
             calls = _parse_gemma_tool_calls(
                 content,
@@ -2269,8 +2277,7 @@ def parse_tool_calls_from_text(
             if calls:
                 return calls
 
-        # A DISABLED wrapper-less Gemma call is prose: drop the span and parse the tail BEFORE the Mistral guard,
-        # whose preamble tolerance would otherwise parse a quoted trigger.
+        # Drop disabled bare Gemma calls before the Mistral guard parses a quoted trigger.
         _prose_end = _disabled_gemma_call_end_containing_signal(content, enabled_tool_names)
         if _prose_end is None:
             break
@@ -2301,10 +2308,12 @@ def parse_tool_calls_from_text(
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
         _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
+        _lfm_pos = content.find(_LFM_CALL_START)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
             (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
+            (_lfm_pos if _lfm_pos >= 0 else len(content), _parse_lfm_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -2418,17 +2427,14 @@ _ONE_STRING_ARG_CALL_RE = re.compile(
     r'\{\s*"([A-Za-z_][\w\-]*)"\s*:\s*"(.*)"\s*\}\s*\}\s*\Z',
     re.DOTALL,
 )
-# A lost second argument or outer key (``", "key":``, ``", 'key':``, ``", key:``, ``"}, "key":``): the
-# value's end is no longer knowable, so it is refused.
+# A lost second argument or outer key leaves the value's end unknowable, so it is refused.
 _SECOND_KEY_RE = re.compile(
     r'"[\s}\]]*,\s*(?:"[A-Za-z_][\w\-]*"|\'[A-Za-z_][\w\-]*\'|[A-Za-z_][\w\-]*)\s*:'
 )
 
 
 def _escape_bare_quotes(raw: str) -> str:
-    """Escape the ``"`` no backslash escapes. A model that left bare quotes was not JSON-escaping quotes, so a
-    ``\\"`` it wrote next to them is the code's own escape and stays a backslash-quote; other escapes (``\\n``)
-    are JSON's. With no bare quote at all, every escape is JSON's."""
+    """If bare quotes: backslash-quote is the code's escape, other escapes JSON; else all JSON."""
     tokens: list[str] = []
     bare = False
     i, n = 0, len(raw)
@@ -2493,8 +2499,7 @@ def _parse_closed_call_unescaped_quotes(content: str, *, id_offset: int) -> list
 
 
 def _loads_call_object(text: str, *, relaxed: bool = True):
-    """A wrapped call's JSON object: strict first; near-JSON a model sampled (single quotes, a trailing comma,
-    True/None, unquoted keys) only when strict fails and healing is on. None when neither reads an object."""
+    """Strict JSON first, then near-JSON if healing is on; None when neither reads an object."""
     try:
         return json.loads(text)
     except (json.JSONDecodeError, ValueError):
@@ -2894,7 +2899,6 @@ def _parse_llama3_bare_json(
     cursor = 0
     n = len(stripped)
     while cursor < n:
-        # Skip whitespace and the Llama-3 ``;`` inter-call separator.
         while cursor < n and stripped[cursor] in " \t\n\r;":
             cursor += 1
         if cursor >= n or stripped[cursor] != "{":
@@ -3416,7 +3420,6 @@ def strip_leading_bare_json_call(text: str, enabled_tool_names: Optional[set] = 
 
     while True:
         probe = strip_llama3_leading_sentinels(remainder.lstrip())
-        # Skip the Llama-3 ``;`` inter-call separator between chained calls.
         if stripped_any or kept:
             probe = probe.lstrip(" \t\n\r;")
         # Separator before ``probe`` shows only if its object is kept; stripping only trims a prefix.
@@ -3471,8 +3474,7 @@ def blocked_bare_json_chain_may_continue(text: str, enabled_tool_names: Optional
     probe = strip_llama3_leading_sentinels(text.lstrip())
     if not probe.startswith("{"):
         return False
-    # Without any ``}`` the leading object cannot have closed; avoids a quadratic rewalk. Counting
-    # braces is wrong: a closed object followed by an open peer is unbalanced too.
+    # No ``}`` means no closed object (fast exit); a brace count is wrong when a peer follows.
     if "}" not in probe:
         return False
     end = _balanced_brace_end(probe, 0)
@@ -3620,8 +3622,7 @@ def blocked_gemma_chain_may_continue(text: str, enabled_tool_names: Optional[set
     m = _GEMMA_BARE_TC_RE.match(probe)
     if m is None or not _markerless_blocked_execution(m.group(1), enabled_tool_names):
         return False
-    # Without a ``}`` after the opener the body cannot have closed; avoids a quadratic rewalk per
-    # snapshot. Counting braces is wrong: a closed body plus an open peer is unbalanced too.
+    # No ``}`` after the opener: still open (avoids a rewalk); brace counting misjudges peers.
     if probe.find("}", m.end() - 1) < 0:
         return True
     end = _gemma_body_brace_end(probe, m.end() - 1)
@@ -3825,9 +3826,8 @@ def _slot_gemma_values(body: str) -> "tuple[str, list[str]]":
 
 
 def _gemma_bare_body_arguments(body: str) -> dict[str, Any]:
-    """Each ``<|"|>``-quoted value is read raw, every other value as the quote-less parser reads it (single
-    quotes, nesting). A delimiter that does not end up a whole value (a literal one inside another quoted
-    value) keeps the quote-less reading of the whole body."""
+    """Gemma-quoted values are read raw, others as the quote-less parser reads them; a delimiter not
+    ending a whole value makes the whole body quote-less."""
     if _GEMMA_QUOTED_VALUE_RE.search(body) is None or _GEMMA_SLOT in body:
         return _gemma_parse_stripped_body(body)
     slotted, raw = _slot_gemma_values(body)
@@ -3893,7 +3893,6 @@ def _gemma_parse_stripped_body(body: str) -> dict[str, Any]:
             i += 1
         raw_val = body[vstart:i].strip()
         if raw_val[:1] in "{[":
-            # Only a fully consumed, closed parse; otherwise keep the raw string.
             parsed, end, closed = _gemma_parse_value(raw_val, 0)
             out[key] = (
                 _gemma_strip_quoted_leaves(parsed)
@@ -3948,8 +3947,7 @@ def _gemma_parse_mapping(text: str, start: int):
 
 
 def _find_outside_json_strings(text: str, needle: str, start: int) -> int:
-    """Index of ``needle`` at/after ``start`` OUTSIDE any JSON string, or -1: a marker inside an
-    argument string must not be taken as the structural terminator."""
+    """Index of ``needle`` at/after ``start`` outside JSON strings, or -1; args may hold it."""
     i = start
     n = len(text)
     in_string = False
@@ -3988,8 +3986,7 @@ def _parse_deepseek_tool_calls(
     out, end_pos = _parse_deepseek_envelope(
         content, begin, id_offset = id_offset, allow_incomplete = allow_incomplete
     )
-    # Auto-Heal only: a model that closes its envelope and opens another runs both, but only once the
-    # first envelope parses strictly, and only closed, strictly parsed envelopes follow it.
+    # Auto-Heal only: each later envelope needs the prior one closed and strictly parsed.
     if (
         out
         and allow_incomplete
@@ -4093,7 +4090,6 @@ def _parse_deepseek_envelope(
         sep_pos = body.find(_DEEPSEEK_SEP, pos)
         if sep_pos < 0:
             break
-        # Walk left to the name start; stop at newline, `<` or `>`.
         name_start = sep_pos
         while name_start > pos and body[name_start - 1] not in "\n<>":
             name_start -= 1
@@ -4473,6 +4469,341 @@ def _parse_minimax_tool_calls(
                     "id": f"call_{id_offset + len(out)}",
                     "type": "function",
                     "function": {"name": im.group(1), "arguments": json.dumps(args)},
+                }
+            )
+    return out
+
+
+# Call-list body start (``[name(``, ``name(``, ``[{``, ``{``); a bare ``[`` / ``[name`` is a call still streaming.
+_LFM_CALL_SHAPE_RE = re.compile(
+    r"\s*(?:\[\s*(?:[A-Za-z_][\w.\-]*\s*(?:\(|\Z)|\{|\Z)|\{|[A-Za-z_][\w.\-]*\s*\()"
+)
+# Auto-Heal: one keyword whose quoted string holds the same quote unescaped (``query='what's new'``).
+_LFM_ONE_STRING_CALL_RE = re.compile(
+    r"\A\s*(\[)?\s*([A-Za-z_][\w.\-]*)\s*\(\s*([A-Za-z_][\w\-]*)\s*=\s*(['\"])(.*)\4\s*,?\s*\)\s*(\])?\s*\Z",
+    re.DOTALL,
+)
+# A second ``, key=`` inside that string means the value's end is unknowable, so it is refused.
+_LFM_SECOND_KEY_RE = re.compile(r",\s*[A-Za-z_][\w\-]*\s*=")
+_LFM_ESCAPE_RE = re.compile(r"\\(['\"\\nrt])")
+_LFM_ESCAPES = {"n": "\n", "r": "\r", "t": "\t"}
+_LFM_NAME_RE = re.compile(r"[A-Za-z_][\w.\-]*")
+_LFM_KEY_RE = re.compile(r"[A-Za-z_][\w\-]*")
+_LFM_WS_RE = re.compile(r"\s*")
+_LFM_LITERAL_NAMES = {
+    "true": True,
+    "false": False,
+    "null": None,
+    "True": True,
+    "False": False,
+    "None": None,
+}
+_LFM_MAX_DEPTH = 64
+
+
+class _LfmFail:
+    """Not a value; a fixed repr keeps the refactor guard's golden digests stable."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<not a value>"
+
+
+_LFM_FAIL = _LfmFail()
+
+
+def _lfm_string_end(text: str, pos: int, n: int) -> int:
+    """Index past the string literal at ``text[pos]``, or -1 if unclosed by ``n``."""
+    quote = text[pos]
+    j = pos + 1
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            j += 2
+            continue
+        if c == quote:
+            return j + 1
+        j += 1
+    return -1
+
+
+def _lfm_block_close(
+    text: str,
+    body_start: int,
+    state: dict | None = None,
+) -> int:
+    """Closer index for the block at ``body_start`` (quoted closers are data; unbalanced quotes: first), or -1.
+    ``state`` is shared across one text's blocks: a quote's first unclosed position, and the characters scanned so
+    far; past a linear budget every later block takes its first closer, so malformed output stays linear."""
+    first = text.find(_LFM_CALL_END, body_start)
+    if first < 0:
+        return -1
+    n = len(text)
+    if state is not None and state.get("scanned", 0) > 4 * n + 4096:
+        return first
+    j = body_start
+    found = first
+    while j < n:
+        c = text[j]
+        if c in "'\"":
+            if state is not None and c in state and state[c] < j:
+                break
+            end = _lfm_string_end(text, j, n)
+            if end < 0:
+                if state is not None:
+                    state[c] = j
+                break
+            j = end
+            continue
+        if text.startswith(_LFM_CALL_END, j):
+            found = j
+            break
+        j += 1
+    if state is not None:
+        state["scanned"] = state.get("scanned", 0) + (j - body_start)
+    return found
+
+
+def _lfm_block_spans(text: str) -> list[tuple[int, int, bool]]:
+    """``(start, end, closed)`` per ``<|tool_call_start|>`` block; an unclosed block runs to the end of the text."""
+    spans: list[tuple[int, int, bool]] = []
+    state: dict = {}
+    pos = 0
+    while True:
+        start = text.find(_LFM_CALL_START, pos)
+        if start < 0:
+            return spans
+        body_start = start + len(_LFM_CALL_START)
+        close = _lfm_block_close(text, body_start, state)
+        if close < 0:
+            spans.append((start, len(text), False))
+            return spans
+        pos = close + len(_LFM_CALL_END)
+        spans.append((start, pos, True))
+
+
+def _lfm_value(node: ast.AST, depth: int = 0) -> Any:
+    """JSON value from an argument AST: Python literals plus true/false/null; anything else fails."""
+    if depth > _LFM_MAX_DEPTH:
+        return _LFM_FAIL
+    if isinstance(node, ast.Constant):
+        value = node.value
+        if value is None or isinstance(value, (str, bool, int, float)):
+            return value
+        return _LFM_FAIL
+    if isinstance(node, ast.Name):
+        return _LFM_LITERAL_NAMES.get(node.id, _LFM_FAIL)
+    if (
+        isinstance(node, ast.UnaryOp)
+        and isinstance(node.op, (ast.USub, ast.UAdd))
+        and isinstance(node.operand, ast.Constant)
+        and type(node.operand.value) in (int, float)
+    ):
+        return -node.operand.value if isinstance(node.op, ast.USub) else node.operand.value
+    if isinstance(node, (ast.List, ast.Tuple)):
+        items = [_lfm_value(item, depth + 1) for item in node.elts]
+        return _LFM_FAIL if any(item is _LFM_FAIL for item in items) else items
+    if isinstance(node, ast.Dict):
+        out: dict = {}
+        for key_node, value_node in zip(node.keys, node.values):
+            key = _lfm_value(key_node, depth + 1) if key_node is not None else _LFM_FAIL
+            if not isinstance(key, str):
+                return _LFM_FAIL
+            value = _lfm_value(value_node, depth + 1)
+            if value is _LFM_FAIL:
+                return _LFM_FAIL
+            out[key] = value
+        return out
+    return _LFM_FAIL
+
+
+def _lfm_argument_value(src: str) -> Any:
+    src = src.strip()
+    try:
+        tree = ast.parse(src, mode = "eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        # A sampled string may hold raw line breaks the template would have escaped (code, multi-line text).
+        if (
+            len(src) < 2
+            or src[0] not in "'\""
+            or src[-1] != src[0]
+            or "\n" not in src
+            and "\r" not in src
+        ):
+            return _LFM_FAIL
+        try:
+            tree = ast.parse(src.replace("\r", "\\r").replace("\n", "\\n"), mode = "eval")
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            return _LFM_FAIL
+    try:
+        return _lfm_value(tree.body)
+    except RecursionError:
+        return _LFM_FAIL
+
+
+def _lfm_value_end(body: str, pos: int) -> int:
+    """Next top-level ``,`` or ``)`` from ``pos``, or -1."""
+    depth = 0
+    n = len(body)
+    j = pos
+    while j < n:
+        c = body[j]
+        if c in "'\"":
+            end = _lfm_string_end(body, j, n)
+            if end < 0:
+                return -1
+            j = end
+            continue
+        if c in "([{":
+            depth += 1
+        elif c in "]}":
+            depth -= 1
+            if depth < 0:
+                return -1
+        elif c == ")":
+            if depth == 0:
+                return j
+            depth -= 1
+        elif c == "," and depth == 0:
+            return j
+        j += 1
+    return -1
+
+
+def _lfm_pythonic_calls(body: str) -> "list[tuple[str, dict]] | None":
+    """Whole-body ``[name(key=value, ...), ...]`` as ``(name, arguments)`` list, else None. Keywords only (LFM2 grammar)."""
+    n = len(body)
+    pos = _LFM_WS_RE.match(body, 0).end()
+    bracketed = pos < n and body[pos] == "["
+    if bracketed:
+        pos = _LFM_WS_RE.match(body, pos + 1).end()
+        if pos < n and body[pos] == "]":
+            return None
+    calls: list[tuple[str, dict]] = []
+    while True:
+        name_m = _LFM_NAME_RE.match(body, pos)
+        if name_m is None:
+            return None
+        pos = _LFM_WS_RE.match(body, name_m.end()).end()
+        if pos >= n or body[pos] != "(":
+            return None
+        pos = _LFM_WS_RE.match(body, pos + 1).end()
+        args: dict = {}
+        if pos < n and body[pos] == ")":
+            pos += 1
+        else:
+            while True:
+                key_m = _LFM_KEY_RE.match(body, pos)
+                if key_m is None:
+                    return None
+                pos = _LFM_WS_RE.match(body, key_m.end()).end()
+                if pos >= n or body[pos] != "=":
+                    return None
+                value_start = pos + 1
+                value_end = _lfm_value_end(body, value_start)
+                if value_end < 0:
+                    return None
+                value = _lfm_argument_value(body[value_start:value_end])
+                if value is _LFM_FAIL:
+                    return None
+                args[key_m.group(0)] = value
+                pos = value_end + 1
+                if body[value_end] == ")":
+                    break
+                pos = _LFM_WS_RE.match(body, pos).end()
+                if pos < n and body[pos] == ")":
+                    pos += 1
+                    break
+        calls.append((name_m.group(0), args))
+        pos = _LFM_WS_RE.match(body, pos).end()
+        if pos < n and body[pos] == ",":
+            pos = _LFM_WS_RE.match(body, pos + 1).end()
+            continue
+        if bracketed:
+            if pos >= n or body[pos] != "]":
+                return None
+            pos = _LFM_WS_RE.match(body, pos + 1).end()
+        return calls if pos == n else None
+
+
+def _lfm_json_calls(body: str) -> "list[tuple[str, dict]] | None":
+    """The JSON spelling older LFM2 templates asked for: ``[{"name": ..., "arguments": {...}}, ...]``."""
+    try:
+        value = json.loads(body)
+    except (ValueError, RecursionError):
+        return None
+    items = value if isinstance(value, list) else [value]
+    calls: list[tuple[str, dict]] = []
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not item["name"]:
+            return None
+        args = item.get("arguments", item.get("parameters", {}))
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except (ValueError, RecursionError):
+                return None
+        if not isinstance(args, dict):
+            return None
+        calls.append((item["name"], args))
+    return calls or None
+
+
+def _lfm_one_string_call(body: str) -> "list[tuple[str, dict]] | None":
+    m = _LFM_ONE_STRING_CALL_RE.match(body)
+    if m is None or bool(m.group(1)) != bool(m.group(6)):
+        return None
+    raw = m.group(5)
+    if _LFM_SECOND_KEY_RE.search(raw):
+        return None
+    value = _LFM_ESCAPE_RE.sub(lambda e: _LFM_ESCAPES.get(e.group(1), e.group(1)), raw)
+    return [(m.group(2), {m.group(3): value})]
+
+
+def _lfm_call_list(body: str, *, heal: bool = False) -> "list[tuple[str, dict]] | None":
+    stripped = body.strip()
+    if not stripped:
+        return None
+    if stripped[0] in "[{":
+        calls = _lfm_json_calls(stripped)
+        if calls is not None:
+            return calls
+    calls = _lfm_pythonic_calls(stripped)
+    if calls is None and heal:
+        calls = _lfm_one_string_call(stripped)
+    return calls
+
+
+def _parse_lfm_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """LFM calls llama-server left as content (unarmed parser). Non-call bodies and reasoning blocks are skipped;
+    unclosed blocks and unescaped-quote strings parse only with Auto-Heal."""
+    out: list[dict] = []
+    if _LFM_CALL_START not in content:
+        return out
+    think_spans = _merge_spans(_tool_healing._think_spans_outside_tool_markup(content))
+    think_starts = [s for s, _ in think_spans]
+    for start, end, closed in _lfm_block_spans(content):
+        think_idx = bisect.bisect_right(think_starts, start) - 1
+        if think_idx >= 0 and start < think_spans[think_idx][1]:
+            continue
+        if not closed and not allow_incomplete:
+            continue
+        body = content[start + len(_LFM_CALL_START) : end - len(_LFM_CALL_END) if closed else end]
+        calls = _lfm_call_list(body, heal = allow_incomplete)
+        if calls is None:
+            continue
+        for name, args in calls:
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": name, "arguments": json.dumps(args)},
                 }
             )
     return out

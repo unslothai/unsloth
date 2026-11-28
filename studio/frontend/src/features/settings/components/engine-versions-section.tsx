@@ -45,12 +45,16 @@ export function EngineVersionsSection() {
           installed: npu.fastflowlm,
           offer: null,
         },
-        {
-          key: "lemonade",
-          labelKey: "settings.about.lemonadeVersion",
-          installed: npu.lemonade,
-          offer: null,
-        },
+        ...(npu.lemonade
+          ? [
+              {
+                key: "lemonade" as const,
+                labelKey: "settings.about.lemonadeVersion" as const,
+                installed: npu.lemonade,
+                offer: null,
+              },
+            ]
+          : []),
       ]
     : [];
 

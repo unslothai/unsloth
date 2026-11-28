@@ -19,6 +19,7 @@ from functools import lru_cache
 from typing import Any, Optional
 
 from .rocm_bf16 import is_rocm_torch
+from .triton_closure_globals import publishes_closure_globals
 
 ROW_MOD_ENV = "UNSLOTH_H3_ROW_MOD"
 _FORWARD_MARK = "_unsloth_h3_row_mod"
@@ -41,6 +42,7 @@ def reference_gated_residual(residual: Any, gate: Any, out: Any, idx: Any) -> An
 
 
 @lru_cache(maxsize = None)
+@publishes_closure_globals
 def _kernels() -> Any:
     import triton
     import triton.language as tl

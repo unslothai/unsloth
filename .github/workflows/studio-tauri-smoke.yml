@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# PR-time Tauri build (Linux debug, unsigned). A second job type-checks `#[cfg(windows)]`
-# code, which Linux strips and cannot cross-compile (`ring` needs MSVC).
+# PR-time Tauri build (Linux debug, unsigned): frontend bundle, Rust unit tests, debug build and
+# repeated launches. The Windows and macOS Rust jobs live in studio-tauri-native-ci.yml, which runs
+# only when something they compile or read changes.
 
 name: Unsloth Tauri CI
 
@@ -45,9 +46,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR branches; on main nothing running is killed, pending runs are replaced.
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -65,8 +64,7 @@ jobs:
           persist-credentials: false
 
       - name: Linux native deps for Tauri / WebKit2GTK
-        # Bounded and retried: a hung apt step is reported as `cancelled` with no reason.
-        # update + install retry as one unit; two long attempts, since slow mirrors are common.
+        # Hangs show as cancelled; retry update+install jointly, 2 long tries for slow mirrors.
         timeout-minutes: 15
         env:
           RETRY_ATTEMPTS: '2'
@@ -114,7 +112,6 @@ jobs:
         run: cargo test --no-fail-fast
 
       - name: Tauri debug build (Linux, no bundle, no codesign)
-        # --debug --no-bundle: compile and wire the dist, no packaging or signing.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ''
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
@@ -135,8 +132,7 @@ jobs:
           file "$BIN"
           du -h "$BIN"
 
-      # The only job that catches a Linux startup regression before a release. Ten launches:
-      # the #8062 X11 race killed about one in three. The backend is a stub.
+      # Only startup gate pre-release; issue 8062 X11 race killed about one in three launches.
       - name: Launch repeatedly under Xvfb
         run: |
           set -u
@@ -219,9 +215,8 @@ jobs:
           fi
           echo "10 of 10 launches reached the backend spawn and stayed up"
 
-      # GPU rendering setting: Off must keep a working transport on X11, and a GPU launch that
-      # dies with Wayland Error 71 before the window is ready must relaunch on the CPU path.
-      # UNSLOTH_TEST_GPU_ERROR71 (debug builds only) sends the real GTK message through the hook.
+      # Rendering Off: X11 transport must work; GPU launch dying with Wayland Error 71 before window
+      # ready relaunches on CPU; UNSLOTH_TEST_GPU_ERROR71 (debug only) sends the GTK message.
       - name: GPU rendering Off and the Error 71 fallback under Xvfb
         run: |
           set -u
@@ -297,142 +292,3 @@ jobs:
             studio/frontend/dist
           if-no-files-found: warn
           retention-days: 1
-
-  # `cfg(windows)` code (e.g. install.rs path normalizer) is stripped on Linux.
-  windows-unit-tests:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Rust unit tests (windows)
-    runs-on: windows-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: '24'
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
-
-      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-        with:
-          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: studio/src-tauri -> target
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python scripts/lockfile_supply_chain_audit.py
-
-      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
-      - name: Frontend build (npm ci, vite)
-        working-directory: studio/frontend
-        run: |
-          npm ci --no-fund --no-audit
-          npm run build
-
-      - name: Rust unit tests (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo test --no-fail-fast
-
-      # The browser guard is under `not(debug_assertions)`, so check the release profile.
-      - name: Rust release type check (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo check --all-targets --release
-
-      - name: Install pinned Tauri CLI (matches release-desktop.yml)
-        run: npm ci --prefix studio --no-fund --no-audit
-
-      - name: Tauri debug build (Windows, no bundle)
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ''
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
-        run: npx --prefix studio tauri build --debug --no-bundle
-
-      # GPU rendering Off must reach WebView2 as --disable-gpu without dropping wry's default
-      # flags; Auto must leave the arguments alone. The second launch follows the first at once,
-      # so a WebView2 that cannot switch arguments on a fast relaunch fails here.
-      - name: GPU rendering Off reaches WebView2
-        shell: pwsh
-        run: |
-          $bin = Resolve-Path "studio/src-tauri/target/debug/unsloth-studio.exe"
-          $cfg = Join-Path $env:APPDATA "ai.unsloth.studio"
-          New-Item -ItemType Directory -Force $cfg | Out-Null
-          function Get-Browser {
-            Get-CimInstance Win32_Process -Filter "Name='msedgewebview2.exe'" |
-              Where-Object { $_.CommandLine -notmatch '--type=' -and $_.CommandLine -match 'ai\.unsloth\.studio\\EBWebView' }
-          }
-          function Stop-App($app) {
-            Stop-Process -Id $app.Id -Force -ErrorAction SilentlyContinue
-            Get-Browser | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-          }
-          function Probe($setting) {
-            Set-Content -Path (Join-Path $cfg "gpu-rendering-v1") -Value $setting
-            $app = Start-Process -FilePath $bin -PassThru
-            $browser = $null
-            for ($i = 0; $i -lt 90 -and -not $browser; $i++) { Start-Sleep 1; $browser = Get-Browser }
-            if (-not $browser) { Stop-App $app; throw "no WebView2 browser process for setting=$setting" }
-            $line = ($browser | Select-Object -First 1).CommandLine
-            Write-Host "setting=$setting -> $line"
-            Start-Sleep 20
-            if ($app.HasExited) { throw "app exited (code $($app.ExitCode)) with setting=$setting" }
-            Stop-App $app
-            return $line
-          }
-          $off = Probe "off"
-          if ($off -notmatch '--disable-gpu') { throw "Off: --disable-gpu missing" }
-          if ($off -notmatch 'msSmartScreenProtection') { throw "Off: wry's default --disable-features was dropped" }
-          $auto = Probe "auto"
-          if ($auto -match '--disable-gpu') { throw "Auto: --disable-gpu present" }
-          Write-Host "Off passes --disable-gpu with wry's defaults; Auto leaves the arguments alone"
-
-  macos-unit-tests:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: Rust unit tests (macos)
-    # macos-26, not macos-15: same hardware class but a much shorter queue tail (measured on
-    # studio-mac-install-matrix). Re-measure if queues change.
-    runs-on: macos-26
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: '24'
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
-
-      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
-        with:
-          # Save only on main: PR-scoped caches only serve that PR and evict main's shared copy.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: studio/src-tauri -> target
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Lockfile supply-chain audit (pre-install scan)
-        run: python scripts/lockfile_supply_chain_audit.py
-
-      # tauri-build resolves frontendDist at compile time, so dist/ must exist first.
-      - name: Frontend build (npm ci, vite)
-        working-directory: studio/frontend
-        run: |
-          npm ci --no-fund --no-audit
-          npm run build
-
-      - name: Rust unit tests (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo test --no-fail-fast
-
-      # The browser guard is under `not(debug_assertions)`, so check the release profile.
-      - name: Rust release type check (studio/src-tauri)
-        working-directory: studio/src-tauri
-        run: cargo check --all-targets --release

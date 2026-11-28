@@ -2070,6 +2070,22 @@ class TestResponsesNonStreamingAdapter:
         assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
         assert body["output"][1]["content"][0]["text"] == "answer"
 
+    def test_literal_think_tags_in_a_split_answer_stay_answer_text(self, monkeypatch):
+        answer = 'Use re.sub(r"<think>.*?</think>", "", s) to drop the block.'
+        body = self._run_with_message(
+            monkeypatch,
+            {"content": answer, "reasoning_content": "plan"},
+            llama_backend = SimpleNamespace(
+                is_loaded = True,
+                reasoning_always_on = True,
+                supports_reasoning = True,
+            ),
+        )
+
+        assert [item["type"] for item in body["output"]] == ["reasoning", "message"]
+        assert body["output"][0]["content"] == [{"type": "reasoning_text", "text": "plan"}]
+        assert body["output"][1]["content"][0]["text"] == answer
+
     def test_reasoning_capable_gguf_keeps_think_tags_visible_when_disabled(self, monkeypatch):
         payload = ResponsesRequest(input = "hi", reasoning = {"effort": "none"})
         body = self._run_with_message(
@@ -2585,6 +2601,24 @@ class TestResponsesStreamAdapter:
         ]
         assert completed["response"]["output"][0]["content"][0]["text"] == "plan"
         assert completed["response"]["output"][1]["content"][0]["text"] == "answer"
+
+    def test_literal_think_tags_after_split_reasoning_stream_as_answer_text(self, monkeypatch):
+        answer = 'Use re.sub(r"<think>.*?</think>", "", s) to drop the block.'
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "plan"}}]},
+            {"choices": [{"delta": {"content": answer[:14]}}]},
+            {"choices": [{"delta": {"content": answer[14:]}}]},
+            {"choices": [], "usage": {"prompt_tokens": 2, "completion_tokens": 3}},
+        ]
+        self._install_stream_mock(monkeypatch, chunks)
+        payload = ResponsesRequest(input = "hi", stream = True)
+        messages = [ChatMessage(role = "user", content = "hi")]
+
+        lines, reasoning_deltas, text_deltas = self._stream_deltas(payload, messages)
+        assert "".join(event["delta"] for event in reasoning_deltas) == "plan"
+        assert "".join(event["delta"] for event in text_deltas) == answer
+        completed = self._payloads(lines, "response.completed")[0]
+        assert completed["response"]["output"][1]["content"][0]["text"] == answer
 
     def test_non_reasoning_gguf_stream_keeps_literal_think_tags_visible(self, monkeypatch):
         chunks = [
@@ -3966,6 +4000,7 @@ def test_upstream_rejection_fails_the_stream_with_a_string_code(monkeypatch, sta
         monkeypatch, handler = lambda request: httpx.Response(status, content = body.encode())
     )
     assert error["code"] == code
+    assert error["message"] == "llama-server error: " + json.loads(body)["error"]["message"]
 
 
 @pytest.mark.parametrize(

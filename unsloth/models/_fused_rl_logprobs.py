@@ -70,8 +70,7 @@ def fused_head(model):
     head = _unsloth_gkd_dense_head(model)
     if head is None:
         return None, None, "output head is not a dense nn.Linear"
-    # The kernel reads weight / bias directly: a hooked head (its own or torch's global module hooks) is not
-    # F.linear(h, W, b).
+    # Weight and bias are read directly, so a hooked head (own or global hooks) is skipped.
     from .dpo import _global_module_hooks
 
     if (
@@ -117,9 +116,12 @@ def score_hidden_states(
     mask = None,
     entropy = False,
     head_info = None,
+    *,
+    entropy_requires_grad = False,
 ):
-    """Returns (logps, entropy or None) from the final hidden states, else None; entropy is detached
-    since callers log it under no_grad; rows outside mask are 0"""
+    """Returns (logps, entropy or None) from the final hidden states, else None; rows outside mask are 0.
+    The entropy is detached by default since PPO / RLOO log it under no_grad; ``entropy_requires_grad=None``
+    keeps it differentiable (the kernel recomputes its gradient only if one arrives)."""
     from .rl_replacements import _unsloth_pref_returns_hidden_states
 
     head, transforms, _ = head_info if head_info is not None else fused_head(model)
@@ -139,11 +141,13 @@ def score_hidden_states(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
         return_entropy = bool(entropy),
-        entropy_requires_grad = False,
+        entropy_requires_grad = entropy_requires_grad,
     )
     if entropy:
         logps, ent = out
-        return logps.to(targets.device), ent.detach().to(targets.device)
+        if entropy_requires_grad is False:
+            ent = ent.detach()
+        return logps.to(targets.device), ent.to(targets.device)
     return out.to(targets.device), None
 
 
@@ -344,7 +348,10 @@ _RLOO_VISION_KEYS = (
     "token_type_ids",
     "mm_token_type_ids",
     "image_position_ids",
+    "pixel_position_ids",
 )
+# Slicing aids TRL reads per chunk; never model inputs.
+_RLOO_CHUNK_ONLY_KEYS = ("num_images", "num_tiles")
 
 
 def rloo_stock_traits(source):
@@ -369,14 +376,17 @@ def rloo_fused_logps(
     kwargs,
 ):
     """RLOOTrainer._get_per_token_logps_and_entropies (TRL < 1.15, which reads ``model(**inputs).logits``) from
-    hidden states. None -> the caller runs TRL's body. Text only; vision and MoE aux loss keep TRL's path."""
+    hidden states. None -> the caller runs TRL's body. Vision batches are scored when one chunk takes every row
+    (the policy pass with gradients); TRL slices image rows per chunk with release-specific rules, so a several-chunk
+    vision batch and the MoE aux loss keep TRL's path."""
     reason = None
     if self.__dict__.get("_unsloth_rloo_fused_off"):
         return None
+    vision = {k: v for k, v in kwargs.items() if k in _RLOO_VISION_KEYS and v is not None}
     if args:
         reason = "positional extras"
-    elif any(kwargs.get(k) is not None for k in _RLOO_VISION_KEYS):
-        reason = "vision inputs"
+    elif vision and (batch_size or input_ids.size(0)) < input_ids.size(0):
+        reason = "vision inputs over several chunks"
     elif kwargs.get("compute_aux_loss", False):
         reason = "router aux loss needs the stock forward"
     elif set(kwargs) - set(_RLOO_VISION_KEYS) - {"compute_aux_loss"}:
@@ -405,6 +415,8 @@ def rloo_fused_logps(
         input_ids_batch = input_ids[start : start + batch_size]
         attention_mask_batch = attention_mask[start : start + batch_size]
         model_inputs = {"input_ids": input_ids_batch, "attention_mask": attention_mask_batch}
+        # One chunk holds every row, so TRL's per-chunk slices of the image inputs are the inputs themselves.
+        model_inputs.update({k: v for k, v in vision.items() if k not in _RLOO_CHUNK_ONLY_KEYS})
         if "logits_to_keep" in getattr(self, "model_kwarg_keys", ()):
             model_inputs["logits_to_keep"] = logits_to_keep + 1
         model_inputs["use_cache"] = False

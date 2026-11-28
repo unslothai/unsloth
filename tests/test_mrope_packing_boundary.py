@@ -79,8 +79,7 @@ class _RemoteCfg:
 
 
 class _RemoteForCausalLM(nn.Module):
-    """A trust_remote_code-style decoder: causal SDPA over the whole row unless `segments`, where it reads
-    the document boundaries from position_ids resets."""
+    """Causal SDPA over the whole row; with segments, document boundaries come from position_ids resets."""
 
     def __init__(self, segments):
         super().__init__()
@@ -140,8 +139,7 @@ def _trainer(
 
 
 def _doc_losses(trainer, docs):
-    """Summed next-token loss per document, on the batches the trainer would feed the model (TRL's compute_loss
-    adds use_cache = False)."""
+    """Summed next-token loss per document on the trainer's own batches; use_cache is off, as in TRL."""
     model = trainer.model
     if trainer.args.packing or trainer.args.padding_free:
         ids = torch.cat(docs)[None]

@@ -15,6 +15,7 @@ import {
   subscribeUploadLimitSettings,
 } from "@/features/settings";
 import {
+  type DatasetImportOptions,
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
   TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
@@ -40,6 +41,19 @@ import {
   useState,
 } from "react";
 import { getFileExtension } from "./dataset-panel-helpers";
+
+type ImportToggles = { pandasJson: boolean; semicolonCsv: boolean };
+
+function importOptions(
+  filename: string,
+  toggles: ImportToggles,
+): DatasetImportOptions {
+  const extension = getFileExtension(filename);
+  return {
+    jsonColumns: toggles.pandasJson && extension === ".json",
+    csvDelimiter: toggles.semicolonCsv && extension === ".csv" ? ";" : ",",
+  };
+}
 
 const TRAINING_UPLOAD_EXTENSIONS = [
   ...TRAINING_DATASET_UPLOAD_EXTENSIONS,
@@ -68,6 +82,10 @@ export function useDatasetUploads() {
     (state) => state.setUploadedEvalFile,
   );
   const [isUploading, setIsUploading] = useState(false);
+  const [pandasJson, setPandasJson] = useState(false);
+  const [pandasEvalJson, setPandasEvalJson] = useState(false);
+  const [semicolonCsv, setSemicolonCsv] = useState(false);
+  const [semicolonEvalCsv, setSemicolonEvalCsv] = useState(false);
   const uploadLockRef = useRef(false);
   const [isDatasetDragOver, setIsDatasetDragOver] = useState(false);
   const [uploadLimitBytes, setUploadLimitBytes] = useState(
@@ -135,6 +153,7 @@ export function useDatasetUploads() {
     file: File,
     onSuccess: (storedPath: string) => void,
     successMessage: string,
+    importToggles: ImportToggles,
   ) => {
     if (!acquireUploadLock()) {
       return;
@@ -151,7 +170,10 @@ export function useDatasetUploads() {
         });
         return;
       }
-      const uploaded = await uploadTrainingDataset(file);
+      const uploaded = await uploadTrainingDataset(
+        file,
+        importOptions(file.name, importToggles),
+      );
       bumpInventoryVersion();
       onSuccess(uploaded.stored_path);
       toast.success(successMessage, { description: uploaded.filename });
@@ -193,7 +215,10 @@ export function useDatasetUploads() {
         intent.path.token,
         "dataset-import",
       );
-      const uploaded = await uploadNativeTrainingDataset(grant.nativePathLease);
+      const uploaded = await uploadNativeTrainingDataset(
+        grant.nativePathLease,
+        importOptions(path, { pandasJson, semicolonCsv }),
+      );
       bumpInventoryVersion();
       selectLocalDataset(uploaded.stored_path);
       toast.success(t("studio.dataset.datasetUploaded"), {
@@ -232,6 +257,7 @@ export function useDatasetUploads() {
       file,
       selectLocalDataset,
       t("studio.dataset.datasetUploaded"),
+      { pandasJson, semicolonCsv },
     );
   };
 
@@ -425,6 +451,7 @@ export function useDatasetUploads() {
         file,
         setUploadedEvalFile,
         t("studio.dataset.evalDatasetUploaded"),
+        { pandasJson: pandasEvalJson, semicolonCsv: semicolonEvalCsv },
       );
     }
   };
@@ -449,9 +476,17 @@ export function useDatasetUploads() {
     handleOpenLearningRecipes,
     isDatasetDragOver,
     isUploading,
+    pandasJson,
+    pandasEvalJson,
     redirectFileName,
+    semicolonCsv,
+    semicolonEvalCsv,
     setDocumentRedirectOpen,
     setIsDatasetDragOver,
+    setPandasJson,
+    setPandasEvalJson,
+    setSemicolonCsv,
+    setSemicolonEvalCsv,
     uploadLimitLabel,
   };
 }

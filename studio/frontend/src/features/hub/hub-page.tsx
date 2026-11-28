@@ -102,6 +102,7 @@ import type {
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
 import { resolveSelectionUrlSync } from "./lib/selection-resolution";
+import { servedCheckpoint } from "./lib/model-identity";
 import { useHubInventory } from "./inventory";
 import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
 import {
@@ -484,11 +485,15 @@ export function ModelsPage() {
       } = {},
     ): Promise<void> => {
       const seq = ++residentStatusSeq.current;
-      const selected = useChatRuntimeStore.getState().params.checkpoint;
+      const { params, loadedModels, activeGgufVariant } =
+        useChatRuntimeStore.getState();
+      const selected = params.checkpoint;
       const read = Promise.all([
         getInferenceStatus(
           undefined,
-          selected && !isExternalModelId(selected) ? selected : undefined,
+          selected && !isExternalModelId(selected)
+            ? servedCheckpoint(loadedModels, selected, activeGgufVariant)
+            : undefined,
         ),
         readIdleUnloadArmed(),
       ])
@@ -1737,12 +1742,14 @@ export function ModelsPage() {
 
   const { vramInfo } = useHubModelVram(selectedModel, gpu);
 
-  const gpuLabel = gpu.available
-    ? `${Math.round(gpu.dedicatedMemoryTotalGb)} GiB`
+  // GGUFs can have a GPU training lacks: Metal on a GGUF-only Mac, a separate Vulkan llama.cpp.
+  const headerGpu = gpu.available ? gpu : inferenceGpu;
+  const gpuLabel = headerGpu.available
+    ? `${Math.round(headerGpu.dedicatedMemoryTotalGb)} GiB`
     : "Unavailable";
   const gpuSharedLabel =
-    gpu.available && gpu.memorySharedGb > 0
-      ? `${Math.round(gpu.memorySharedGb)} GiB`
+    headerGpu.available && headerGpu.memorySharedGb > 0
+      ? `${Math.round(headerGpu.memorySharedGb)} GiB`
       : null;
   const ramLabel =
     gpu.systemRamTotalGb > 0

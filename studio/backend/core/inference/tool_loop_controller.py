@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
-from core.inference.browser_agent import BROWSER_TOOL_NAMES
+from core.inference.browser_agent import BROWSER_TOOL_NAMES, workspace_path_of
 from core.inference.computer_use import COMPUTER_TOOL_NAME
 from core.inference.llama_tool_schema import unrelaxed
-from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
+from core.inference.mcp_images import is_image_tool, mark_as_taken, split_images as split_mcp_images
 from core.inference.media_chat_tools import MEDIA_CHAT_TOOLS
 from core.inference.tool_facts import REPEATABLE, awaits_user, reads_only, repeatable
 
@@ -66,8 +66,7 @@ def _looks_like_broken_json(raw: str) -> bool:
     except json.JSONDecodeError as error:
         if error.msg.startswith("Unterminated string") or error.pos >= len(text):
             return True
-        # A token cut mid-way reports at its start, so check that the rest is one unfinished token.
-        # A bad property name is malformed, not truncated, and stays healable.
+        # A cut token reports at its start; a bad property name is malformed and healable.
         if error.msg.startswith("Expecting property name"):
             return False
         # A complete document with trailing junk lost nothing.
@@ -214,8 +213,7 @@ class ToolCallDecision:
 
     @property
     def unparsed_fragment(self) -> "str | None":
-        """Internal UNPARSED_ARGUMENTS_KEY must not leak to the card or replay, so both boundaries
-        use this."""
+        """Internal UNPARSED_ARGUMENTS_KEY must not leak to the card or replay; both use this."""
         if isinstance(self.arguments, Mapping) and UNPARSED_ARGUMENTS_KEY in self.arguments:
             return str(self.arguments.get(UNPARSED_ARGUMENTS_KEY) or "")
         return None
@@ -316,7 +314,7 @@ class ToolCallCompletion:
         """Only MCP and image-viewer tools yield images; a plain suffix elsewhere would attach bytes."""
         if not self.executed or not is_image_tool(self.decision.tool_name):
             return []
-        return split_mcp_images(self.result)[1]
+        return mark_as_taken(split_mcp_images(self.result)[1], self.decision.tool_name)
 
 
 @dataclass(frozen = True)
@@ -351,8 +349,7 @@ _DECODE_ERRORS = (ValueError, RecursionError)
 _LITERAL_ERRORS = (*_DECODE_ERRORS, SyntaxError, MemoryError)
 
 
-# Group 1 is the closing quote. The `\?$` tail stops a started match failing, which would make
-# `finditer` rescan every later quote.
+# Group 1 is the closing quote; the optional-backslash end tail stops finditer rescanning.
 _JSON_STRING_RE = re.compile(r'"(?:[^"\\]|\\.)*(?:(")|\\?$)', re.S)
 _JSON_CLOSER = {"[": "]", "{": "}"}
 
@@ -535,8 +532,7 @@ def _coerce_declared_value(text: str, declared: str, repair: bool) -> Any:
 
 
 def _usable_container(value: Any, want: type) -> bool:
-    """A ``want`` that survives the JSON re-encoding of ``arguments``: both decoders admit
-    what ``json.dumps`` will not write back, such as an integer key returning as a STRING."""
+    """``want`` must survive json.dumps re-encoding; decoders admit int keys returning as str."""
     if not isinstance(value, want):
         return False
     try:
@@ -548,8 +544,7 @@ def _usable_container(value: Any, want: type) -> bool:
 
 
 def _coerce_container(text: str, want: type, repair: bool) -> Any:
-    """``text`` read as the DECLARED container, tolerating a Python literal and, when
-    ``repair``, unbalanced brackets. Rewriting brackets is what auto-heal opts out of."""
+    """``text`` as DECLARED container; ``repair`` rewrites brackets, which auto-heal turns off."""
     try:
         parsed = json.loads(text, strict = False)
     except _DECODE_ERRORS:
@@ -630,19 +625,31 @@ def _declared_properties(tool_name: str, tool_schemas) -> Any:
     return None
 
 
-def _mcp_tool_spec(tool_name: str) -> Any:
+def _mcp_tool_specs(tool_names: Collection[str]) -> dict[str, Any]:
+    """Neutralized specs of cached MCP tools by name; one catalog build serves every name."""
     try:
-        from core.inference.tools import mcp_tool_spec  # noqa: PLC0415 -- cycle at import time
+        from core.inference.tools import mcp_tool_specs  # noqa: PLC0415 -- cycle at import time
         from core.inference.chat_template_helpers import neutralize_tool_descriptions  # noqa: PLC0415
-
-        specs = neutralize_tool_descriptions([mcp_tool_spec(tool_name)])
-        return specs[0] if specs else None
+        found = mcp_tool_specs(tool_names)
     except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
-        return None
+        return {}
+    specs: dict[str, Any] = {}
+    for name, spec in found.items():
+        try:
+            neutralized = neutralize_tool_descriptions([spec])
+        except Exception:  # noqa: BLE001 -- an unknown tool stays disabled
+            continue
+        if neutralized and neutralized[0] is not None:
+            specs[name] = neutralized[0]
+    return specs
+
+
+def _mcp_tool_spec(tool_name: str) -> Any:
+    return _mcp_tool_specs([tool_name]).get(tool_name)
 
 
 def _mcp_tool_search_specs(result: str) -> list:
-    specs = []
+    names = []
     # The worker's result budget is absent here; its returned schemas are authoritative.
     for line in result.splitlines():
         if not line.startswith("  schema: "):
@@ -652,10 +659,10 @@ def _mcp_tool_search_specs(result: str) -> list:
         except (ValueError, TypeError):
             continue
         name = _tool_name_from_schema(schema) if isinstance(schema, Mapping) else None
-        spec = _mcp_tool_spec(name) if name else None
-        if spec is not None:
-            specs.append(spec)
-    return specs
+        if name:
+            names.append(name)
+    specs = _mcp_tool_specs(names) if names else {}
+    return [specs[name] for name in names if name in specs]
 
 
 def _tool_name_key(name: str) -> str:
@@ -663,9 +670,8 @@ def _tool_name_key(name: str) -> str:
 
 
 def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
-    """The one enabled tool a sampled name means when only its case or ``-``/``_`` differ (WEB_SEARCH,
-    web-search). Never an execution-class or MCP tool: those run only under their exact name, so a bare
-    call cannot reach them by a near spelling. None when no tool, or more than one, matches."""
+    """The one enabled tool a name matches ignoring case and -/_ (WEB_SEARCH, web-search); never an
+    execution-class or MCP tool, which needs its exact name; None if none or several."""
     # ASCII only: Unicode case folding maps other letters onto ASCII ones (``ſ`` -> ``s``, Kelvin sign -> ``k``).
     if not name or not name.isascii():
         return None
@@ -677,6 +683,35 @@ def _canonical_tool_name(name: str, allowed: Collection[str]) -> "str | None":
     if match in _tool_healing_exec_names() or match.startswith(MCP_TOOL_PREFIX):
         return None
     return match
+
+
+# Page-read names other harnesses ship, which models call for web_search with a url (#18802).
+_WEB_FETCH_ALIASES = frozenset(
+    {"web_fetch", "webfetch", "fetch", "fetch_url", "url_fetch", "fetch_page", "fetch_webpage"}
+)
+
+
+def _web_fetch_alias(name: str, raw_args: Any, allowed: Collection[str]) -> bool:
+    """Whether a call to a missing page-read tool means web_search on its URL: web_search is enabled, nothing
+    enabled carries the sampled name, and the arguments name a URL. Without a URL it stays an unknown tool."""
+    if "web_search" not in allowed or not name or not name.isascii():
+        return False
+    if _tool_name_key(name) not in _WEB_FETCH_ALIASES:
+        return False
+    if any(_tool_name_key(tool) == _tool_name_key(name) for tool in allowed):
+        return False
+    args = raw_args
+    if isinstance(args, str):
+        try:
+            args = json.loads(args) if args.strip() else {}
+        except ValueError:
+            return False
+    if not isinstance(args, Mapping):
+        return False
+    from core.inference.tools import _resolve_web_search_args  # noqa: PLC0415 -- cycle at import time
+
+    _query, url = _resolve_web_search_args(dict(args))
+    return bool(url)
 
 
 def _tool_healing_exec_names() -> "frozenset[str]":
@@ -725,15 +760,13 @@ def coerce_tool_arguments(
             # Must not raise: this runs before the budget gate, so a raise aborts the whole turn.
             pass
         if heal:
-            # Near-JSON (single quotes, a trailing comma, True/None, an object encoded as a string) is the
-            # object it spells; wrapping it whole would run the tool on the call's own source text.
+            # Near-JSON spells an object; wrapping it would run the tool on the call's source.
             repaired = _relaxed_arguments(raw_args, properties)
             if repaired is not None:
                 return CoercedArguments(
                     coerce_arguments_by_schema(repaired, properties, repair = heal), True
                 )
-            # Text that opens like JSON but fails to parse is a truncated object, not a bare string;
-            # wrapping it whole would pass the fragment as the argument value.
+            # Truncated JSON object, not a bare string: wrapping it would pass the fragment.
             key = (
                 None
                 if _looks_like_broken_json(raw_args)
@@ -748,7 +781,6 @@ def coerce_tool_arguments(
 
 
 def tool_event_provenance(**flags: object) -> dict[str, object]:
-    """Return provenance metadata with falsey flags omitted."""
     provenance: dict[str, object] = {"source": "local"}
     for key, value in flags.items():
         if value is not None and value is not False:
@@ -857,6 +889,10 @@ def _browser_status(tool_name: str, arguments: Mapping[str, Any]) -> str:
                 "forward": "Going forward",
                 "reload": "Reloading the page",
             }[url.lower()]
+        path = workspace_path_of(url)
+        if path:
+            name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+            return f"Opening: {name}" if name else "Opening a file..."
         try:
             host = urlparse(url if "://" in url else f"https://{url}").hostname or ""
         except ValueError:
@@ -925,16 +961,14 @@ TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
 
 
 def with_appended_text(content, text: str):
-    """``content`` with ``text`` at the end. A part list (an image a tool returned may have joined
-    the turn) gets a text part; formatting it as a string ships the image as base64 prose."""
+    """Append ``text``; a part list gets a text part, since str() ships images as base64 prose."""
     if isinstance(content, list):
         return [*content, {"type": "text", "text": text}]
     return f"{content}{text}"
 
 
 def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
-    """Replayed tool results as the model saw them (error nudge, folded feedback from
-    ``extra_content``, no citation map), so the cached prefix holds. Idempotent."""
+    """Tool results as the model saw them on replay, so the cached prefix holds; idempotent."""
     out = list(messages)
     for i, message in enumerate(out):
         if not isinstance(message, dict) or message.get("role") != "tool":
@@ -1077,8 +1111,7 @@ def _reruns_after_new_work(tool_name: Any) -> bool:
     return tool_name in _WORKSPACE_TOOLS or str(tool_name or "").startswith(_MCP_TOOL_PREFIX)
 
 
-# Cached in the clear for CLI reuse; masked before the model, and the mask has no prefix to
-# re-match.
+# Cached in the clear for CLI reuse; masked before the model; mask has no prefix to re-match.
 _STUDIO_API_KEY_RE = re.compile(
     # 8, not 32: a truncated result can end mid-key. Hex only, so `sk-unsloth-internal-...` survives.
     r"sk-unsloth-[0-9a-fA-F]{8,}"
@@ -1252,6 +1285,7 @@ class ToolLoopController:
         duplicate_noop_limit: int = 2,
         session_id: str | None = None,
         thread_id: str | None = None,
+        loaded_mcp_tools: Collection[str] = (),
     ) -> None:
         self._session_id = session_id
         self._thread_id = thread_id
@@ -1261,6 +1295,11 @@ class ToolLoopController:
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
+        if self._mcp_search:
+            # Matched, searched or run MCP tools stay callable unlisted.
+            self._allowed_tool_names.update(
+                _mcp_tool_specs(loaded_mcp_tools) if loaded_mcp_tools else ()
+            )
         self._auto_heal_tool_calls = auto_heal_tool_calls
         self._deduplicate_tool_calls = deduplicate_tool_calls
         self._one_shot_tools = one_shot_tools
@@ -1308,11 +1347,9 @@ class ToolLoopController:
         tools = self._tools
         if include_deferred and self._mcp_search:
             declared = {_tool_name_from_schema(tool) for tool in tools}
-            tools = tools + [
-                spec
-                for name in sorted(self._allowed_tool_names - declared)
-                if (spec := _mcp_tool_spec(name)) is not None
-            ]
+            deferred = sorted(self._allowed_tool_names - declared)
+            specs = _mcp_tool_specs(deferred) if deferred else {}
+            tools = tools + [specs[name] for name in deferred if name in specs]
         for tool in tools:
             name = _tool_name_from_schema(tool)
             if name in self._completed_one_shot_tools:
@@ -1337,6 +1374,10 @@ class ToolLoopController:
             canonical = _canonical_tool_name(tool_name, self._allowed_tool_names)
             if canonical is not None:
                 tool_name, name_healed = canonical, True
+            elif _web_fetch_alias(
+                tool_name, function.get("arguments", {}), self._allowed_tool_names
+            ):
+                tool_name, name_healed = "web_search", True
         # Deferred schemas must not shift the cached prompt prefix.
         extra_schema = None
         if (
@@ -1383,9 +1424,7 @@ class ToolLoopController:
             and not repeatable(tool_name)
             and tool_name != MCP_TOOL_SEARCH_NAME
         ):
-            # Not the browser tools: each acts on or reads the page as it is now, so a second
-            # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
-            # Nor the media tools: the same prompt again is another image with a fresh seed.
+            # Browser repeats hit the live page (new work; 2 no-ops end a turn); media reseeds.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

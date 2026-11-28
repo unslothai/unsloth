@@ -456,6 +456,7 @@ def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monke
 
 _NIX_BWRAP = "/nix/store/abc-bubblewrap/bin/bwrap"
 _OVERFLOW = 65534
+_NIXBLD = 30000
 
 
 def _fake_tree(
@@ -464,15 +465,25 @@ def _fake_tree(
     *,
     found = _NIX_BWRAP,
     overflow = None,
+    gids = (1000, 1000, 1000),
+    groups = (1000,),
+    acl_dirs = (),
 ):
-    """Point the trust check at `found` over `entries` ({path: (mode, uid)}), in a namespace if `overflow`."""
-    real_stat, real_access = os.stat, os.access
+    """Point the trust check at `found` over `entries` ({path: (mode, uid[, gid])}), in a namespace if `overflow`."""
+    real_stat, real_access, real_listxattr = os.stat, os.access, os.listxattr
 
     def fake_stat(path, *args, **kwargs):
         if os.fspath(path) not in entries:
             return real_stat(path, *args, **kwargs)
-        mode, uid = entries[os.fspath(path)]
-        return os.stat_result((mode, 1, 1, 1, uid, 0, 0, 0, 0, 0))
+        mode, uid, gid = (*entries[os.fspath(path)], 0)[:3]
+        return os.stat_result((mode, 1, 1, 1, uid, gid, 0, 0, 0, 0))
+
+    def fake_listxattr(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_listxattr(path, *args, **kwargs)
+        if isinstance(acl_dirs, OSError):
+            raise acl_dirs
+        return ["system.posix_acl_access"] if os.fspath(path) in acl_dirs else []
 
     monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: found)
     monkeypatch.setattr(sandbox_linux.os.path, "realpath", lambda path, **_kw: path)
@@ -480,6 +491,9 @@ def _fake_tree(
     monkeypatch.setattr(
         sandbox_linux.os, "access", lambda path, mode: path in entries or real_access(path, mode)
     )
+    monkeypatch.setattr(sandbox_linux.os, "listxattr", fake_listxattr)
+    monkeypatch.setattr(sandbox_linux.os, "getresgid", lambda: tuple(gids))
+    monkeypatch.setattr(sandbox_linux.os, "getgroups", lambda: list(groups))
     monkeypatch.setattr(sandbox_linux, "_unmapped_uid", lambda: overflow)
     monkeypatch.delenv(sandbox_linux.BWRAP_PATH_ENV, raising = False)
 
@@ -492,7 +506,7 @@ def _nix_tree(
     return {
         "/": (stat.S_IFDIR | 0o755, owner),
         "/nix": (stat.S_IFDIR | 0o755, owner),
-        "/nix/store": (stat.S_IFDIR | store_mode, store_owner),
+        "/nix/store": (stat.S_IFDIR | store_mode, store_owner, _NIXBLD),
         "/nix/store/abc-bubblewrap": (stat.S_IFDIR | 0o555, owner),
         "/nix/store/abc-bubblewrap/bin": (stat.S_IFDIR | 0o555, owner),
         _NIX_BWRAP: (stat.S_IFREG | 0o555, owner),
@@ -513,6 +527,58 @@ def test_a_nix_store_bwrap_is_trusted(monkeypatch):
 def test_a_replaceable_store_is_still_refused(monkeypatch, store_mode, store_owner):
     _fake_tree(monkeypatch, _nix_tree(store_mode, store_owner = store_owner))
     with pytest.raises(sandbox_linux.BwrapUntrustedError, match = "replaceable: /nix/store\\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+_USR_BWRAP = "/usr/bin/bwrap"
+
+
+def _usr_tree(usr_mode = 0o775, usr_gid = 0):
+    return {
+        "/": (stat.S_IFDIR | 0o755, 0),
+        "/usr": (stat.S_IFDIR | usr_mode, 0, usr_gid),
+        "/usr/bin": (stat.S_IFDIR | 0o755, 0),
+        _USR_BWRAP: (stat.S_IFREG | 0o755, 0),
+    }
+
+
+@pytest.mark.parametrize("usr_mode", [0o775, 0o2775])
+def test_a_root_group_writable_usr_is_trusted_outside_group_root(monkeypatch, usr_mode):
+    _fake_tree(monkeypatch, _usr_tree(usr_mode), found = _USR_BWRAP)
+    assert sandbox_linux._trusted_bwrap_path() == _USR_BWRAP
+
+
+def test_a_filesystem_without_xattrs_still_trusts_a_root_group_writable_usr(monkeypatch):
+    unsupported = OSError(errno.ENOTSUP, "not supported")
+    _fake_tree(monkeypatch, _usr_tree(), found = _USR_BWRAP, acl_dirs = unsupported)
+    assert sandbox_linux._trusted_bwrap_path() == _USR_BWRAP
+
+
+@pytest.mark.parametrize(
+    "gids, groups",
+    [
+        ((1000, 1000, 1000), (1000, 0)),
+        ((1000, 0, 1000), (0,)),
+        ((0, 1000, 1000), (1000,)),
+        ((1000, 1000, 0), (1000,)),
+    ],
+    ids = ["supplementary", "effective", "real", "saved"],
+)
+def test_a_root_group_writable_usr_is_refused_in_group_root(monkeypatch, gids, groups):
+    _fake_tree(monkeypatch, _usr_tree(), found = _USR_BWRAP, gids = gids, groups = groups)
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+@pytest.mark.parametrize(
+    "usr_mode, usr_gid, acl_dirs",
+    [(0o775, 0, ("/usr",)), (0o775, 1000, ()), (0o777, 0, ()), (0o757, 0, ())],
+    ids = ["acl", "user-group", "world-writable", "other-writable"],
+)
+def test_a_usr_writable_beyond_group_root_is_refused(monkeypatch, usr_mode, usr_gid, acl_dirs):
+    tree = _usr_tree(usr_mode, usr_gid)
+    _fake_tree(monkeypatch, tree, found = _USR_BWRAP, acl_dirs = acl_dirs)
+    with pytest.raises(sandbox_linux.BwrapUntrustedError, match = r"replaceable: /usr\)"):
         sandbox_linux._trusted_bwrap_path()
 
 
@@ -620,9 +686,11 @@ def test_the_model_cache_shares_its_data_subdirectories_and_nothing_else(
         shared = _pairs(launch.argv, "--bind-try")
         assert sorted(shared) == sorted(
             (os.path.join(str(cache), name), os.path.join(inner, name))
-            for name in ("hub", "datasets", "xet", "assets")
+            for name in ("hub", "xet", "assets")
         )
-        assert not any("modules" in destination for _, destination in shared)
+        # Studio runs modules/ and memory-maps datasets/: neither is the jail's to write.
+        for unshared in ("modules", "datasets"):
+            assert not any(unshared in destination for _, destination in shared), unshared
         assert launch.argv[launch.argv.index("HF_HOME") + 1] == inner
         for credential in ("token", "stored_tokens"):
             host_path = os.path.join(str(cache), credential)
@@ -1671,7 +1739,7 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
         path.mkdir(parents = True)
     import utils.hf_cache_settings as cache_settings
 
-    # datasets/assets follow the real HF home, which a Studio-selected folder leaves in place.
+    # assets follows the real HF home, which a Studio-selected folder leaves in place.
     monkeypatch.setenv("HF_HOME", str(home))
     monkeypatch.delenv("HF_DATASETS_CACHE", raising = False)
     monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
@@ -1685,7 +1753,8 @@ def test_the_cache_studio_actually_uses_is_the_one_shared(tmp_path, monkeypatch)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
     assert binds["hub"] == str(hub)
     assert binds["xet"] == str(xet)
-    assert binds["datasets"] == str(home / "datasets")
+    assert binds["assets"] == str(home / "assets")
+    assert "datasets" not in binds
     assert "hub" not in sandbox_linux._model_cache_binds(str(hub.parent))
 
 
@@ -3074,8 +3143,9 @@ def test_a_cache_folder_a_fresh_hf_home_lacks_is_created_and_shared(
     (cache / "hub").mkdir(parents = True)
     _share_cache_paths(monkeypatch, cache)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    for name in ("hub", "datasets", "assets", "xet"):
+    for name in ("hub", "assets", "xet"):
         assert name in binds and os.path.isdir(cache / name), name
+    assert "datasets" not in binds and not os.path.exists(cache / "datasets")
     assert cache_log.warnings == []
 
 
@@ -3086,32 +3156,32 @@ def test_a_cache_folder_that_cannot_be_created_is_skipped_quietly(tmp_path, monk
     real = os.makedirs
 
     def refuse(path, *a, **k):
-        if os.path.basename(path) == "datasets":
+        if os.path.basename(path) == "assets":
             raise PermissionError(13, "Permission denied", path)
         return real(path, *a, **k)
 
     monkeypatch.setattr(sandbox_linux.os, "makedirs", refuse)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert "datasets" not in binds and "hub" in binds
+    assert "assets" not in binds and "hub" in binds
     assert cache_log.warnings == []
 
 
 def test_a_cache_entry_that_is_not_a_folder_still_warns(tmp_path, monkeypatch, cache_log):
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    (cache / "datasets").write_text("not a folder")
+    (cache / "assets").write_text("not a folder")
     _share_cache_paths(monkeypatch, cache)
     binds = sandbox_linux._model_cache_binds(str(tmp_path / "session"))
-    assert "datasets" not in binds
+    assert "assets" not in binds
     assert cache_log.warnings == [
-        "Not sharing the datasets cache into the sandbox: it is not a directory"
+        "Not sharing the assets cache into the sandbox: it is not a directory"
     ]
 
 
 def test_the_same_cache_warning_is_logged_once_a_minute(tmp_path, monkeypatch, cache_log):
     cache = tmp_path / "hostcache"
     (cache / "hub").mkdir(parents = True)
-    (cache / "datasets").write_text("not a folder")
+    (cache / "assets").write_text("not a folder")
     _share_cache_paths(monkeypatch, cache)
     session = str(tmp_path / "session")
     clock = [1000.0]

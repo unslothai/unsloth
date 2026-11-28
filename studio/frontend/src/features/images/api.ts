@@ -13,6 +13,7 @@ import {
   MEMORY_REFUSAL_HEADER,
   MemoryEstimateRefusalError,
 } from "./lib/memory-refusal";
+import { isLoraReloadRefusal, LoraReloadRefusalError } from "./lib/lora-reload";
 import type { DetailerRecord, DetailerRequest } from "./lib/detailer";
 import type { PromptEnhancement } from "./lib/prompt-enhance";
 import type { HiresCapability, HiresRequest } from "./lib/hires-choice";
@@ -33,8 +34,15 @@ export interface DiffusionResolvedControl {
   modules?: number;
 }
 
+import type { MultiGpuStatus } from "@/lib/multi-gpu-placement";
+
 export interface DiffusionStatus {
+  chat_swap_available?: boolean;
   loaded: boolean;
+  /** Per transformer scheme, why the loaded family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
+  /** The GPU index precision_options was judged on (probe verdicts are per card); null when unknown. */
+  precision_options_card?: number | null;
   // False when the resident model belongs to another account; the response then carries nothing else.
   yours?: boolean;
   repo_id: string | null;
@@ -67,6 +75,12 @@ export interface DiffusionStatus {
   attention_backend?: string | null;
   transformer_cache?: string | null;
   baked_loras?: string[] | null;
+  // The {id, weight} pairs the load baked in (int8 / fp8 builds); absent on older backends.
+  baked_lora_specs?: LoraSpecInput[] | null;
+  // Whether the attached LoRA set is folded into the weights, and why not; null without LoRAs or on older backends.
+  lora_fuse?: string | null;
+  // Multi-card placement (component split, layer split, guidance replica) and why; null for a one-card load.
+  multi_gpu?: MultiGpuStatus | null;
   vae_tiling?: boolean;
   workflows?: string[];
   // Absent on older backends: callers keep the historical limits (4 images, RGB, 16 px, 2048).
@@ -78,6 +92,8 @@ export interface DiffusionStatus {
   engine_forced?: string | null;
   // A loaded GGUF the native sd.cpp engine can run (drives the Advanced Engine select).
   native_engine_eligible?: boolean;
+  // False on CPU-only torch: Diffusers engine choice is hidden.
+  gguf_diffusers_allowed?: boolean;
   // LoRA is unavailable on this engine, but a reload on the native engine would apply LoRAs.
   lora_via_native?: boolean;
   // LoRA is off only because Speed=Auto compiled the model on its 3rd image; a reload brings it back.
@@ -94,6 +110,7 @@ export interface DiffusionStatus {
   negative_prompt_min_guidance?: number | null;
   // False when the loaded model ignores guidance on this engine (FLUX.3 distilled on diffusers).
   supports_guidance?: boolean;
+  supports_cfg_interval?: boolean;
   // False when this load streams no denoise previews (native engine, families without a preview map).
   supports_live_preview?: boolean;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
@@ -105,13 +122,11 @@ export interface DiffusionStatus {
   shift_control?: ShiftControl | null;
   // Textual-inversion embedding format the loaded model takes ("sdxl"); null/absent = no embeddings.
   textual_inversion?: string | null;
-  // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
-  // backend that records it; absent on older backends.
+  // Provenance per Advanced control; set only with a loaded model, absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
-  // Whether the loaded family can run the prompt upsampler (FLUX.3), and whether it is on by default. Absent on
-  // an older backend: no Enhance prompt toggle.
+  // Prompt upsampler (FLUX.3), default-on flag; absent on older backend: no Enhance toggle.
   supports_prompt_upsampler?: boolean;
   prompt_upsampler_default?: boolean;
   // Hires fix the loaded model takes; null/absent = hidden (no img2img path, or an engine without it).
@@ -138,8 +153,7 @@ export interface DiffusionConditioning {
   // null = the build's tier
   edit_output_resolution?: number | null;
   unified_edit: boolean;
-  // An edit-only family whose Edit takes more images after the source (Qwen-Image-Edit-Plus, up to
-  // max_condition_images in total). Absent on older backends.
+  // Extra images after the source, up to max_condition_images total; absent on old backends.
   multi_image_edit?: boolean;
   localized_edit_modes: LocalizedEditMode[];
   notes?: string[];
@@ -153,8 +167,7 @@ export interface DiffusionGenerateProgress {
   total_steps: number;
   fraction: number;
   eta_seconds: number | null;
-  // Absent (sd.cpp engine) means "denoise". "encode" runs before the denoise loop starts; "enhance" is the FLUX.3
-  // prompt upsampler writing the caption before the run (with `message`).
+  // Absent (sd.cpp) = denoise; encode precedes denoise; enhance = FLUX.3 prompt upsampler.
   phase?: "enhance" | "encode" | "denoise" | "decode" | null;
   message?: string | null;
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
@@ -184,8 +197,7 @@ export interface DiffusionLoadRequest {
   model_path: string;
   display_repo_id?: string;
   gguf_filename?: string;
-  // How to load the model (omit to auto-detect from gguf_filename). A single_file .safetensors loads from any repo;
-  // pipeline loads are restricted to unsloth/* repos, the official bases, or a local path.
+  // Pipelines: unsloth org repos, official bases or local paths only; single_file: any repo.
   model_kind?: "gguf" | "single_file" | "pipeline";
   base_repo?: string;
   family_override?: string;
@@ -218,8 +230,11 @@ export interface DiffusionLoadRequest {
     | "flash4"
     | "sage"
     | "xformers"
-    | "aiter";
+    | "aiter"
+    | "flash_sdpa";
   int8_attention?: "auto" | "on" | "off";
+  // Omitted = auto (env switch, else off).
+  lora_fuse?: "on" | "off";
   memory_mode?: "auto" | "fast" | "balanced" | "low_vram";
   // Neither engine shards, so several cards resolve to the one with the most free VRAM.
   gpu_ids?: number[];
@@ -269,8 +284,8 @@ export interface DiffusionGenerateRequest {
   shift?: number;
   base_shift?: number;
   max_shift?: number;
-  // Rewrite the prompt with the family's prompt upsampler first. null/absent = the family default. Sent only for a
-  // family that supports it.
+  cfg_interval_end?: number;
+  // Upsampler rewrite; null/absent = family default; sent only for families that support it.
   enhance_prompt?: boolean | null;
   // Hires fix (text to image only); omitted = off.
   hires?: HiresRequest;
@@ -321,6 +336,11 @@ export interface DiffusionLoraInfo {
   size_bytes: number;
   weight_default: number;
   fine_tuned?: boolean;
+  /** Step-distilled adapters: the publisher's steps / guidance, applied when the adapter is picked. */
+  recommended_steps?: number | null;
+  recommended_guidance?: number | null;
+  /** A two-expert pair (high- and low-noise files) for a two-expert video model. */
+  expert_pair?: boolean;
 }
 
 export interface GalleryImage {
@@ -339,9 +359,7 @@ export interface GalleryImage {
   generation_seconds?: number | null;
   generation_count?: number | null;
   model: string | null;
-  // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
-  // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
-  // Engine that ran it ("diffusers" | "sd_cpp" | "mlx"); the same seed draws different noise on each.
+  // Repo id alone is not enough; recipes need quant, torchao, adapters, engine (seed varies).
   engine?: string | null;
   model_kind?: string | null;
   gguf_filename?: string | null;
@@ -377,6 +395,7 @@ export interface GalleryImage {
   shift?: number | null;
   base_shift?: number | null;
   max_shift?: number | null;
+  cfg_interval_end?: number | null;
   embeddings?: string[] | null;
   // The caption the prompt upsampler wrote and the model actually ran; `prompt` stays the user's text.
   enhanced_prompt?: string | null;
@@ -418,6 +437,21 @@ export async function parseJson<T>(response: Response): Promise<T> {
     throw new Error(await readFastApiError(response));
   }
   return (await response.json()) as T;
+}
+
+export type ChatImageSwapSetting = { enabled: boolean; managed_by_env: boolean };
+
+export async function chatImageSwapSetting(
+  enabled?: boolean,
+  signal?: AbortSignal,
+): Promise<ChatImageSwapSetting> {
+  const options = enabled === undefined ? { signal } : {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+    signal,
+  };
+  return parseJson(await authFetch("/api/settings/chat-image-swap", options));
 }
 
 export async function getDiffusionStatus(
@@ -517,6 +551,8 @@ export interface DiffusionDownloadPlan {
   incompatible_reason?: string | null;
   /** Absent on an older backend. */
   incompatible_code?: string | null;
+  /** Per transformer scheme, why the planned family or card refuses it (null = nothing known); absent on older backends. */
+  precision_options?: Record<string, string | null> | null;
 }
 
 export async function getDiffusionDownloadPlan(
@@ -543,8 +579,7 @@ export class GenerateResponseLostError extends Error {
 const RESPONSE_LOST_STATUSES = new Set([408, 502, 503, 504, 522, 524]);
 
 /** A run past the proxy window throws GenerateResponseLostError; settle it, do not retry. */
-/** `sequence`: this run belongs to a multi-run Generate; while `more` runs follow, the server queue holds its next job
- *  until this sequence's next request arrives. */
+/** `sequence`: while `more` runs follow, the server holds the next job until the next request. */
 export async function generateDiffusionImage(
   body: DiffusionGenerateRequest,
   sequence?: { id: string; more: boolean },
@@ -572,8 +607,7 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // Only a proxy's HTML or empty reply means the generation may still be running; a JSON
-    // application error is thrown with the backend's reason rather than polled for.
+    // Only proxy HTML/empty replies may mean still running; JSON errors thrown, not polled.
     if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
@@ -584,6 +618,9 @@ export async function generateDiffusionImage(
     isMemoryEstimateRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))
   ) {
     throw new MemoryEstimateRefusalError(await readFastApiError(response));
+  }
+  if (!response.ok && isLoraReloadRefusal(response.status, response.headers.get(MEMORY_REFUSAL_HEADER))) {
+    throw new LoraReloadRefusalError(await readFastApiError(response));
   }
   return parseJson(response);
 }
@@ -774,20 +811,20 @@ export interface DiffusionTrainingStartRequest {
   lr_warmup_steps?: number;
   base_precision?: "nf4" | "bf16" | "int8" | "fp8" | "mxfp8" | "auto";
   compile_transformer?: "off" | "on" | "auto";
+  // bf16 DiT bases only: blocks streamed from host RAM. Omitted = the server default (off).
+  block_swap?: "off" | "auto" | number;
   cache_latents?: boolean;
   cache_variants?: number;
   enable_tf32?: boolean;
   // Omitted: on for a new run; a resume keeps its checkpoint's.
   bucketing?: boolean;
-  // Write a resumable checkpoint every N optimizer steps. 0 (the default) writes none; a
-  // stop-and-save always writes one, so Resume stays available either way.
+  // Checkpoint every N steps (0 = none); stop-and-save always writes one, so Resume works.
   save_steps?: number;
   save_total_limit?: number;
   // Plus step 0 and the last step; 0 renders none.
   sample_every?: number;
   sample_prompts?: string[];
-  // Continue a previous run: its output_dir, or one explicit checkpoint-<N> directory inside it. train_steps then
-  // means the TARGET TOTAL, so a checkpoint at 11 with train_steps 500 runs 12..500.
+  // Resume from output_dir or one checkpoint-<N> dir; train_steps is then the TARGET TOTAL.
   resume_from_checkpoint?: string | null;
   resumed_from_job_id?: string | null;
   hf_token?: string | null;
@@ -845,8 +882,16 @@ export interface DiffusionTrainingStatus {
   catalog_path?: string | null;
   family?: string | null;
   base_model?: string | null;
+  instance_prompt?: string | null;
   samples_per_second?: number | null;
   peak_memory_gb?: number | null;
+  // What block_swap resolved to once the base loaded; absent when it did not run.
+  block_swap?: {
+    swapped_blocks?: number;
+    total_blocks?: number;
+    host_gib?: number;
+    pinned_gib?: number;
+  } | null;
   checkpoint_path?: string | null;
   checkpoint_step?: number | null;
   resume_blocked_reason?: string | null;
@@ -926,8 +971,13 @@ export async function getDiffusionTrainingRun(
   return parseJson(await authFetch(`/api/train/diffusion/runs/${encodeURIComponent(jobId)}`));
 }
 
-export async function getDiffusionTrainingStatus(): Promise<DiffusionTrainingStatus> {
-  return parseJson(await authFetch("/api/train/diffusion/status"));
+/** The raw body, so a poller can skip an unchanged reply without parsing it. */
+export async function getDiffusionTrainingStatusText(): Promise<string> {
+  const response = await authFetch("/api/train/diffusion/status");
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return response.text();
 }
 
 export interface DiffusionDatasetSummary {
@@ -961,6 +1011,8 @@ export interface DiffusionTrainableFamily {
     lr_scheduler?: string;
     lr_warmup_steps?: number;
   } | null;
+  // The step count a sweep measured for this family and the set size it ran on; null where no sweep exists.
+  step_guidance?: { steps: number; items: number; batch_size?: number } | null;
   vram_note?: string | null;
   gated?: boolean | null;
   params?: string | null;
@@ -969,6 +1021,8 @@ export interface DiffusionTrainableFamily {
   precision_modes?: string[];
   recommended_precision?: string;
   supports_compile?: boolean;
+  // DiT trainer with bf16 on this host; absent on an older backend, which has no block_swap field.
+  supports_block_swap?: boolean;
   // Whether the family loop writes checkpoint bundles; undefined on an older backend reads as true.
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.

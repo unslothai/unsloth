@@ -57,6 +57,7 @@ function setup() {
         withAllowOversizedLoad: (body: unknown) => body,
       },
       "./lib/memory-refusal": {},
+      "./lib/lora-reload": {},
     },
   );
   const ok = () =>

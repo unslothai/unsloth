@@ -40,6 +40,12 @@ LOADED = {
 }
 STATUS = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": ["/srv/models/llama.gguf"]}
 EMPTY_STATUS = {"loaded": [], "serving": [], "serving_checkpoints": []}
+TWO_QUANTS = {
+    "loaded": [LLM],
+    "serving": [LLM, LLM],
+    "serving_checkpoints": [f"{LLM}:Q8_0", f"{LLM}:Q4_K_M"],
+}
+ONE_QUANT = {"loaded": [LLM], "serving": [LLM], "serving_checkpoints": [LLM]}
 LOAD = ("POST", "/api/inference/load")
 # A load that finished inside its wait.
 SETTLED = {"status": "loaded", "fraction": None, "job_id": None, "poll_after_s": None}
@@ -87,7 +93,7 @@ def test_load_sends_the_body_and_reports_the_result(monkeypatch, kind):
         "evicted_slots": [{"kind": "llm", "model": "unsloth/Qwen3-0.6B"}],
     }
     assert bodies(studio, "/api/inference/load") == [
-        {"model_path": LLM, "load_in_4bit": True, "max_seq_length": 0, "gguf_variant": "Q4_K_M"}
+        {"model_path": LLM, "use_saved_settings": True, "gguf_variant": "Q4_K_M"}
     ]
 
 
@@ -124,6 +130,69 @@ def test_evicted_merges_the_route_list_and_status(
     assert result["structuredContent"]["evicted"] == expected
 
 
+SAVED_ROW = {
+    "max_seq_length": 100_000,
+    "kv_cache_dtype": "q8_0",
+    "llama_extra_args": ["-cmoe"],
+    "gpu_memory_mode": "manual",
+    "gpu_layers": 0,
+}
+SAVED_CPU = {"gpu_memory_mode": "manual", "gpu_layers": 0}
+GPU_AUTO = {"gpu_memory_mode": "auto", "gpu_layers": -1}
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (
+            {},
+            {"max_seq_length": 100_000, "cache_type_kv": "q8_0", "load_in_4bit": True, **SAVED_CPU},
+        ),
+        (
+            {"max_seq_length": 4096, "kv_cache_type": "f16", "load_in_4bit": False},
+            {"max_seq_length": 4096, "cache_type_kv": "f16", "load_in_4bit": False},
+        ),
+        ({"max_seq_length": 0}, {"max_seq_length": 0, "cache_type_kv": "q8_0"}),
+        ({"device": "gpu"}, {"max_seq_length": 100_000, "cache_type_kv": "q8_0", **GPU_AUTO}),
+    ],
+)
+def test_a_load_takes_saved_settings_for_what_it_leaves_unset(monkeypatch, args, expected):
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver as resolver
+    from models.inference import LoadRequest
+    from utils import openai_auto_switch_settings as settings
+
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: (LLM, dict(SAVED_ROW)))
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    _result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM, **args})
+    (body,) = bodies(studio, "/api/inference/load")
+    assert body["use_saved_settings"] is True
+    filled = asyncio.run(inference_route._with_saved_settings(LoadRequest(**body)))
+    assert {name: getattr(filled, name) for name in expected} == expected
+    assert filled.llama_extra_args == ["-cmoe"]
+
+
+def test_device_gpu_keeps_a_saved_offload_argument(monkeypatch):
+    """Automatic placement keeps a saved -ngl on every load path; MCP's device="gpu" follows that rule."""
+    import routes.inference as inference_route
+    from core.inference import local_model_resolver as resolver
+    from models.inference import LoadRequest
+    from utils import openai_auto_switch_settings as settings
+
+    row = {"llama_extra_args": ["-ngl", "0"], **SAVED_CPU}
+    monkeypatch.setattr(settings, "resolve_override_for_load", lambda *a: (LLM, dict(row)))
+    monkeypatch.setattr(resolver, "resolve_trusted_cached_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda *a, **k: None)
+    monkeypatch.setattr(resolver, "local_target_is_gguf", lambda *a, **k: True)
+    _result, studio = run_tool(monkeypatch, PAYLOADS, "load_model", {"model": LLM, "device": "gpu"})
+    (body,) = bodies(studio, "/api/inference/load")
+    filled = asyncio.run(inference_route._with_saved_settings(LoadRequest(**body)))
+    assert filled.gpu_memory_mode == "auto"
+    assert inference_route._strip_inherited_extras(filled, filled.llama_extra_args) == ["-ngl", "0"]
+
+
 @pytest.mark.parametrize(
     "args,headers,token",
     [
@@ -137,7 +206,7 @@ def test_the_hub_token_goes_in_the_body_not_the_header(monkeypatch, args, header
     )
     (_m, _p, sent_headers, body) = call_to(studio, "/api/inference/load")
     assert json.loads(body)["hf_token"] == token
-    assert json.loads(body)["load_in_4bit"] is ("load_in_4bit" not in args)
+    assert json.loads(body).get("load_in_4bit") is args.get("load_in_4bit")
     assert "x-unsloth-hf-token" not in sent_headers
 
 
@@ -183,6 +252,15 @@ def test_download_progress_is_used_before_the_load_starts(monkeypatch, fast_poll
         ({"model": "unsloth/not-loaded"}, (STATUS,), "unsloth/not-loaded", None),
         ({"model": LLM}, (STATUS,), LLM, None),
         ({}, (EMPTY_STATUS,), None, []),
+        ({"model": LLM}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": LLM}]),
+        ({"model": LLM}, (TWO_QUANTS,), LLM, None),
+        ({}, (TWO_QUANTS, ONE_QUANT), LLM, [{"model_path": f"{LLM}:Q8_0"}]),
+        (
+            {"model": f"{LLM}:Q4_K_M"},
+            (TWO_QUANTS, ONE_QUANT),
+            f"{LLM}:Q4_K_M",
+            [{"model_path": f"{LLM}:Q4_K_M"}],
+        ),
     ],
 )
 def test_unload_picks_the_serving_checkpoint_and_checks_the_result(
@@ -209,12 +287,14 @@ def _media_studio(
     load_answer = None,
     plan = None,
     chat_statuses = None,
+    catalog = None,
 ):
     """``progress`` and ``statuses`` are consumed in order; the last one repeats."""
     prefix = "/api/inference/images" if kind == "image" else "/api/inference/video"
     return fake_studio(
         {
             **({STATUS_ROUTE: sequence(*chat_statuses)} if chat_statuses else {}),
+            **({("GET", "/api/inference/media/catalog"): catalog} if catalog is not None else {}),
             ("GET", "/api/hub/gguf-variants"): {
                 "repo_id": FLUX_GGUF,
                 "default_variant": "Q4_K_S",
@@ -231,20 +311,23 @@ def _media_studio(
 
 # No variant named: the default is used, and the hf_token argument reaches the (gated) lookup.
 @pytest.mark.parametrize(
-    "extra,filename",
+    "extra,filename,suffix",
     [
-        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf"),
-        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf"),
+        ({"variant": "Q8_0"}, "flux1-schnell-Q8_0.gguf", ""),
+        ({"hf_token": "hf_arg"}, "flux1-schnell-Q4_K_S.gguf", ""),
+        ({}, "flux1-schnell-Q8_0.gguf", ":Q8_0"),
     ],
 )
-def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extra, filename):
+def test_a_gguf_image_repo_sends_its_gguf_filename(
+    monkeypatch, fast_polls, extra, filename, suffix
+):
     studio = _media_studio(
         "image",
         progress = [{"phase": "downloading", "bytes_downloaded": 1, "bytes_total": 2}, READY],
         statuses = [{"loaded": True, "repo_id": FLUX_GGUF, "gguf_filename": filename}],
     )
     result, _studio = run_tool(
-        monkeypatch, studio, "load_model", {"model": FLUX_GGUF, "kind": "image", **extra}
+        monkeypatch, studio, "load_model", {"model": FLUX_GGUF + suffix, "kind": "image", **extra}
     )
     loaded = {"kind": "image", "model": FLUX_GGUF, "loaded": True, **SETTLED, "display_name": None}
     loaded.update(placement = None, alongside_applied = None)
@@ -738,6 +821,30 @@ def test_a_chat_load_asking_for_a_variant_never_follows_another_load(monkeypatch
     routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, STATUS)}
     _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, "variant": "Q8_0"})
     assert len(bodies(studio, "/api/inference/load")) == 1
+
+
+@pytest.mark.parametrize("args", [{"max_seq_length": 0}, {"load_in_4bit": True}])
+def test_a_chat_load_with_an_explicit_choice_never_follows_another_load(
+    monkeypatch, fast_polls, args
+):
+    # The load running elsewhere may use the saved settings this call overrides.
+    loading_now = {"loading": [LLM], "serving": [], "loaded": []}
+    routes = {**PAYLOADS, STATUS_ROUTE: sequence(loading_now, STATUS)}
+    _result, studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM, **args})
+    assert len(bodies(studio, "/api/inference/load")) == 1
+
+
+@pytest.mark.parametrize("args", [{"max_seq_length": 0}, {"load_in_4bit": True}])
+def test_an_explicit_choice_is_not_the_same_job_as_an_unset_one(monkeypatch, fast_polls, args):
+    studio = fake_studio({**PAYLOADS, LOAD: slow(LOADED, 0.3)})
+    with session(monkeypatch, studio) as call:
+        first = call("load_model", {"model": LLM, "wait_s": 0})["structuredContent"]
+        second = call("load_model", {"model": LLM, "wait_s": 0, **args})["structuredContent"]
+        assert first["job_id"] != second["job_id"]
+        for early in (first, second):
+            call("get_job", {"kind": "load", "id": early["job_id"], "wait_s": 30})
+    sent = bodies(studio, "/api/inference/load")
+    assert [body.get(name) for body in sent for name in args] == [None, *args.values()]
 
 
 def test_one_failed_status_read_does_not_end_a_followed_load(monkeypatch, fast_polls):
@@ -1535,3 +1642,112 @@ def test_an_unload_retries_this_callers_resident_after_its_replacement_fails(mon
     sent = bodies(studio, "/api/inference/video/unload")
     assert sent.count({"expected_load_id": "A"}) == 2 and {"expected_load_id": "B"} in sent
     assert unloaded.unloaded is True
+
+
+# Kind inference: a catalog row or the /v1/models task picks the route; otherwise llm.
+FLUX2 = "unsloth/FLUX.2-klein-4B"
+TTS_ID = "unsloth/Kokoro-82M"
+MEDIA_CATALOG = ("GET", "/api/inference/media/catalog")
+CATALOGS = {
+    MEDIA_CATALOG: {"models": [{"id": FLUX2, "kind": "image"}]},
+    ("GET", "/api/inference/audio/catalog"): {"models": [{"id": TTS_ID, "task": "tts"}]},
+    ("GET", "/v1/models"): {"data": []},
+}
+
+
+def test_a_catalog_image_id_loads_as_an_image_without_a_kind(monkeypatch, fast_polls):
+    studio = _media_studio(
+        "image",
+        catalog = CATALOGS[MEDIA_CATALOG],
+        progress = [READY],
+        statuses = [{"loaded": True, "repo_id": FLUX2}],
+    )
+    result, studio = run_tool(monkeypatch, studio, "load_model", {"model": FLUX2})
+    assert result["structuredContent"]["kind"] == "image", result
+    assert len(media_load_bodies(studio, "/api/inference/images/load")) == 1
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_an_explicit_llm_load_of_a_catalog_image_model_is_refused_before_any_load(monkeypatch):
+    args = {"model": FLUX2, "kind": "llm"}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    text = result["content"][0]["text"]
+    assert result["isError"] is True and f"call load_model(model='{FLUX2}', kind='image')" in text
+    assert bodies(studio, "/api/inference/load") == []
+
+
+def test_a_zero_wait_llm_load_of_a_catalog_image_model_still_never_reaches_the_llm_route(
+    monkeypatch, fast_polls
+):
+    studio = fake_studio({**PAYLOADS, **CATALOGS})
+    with session(monkeypatch, studio) as call:
+        early = call("load_model", {"model": FLUX2, "kind": "llm", "wait_s": 0})
+        job_id = (early.get("structuredContent") or {}).get("job_id")
+        if job_id:
+            job = call("get_job", {"kind": "load", "id": job_id, "wait_s": 30})
+            assert job["structuredContent"]["status"] == "failed", job
+    assert bodies(studio, "/api/inference/load") == []
+
+
+# An explicit llm load of a tts row goes through; a bare name keeps its variant.
+@pytest.mark.parametrize(
+    "model, kind, sent",
+    [(TTS_ID, "llm", TTS_ID), ("Kokoro-82M:Q4_K_M", "tts", f"{TTS_ID}:Q4_K_M")],
+)
+def test_a_catalog_tts_row_loads_through_the_llm_route(monkeypatch, fast_polls, model, kind, sent):
+    args = {"model": model, "kind": kind}
+    result, studio = run_tool(monkeypatch, {**PAYLOADS, **CATALOGS}, "load_model", args)
+    assert result["isError"] is False, json.dumps(result)
+    assert [body["model_path"] for body in bodies(studio, "/api/inference/load")] == [sent]
+
+
+def test_an_autoconfig_failure_gets_the_kind_hint(monkeypatch):
+    failed = JSONResponse({"detail": f"Unrecognized model in {LLM}."}, status_code = 500)
+    routes = {**PAYLOADS, **CATALOGS, LOAD: failed}
+    result, _studio = run_tool(monkeypatch, routes, "load_model", {"model": LLM})
+    text = result["content"][0]["text"]
+    assert (
+        result["isError"] is True
+        and "pass kind" in text
+        and "list_models(source='catalog')" in text
+    )
+
+
+def test_a_slow_catalog_does_not_hold_an_explicit_llm_load_past_wait_s(monkeypatch, fast_polls):
+    slow_catalogs = {route: slow(answer, 2.0) for route, answer in CATALOGS.items()}
+    studio = fake_studio(
+        {**PAYLOADS, LOAD: slow(LOADED, 1.0), STATUS_ROUTE: EMPTY_STATUS, **slow_catalogs}
+    )
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        early = call("load_model", {"model": LLM, "kind": "llm", "wait_s": 0})
+        assert time.monotonic() - started < 1.5
+    assert early["structuredContent"]["status"] == "loading", early
+
+
+@pytest.mark.parametrize(
+    "asked, full",
+    [
+        ("Moonshine-Streaming-GGUF:small/Q8_0", "org/Moonshine-Streaming-GGUF:small/Q8_0"),
+        ("other/Moonshine-Streaming-GGUF", "other/Moonshine-Streaming-GGUF"),
+    ],
+)
+def test_a_bare_catalog_name_keeps_a_variant_that_holds_a_slash(asked, full):
+    from studio_mcp.tools import models as tools
+    class Catalog:
+        async def catalog_id(self):
+            return "org/Moonshine-Streaming-GGUF:small/Q8_0"
+
+    assert asyncio.run(tools._full_id(asked, Catalog())) == full
+
+
+def test_a_slow_kind_lookup_answers_within_wait_s_and_asks_for_the_kind(monkeypatch, fast_polls):
+    slow_reads = {route: slow(answer, 6.0) for route, answer in CATALOGS.items()}
+    slow_reads[("GET", "/v1/models")] = slow({"data": []}, 6.0)
+    studio = fake_studio({**PAYLOADS, STATUS_ROUTE: EMPTY_STATUS, **slow_reads})
+    with session(monkeypatch, studio) as call:
+        started = time.monotonic()
+        result = call("load_model", {"model": "org/model", "wait_s": 0})
+        assert time.monotonic() - started < 5
+    assert result["isError"] is True and "pass kind" in result["content"][0]["text"], result
+    assert bodies(studio, "/api/inference/load") == []

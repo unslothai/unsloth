@@ -14,6 +14,7 @@
 
 """Append the offload hint to the save error, never replace it; only when a meta parameter exists."""
 
+import ast
 import sys
 from pathlib import Path
 
@@ -60,8 +61,7 @@ def test_the_hint_states_the_remedy():
 
 
 def test_it_reports_a_few_names_not_all_of_them():
-    """A 30B MoE has thousands of offloaded tensors; pasting them all would
-    bury the actual error."""
+    """A 30B MoE has thousands of offloaded tensors; pasting them all would bury the error."""
     m = _Model([(f"layer.{i}.weight", _p("meta")) for i in range(500)])
     hint = _offloaded_parameter_hint(m)
     assert hint.count("layer.") <= 3
@@ -75,8 +75,7 @@ def test_a_mix_of_real_and_meta_still_fires():
 
 
 def test_a_fully_resident_model_gets_no_hint():
-    """The mislabelling risk. An unrelated save failure must not be blamed
-    on an offload that never happened."""
+    """An unrelated save failure must not be blamed on an offload that never happened."""
     m = _Model([("a", _p("cpu")), ("b", _p("cpu"))])
     assert _offloaded_parameter_hint(m) == ""
 
@@ -117,10 +116,41 @@ def test_a_parameter_with_no_device_does_not_crash():
 SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
 
-def test_both_save_failure_paths_use_it():
-    """The GGUF export can fail at the merge step or at the plain save step,
-    and offloading breaks both."""
-    assert SRC.count("_offloaded_parameter_hint(self)") == 2
+def _save_failure_messages():
+    """Each `raise RuntimeError(f"Failed to save...")` in save.py, with whether its message carries the hint."""
+    for node in ast.walk(ast.parse(SRC)):
+        if not (
+            isinstance(node, ast.Raise)
+            and isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)
+            and node.exc.func.id == "RuntimeError"
+            and node.exc.args
+            and isinstance(node.exc.args[0], ast.JoinedStr)
+        ):
+            continue
+        message = node.exc.args[0]
+        text = "".join(v.value for v in message.values if isinstance(v, ast.Constant))
+        if not text.startswith("Failed to save"):
+            continue
+        hinted = any(
+            isinstance(v, ast.FormattedValue)
+            and isinstance(v.value, ast.Call)
+            and isinstance(v.value.func, ast.Name)
+            and v.value.func.id == "_offloaded_parameter_hint"
+            for v in message.values
+        )
+        yield node.lineno, text, hinted
+
+
+def test_every_save_failure_path_uses_it():
+    """GGUF export can fail at the merge, the plain save or (#20022) the GGUF-packed dense write; offloading
+    breaks each, so every "Failed to save" error names it. A count of call sites broke when a path was added."""
+    messages = list(_save_failure_messages())
+    assert {text.split(":")[0] for _, text, _ in messages} >= {
+        "Failed to save/merge model",
+        "Failed to save model",
+    }
+    assert [line for line, _, hinted in messages if not hinted] == []
 
 
 def test_the_original_error_is_still_reported():

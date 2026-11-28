@@ -29,8 +29,7 @@ def resolve_build_family(base: str, override: Optional[str] = None) -> Optional[
 def convrot_refusal(
     group: int, rotatable: Sequence[str], not_divisible: Sequence[str]
 ) -> Optional[str]:
-    """Refuse a ConvRot build with no rotatable Linear before the hours of quantising, not after:
-    its empty fqn list is refused at load time, leaving an unopenable artifact"""
+    """Refuse a ConvRot build with no rotatable Linear before quantising; load would refuse it."""
     if rotatable:
         return None
     return (
@@ -122,7 +121,8 @@ def upload_destination(
     rotated_name = convrot_prequant_filename(scheme, family) if rotated else None
     if rotated_name:
         spec_group = convrot_spec_for_scheme(scheme, family)[0]
-        if convrot_group is not None and int(convrot_group) != spec_group:
+        # Group 0: no runtime path to match, the file's own metadata carries its group.
+        if spec_group and convrot_group is not None and int(convrot_group) != spec_group:
             raise ValueError(
                 f"{rotated_name} is reserved for the ConvRot group {spec_group} build that matches "
                 f"the runtime path; a group {convrot_group} build needs --upload-filename."
@@ -139,7 +139,6 @@ def upload_destination(
             f"{scheme!r}, so {why} has no name the loader would ask for. Add the "
             "entry to the family table, or pass --upload-filename."
         )
-    # Check both directions: the declared name's extension must match the container.
     wanted = ".safetensors" if safetensors else ".pt"
     if not preferred.lower().endswith(wanted):
         reads_as = "a pickle" if safetensors else "safetensors"

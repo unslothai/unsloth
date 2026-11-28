@@ -52,11 +52,7 @@ export const orderHighlightRequests = <T extends { speculative?: boolean }>(
   ...requests.filter((request) => request.speculative),
 ];
 
-/*
- * A full result as it crosses to the main thread: tokens with equal styles share one style object
- * (the clone keeps shared references, so the main thread rebuilds a handful of styles instead of
- * one per token), and no grammar state, which nothing there resumes from a worker result.
- */
+/* Equal styles share one object so the clone keeps them shared; grammar state is not sent. */
 export function transferableResult(result: HighlightResult): HighlightResult {
   const styles = new Map<string, Record<string, string>>();
   const shared = (style: Record<string, string>): Record<string, string> => {

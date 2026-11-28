@@ -118,10 +118,20 @@ def _call_name(node: ast.Call) -> str | None:
     return None
 
 
+def _statements(tree: ast.AST):
+    """Yields the statement nodes of a tree, pruning expressions (they never contain statements);
+    same result as ast.walk, with far fewer nodes visited."""
+    stack = [tree]
+    while stack:
+        node = stack.pop()
+        yield node
+        stack.extend(c for c in ast.iter_child_nodes(node) if not isinstance(c, ast.expr))
+
+
 def _subprocess_names(tree: ast.AST) -> set[str]:
     """Names subprocess is reachable under here, e.g. `import subprocess as _sp`."""
     names = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "subprocess":
@@ -141,7 +151,7 @@ def _subprocess_aliases(tree: ast.AST, names: set[str]) -> set[str]:
         )
 
     aliases: set[str] = set()
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "subprocess":
             aliases.update(a.asname or a.name for a in node.names if a.name in _SUBPROCESS_CALLS)
         elif isinstance(node, ast.Assign) and _is_bound(node.value):
@@ -263,7 +273,7 @@ def _path_class_names(tree: ast.AST) -> set[str]:
     call site, and a module-wide guess flags valid calls on an instance that happens to share the
     name in another scope."""
     names = set(_PATH_CLASSES)
-    for node in ast.walk(tree):
+    for node in _statements(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
             for alias in node.names:
                 if alias.name in _PATH_CLASSES:
@@ -281,8 +291,7 @@ def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str])
         isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
     )
     position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
-    # A starred argument at or before the slot makes the runtime position unknowable statically,
-    # so only a keyword encoding counts there: conservative, and nothing in the tree spells it so.
+    # A starred arg at or before the slot hides the position; only a keyword encoding counts.
     if any(isinstance(arg, ast.Starred) for arg in node.args[: position + 1]):
         return False
     if len(node.args) <= position:
@@ -608,8 +617,7 @@ def test_a_torn_cache_ref_reads_as_not_cached(tmp_path: Path, monkeypatch) -> No
 
 
 def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch) -> None:
-    """_remove_pid_file runs first in _graceful_shutdown, so a raise there leaves
-    the inference, export, training and tunnel children alive."""
+    """_remove_pid_file runs first in _graceful_shutdown, so a raise leaves children alive."""
     _shared_setup_1(__file__)
     import run as studio_run
 
@@ -627,8 +635,7 @@ def test_a_corrupt_pid_file_does_not_abort_shutdown(tmp_path: Path, monkeypatch)
 
 
 def test_the_legacy_pid_record_is_handed_to_a_live_sibling(tmp_path: Path, monkeypatch) -> None:
-    """Only one server owns studio.pid, so deleting it while a sibling still serves would leave
-    that sibling unstoppable from an older CLI that reads no other file."""
+    """Deleting studio.pid under a live sibling leaves older CLIs unable to stop that sibling."""
     _shared_setup_1(__file__)
     import run as studio_run
 
@@ -764,8 +771,7 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """Lifespan calls _load_bootstrap_password with no handler, so an unusable file must be ignored
-    rather than raised; a raise takes the backend down."""
+    """Lifespan calls _load_bootstrap_password with no handler; unusable files must not raise."""
     _shared_setup_1(__file__)
     from auth import storage
 
@@ -803,9 +809,8 @@ def test_a_damaged_checkpoint_resets_instead_of_resuming_on_a_broken_cursor(tmp_
 
 
 def test_a_utf8_record_is_not_parsed_a_second_time(tmp_path: Path) -> None:
-    """These shards reach gigabytes and every resume reads all of one, so a
-    record that already read as UTF-8 must not be decoded and parsed again under
-    the codepage. The legacy reading exists only to recover keys UTF-8 could not."""
+    """Shards reach gigabytes and every resume reads all of one, so UTF-8 records must not be parsed
+    again under the codepage; legacy reading only recovers keys UTF-8 could not."""
     module = _load_state_store("cp1252")
     calls: list[str] = []
     real_parse = module._parse

@@ -4,11 +4,12 @@
 """The ARM half of .github/workflows/prebuilt-cuda-wheels.yml.
 
 * linux_aarch64 builds all three packages for torch 2.13 / 2.14 (upstream's aarch64 wheels stop
-  at 2.10); win_arm64 builds causal-conv1d and mamba-ssm for NVIDIA's torch 2.14.0+cu134 only,
-  since NVIDIA publishes flash-attn for it and no other CUDA torch exists there;
+  at 2.10); win_arm64 builds causal-conv1d and mamba-ssm for NVIDIA's torch 2.14.0+cu134 and
+  2.15.0+cu135 only, since NVIDIA publishes flash-attn for them and no other CUDA torch exists
+  there, each with the CUDA toolkit its +cuNNN tag names (13.4.1 and 13.5.0);
 * ARM is opt-in: the default dispatch plans exactly the x86_64 cells it planned before;
 * the x86_64 GPU runner never gets an aarch64 wheel;
-* the CUDA 13.4 redist installer checks a pinned manifest and every archive against it;
+* the CUDA redist installer checks a pinned manifest and every archive against it;
 * the binary check catches an x64 extension under an arm64 name and a glibc above the floor.
 """
 
@@ -87,15 +88,70 @@ class TestMatrix:
             )
             assert cell["py_platform"] == "win-arm64"
             assert cell["shards"] == 0
+            assert cell["cuda_redist_version"] == "13.4.1"
+            assert cell["cuda_redist_url"].endswith("/redistrib_13.4.1.json")
         mamba = next(cell for cell in cells if cell["package"] == "mamba-ssm")
         # triton-windows 3.8.0.post29 publishes win_arm64 wheels, the release torch 2.14 pairs with.
         assert mamba["smoke_extra"] == "triton-windows==3.8.0.post29"
         assert "triton" in mamba["smoke_exclude"].split()
 
+    def test_win_arm64_builds_torch_215_cu135_with_the_cuda_135_toolkit(self):
+        """NVIDIA's index publishes torch 2.15.0+cu135 for win_arm64, built with CUDA 13.5, whose
+        redist carries a windows-arm64 archive for every component the toolkit step installs."""
+        cells = pw.build_matrix(platforms = "win_arm64", torches = "2.14.0,2.15.0")
+        by_torch = {}
+        for cell in cells:
+            by_torch.setdefault(cell["torch"], []).append(cell)
+        assert sorted(by_torch) == ["2.14.0", "2.15.0"]
+        assert sorted(cell["wheel_name"] for cell in by_torch["2.15.0"]) == [
+            "causal_conv1d-1.7.0+cu13torch2.15cxx11abiTRUE-cp313-cp313-win_arm64.whl",
+            "mamba_ssm-2.3.2.post1+cu13torch2.15cxx11abiTRUE-cp313-cp313-win_arm64.whl",
+        ]
+        expected = {
+            "2.14.0": (
+                "torch==2.14.0+cu134",
+                "13.4.1",
+                "e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5",
+            ),
+            "2.15.0": (
+                "torch==2.15.0+cu135",
+                "13.5.0",
+                "401529e951b845788177f999c0756c520c4d0db1cd4cd05c0a295e331884b596",
+            ),
+        }
+        for torch_version, (spec, release, digest) in expected.items():
+            for cell in by_torch[torch_version]:
+                assert cell["torch_spec"] == spec
+                assert cell["cuda_redist_version"] == release
+                assert cell["cuda_redist_url"] == (
+                    "https://developer.download.nvidia.com/compute/cuda/redist/"
+                    f"redistrib_{release}.json"
+                )
+                assert cell["cuda_redist_sha256"] == digest
+                assert (
+                    cell["torch_index_args"]
+                    == "--extra-index-url https://pypi.nvidia.com/nvtorch_oot"
+                )
+        mamba = next(cell for cell in by_torch["2.15.0"] if cell["package"] == "mamba-ssm")
+        # torch 2.15 pins triton~=3.9.0; 3.9.0.post30 publishes win_arm64 wheels.
+        assert mamba["smoke_extra"] == "triton-windows==3.9.0.post30"
+        # The ccache key carries the torch, so 13.4 and 13.5 objects never mix.
+        assert "-torch${{ matrix.torch }}-" in WORKFLOW.read_text(encoding = "utf-8")
+
+    def test_only_win_arm64_cells_carry_a_redist_toolkit(self):
+        cells = pw.build_matrix(platforms = "linux_x86_64,win_amd64,linux_aarch64")
+        for cell in cells:
+            assert cell["cuda_redist_version"] == cell["cuda_redist_url"] == ""
+            assert cell["cuda_redist_sha256"] == ""
+
     def test_win_arm64_adds_interpreters_on_request(self):
         cells = pw.build_matrix(platforms = "win_arm64", pythons = "3.11,3.12,3.13")
         assert sorted({cell["python_tag"] for cell in cells}) == ["cp311", "cp312", "cp313"]
         assert len(cells) == 6
+        both = pw.build_matrix(
+            platforms = "win_arm64", torches = "2.14.0,2.15.0", pythons = "3.11,3.12,3.13"
+        )
+        assert len(both) == 12
 
     @pytest.mark.parametrize(
         "request_",
@@ -239,10 +295,18 @@ class TestCudaRedist:
             step = next(
                 s
                 for s in workflow["jobs"][job]["steps"]
-                if s.get("name") == "Install the CUDA 13.4 toolkit (Windows ARM64)"
+                if s.get("name")
+                == "Install the CUDA ${{ matrix.cuda_redist_version }} toolkit (Windows ARM64)"
             )
-            assert "redistrib_13.4.1.json" in step["run"]
-            assert "e24677584a7161a69f370271fc638b252a0e77e48bdf5fccf1862bae028c08d5" in step["run"]
+            # Per cell from the plan, never a hardcoded toolkit: 2.15.0+cu135 needs 13.5.
+            assert "redistrib_13." not in step["run"]
+            assert step["env"] == {
+                "CUDA_REDIST_URL": "${{ matrix.cuda_redist_url }}",
+                "CUDA_REDIST_SHA256": "${{ matrix.cuda_redist_sha256 }}",
+            }
+            assert "$env:CUDA_REDIST_URL" in step["run"]
+            assert "$env:CUDA_REDIST_SHA256" in step["run"]
+            assert "throw" in step["run"].split("python", 1)[0], "an empty manifest must fail"
             for component in (
                 "cuda_nvcc",
                 "libnvvm",

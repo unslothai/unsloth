@@ -49,8 +49,7 @@ _ENABLED = _ENV_ENABLED and TORCH_SUPPORTS_PREFIX_GROUPER
 _OFF_LOGGED = False
 _VERIFY_ON = env_on("UNSLOTH_GRPO_PREFIX_GROUPER_VERIFY", "1")
 _TOKR_THRESHOLD = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOKR", "1.3"))
-# Cost gate on saved prompt tokens per call: measured L4 LoRA break-even ~670 (Qwen3-0.6B) and
-# ~560 (Qwen2.5-1.5B) saved tokens, so 1024 keeps a margin.
+# L4 LoRA break-even ~670 (Qwen3-0.6B), ~560 (Qwen2.5-1.5B) saved tokens; 1024 keeps a margin.
 _MIN_SAVED = int(float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_MIN_SAVED", "1024")))
 _TOL_OK = float(os.environ.get("UNSLOTH_GRPO_PREFIX_GROUPER_TOL", "0.7"))
 
@@ -106,6 +105,7 @@ def prefix_seg_info_applied(model) -> bool:
 
     Other forwards drop it via ``**kwargs`` and leak completions across a group (0.02-0.04 nats, under
     the 0.7-nat self-verify), so every decoder layer must run a forward marked by ``applies_prefix_seg_info``.
+    With none marked, the verified transformers-native families (prefix_grouper_hf) are wrapped.
     """
     if model is None:
         return False
@@ -124,6 +124,10 @@ def prefix_seg_info_applied(model) -> bool:
                 for module in model.modules()
             )
             applied = marked >= layers
+            if not applied and marked == 0:
+                # transformers-native attention (FastModel families): route through the interface.
+                from .prefix_grouper_hf import enable_hf_prefix_seg_info
+                applied = enable_hf_prefix_seg_info(model, layers)
     except Exception:
         applied = False
     try:

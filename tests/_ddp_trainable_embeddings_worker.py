@@ -85,9 +85,7 @@ def main(out_dir):
         # Rank 0 hosts the TCPStore, so no rank leaves before the other is done with it.
         dist.barrier()
         dist.destroy_process_group()
-        # Results are written and the group is torn down. Interpreter teardown can still wedge on a
-        # gloo C++ thread, which hung finished runs past the parent's timeout; skip it, as the other
-        # gloo workers do, so only the run itself decides the exit code.
+        # Teardown can wedge on a gloo C++ thread past the parent's timeout, so exit with os._exit.
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)

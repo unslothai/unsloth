@@ -15,7 +15,7 @@ calls decode eagerly; an out-of-memory graphed call is redone once eagerly). Aft
 the graph and its StaticCache are kept for the next call of the same batch (keep()); training, a returned
 or caller-owned cache, and parameter / adapter / quant changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
 disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
-(16) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
+(64) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
 
 import collections
 import collections.abc
@@ -33,6 +33,7 @@ import torch
 
 from . import _decode_graphs as G
 from . import _kv_cache as KV
+from ._cache_kwarg import get_cache_kwarg, output_cache
 
 __all__ = [
     "wanted",
@@ -54,15 +55,13 @@ _COUNTERS = ("cumulative_length", "cumulative_length_int")
 _MAX_ARG_BYTES = 16 * 1024 * 1024
 _CONSTANTS = (bool, int, float, str, torch.dtype, torch.device)
 _MAX_KEYS = 4096
-# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1, 2.7-4.7x at 16).
-MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "16"))
-# Free memory a graphed call needs beyond the eager one: the graph pool (8-16 MiB measured on 1B models),
-# static input buffers and the side stream's workspace. Below it the call decodes eagerly.
+# Graphs only remove launch overhead (T4 1B 4-bit: 4-7x at bsz 1); 64 covers RL rollouts (8-64 rows).
+MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ", "64"))
+# Graph pool and static buffers need free memory; below that the call decodes eagerly.
 _FREE_MARGIN_BYTES = 256 * 1024 * 1024
 # A kept cache longer than this many times the call's own length is not reused (attention reads every slot).
 _KEEP_MAX_RATIO = 2
-# Captures in a row without a replay: the key changes every step, so the rest of the call decodes eagerly.
-# A healthy call captures at most twice in a row (window filling, then full).
+# Back-to-back captures without replay (key changes each step) go eager; healthy is at most 2.
 _MAX_UNREPLAYED_CAPTURES = 4
 PLANS = collections.Counter()
 EAGER_REDOS = 0
@@ -191,6 +190,13 @@ class _Cuda:
         G._begin(graph, pool)
 
     @staticmethod
+    def reset_rng_capture(indices):
+        """After a failed capture: clear the CUDA RNG's capturing flag on every card the capture may
+        have begun on (see _decode_graphs._reset_rng_capture_flag)."""
+        for index in indices:
+            G._reset_rng_capture_flag(torch.device("cuda", index))
+
+    @staticmethod
     def end_on(graph):
         with warnings.catch_warnings():
             # A segment with no kernels (the tail after the last hand-off) is an empty, valid graph.
@@ -205,12 +211,8 @@ class _Cuda:
         others = None,
         mempools = None,
     ):
-        """(graph, fn()) with fn's launches captured into graph (`cache`: for host stand-ins).
-        `others` ({index: stream}): the other cards of a model split over cards, their side streams
-        current there (on_streams). The step is then captured as one graph per run of work on one
-        card, cut where accelerate's AlignDevicesHook moves tensors to another card; those hand-offs
-        run eagerly between the segments' replays (_Segments). Capturing a cross-card copy is not
-        possible without peer access (cudaErrorStreamCaptureUnsupported on PCIe T4s)."""
+        """One graph per card run; hand-offs between cards run eagerly between segment replays;
+        cross-card copy in capture needs peer access (refused on PCIe T4s)"""
         if others:
             here = torch.cuda.current_device()
             pools = dict(mempools)
@@ -273,10 +275,14 @@ class _SegmentRecorder:
         self.pending = None
         self.moved = {}
         self.original = None
+        # Cards begun (attempted too): a failed recording resets the RNG flag only on them.
+        self.begun = []
 
     def begin(self, card):
         self.graph = self.backend.new_graph()
         self.card = card
+        if card not in self.begun:
+            self.begun.append(card)
         self.backend.begin_on(self.graph, self.pools[card], card)
 
     def end(self):
@@ -298,7 +304,6 @@ class _SegmentRecorder:
             hit = self.moved.get(key)
             if hit is not None:
                 return hit[1]
-            # First crossing of this tensor to `card`: the segment ends here, the copy runs eagerly.
             self.end()
             dst = value.to(target)
             self.moved[key] = (value, dst)
@@ -310,9 +315,8 @@ class _SegmentRecorder:
             and isinstance(value, _BlockMask)
             and "_unsloth_graph_closure" in value.__dict__
         ):
-            # A graph BlockMask (_build): its fields and the tensors its mask_mod reads cross like tensors
-            # (eager hand-offs refilled every replay); BlockMask.to would leave mask_mod's tensors on this
-            # card, and a cross-card copy inside the capture is refused.
+            # Graph BlockMask: fields and mask_mod tensors cross by eager hand-off (BlockMask.to
+            # would strand them on this card); a cross-card copy inside capture is refused
             key = (id(value), card)
             hit = self.moved.get(key)
             if hit is None:
@@ -352,8 +356,7 @@ class _SegmentRecorder:
         return self._move(tensor, card, self.backend.card_device(card), skip_keys)
 
     def run(self, fn):
-        # accelerate's hooks are process-global: two overlapping recordings (threads) would restore each
-        # other's replacements, leaving a finished recorder installed.
+        # accelerate hooks are process-global; overlapping recordings clobber each other.
         with _RECORDING:
             return self._run(fn)
 
@@ -383,13 +386,17 @@ class _SegmentRecorder:
             out = fn()
             self.resume()
             self.end()
-        except BaseException:
+        except BaseException as error:
             if self.graph is not None:
                 try:
                     self.backend.end_on(self.graph)
                 except Exception:
                     pass
                 self.graph = None
+            try:
+                error._unsloth_capture_cards = tuple(self.begun)
+            except Exception:
+                pass
             raise
         finally:
             hooks.send_to_device = original_send
@@ -509,8 +516,7 @@ def _decoder_prompt(kwargs):
 
 
 def _plan_len(model, args, kwargs):
-    """prompt + new tokens this call can reach (0 if unknown), as the llama path sizes its plan.
-    Encoder-decoder: the decoder prompt only, not the encoder input (Whisper mel frames)."""
+    """Prompt + new tokens this call can reach (0 if unknown); encoder input is not counted."""
     try:
         from .llama import _generation_plan_len
         if _encoder_decoder(model):
@@ -523,11 +529,10 @@ def _plan_len(model, args, kwargs):
 
 
 def plan(model, args, kwargs, input_ids):
-    """ "graph" or "eager" for this generate() call, decided once before it decodes (inside
-    generate_scope(), so graphs are on by default). Eager: graphs not wanted (wanted()), batch over
-    MAX_BSZ, too few decode steps to win back a capture (unless a kept graph of this batch replays from
-    the first step), or too little free memory for the graph pool. A kept graph / cache that this call
-    cannot reuse is dropped here."""
+    """Picks graph or eager once per generate() call, on by default; eager when graphs are unwanted
+    (wanted()), batch is over MAX_BSZ, too few steps to repay a capture (unless a kept graph
+    replays), or too little free memory for the graph pool; a kept graph or cache this call
+    cannot reuse is dropped."""
     state = model.__dict__.get(_ATTR)
     if not wanted(model):
         if state is not None:
@@ -596,8 +601,7 @@ def plan(model, args, kwargs, input_ids):
 
 
 def ineligible(model):
-    """A call that cannot decode through graphs (dynamic cache, compiled decode): eager, and a kept
-    graph / cache goes (it would only hold memory)."""
+    """Dynamic cache or compiled decode runs eager and drops any kept graph."""
     state = model.__dict__.get(_ATTR)
     if state is not None and state.kept is not None:
         state.clear()
@@ -609,7 +613,7 @@ def replayable(kwargs):
     """A failed graphed call can be redone eagerly only when no caller object holds its partial state."""
     return not (
         kwargs.get("streamer", None) is not None
-        or kwargs.get("past_key_values", None) is not None
+        or get_cache_kwarg(kwargs) is not None
         or kwargs.get("stopping_criteria", None)
         or kwargs.get("logits_processor", None)
     )
@@ -691,8 +695,7 @@ def _plain_bound(model, forward):
 
 
 def _single_device_hook(model):
-    """accelerate AlignDevicesHook(s) that only move tensors to the model's own (single) device: no
-    offload, no weights map. Another hook type, or an execution device elsewhere, is not ours to graph."""
+    """AlignDevicesHook(s) moving tensors to the model's device; no offload or weights map."""
     try:
         from accelerate.hooks import AlignDevicesHook, SequentialHook
     except Exception:
@@ -709,8 +712,7 @@ def _single_device_hook(model):
         if target is None:
             continue
         try:
-            # accelerate names a GPU by its index; torch.device(int) asks for the current accelerator, which
-            # a CPU-only torch build does not have (it raises).
+            # accelerate names GPUs by index; torch.device(int) raises on a CPU-only torch.
             if type(target) is int:
                 target = torch.device(_BACKEND.device_type, target)
             target = torch.device(target)
@@ -727,9 +729,7 @@ def _single_device_hook(model):
 
 
 def _split_entry_card(model, target):
-    """A model split over cards (multi-device graphs on): its root hook moves the inputs to the card of the
-    first block, which need not be `model.device` (the first parameter: a tied embedding / lm_head can sit
-    on the last card). Any card the model's parameters are on is its own."""
+    """Inputs go to the first block's card, not necessarily model.device; each card is its own."""
     if not _multidevice_enabled():
         return False
     devices = _param_devices(model)
@@ -851,8 +851,7 @@ def begin(model):
 
 
 def end(model, keep = False):
-    """End of a generate() call. Its graphs read this call's cache: freed, unless `keep` (keepable()), when
-    the graphs and that cache stay for the next call of the same batch (released by training)."""
+    """Frees graphs and cache unless keep; kept for the same batch's next call until training."""
     state = model.__dict__.get(_ATTR)
     if state is None:
         return
@@ -932,9 +931,9 @@ def keepable(model, kwargs, output):
     caller passed or got back the cache (a later call would overwrite it), nor in training mode."""
     if os.environ.get("UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP", "1") == "0":
         return False
-    if getattr(model, "training", False) or kwargs.get("past_key_values", None) is not None:
+    if getattr(model, "training", False) or get_cache_kwarg(kwargs) is not None:
         return False
-    if getattr(output, "past_key_values", None) is not None:
+    if output_cache(output) is not None:
         return False
     # The next call re-encodes into a new cross-attention cache (reuse_kept_cache never hands one back).
     if _encoder_decoder(model):
@@ -950,8 +949,7 @@ def release(model):
 
 
 def _bucket_budget(need, limit):
-    # 2x the call's need, but never below the smallest bucket a fresh cache would get: else repeated short calls
-    # after a long one would drop and re-capture an equal bucket every call.
+    # 2x the need, never below the smallest fresh-cache bucket, else short calls re-capture.
     return max(_KEEP_MAX_RATIO * max(need, 1), KV.bucket(max(need, 1), max(limit, need, 1)))
 
 
@@ -992,8 +990,7 @@ def _reserve_step(
     bound,
     call = None,
 ):
-    """Grows a growable cache to hold this generate step. `call` tracks tokens in the cache but not in input_ids
-    (inputs_embeds prompt, or a returned cache continued with only new tokens)."""
+    """Grows a growable cache to fit this step; call counts cache tokens not in input_ids."""
     call = {} if call is None else call
     # Dim 1 is the sequence: CSM's input_ids are (batch, frames, codebooks), shape[-1] the 33 codebooks.
     total = (
@@ -1055,7 +1052,7 @@ class reuse_kept_cache:
         extra = bound.get("kwargs")
         if isinstance(extra, dict):
             bound = {**extra, **bound}
-        cache = bound.get("past_key_values")
+        cache = get_cache_kwarg(bound)
         if KV.is_growable(cache):
             _reserve_step(cache, input_ids, bound, self.reserve_call)
         return self.prepare_inputs(input_ids, *args, **kwargs)
@@ -1365,9 +1362,8 @@ def _host_counter(layer):
 
 
 def _window_reason(cache, q_len):
-    # A step that fills a sliding window switches the update's branch mid-call: eager. Before and after it, every
-    # one-token step runs the same device work (write at the device counter, or roll by one slot), and the key
-    # carries which of the two each layer is in (_window_state), so a replay repeats the right one.
+    # Filling a sliding window switches branch mid-call (eager); before and after, every one-token
+    # step runs the same device work; _window_state keys each layer's branch for replay
     for layer in cache.layers:
         if type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
@@ -1379,8 +1375,7 @@ def _window_reason(cache, q_len):
 
 
 def _window_fills(cache, q_len):
-    """Whether this step fills a sliding window (count + q_len reaches it). Its key is the filling one, but a
-    capture records after the warm-up advanced the counters, i.e. the rolling branch: never capture it."""
+    """Fills a sliding window: never capture it, it records the rolling branch after warm-up."""
     for layer in cache.layers:
         if type(layer) in _SLIDING_LAYERS:
             count = _host_counter(layer)
@@ -1509,9 +1504,7 @@ def _host_state_reason(before, after, q_len):
 
 
 def _snapshot(cache, rows = True):
-    """Length counters (host ints, device scalars) a step advances, plus what undoes the roll of every full sliding
-    window (a step rolls it, so unlike a slot write it is not idempotent); restored by _restore. rows=False: the
-    counters only (a recording runs no device work)."""
+    """Length counters, sliding-window roll undo (not idempotent); rows=False: counters only."""
     host, device = [], []
     rolling = None
     for layer in cache.layers:
@@ -1672,10 +1665,7 @@ def _build(value, buffers, cache):
 
 
 def _block_mask_moved(value, move):
-    """A graph BlockMask with every tensor field and closure tensor passed through `move` (tensor -> tensor
-    on the target card) and mask_mod rebuilt over the moved closure tensors; `value` itself when nothing
-    moved (accelerate also "moves" the mask to the card it is on: the root hook, the first card's layers),
-    so it keeps the per-device move for the next card's hook."""
+    """Returns a BlockMask with tensors on the target card, or value itself if nothing moved."""
     fields = [
         (name, field, move(field))
         for name, field in _block_mask_fields(value)
@@ -1738,9 +1728,7 @@ def _multidevice_enabled():
 
 
 def _hooks_align_only(model):
-    """Every accelerate hook in `model` only moves tensors to its block's card (AlignDevicesHook, no
-    offload, no weights map): a model split over cards by device_map / Unsloth's layer split. Offload,
-    other hook types or an unreadable hook keep the model eager."""
+    """Every accelerate hook must be an offload-free AlignDevicesHook, else the model stays eager."""
     hooked = [m.__dict__["_hf_hook"] for m in model.modules() if "_hf_hook" in m.__dict__]
     if not hooked:
         return True
@@ -1789,9 +1777,8 @@ def _multidevice_reason(model, devices):
 
 
 def _fingerprint(model, state = None):
-    """Parameters (address, dtype, shape), quant state and adapter state; None when the model is not
-    on CUDA cards only, or is split over cards in a way this path does not graph (offload, other hooks).
-    `state` gets the other cards of a split model and the refusal."""
+    """Keys graphs by parameter address, dtype, shape, quant state and adapter state; None for
+    non-CUDA, offload or other hooks; state gets the other cards and refusal"""
     items = []
     host = _offloaded_input_embedding(model)
     # Its weights stay fingerprinted, by identity too (a swapped table re-captures); only their device is exempt.
@@ -1868,8 +1855,7 @@ def _step_type_ids(kwargs, q_len):
 
 
 def _mrope_positions(model, kwargs):
-    """kwargs with the decode position_ids the model's forward would derive, computed outside the
-    graph (same ops, so the same values); unchanged when they do not apply."""
+    """Decode position_ids the forward would derive, computed outside the graph; else as is."""
     if kwargs.get("position_ids") is not None:
         return kwargs
     if getattr(getattr(model, "config", None), "model_type", None) not in _MROPE_MODEL_TYPES:
@@ -1894,9 +1880,7 @@ def _mrope_positions(model, kwargs):
     return {**kwargs, "position_ids": position_ids}
 
 
-# Multimodal decoders whose forward zeroes placeholder ids with a boolean index (`ids[mask] = 0`, a host sync a
-# capture cannot hold): the step's embeddings are looked up outside the graph with the same ops. Model type ->
-# placeholder token ids.
+# Placeholder ids zeroed by boolean index sync the host, so their embeddings run outside the graph.
 _PLACEHOLDER_EMBED_MODEL_TYPES = {
     "muse_glimmer": ("image_token_id", "video_token_id"),
     "muse_spark": ("image_token_id", "video_token_id", "audio_token_id"),
@@ -1905,8 +1889,7 @@ _PLACEHOLDER_EMBED_MODEL_TYPES = {
 
 
 def _placeholder_embeds(model, kwargs):
-    """kwargs with input_ids replaced by the inputs_embeds the model's forward would compute from them (a
-    one-token text decode step: no media); unchanged when this does not apply."""
+    """input_ids replaced by inputs_embeds for a one-token text decode step; else unchanged."""
     config = getattr(model, "config", None)
     names = _PLACEHOLDER_EMBED_MODEL_TYPES.get(getattr(config, "model_type", None))
     ids = kwargs.get("input_ids")
@@ -2012,7 +1995,7 @@ def decode_step(
     state.step += 1
     if ids.shape[0] > MAX_BSZ:
         return _refusal(state, "batch over max")
-    full_cache = kwargs.get("past_key_values")
+    full_cache = get_cache_kwarg(kwargs)
     reason = _cache_reason(full_cache)
     cache = _self_attention_cache(full_cache)
     cross = _cross_attention_layers(full_cache)
@@ -2189,6 +2172,30 @@ def _buffer_like(leaf):
         return _empty_strided_like(leaf)
 
 
+def _capture_cards(error):
+    """Cards a failed capture began on: split recorder's names minus unreached; else this one."""
+    try:
+        cards = getattr(error, "_unsloth_capture_cards", None)
+        return tuple(cards) if cards is not None else (_BACKEND.current_device(),)
+    except Exception:
+        return ()
+
+
+def _reset_rng_capture(cards):
+    """After a failed capture: capture_begin marks the RNG as capturing and only a clean capture_end
+    clears it, so a capture that died in between leaves every later random op (sampling, dropout, vLLM's
+    sampler) raising "Offset increment outside graph capture encountered unexpectedly". The reset is
+    itself a tiny capture: it holds the recording lock, so no split-model recording on another thread
+    overlaps it."""
+    if not cards:
+        return
+    try:
+        with _RECORDING:
+            _BACKEND.reset_rng_capture(tuple(cards))
+    except Exception:
+        pass
+
+
 def _capture(state, key, forward, kwargs, leaves, cache):
     """Runs this step eagerly (warm-up, its outputs are returned), then captures it."""
     if len(state.graphs) >= G.MAX_GRAPHS:
@@ -2227,9 +2234,9 @@ def _capture(state, key, forward, kwargs, leaves, cache):
     before = _host_state(cache)
     stream.wait_stream(_BACKEND.current_stream())
     graph = None
+    oom_cards = None
     try:
-        # A split model's other cards run on their side streams in the warm-up too (their cuBLAS
-        # workspaces exist before the capture).
+        # Other cards warm up on side streams too, so cuBLAS workspaces exist before capture.
         with (
             _BACKEND.stream(stream),
             _BACKEND.on_streams(side) if side else contextlib.nullcontext(),
@@ -2266,8 +2273,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
         if graph is None:
             raise
         if isinstance(error, torch.cuda.OutOfMemoryError):
-            # Out of memory while recording: free every graph of this call and decode the rest of it eagerly.
-            # Not refused for the process (the next call may have the room).
+            # OOM: free the call's graphs, decode eagerly; not refused (the next call may fit).
             reason = "capture failed: out of memory"
             if len(state.capture_errors) < 4:
                 state.capture_errors.append((reason, _where(error)))
@@ -2276,20 +2282,27 @@ def _capture(state, key, forward, kwargs, leaves, cache):
             state.cache_sig = sig
             state.call_stop = reason
             state.refusals[reason] += 1
+            # The RNG reset allocates: it runs below, once the call's graphs are freed and the error (whose
+            # traceback holds the failed graph and its pool) is gone, so it does not hit the same OOM.
+            oom_cards = _capture_cards(error)
+        else:
+            message = " ".join(str(error).split())[:200]
+            reason = f"capture failed: {type(error).__name__}: {message}"
+            if len(state.capture_errors) < 4:
+                state.capture_errors.append((reason, _where(error)))
+            state.pool = None
+            state.refused[key] = reason
+            state.refusals[reason] += 1
+            _reset_rng_capture(_capture_cards(error))
+            if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
+                raise
             return outputs
-        message = " ".join(str(error).split())[:200]
-        reason = f"capture failed: {type(error).__name__}: {message}"
-        if len(state.capture_errors) < 4:
-            state.capture_errors.append((reason, _where(error)))
-        state.pool = None
-        state.refused[key] = reason
-        state.refusals[reason] += 1
-        if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
-            raise
-        return outputs
     finally:
         # Also after a failed capture: the eager steps must not race the side stream.
         _BACKEND.current_stream().wait_stream(stream)
+    if oom_cards is not None:
+        _reset_rng_capture(oom_cards)
+        return outputs
     state.graphs[key] = _Entry(graph, buffers, static_outputs, key in state.validated)
     state.captures += 1
     state.unreplayed += 1
@@ -2298,8 +2311,7 @@ def _capture(state, key, forward, kwargs, leaves, cache):
 
 
 def _validate(state, key, entry, forward, kwargs, cache):
-    """First replay of a key must match the eager step bitwise, else the key is refused. Eager runs
-    last, so generation continues from its result and cache rows."""
+    """First replay of a key must match eager bitwise or the key is refused; eager runs last."""
     state.validations += 1
     start = _snapshot(_self_attention_cache(cache))
     _replay(state, entry)

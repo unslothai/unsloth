@@ -38,6 +38,7 @@ lock = threading.Lock()
 loading: Optional[tuple[ExtraSlot, str]] = None
 # Out of routing, but their server would not stop: still priced for VRAM and retried by every drop.
 stuck: list[ExtraSlot] = []
+primary_last_used = 0.0
 
 
 def in_slot(slot: Optional[ExtraSlot], fn: Callable):
@@ -66,7 +67,6 @@ def busy() -> bool:
 
 
 def resident() -> list[ExtraSlot]:
-    """Every kept slot that may still hold a model: the routed ones and the stuck ones."""
     return [*slots, *stuck]
 
 
@@ -102,11 +102,17 @@ def visible_loading() -> Optional[tuple[ExtraSlot, str]]:
 
 
 def serving_slot(requested: str, candidates: list[ExtraSlot], satisfies) -> Optional[ExtraSlot]:
-    """The slot among ``candidates`` serving ``requested``; None when the primary does (it wins a tie)."""
-    for slot in (None, *candidates):
-        if in_slot(slot, lambda: satisfies(requested)):
-            return slot
-    return None
+    """Slot serving ``requested`` (None: primary); one repo's quants: last used, primary ties."""
+    serving = [slot for slot in (None, *candidates) if in_slot(slot, lambda: satisfies(requested))]
+    return max(serving, key = lambda s: s.last_used if s else primary_last_used, default = None)
+
+
+def mark_used(slot: Optional[ExtraSlot]) -> None:
+    global primary_last_used
+    if slot is None:
+        primary_last_used = time.monotonic()
+    else:
+        slot.last_used = time.monotonic()
 
 
 async def route(
@@ -114,20 +120,26 @@ async def route(
     satisfies,
     touch: bool = True,
 ) -> Optional[ExtraSlot]:
-    """Route this task to the slot serving ``requested``, if any, and hold it until the task ends.
-    ``touch=False`` for reads (status polls), which must not reorder eviction."""
+    """Route to the ``requested`` slot until the task ends; ``touch=False`` keeps LRU order."""
     routed_slot.set(None)
     if not (slots and isinstance(requested, str) and requested):
         return None
     candidates = visible()
     if not candidates:
         return None
-    slot = await asyncio.to_thread(serving_slot, requested, candidates, satisfies)
+
+    def pick():
+        slot = serving_slot(requested, candidates, satisfies)
+        return slot, slot is None and touch and in_slot(None, lambda: satisfies(requested))
+
+    slot, primary_serves = await asyncio.to_thread(pick)
     if slot is None or not reserve(slot):
+        if primary_serves:
+            mark_used(None)
         return None
     routed_slot.set(slot)
     if touch:
-        slot.last_used = time.monotonic()
+        mark_used(slot)
     return slot
 
 
@@ -293,7 +305,6 @@ def unload_extra_models(
 
 
 def unload_idle() -> int:
-    """Drop every kept model no request is using or loading."""
     filling = loading[0] if loading else None
     idle = [s for s in list(slots) if s is not filling and not s.generations and not s.refs]
     return len(evict_these(idle))

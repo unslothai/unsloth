@@ -325,8 +325,7 @@ def _producer_steps(path: Path) -> dict:
                 and with_.get("key") is not None
                 and uses_value.strip().split("@")[0].casefold().startswith("actions/cache")
             ):
-                # Only for actions whose published key output is this input;
-                # a local action may emit its own key.
+                # Only actions/cache echoes its key input; a local action may emit its own key.
                 out[ident] = set(_CACHE_STEP_OUTPUTS)
                 continue
             body = mapping.get("run")
@@ -466,8 +465,7 @@ def _resolved_inputs(
             else:
                 forwarded = _INPUT_KEY.fullmatch(literal)
                 if forwarded is not None and site_scope is not None:
-                    # A wrapper forwarding its own input is resolvable one level up;
-                    # recorded for the caller to resolve rather than recursing here.
+                    # Wrapper-forwarded input: the caller resolves it one level up, not deeper.
                     forwarded_inputs.setdefault(name, set()).add((forwarded.group(1), site_scope))
                     continue
                 # An explicit value this check cannot expand; no default can settle it.
@@ -723,8 +721,7 @@ def _expand_key(
             delegated = entry[2] if len(entry) > 2 else set()
             if not values:
                 nxt.add(k)
-                # Resolved with no literals means every call site delegates;
-                # only resolved-false is doubt.
+                # Resolved, no literals: every site delegates; only resolved-false is doubt.
                 readable = bool(delegated) and all(
                     _delegation_is_read(expr, producers or {}, expr_scope)
                     for expr, expr_scope in delegated
@@ -773,8 +770,7 @@ def _input_namespaces(callers: list, targets: list) -> dict:
     merged: dict = {}
     for target in targets:
         resolved = _resolved_inputs(callers, _target_name(target))
-        # A declared default settles only the omission; an explicit unexpandable caller value keeps
-        # the namespace undecided.
+        # Default settles only omissions; an explicit unexpandable value keeps it undecided.
         defaults = _declared_defaults(target)
         for field, value in defaults.items():
             entry = resolved.get(field, (set(), True, 0, 0, set()))
@@ -1351,8 +1347,7 @@ def main() -> int:
                         k.strip(), publish_producers, pub_scope
                     ):
                         continue
-                    # Unresolved publish keys fail closed too;
-                    # a key with no literal head could be any value.
+                    # Publish keys with no literal head fail closed; any value could match.
                     heads = [h for h in _prefix_candidates(k) if h]
                     reported = False
                     for literal in sorted(pr_keys):
@@ -1368,8 +1363,7 @@ def main() -> int:
                             break
                     if reported:
                         continue
-                    # Both sides unresolved and spelled differently:
-                    # compatible if either head prefixes the other.
+                    # Unresolved, differently spelled: compatible if a head prefixes the other.
                     for raw_pr, pr_heads in pr_undecided:
                         fixed = [h for h in pr_heads if h]
                         if (
@@ -1419,8 +1413,7 @@ def main() -> int:
                 h for v in sorted(vals) if _is_truncated(v) for h in _prefix_candidates(v)
             )
             if not resolved:
-                # An unexpandable or omitted value is undecidable;
-                # resolved with no literals is delegation and fine.
+                # Unexpandable/omitted values are undecidable; no-literal resolution delegates.
                 undecidable_pr_keys.append(k)
         elif _DELEGATED_KEY.fullmatch(k.strip()):
             # A steps.* key delegates to a composite whose prefix was collected above.
@@ -1430,8 +1423,7 @@ def main() -> int:
 
     for pub_path, prefixes in publish_restore_prefixes:
         for prefix in prefixes:
-            # Expand with the declaring target's own inputs first,
-            # or the broad head collides with everything.
+            # Expand declaring target's own inputs first; broad head collides with everything.
             prefix_ns = publish_by_target.get(pub_path, {})
             expanded_prefixes, _ok = _expand_key(prefix, prefix_ns)
             pub_heads = [

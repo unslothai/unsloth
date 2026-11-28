@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { formatBytes } from "@/features/hub";
 import {
   type ChatAttachmentRecord,
   deleteChatAttachment,
@@ -51,20 +52,6 @@ function formatUploadedAt(value: string | number | null | undefined): string {
     month: "long",
     day: "numeric",
   });
-}
-
-function formatSize(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined) return "-";
-  if (bytes < 1024) return `${bytes} B`;
-  const units = ["KB", "MB", "GB"];
-  let value = bytes;
-  let unit = "B";
-  for (const next of units) {
-    if (value < 1024) break;
-    value /= 1024;
-    unit = next;
-  }
-  return `${value >= 10 ? Math.round(value) : value.toFixed(1)} ${unit}`;
 }
 
 function ragLocationLabel(doc: UploadedDocument): string {
@@ -590,7 +577,7 @@ export function UploadedFilesView() {
                     ) : null}
                   </span>
                   <span className="text-xs text-muted-foreground tabular-nums">
-                    {formatSize(row.sizeBytes)}
+                    {row.sizeBytes == null ? "-" : formatBytes(row.sizeBytes)}
                   </span>
                 </span>
               </button>

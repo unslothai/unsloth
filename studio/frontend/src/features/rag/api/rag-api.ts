@@ -3,7 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
 import type {
@@ -24,18 +24,9 @@ import { noteRagAvailability, noteRagResponse } from "./rag-availability";
 
 const RAG_BASE = "/api/rag";
 
-function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const { detail, message } = body as { detail?: unknown; message?: unknown };
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
-}
-
 export function ragError(status: number, body: unknown): Error & { status: number } {
-  return Object.assign(new Error(parseErrorText(status, body)), { status });
+  const message = formatApiErrorBody(body) ?? `Request failed (${status})`;
+  return Object.assign(new Error(message), { status });
 }
 
 /** True for a definitive server answer, so retrying cannot help. */
@@ -93,13 +84,23 @@ async function ragUpload(
   return json as DocumentUploadResult;
 }
 
-/** Not gated on sqlite-vec, so its status says nothing about RAG availability. */
+/** Not gated on sqlite-vec. Scanned pages past `maxChars` are not OCR'd. `boxes` asks for the
+ *  text blocks of an image Tesseract read. */
 export async function extractDocumentText(
   file: File,
   beforeRetry?: () => void,
-): Promise<{ text: string; truncated: boolean }> {
+  maxChars?: number,
+  boxes?: boolean,
+): Promise<{
+  text: string;
+  truncated: boolean;
+  warning?: string;
+  blocks?: unknown[];
+}> {
   const form = new FormData();
   form.append("file", file);
+  if (maxChars !== undefined) form.append("max_chars", String(maxChars));
+  if (boxes) form.append("boxes", "true");
   const response = await authFetch(
     `${RAG_BASE}/extract-text`,
     { method: "POST", body: form },
@@ -107,7 +108,12 @@ export async function extractDocumentText(
   );
   const json = await response.json().catch(() => null);
   if (!response.ok) throw ragError(response.status, json);
-  return json as { text: string; truncated: boolean };
+  return json as {
+    text: string;
+    truncated: boolean;
+    warning?: string;
+    blocks?: unknown[];
+  };
 }
 
 export async function listKnowledgeBases(): Promise<KnowledgeBase[]> {

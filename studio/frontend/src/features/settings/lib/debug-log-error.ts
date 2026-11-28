@@ -3,8 +3,7 @@
 
 /** Leaf module with no imports so the recovery rule is testable. */
 
-/** Carries the status: the endpoint answers every content state 200 and keeps 404 for an
- * unknown source id. */
+/** Carries the status: the endpoint answers 200 for every content state, 404 for unknown ids. */
 export class DebugLogRequestError extends Error {
   readonly status: number;
 

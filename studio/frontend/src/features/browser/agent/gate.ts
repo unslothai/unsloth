@@ -6,7 +6,7 @@
  *  talk the model into anything, so the rules hold whatever the model says it wants. */
 
 import type { ElementInfo } from "./page-agent";
-import { type AgentPermissions, patternMatches, ruleFor } from "./permissions";
+import { type AgentPermissions, ruleCovers, ruleFor } from "./permissions";
 
 /** `prompt` is for the model; `ask`, `host` and `name` let the panel say it in the reader's language. */
 export type Question = {
@@ -143,8 +143,7 @@ function mentioned(host: string, text: string): boolean {
   return new RegExp(`(^|[^a-z0-9.-])${word}($|[^a-z0-9.-]|\\.(?![a-z0-9-]))`).test(lower);
 }
 
-/** A new site needs the user's OK unless they named it or the page links to it: a made-up address
- *  is how a hijacked agent would carry what it read to someone else. */
+/** New sites need the user's OK unless named or linked by the page, else a hijack could leak. */
 export function gateNavigation(url: string, context: NavigationContext): Gate {
   let parsed: URL;
   try {
@@ -163,7 +162,7 @@ export function gateNavigation(url: string, context: NavigationContext): Gate {
   if (rule.browsing === "allow") return ALLOW;
   if (site) {
     const here = hostOfUrl(context.currentUrl);
-    return here && patternMatches(site, here) ? ALLOW : ask;
+    return ruleCovers(site, rule, here) ? ALLOW : ask;
   }
   if (context.knownHosts.has(host) || mentioned(host, context.userText)) return ALLOW;
   if (context.pageLinks.has(parsed.href)) return LINKED;
@@ -180,8 +179,7 @@ const CONSEQUENTIAL =
 
 const CONSEQUENTIAL_LINK = /\b(buy|purchase|order now|checkout|check out|pay|donate|delete|unsubscribe|subscribe)\b/i;
 
-// The same verbs in the languages Studio ships in (src/i18n/locales). Whole words where words are
-// spaced; anywhere in Chinese, Japanese and Korean, where a verb sits inside a longer run.
+// Localized verbs from src/i18n/locales: whole words if spaced; substrings in CJK text.
 const SPACED_WORDS = [
   "comprar", "compra", "pagar", "pague", "eliminar", "borrar", "excluir", "apagar", "enviar", "transferir", "suscribirse", "assinar", "confirmar", "publicar", "finalizar compra",
   "acheter", "payer", "commander", "supprimer", "envoyer", "virement", "transférer", "s'abonner", "confirmer", "publier", "se connecter", "s'inscrire",
@@ -241,12 +239,10 @@ export function gateElement(
   if (submits && (info.formHasPassword || info.formMethod === "post")) {
     return { kind: "ask", ask: "submit", host, name: "", prompt: `Submit this form on ${host}?`, detail: describe(info) };
   }
-  // A link mostly just opens a page ("Sign in" goes to the sign-in form), so fewer words count there.
-  // Enter in a field presses the form's default button: its words count as a click on it would.
+  // Links count fewer verbs; Enter in a field counts the form's default button as a click.
   const label = action === "submit" && info.submitter ? info.submitter : info.name;
   const consequential = (info.role === "link" ? CONSEQUENTIAL_LINK : CONSEQUENTIAL).test(label) || LOCALIZED.test(label);
-  // Selecting a checkbox, radio or switch is a click on it; a select is a click too: on a checkbox
-  // its name, on a dropdown the chosen option (passed as the name), since a page can act on change.
+  // Checkbox, radio, switch: click by name; select: by chosen option, as pages act on change.
   const clicks = action === "click" || submits || action === "select";
   if (clicks && consequential) {
     return { kind: "ask", ask: "click", host, name: clip(label), prompt: `Click “${clip(label)}” on ${host}?`, detail: describe(info) };

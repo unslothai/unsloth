@@ -97,6 +97,38 @@ def test_a_slow_failure_travels_in_the_body(route):
     assert body["_deferred_error"] == {"status_code": 500, "detail": "llama-server died"}
 
 
+@pytest.mark.parametrize("wait", [False, True])
+def test_managed_engine_log_target_survives_load_failure(route, wait):
+    detail = {
+        "code": "managed_engine_load_failed",
+        "message": "Engine failed to start. CUDA out of memory",
+        "log_family": "sglang",
+        "log_path": "/home/test/logs/sglang/sglang-attempt.log",
+    }
+    failure = HTTPException(status_code = 500, detail = detail)
+    assert route._ran_out_of_memory(failure)
+
+    async def fail():
+        if wait:
+            await asyncio.sleep(0.2)
+        raise failure
+
+    async def run():
+        return await route._tunnel_safe_json(fail(), label = "Model load")
+
+    if not wait:
+        with pytest.raises(HTTPException) as immediate:
+            asyncio.run(run())
+        assert immediate.value.detail == detail
+    else:
+
+        async def collect():
+            return b"".join(await _collect(await run()))
+
+        response = json.loads(asyncio.run(collect()))
+        assert response[route._DEFERRED_ERROR_KEY] == {"status_code": 500, "detail": detail}
+
+
 def test_an_unexpected_slow_failure_becomes_a_500(route):
     async def slow_boom():
         await asyncio.sleep(0.2)

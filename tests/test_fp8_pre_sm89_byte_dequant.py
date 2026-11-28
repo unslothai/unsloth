@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from unsloth.kernels import fp8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 CUDA = torch.cuda.is_available()
 needs_cuda = pytest.mark.skipif(not CUDA, reason = "needs CUDA")
@@ -23,6 +24,10 @@ def pre_sm89(monkeypatch):
     fp8._rocm_bytes_dequant_arch.cache_clear()
     if CUDA and torch.version.hip is None and torch.cuda.get_device_capability() >= (8, 9):
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
+    elif CUDA and torch.version.hip is not None:
+        # ROCm routes on the gfx arch + triton version, not the capability: a gfx arch with fp8e4nv
+        # (gfx1151 on triton 3.5+) would otherwise take the fp8 GEMM instead of the dequant path.
+        monkeypatch.setattr(fp8, "_rocm_fp8e4nv_kernel_supported", lambda device: False)
     yield
     fp8._fp8_device_lacks_kernel.cache_clear()
     fp8._rocm_bytes_dequant_arch.cache_clear()
@@ -182,6 +187,8 @@ def _router(monkeypatch):
         with monkeypatch.context() as mp:
             mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: capability)
             mp.setattr(torch.version, "hip", hip)
+            if not hip:
+                drop_rocm_tag(mp, torch)
             if hip is not None:
                 props = types.SimpleNamespace(gcnArchName = arch)
                 mp.setattr(torch.cuda, "get_device_properties", lambda *a, **k: props)

@@ -231,7 +231,8 @@ def site_cookie_state(subject: str, url: str) -> tuple[list, list[tuple[str, str
     """``([epoch, version], page_cookies(...), has_site_cookies(...))``, read together so the version dates both."""
     jar = _jar(subject)
     with jar._cookies_lock:  # type: ignore[attr-defined]
-        return [_EPOCH, _version], page_cookies(subject, url), has_site_cookies(subject, url)
+        site = list(_site_cookies(subject, url))
+        return [_EPOCH, _version], _page_entries(site), bool(site)
 
 
 def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
@@ -240,8 +241,20 @@ def _site_cookies(subject: str, url: str) -> Iterable[http.cookiejar.Cookie]:
     if page is None:
         return
     jar = _jar(subject)
-    for cookie in list(jar):
-        at_path = _request(f"{page.type}://{page.host}{cookie.path or '/'}")
+    # domain_return_ok is the stdlib's own prefilter for return_ok; deepvalues keeps list(jar)'s order.
+    domains = {
+        domain: paths
+        for domain, paths in list(jar._cookies.items())  # type: ignore[attr-defined]
+        if jar._policy.domain_return_ok(domain, page)  # type: ignore[attr-defined]
+    }
+    cookies = list(http.cookiejar.deepvalues(domains))
+    # return_ok only reads the request, so cookies sharing a path share one.
+    at_paths: dict[str, Optional[urllib.request.Request]] = {}
+    for cookie in cookies:
+        path = cookie.path or "/"
+        if path not in at_paths:
+            at_paths[path] = _request(f"{page.type}://{page.host}{path}")
+        at_path = at_paths[path]
         if at_path is not None and jar._policy.return_ok(cookie, at_path):  # type: ignore[attr-defined]
             yield cookie
 
@@ -251,11 +264,14 @@ def has_site_cookies(subject: str, url: str) -> bool:
 
 
 def page_cookies(subject: str, url: str) -> list[tuple[str, str]]:
-    """What ``document.cookie`` may see on ``url``'s site, at any path, in the frame's own form
-    (browser.py): ``"<name>=<path>"`` to ``"<deadline ms>|<value>"``. HttpOnly ones stay here."""
+    """document.cookie on url's site, any path: name=path to deadline ms|value; not HttpOnly."""
+    return _page_entries(_site_cookies(subject, url))
+
+
+def _page_entries(cookies: Iterable[http.cookiejar.Cookie]) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     room = _MAX_PAGE_COOKIE_CHARS
-    for cookie in _site_cookies(subject, url):
+    for cookie in cookies:
         if _http_only(cookie):
             continue
         deadline = "" if cookie.expires is None else str(int(cookie.expires) * 1000)
@@ -274,9 +290,8 @@ def set_page_cookie(
     stored: Optional[str],
     same_site: Optional[str] = None,
 ) -> None:
-    """A page's ``document.cookie`` write in the frame's form (``stored`` None removes): host-only,
-    Secure over https, never over an HttpOnly cookie or a Secure one from http (rfc6265bis 5.7).
-    ``same_site`` is the write's SameSite; an unknown value leaves the default (Lax)."""
+    """Frame-form document.cookie write (stored None removes): host-only; Secure over https; never
+    over an HttpOnly or http-set Secure cookie (rfc6265bis 5.7); unknown same_site is Lax."""
     name, _, path = key.partition("=")
     if not path.startswith("/") or any(char in name + path for char in ";,\r\n \t"):
         return

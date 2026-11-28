@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import collections
+import contextvars
 import hashlib
 import http.client
 import io
@@ -266,8 +267,7 @@ JPEG_QUALITY = 92
 _MAX_UPLOAD_SIDE = 4096
 
 # ── server ──────────────────────────────────────────────────────────────────────────────────────────────────────────
-# Holds the system prompt (~1k tokens), up to ten references (256-1024 image tokens each) and the 3584-token caption.
-# The model's own 262k default would allocate a KV cache many times the weights.
+# 16k fits the system prompt, ten references and caption; the 262k default bloats the KV cache.
 _CONTEXT_TOKENS = 16384
 _SERVER_START_TIMEOUT_SECONDS = 180.0
 _REQUEST_TIMEOUT_SECONDS = 600.0
@@ -291,11 +291,29 @@ def _overhead_mib(context_tokens: Optional[int] = None) -> float:
 
 # Fewer layers than this on the GPU is not worth the split.
 _MIN_GPU_LAYERS = 4
-# After a call, keep the server resident only when at least this much accelerator memory stays free; else unload it
-# before the DiT denoises.
+# Unload after a call unless this much accelerator memory stays free, before the DiT denoises.
 _TIGHT_FREE_MIB = 6144
 _TIGHT_FREE_FRACTION = 0.20
 _CACHE_ENTRIES = 128
+
+# UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD=1 lets a generate start with only part of the upsampler
+# on the GPU; by default it is skipped (status unavailable) when free memory is too low for the
+# whole GGUF, since CPU layers decode too slowly to be worth it for a short render.
+ENV_ALLOW_PARTIAL_OFFLOAD = "UNSLOTH_PROMPT_UPSAMPLER_PARTIAL_OFFLOAD"
+# Set by enhance_for_generation: the start (or reuse) has to hold every layer on the accelerator.
+_GENERATE_NEEDS_FULL_OFFLOAD: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "flux3_prompt_upsampler_generate_needs_full_offload", default = False
+)
+
+
+def _partial_offload_allowed() -> bool:
+    return (os.environ.get(ENV_ALLOW_PARTIAL_OFFLOAD) or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 
 STATUS_APPLIED = "applied"
 STATUS_OFF = "off"
@@ -331,8 +349,7 @@ def variant_for_family(family_name: Optional[str]) -> str:
 
 
 def resolve_enhance(family_name: Optional[str], enhance_prompt: Optional[bool]) -> bool:
-    """Whether a generate call upsamples: None is the family default (on for every FLUX.3 Klein family and for
-    MiniMax-H3-Image, as its reference templates ship it), and every other family ignores the flag."""
+    """None = on for FLUX.3 Klein and MiniMax-H3-Image (templates ship it); others ignore it."""
     if not supports_family(family_name):
         return False
     return True if enhance_prompt is None else bool(enhance_prompt)
@@ -372,8 +389,7 @@ def get_reference_size(width: int, height: int, num_references: int) -> tuple[in
 
 
 def prepare_reference(image: Any, num_references: int) -> bytes:
-    """One reference as the upsampler saw them in training, as JPEG bytes: EXIF-upright, RGB over white, LANCZOS to
-    the size budget, JPEG quality 92."""
+    """JPEG bytes as in training: EXIF-upright, RGB over white, LANCZOS to budget, quality 92."""
     from PIL import Image, ImageOps
 
     image = ImageOps.exif_transpose(image)
@@ -785,8 +801,7 @@ def _cached_download_paths(
     hub_cache: Optional[Path] = None,
     revision: Optional[str] = None,
 ) -> Optional[tuple[str, str]]:
-    """Both repo files at one revision, or None (the download state's completion check). A pinned revision is the
-    one just downloaded, so it checks the default quant the download fetched; without one, any cached quant counts."""
+    """Both repo files at one revision or None; pinned checks the default quant, else any cached quant."""
     if revision is None:
         model, mmproj = _cached_pair(hub_cache)
     else:
@@ -929,8 +944,7 @@ def _resident_cuda_ordinal() -> Optional[int]:
 
 
 def _child_device_mask(ordinal: Optional[int]) -> dict:
-    """Pin llama-server to the image model's card: left alone it splits layers over every visible GPU, onto a card the
-    memory probe never read."""
+    """Pin llama-server to the image model's card, else it splits layers over unprobed cards."""
     # LLAMA_ARG_DEVICE is the user's own pick, and names devices a narrowed mask would renumber.
     if ordinal is None or ordinal < 0 or str(os.environ.get("LLAMA_ARG_DEVICE", "")).strip():
         return {}
@@ -1026,8 +1040,7 @@ def _vulkan_pin_possible(binary: str, torch) -> bool:
 
 
 def _prefetch_vulkan_rows(binary: str, cancel: Optional[threading.Event] = None) -> None:
-    """Probe (and read the card lookup's inventory) before the render slot, waited for cancellably: the probe can take
-    its 15 s timeout, which a blocking unload behind this warm start must not sit out."""
+    """Probe before the render slot, cancellably: its 15 s timeout must not block an unload."""
     try:
         import torch
         if not _vulkan_pin_possible(binary, torch):
@@ -1073,8 +1086,7 @@ def _wait_for_vulkan_probe(timeout: float = 20.0) -> None:
 
 
 def _vulkan_rows_came_back_empty(binary: str) -> bool:
-    """A pinnable multi-GPU host whose cached Vulkan probe listed nothing: a warm start would stay unpinned for good.
-    One torch card warm-starts unpinned as before."""
+    """Empty cached Vulkan probe on a multi-GPU host: warm start would stay unpinned for good."""
     try:
         import torch
         return (
@@ -1273,6 +1285,8 @@ class PromptUpsamplerSidecar:
         self._api_key: Optional[str] = None
         self._key: Optional[tuple] = None
         self._gpu_layers: Optional[int] = None
+        # The running server sits partly (or wholly) on the CPU although an accelerator holds the image model.
+        self._split_on_accelerator = False
         self._penalize_prompt_supported = False
         self._loading = False
         self._starting_process: Optional[subprocess.Popen] = None
@@ -1309,7 +1323,6 @@ class PromptUpsamplerSidecar:
     def holds_vram(self) -> bool:
         return self.loaded and bool(self._gpu_layers)
 
-    # keep-alive
     def _cancel_idle_locked(self) -> None:
         if self._idle_timer is not None:
             self._idle_timer.cancel()
@@ -1345,6 +1358,7 @@ class PromptUpsamplerSidecar:
             self._api_key = None
             self._key = None
             self._gpu_layers = None
+            self._split_on_accelerator = False
             self._penalize_prompt_supported = False
             self._context_tokens = None
 
@@ -1412,9 +1426,8 @@ class PromptUpsamplerSidecar:
             self._loading = True
         slot = None
         try:
-            # Offloaded layers size themselves to the free memory read at spawn: a render denoising meanwhile (another
-            # request's) has not reached its peak yet, so the start waits for the generation slot, as a warm start
-            # holds it. Called ahead of the request's own render, never inside one.
+            # Offloaded layers size to free memory read at spawn, so wait for the generation slot a
+            # render still peaking holds; call ahead of a request's render, never inside one.
             slot = self._wait_for_render_slot()
             self._spawn_server(binary, model, mmproj, **_context_kwargs(context_tokens))
         finally:
@@ -1425,9 +1438,8 @@ class PromptUpsamplerSidecar:
                 self._starting_process = None
 
     def _wait_for_render_slot(self) -> Any:
-        """The active image engine's generation lock, acquired, or None where the start would not offload (training,
-        nobody on the GPU, a CPU-only host) or the engine cannot be read. Waited for cancellably: a Stop, training
-        start or handover sets ``_load_cancel``."""
+        """Image engine's acquired generation lock, or None where a start would not offload
+        (training, no GPU owner, CPU-only) or an unreadable engine; cancellable via _load_cancel."""
         from core.inference.stt_sidecar import _training_active
 
         if _training_active() or _gpu_unowned():
@@ -1490,6 +1502,13 @@ class PromptUpsamplerSidecar:
             cpu_only,
             overhead_mib = _overhead_mib(context_tokens),
         )
+        split = not cpu_only and device == "cuda" and free_mib is not None and layers != 99
+        if split and _GENERATE_NEEDS_FULL_OFFLOAD.get() and not _partial_offload_allowed():
+            raise UpsamplerUnavailableError(
+                f"{Path(model).name} does not fit in the {free_mib} MiB the image model leaves free on the GPU "
+                f"(-ngl {layers} of {_NUM_LAYERS}); a partly CPU caption takes minutes, so this render skips it. "
+                f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 runs it anyway"
+            )
         sock, port = MtmdSttSidecar._reserve_free_port()
         cmd = [
             binary,
@@ -1541,8 +1560,7 @@ class PromptUpsamplerSidecar:
         )
         if self._load_cancel.is_set():
             raise UpsamplerCancelledError("The prompt upsampler load was cancelled.")
-        # Undrained pipes would block llama-server once its log fills them, so its output goes nowhere unless a log
-        # file is asked for.
+        # Undrained pipes would block llama-server; output is dropped unless a log file is set.
         log_path = (os.environ.get(ENV_SERVER_LOG) or "").strip()
         log_file = open(log_path, "ab") if log_path else None
         try:
@@ -1584,6 +1602,7 @@ class PromptUpsamplerSidecar:
                 self._penalize_prompt_supported = penalize_prompt_supported
                 self._key = (binary, model, mmproj)
                 self._gpu_layers = layers
+                self._split_on_accelerator = split
                 self._gpu_ordinal = ordinal
                 self._context_tokens = context_tokens
                 self._generation += 1
@@ -1613,21 +1632,30 @@ class PromptUpsamplerSidecar:
             with self._lock:
                 self._cancel_idle_locked()
                 current = self._key if self.loaded else None
-                # A server with the vision projector also serves text-only requests, so a t2i after an edit does
-                # not relaunch.
+                # Projector server also serves text-only, so t2i after an edit won't relaunch.
                 if current is not None and not self._serves_locked(
                     binary, model, mmproj, context_tokens
                 ):
                     self._release_locked()
                 if self._stopping or epoch != self._stop_epoch:
-                    # Queued behind a request a training start or GPU handover drained: starting now would sit beside
-                    # the new owner.
+                    # Drained by training or handover: starting now sits beside the new owner.
                     raise UpsamplerUnavailableError(
                         "The prompt upsampler was stopped for another GPU user."
                     )
                 # Claimed under the same lock: an idle callback already waiting on it then sees the request.
                 self._active_requests += 1
             try:
+                if (
+                    self.loaded
+                    and self._split_on_accelerator
+                    and _GENERATE_NEEDS_FULL_OFFLOAD.get()
+                    and not _partial_offload_allowed()
+                ):
+                    # Started split by a preview or an opt-in: as slow for this render as a fresh split start.
+                    raise UpsamplerUnavailableError(
+                        f"the running server holds only -ngl {self._gpu_layers} of {_NUM_LAYERS} layers on the GPU; "
+                        f"{ENV_ALLOW_PARTIAL_OFFLOAD}=1 uses it anyway"
+                    )
                 if not self.loaded:
                     if not _image_model_owns_gpu():
                         # Chat or video took the GPU after this request read the FLUX.3 status: starting now would
@@ -1648,8 +1676,7 @@ class PromptUpsamplerSidecar:
 
     @contextmanager
     def _request_slot(self, cancel_event: Optional[threading.Event]) -> Iterator[None]:
-        """The request lock, waited for cancellably: a Stop on a request queued behind a warm start cancels that start
-        instead of waiting it out."""
+        """Waits for the request lock; a Stop cancels any warm start it is queued behind."""
         while not self._request_lock.acquire(timeout = 0.2):
             if cancel_event is not None and cancel_event.is_set():
                 if self._warming:
@@ -1682,8 +1709,7 @@ class PromptUpsamplerSidecar:
 
     @property
     def stop_epoch(self) -> int:
-        """Bumped by every blocking unload (a GPU handover, a training start). A warm start scheduled under an older
-        epoch never starts."""
+        """Bumped by every blocking unload; a warm start from an older epoch never starts."""
         return self._stop_epoch
 
     def _serves_locked(
@@ -1773,16 +1799,14 @@ class PromptUpsamplerSidecar:
     ) -> str:
         from core.inference.stt_sidecar import _training_active
 
-        # Published before the training and owner probes, as _launch does: a training start that passes them finds a
-        # load to cancel (free_prompt_upsampler_for_training reads is_loading).
+        # Published before the probes, as in _launch: a training start finds a load to cancel.
         self._load_cancel.clear()
         with self._lock:
             self._loading = True
             self._warming = True
         slot_held = None
         try:
-            # The image model must hold the GPU: with nobody on it the server would start CPU-only and stay outside
-            # every eviction.
+            # With nobody on the GPU the server starts CPU-only, outside every eviction.
             if _gpu_unowned() or not _image_model_owns_gpu() or _training_active():
                 return "gpu"
             # A user-picked device is not the card the memory probe reads; its first enhanced run starts it.
@@ -1830,8 +1854,7 @@ class PromptUpsamplerSidecar:
                     # Up for other files (text-only, and an edit needs the projector): replaced only once starting.
                     self._release_locked()
             self._spawn_server(binary, model, mmproj, **_context_kwargs(context_tokens))
-            # Revalidate once up: a load published or a handover made while the server came up means it now serves a
-            # model that is leaving.
+            # Once up: a load or handover during startup means it serves a leaving model.
             with self._lock:
                 stale = self._load_cancel.is_set() or self._stopping or epoch != self._stop_epoch
             if stale or _active_engine_loading():
@@ -1880,8 +1903,7 @@ def _cuda_device_count() -> int:
 
 
 def cancel_warm_start() -> bool:
-    """Cancel a warm start still launching (it holds the image engine's generation slot until up),
-    for a teardown, model switch or unenhanced render; never creates the sidecar or blocks."""
+    """Cancel a launching warm start (holds the generation slot); never creates the sidecar or blocks."""
     sidecar = _sidecar
     return sidecar is not None and sidecar.cancel_warm_start()
 
@@ -2042,8 +2064,7 @@ def get_sidecar() -> PromptUpsamplerSidecar:
 
 
 def stop_for_handover() -> None:
-    """The image model the server serves is leaving the GPU: stop every run still enhancing and the server, blocking,
-    so nothing of it outlives the DIFFUSION claim."""
+    """Blocking stop of enhancing runs and the server so nothing outlives the DIFFUSION claim."""
     cancel_active()
     unload_sidecar(wait = True)
 
@@ -2082,8 +2103,7 @@ def warm_for_family(
     sidecar = get_sidecar()
     mmproj = mmproj_path()
     if sidecar.is_loading() or sidecar.serves(binary, model, mmproj):
-        # Starting, or up for these files (the call refreshes its keep-alive): nothing to wait for on a thread. A
-        # server for other files is replaced on the thread below, so the route never waits for a start.
+        # Already starting or up: nothing to wait for; other files are replaced off the route.
         return sidecar.warm(
             binary = binary, model = model, mmproj = mmproj, expected_epoch = expected_epoch
         )
@@ -2256,8 +2276,7 @@ def enhance_for_generation(
     reference_images: Optional[list] = None,
     cancel_event: Optional[threading.Event] = None,
 ) -> EnhanceOutcome:
-    """Captions for each distinct prompt of a generate call. Never raises except on cancel: anything that stops the
-    upsampler leaves the prompt as typed and says why in the status."""
+    """Captions each prompt; raises only on cancel, else leaves it as typed with a status."""
     if not supports_family(family_name):
         return EnhanceOutcome(status = None)
     if not resolve_enhance(family_name, enhance_prompt):
@@ -2283,6 +2302,7 @@ def enhance_for_generation(
     bind_generation_cancel(cancel_event)
     outcome = EnhanceOutcome(status = STATUS_APPLIED)
     sidecar = get_sidecar()
+    full_offload = _GENERATE_NEEDS_FULL_OFFLOAD.set(True)
     # On every exit, a Stop included: a retry with enhancement off must not denoise beside a tight server.
     try:
         with _tracking(len(distinct), cancel_event) as tracked:
@@ -2328,16 +2348,15 @@ def enhance_for_generation(
                         outcome.captions[prompt] = caption
                         outcome.statuses[prompt] = STATUS_APPLIED
                 if systemic is not None:
-                    # The runtime itself failed (a start that timed out, a dead server): the rest of the batch would wait
-                    # out the same timeout each, so they run as typed now.
+                    # Failed runtime: the rest would each wait out the timeout; run as typed.
                     for rest in distinct[index:]:
                         outcome.statuses[rest] = systemic
                     break
                 _advance(tracked)
     finally:
+        _GENERATE_NEEDS_FULL_OFFLOAD.reset(full_offload)
         with suppress(Exception):
             sidecar.release_if_tight()
     if outcome.statuses and not outcome.captions:
-        # Nothing applied: the batch-level status is the first reason.
         outcome.status = next(iter(outcome.statuses.values()))
     return outcome

@@ -11,11 +11,12 @@ import {
 } from "react";
 import { isTouchClick } from "@/components/ui/touch-click";
 
+const TOOLTIP_CONTENT = '[data-slot="tooltip-content"]';
+
 /**
- * Mounts an autohidden action bar while focus is inside the message, via the same
- * `message.setIsHovering` flag the library's mouseenter/mouseleave writes. Two writers share one
- * flag, so this covers both crossings: pointer leaving with focus inside (`reassert`), and focus
- * leaving with the pointer still over (defers to the library's mouseleave).
+ * Keeps the autohidden bar mounted while focus is inside, via message.setIsHovering shared with the
+ * library's mouseenter/mouseleave; covers pointer-out with focus inside (reassert) and focus-out
+ * with pointer still over (defers to library's mouseleave).
  */
 export function useActionBarFocusReveal() {
   const aui = useAui();
@@ -23,9 +24,9 @@ export function useActionBarFocusReveal() {
   const focusWithinRef = useRef(false);
   const clearFrameRef = useRef<number | null>(null);
   const popupObserverRef = useRef<MutationObserver | null>(null);
+  const onCardRef = useRef(false);
 
-  // The More menu is portaled outside the message, so focus in it counts as engaged. Scoped to the
-  // action bar: open disclosures also carry aria-expanded and would hold the bar every frame.
+  // Portaled More menu counts as engaged; other aria-expanded disclosures would hold the bar.
   const openPopupTrigger = useCallback(
     () =>
       rootRef.current?.querySelector(
@@ -93,7 +94,7 @@ export function useActionBarFocusReveal() {
           return;
         }
         focusWithinRef.current = false;
-        if (!el.matches(":hover")) {
+        if (!el.matches(":hover") && !onCardRef.current) {
           aui.message().setIsHovering(false);
         }
       };
@@ -128,16 +129,36 @@ export function useActionBarFocusReveal() {
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
-    // From an effect on purpose: it registers after the library's mouseleave, so both writes land in
-    // one dispatch and React never renders the intermediate `false`.
-    const reassert = () => {
-      if (focusWithinRef.current && isEngaged()) {
-        aui.message().setIsHovering(true);
+    // Registers after mouseleave so one dispatch batches both writes; no intermediate false.
+    let release: ((event: PointerEvent) => void) | null = null;
+    const stopRelease = () => {
+      if (release) document.removeEventListener("pointermove", release, true);
+      release = null;
+      onCardRef.current = false;
+    };
+    const reassert = (event: MouseEvent) => {
+      // Hovering a portaled tooltip card keeps the bar; clears once the pointer leaves both.
+      const into = event.relatedTarget as Element | null;
+      if (!into?.closest?.(TOOLTIP_CONTENT)) {
+        if (focusWithinRef.current && isEngaged()) aui.message().setIsHovering(true);
+        return;
       }
+      aui.message().setIsHovering(true);
+      stopRelease();
+      onCardRef.current = true;
+      release = (move) => {
+        const target = move.target as Element | null;
+        if (target?.closest?.(TOOLTIP_CONTENT)) return;
+        stopRelease();
+        if (target && el.contains(target)) return;
+        if (!(focusWithinRef.current && isEngaged())) aui.message().setIsHovering(false);
+      };
+      document.addEventListener("pointermove", release, true);
     };
     el.addEventListener("mouseleave", reassert);
     return () => {
       el.removeEventListener("mouseleave", reassert);
+      stopRelease();
       cancelPendingClear();
     };
   }, [aui, isEngaged, cancelPendingClear]);

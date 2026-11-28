@@ -236,3 +236,8 @@ export function usePalette(): {
   );
   return { palette, setPalette };
 }
+
+/** Current palette without subscribing; for code outside React. */
+export function getPalette(): Palette {
+  return currentPalette;
+}

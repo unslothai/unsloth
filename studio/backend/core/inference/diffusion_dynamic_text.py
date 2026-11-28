@@ -60,9 +60,8 @@ _MINIMAX_H3_SOURCES: tuple[str, ...] = (
     *_hooked_args(r"\[1\]"),
 )
 
-# FLUX.3 Klein pads prompts to a multiple of 80 tokens, so each bucket was a new shape and
-# recompiled both blocks; arming these block inputs makes the first compile cover every length with
-# unchanged output.
+# FLUX.3 Klein pads prompts to multiples of 80 tokens, so each bucket was a new shape and recompiled
+# both blocks; arming these inputs makes one compile cover all lengths with unchanged output.
 _FLUX3_SOURCES: tuple[str, ...] = (
     "L['hidden_states']",
     "L['temb_mod']",
@@ -115,9 +114,8 @@ _MOSS_IMAGE_SOURCES: tuple[str, ...] = (
     *_hooked_args(r"\[0\]"),
     *_hooked_args(r"\[1\]\[[01]\]"),
 )
-# Policy for every denoiser class (test_diffusion_prompt_length_policy checks coverage); a tuple
-# lists the dynamo sources carrying a prompt-following text length, and FIXED_LENGTH means every
-# prompt is padded to max_sequence_length, so a new prompt never changes a shape.
+# Policy per denoiser class (test_diffusion_prompt_length_policy checks coverage): a tuple lists
+# prompt-length dynamo sources; FIXED_LENGTH pads to max_sequence_length (no new shapes).
 FIXED_LENGTH = "fixed"
 PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
@@ -126,7 +124,8 @@ PROMPT_LENGTH_POLICY: dict[str, Any] = {
     "QwenImageTransformer2DModel": _QWEN_IMAGE_SOURCES,
     "QwenImage21Transformer2DModel": _QWEN_IMAGE_21_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,
-    "Krea2Transformer2DModel": FIXED_LENGTH,  # padded to max_sequence_length 512
+    # padded to max_sequence_length 512; Studio keeps the valid rows in multiples of 128 (diffusion_krea2_text_trim)
+    "Krea2Transformer2DModel": FIXED_LENGTH,
     "ChromaTransformer2DModel": FIXED_LENGTH,  # T5 padded to max_sequence_length 512
     "CosmosTransformer3DModel": FIXED_LENGTH,  # Anima: the text conditioner pads to min_sequence_length 512
     "Lumina2Transformer2DModel": FIXED_LENGTH,  # Gemma padded to max_sequence_length 256
@@ -152,9 +151,7 @@ def prompt_length_varies(transformer: Any) -> bool:
     return isinstance(PROMPT_LENGTH_POLICY.get(cls.__name__), tuple)
 
 
-# What the compile arms: int8 and fp8 FLUX.1 and Z-Image (torchao weights, automatic dynamic)
-# recompiled on new text lengths and resolutions; armed, the first compile covers every text length
-# and image size.
+# Arms torchao int8/fp8 FLUX.1 and Z-Image, which recompiled per text length and resolution.
 _FAMILY_SOURCES: dict[str, tuple[str, ...]] = {
     "FluxTransformer2DModel": _FLUX1_SOURCES,
     "ZImageTransformer2DModel": _ZIMAGE_SOURCES,

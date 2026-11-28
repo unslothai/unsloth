@@ -1,0 +1,55 @@
+{
+ "zonos3": {
+  "family": "zonos3",
+  "tasks": ["tts","clone"],
+  "packages": [
+   {"id":"zonos3_mini_ptq","display_name":"ZONOS3-Mini PTQ","default":true,"format":"gguf","precision":"q4_0","target_directory":"ZONOS3-Mini-GGUF","files":["gguf/backbone-ptq.gguf","gguf/zac-keep2.gguf","gguf/spk-encoder.gguf"],"strip_prefix":"gguf"},
+   {"id":"zonos3_mini_ptq_raw_reference","display_name":"ZONOS3-Mini PTQ + raw-reference encoder","format":"gguf","precision":"q4_0","target_directory":"ZONOS3-Mini-GGUF","files":["gguf/backbone-ptq.gguf","gguf/zac-keep2.gguf","gguf/spk-encoder.gguf","gguf/zac-encoder.gguf","gguf/ssl-teacher.gguf"],"strip_prefix":"gguf"}
+  ],
+  "package_defaults": {"download":{"kind":"huggingface_snapshot","repo":"Zyphra/ZONOS3-Mini","revision":"main","gated":false}},
+  "sources": [{"format":"gguf","roots":{"model":".","weights":"$gguf"},"files":{},"tensors":{"backbone":{"source":"weights:"},"decoder":"model:zac-keep2.gguf","speaker_encoder":"model:spk-encoder.gguf"},"optional_tensors":{"reference_encoder":"model:zac-encoder.gguf","ssl_teacher":"model:ssl-teacher.gguf"}}],
+  "ui": {"recommended_package":"zonos3_mini_ptq","tags":["TTS","Clone","GGUF","Stream"],"docs":["docs/models/zonos3.md"]},
+  "runtime": {"tags":["gguf","stream","cpu","metal"]}
+ },
+ "lfm2_audio": {
+  "family": "lfm2_audio",
+  "tasks": ["asr","tts","s2s"],
+  "packages": [
+   {"id":"lfm2_audio_1_5b_q8_0","display_name":"LFM2.5-Audio-1.5B Q8_0 GGUF","default":true,"format":"gguf","precision":"q8_0","target_directory":"LFM2.5-Audio-1.5B-GGUF","files":["LFM2.5-Audio-1.5B-Q8_0.gguf","mmproj-LFM2.5-Audio-1.5B-Q8_0.gguf","vocoder-LFM2.5-Audio-1.5B-Q8_0.gguf","tokenizer-LFM2.5-Audio-1.5B-Q8_0.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-GGUF","revision":"7d525f883a077e20afb782f2ff618edcae0e39e4","gated":false}},
+   {"id":"lfm2_audio_1_5b_f16","display_name":"LFM2.5-Audio-1.5B F16 GGUF","format":"gguf","precision":"f16","target_directory":"LFM2.5-Audio-1.5B-GGUF","files":["LFM2.5-Audio-1.5B-F16.gguf","mmproj-LFM2.5-Audio-1.5B-F16.gguf","vocoder-LFM2.5-Audio-1.5B-F16.gguf","tokenizer-LFM2.5-Audio-1.5B-F16.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-GGUF","revision":"7d525f883a077e20afb782f2ff618edcae0e39e4","gated":false}},
+   {"id":"lfm2_audio_1_5b_q4_0","display_name":"LFM2.5-Audio-1.5B Q4_0 GGUF","format":"gguf","precision":"q4_0","target_directory":"LFM2.5-Audio-1.5B-GGUF","files":["LFM2.5-Audio-1.5B-Q4_0.gguf","mmproj-LFM2.5-Audio-1.5B-Q4_0.gguf","vocoder-LFM2.5-Audio-1.5B-Q4_0.gguf","tokenizer-LFM2.5-Audio-1.5B-Q4_0.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-GGUF","revision":"7d525f883a077e20afb782f2ff618edcae0e39e4","gated":false}},
+   {"id":"lfm2_audio_1_5b_jp_q8_0","display_name":"LFM2.5-Audio-1.5B-JP Q8_0 GGUF","format":"gguf","precision":"q8_0","target_directory":"LFM2.5-Audio-1.5B-JP-GGUF","files":["LFM2.5-Audio-1.5B-JP-Q8_0.gguf","mmproj-LFM2.5-Audio-1.5B-JP-Q8_0.gguf","vocoder-LFM2.5-Audio-1.5B-JP-Q8_0.gguf","tokenizer-LFM2.5-Audio-1.5B-JP-Q8_0.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF","revision":"64b96718b341dbd5650f9e85627cecdcbd4ac61b","gated":false}},
+   {"id":"lfm2_audio_1_5b_jp_f16","display_name":"LFM2.5-Audio-1.5B-JP F16 GGUF","format":"gguf","precision":"f16","target_directory":"LFM2.5-Audio-1.5B-JP-GGUF","files":["LFM2.5-Audio-1.5B-JP-F16.gguf","mmproj-LFM2.5-Audio-1.5B-JP-F16.gguf","vocoder-LFM2.5-Audio-1.5B-JP-F16.gguf","tokenizer-LFM2.5-Audio-1.5B-JP-F16.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF","revision":"64b96718b341dbd5650f9e85627cecdcbd4ac61b","gated":false}},
+   {"id":"lfm2_audio_1_5b_jp_f32","display_name":"LFM2.5-Audio-1.5B-JP F32 GGUF","format":"gguf","precision":"f32","target_directory":"LFM2.5-Audio-1.5B-JP-GGUF","files":["LFM2.5-Audio-1.5B-JP-F32.gguf","mmproj-LFM2.5-Audio-1.5B-JP-F32.gguf","vocoder-LFM2.5-Audio-1.5B-JP-F32.gguf","tokenizer-LFM2.5-Audio-1.5B-JP-F32.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF","revision":"64b96718b341dbd5650f9e85627cecdcbd4ac61b","gated":false}},
+   {"id":"lfm2_audio_1_5b_jp_q4_0","display_name":"LFM2.5-Audio-1.5B-JP Q4_0 GGUF","format":"gguf","precision":"q4_0","target_directory":"LFM2.5-Audio-1.5B-JP-GGUF","files":["LFM2.5-Audio-1.5B-JP-Q4_0.gguf","mmproj-LFM2.5-Audio-1.5B-JP-Q4_0.gguf","vocoder-LFM2.5-Audio-1.5B-JP-Q4_0.gguf","tokenizer-LFM2.5-Audio-1.5B-JP-Q4_0.gguf"],"download":{"kind":"huggingface_snapshot","repo":"LiquidAI/LFM2.5-Audio-1.5B-JP-GGUF","revision":"64b96718b341dbd5650f9e85627cecdcbd4ac61b","gated":false}}
+  ],
+  "sources": [{"format":"gguf","roots":{"model":"."},"files":{},"optional_files":{},"tensors":{}}],
+  "ui": {"tags":["ASR","TTS","GGUF","Stream"],"recommended_package":"lfm2_audio_1_5b_q8_0","docs":["docs/models/lfm2_audio.md"],"summary":"LFM2.5-Audio transcription, speech and spoken chat (English and Japanese checkpoints) from Liquid's published GGUFs.","builtin_voices":["us_male","us_female","uk_male","uk_female"],"default_voice":"us_male"},
+  "runtime": {"tags":["gguf","cpu","metal","cuda"]}
+ },
+ "xtts_v2": {
+  "family": "xtts_v2",
+  "tasks": ["tts"],
+  "packages": [
+   {"id":"xtts_v2_gguf_q8_0","display_name":"XTTS v2 GGUF (Q8_0)","default":true,"format":"gguf","precision":"q8_0","target_directory":"XTTS-v2-Q8","files":["q8_0/xtts-v2-gpt-q8_0.gguf","q8_0/xtts-v2-vocoder-f16.gguf","q8_0/mel_norms.bin"],"download":{"kind":"huggingface_snapshot","repo":"onicubag/xTTSv2-GGUF"},"strip_prefix":"q8_0"},
+   {"id":"xtts_v2_gguf","display_name":"XTTS v2 GGUF (Original)","default":false,"format":"gguf","precision":"orig","target_directory":"XTTS-v2","files":["xtts-v2-gpt.gguf","xtts-v2-vocoder-f16.gguf","mel_norms.bin"],"download":{"kind":"huggingface_snapshot","repo":"onicubag/xTTSv2-GGUF"}},
+   {"id":"xtts_v2_gguf_q4_k_m","display_name":"XTTS v2 GGUF (Q4_K_M)","default":false,"format":"gguf","precision":"q4_k_m","target_directory":"XTTS-v2-Q4_K_M","files":["q4_k_m/xtts-v2-gpt-q4_k_m.gguf","q4_k_m/xtts-v2-vocoder-f16.gguf","q4_k_m/mel_norms.bin"],"download":{"kind":"huggingface_snapshot","repo":"onicubag/xTTSv2-GGUF"},"strip_prefix":"q4_k_m"}
+  ],
+  "sources": [{"format":"gguf","roots":{"model":".","weights":"$gguf"},"files":{"vocoder":"model:xtts-v2-vocoder-f16.gguf"},"tensors":{"gpt_weights":{"source":"weights:"},"vocoder_weights":{"source":"model:xtts-v2-vocoder-f16.gguf"}}}],
+  "ui": {"tags":["TTS","Clone","GGUF"],"docs":["docs/community_models/xtts_v2.md"],"recommended_package":"xtts_v2_gguf_q8_0"},
+  "runtime": {"tags":["gguf"]}
+ },
+ "kokoro_tts": {
+  "family": "kokoro_tts",
+  "tasks": ["tts"],
+  "packages": [
+   {"id":"kokoro_82m_q8_0","display_name":"Kokoro 82M Q8_0 GGUF","default":true,"format":"gguf","precision":"q8_0","target_directory":"Kokoro-82M-GGUF","files":["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf"],"strip_prefix":"Kokoro-82M-GGUF"},
+   {"id":"kokoro_82m_bf16","display_name":"Kokoro 82M BF16 GGUF","format":"gguf","precision":"bf16","target_directory":"Kokoro-82M-GGUF","files":["Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"],"strip_prefix":"Kokoro-82M-GGUF"},
+   {"id":"kokoro_82m_generator_rk3588","display_name":"Kokoro 82M NPU Generator RKNN (RK3588)","format":"rknn","precision":"f16","target_directory":"Kokoro-82M-GGUF","files":["rk3588/generator_w512.rknn"],"strip_prefix":"rk3588","download":{"kind":"huggingface_snapshot","repo":"wOvANAI/rknn-tts-engines","revision":"main","gated":false}}
+  ],
+  "package_defaults": {"download":{"kind":"huggingface_snapshot","repo":"audio-cpp/audio.cpp-gguf","revision":"main","gated":false}},
+  "sources": [{"format":"gguf","roots":{"model":".","weights":"$gguf"},"files":{"config":"model:config.json","voices":"model:voices.json","vocabulary":"model:vocab.tsv"},"tensors":{"weights":{"source":"weights:","prefix":"kokoro"}}}],
+  "ui": {"recommended_package":"kokoro_82m_q8_0","tags":["TTS","GGUF"],"builtin_voices":["af_alloy","af_aoede","af_bella","af_heart","af_jessica","af_kore","af_nicole","af_nova","af_river","af_sarah","af_sky","am_adam","am_echo","am_eric","am_fenrir","am_liam","am_michael","am_onyx","am_puck","am_santa","bf_alice","bf_emma","bf_isabella","bf_lily","bm_daniel","bm_fable","bm_george","bm_lewis","ef_dora","em_alex","em_santa","ff_siwis","hf_alpha","hf_beta","hm_omega","hm_psi","if_sara","im_nicola","jf_alpha","jf_gongitsune","jf_nezumi","jf_tebukuro","jm_kumo","pf_dora","pm_alex","pm_santa","zf_xiaobei","zf_xiaoni","zf_xiaoxiao","zf_xiaoyi","zm_yunjian","zm_yunxi","zm_yunxia","zm_yunyang"],"default_voice":"af_heart","docs":["tests/kokoro_tts/MULTILINGUAL_GGUF.md"]},
+  "runtime": {"tags":["gguf","stream"]}
+ }
+}

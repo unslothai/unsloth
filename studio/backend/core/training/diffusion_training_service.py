@@ -18,7 +18,9 @@ from core.training.account_jobs import (
     worker_alive,
 )
 from utils.account_context import account_thread
+from utils.keep_awake import keeps_system_awake
 from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
+from utils.process_memory_peaks import MEMORY_PEAK_FIELDS, merge_memory_peaks
 import contextlib
 import json
 import math
@@ -78,6 +80,7 @@ class _DownloadPhaseQueue:
         self.queue.put(event)
 
 
+@keeps_system_awake
 def _run_diffusion_child(
     *,
     event_queue: Any,
@@ -178,8 +181,7 @@ class DatasetMutationInFlight(RuntimeError):
 
 
 def _llm_training_active() -> bool:
-    """Whether the LLM trainer holds the GPU. Best-effort: an import/health failure must not
-    block a diffusion start, exactly as the route's own reciprocal check fails open."""
+    """Whether the LLM trainer holds the GPU; a failed check fails open so diffusion can start."""
     try:
         from core.training import get_training_backend
         return bool(get_training_backend().is_training_active())
@@ -209,7 +211,12 @@ def _resume_fields(
 ) -> dict[str, Any]:
     """Derived from disk; write_error is sticky and blocks resume; started_at and ended_at fence off bundles from other runs. Never raises."""
     try:
+        from core.training.account_jobs import account_path
         from core.training.diffusion_checkpoint import describe_resume_state
+
+        # The scan probes (and may rename inside) output_dir: keep a managed record in its workspace.
+        account_path(output_dir)
+        account_path(source_checkpoint)
         state = describe_resume_state(
             output_dir,
             status = status,
@@ -335,8 +342,7 @@ def _restate_live_job(rec: dict) -> dict:
     if rec.get("job_id") == live.get("job_id") and live.get("status") == "running":
         rec["status"] = "running"
         rec["message"] = live.get("message") or ""
-        # _UNRESUMABLE_STATUS rejects a running job because its output directory is being written right now,
-        # so a Resume there can only race the live run and 409.
+        # Running job's output dir is being written, so a Resume would race the live run (409).
         rec["can_resume"] = False
         rec["checkpoint_path"] = None
     return rec
@@ -370,8 +376,13 @@ def _idle_state() -> dict[str, Any]:
         "catalog_path": None,
         "family": None,
         "base_model": None,
+        "instance_prompt": None,
         "samples_per_second": None,
         "peak_memory_gb": None,
+        # The trainer process's own peaks (utils.process_memory_peaks, bytes), as on the LLM status; None until reported.
+        "memory_peaks": None,
+        # block_swap as resolved by the trainer (blocks swapped, host / pinned GiB); None when it did not run.
+        "block_swap": None,
         # Newest checkpoint-<N> path and step; why it failed to save (Resume tooltip); resumed-from step.
         "checkpoint_path": None,
         "checkpoint_step": None,
@@ -507,8 +518,7 @@ class DiffusionTrainingService:
         self._target = target if target is not None else _default_target
         self._stderr_capture = None
         self._lock = threading.Lock()
-        # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards
-        # refuse a concurrent load. Cleared by unreserve().
+        # Set by reserve() before GPU models are freed; load guards refuse concurrent loads.
         self._reserved = False
         # Two-sided under _lock: starts and dataset mutations exclude each other.
         self._dataset_mutations = 0
@@ -591,8 +601,7 @@ class DiffusionTrainingService:
 
     @contextlib.contextmanager
     def dataset_mutation(self):
-        """Registers under reserve()'s lock, closing the gap between an is_active() check and the
-        mutation."""
+        """Registers under reserve()'s lock to close the is_active() check-then-mutate race."""
         with self._lock:
             if self._reserved or (self._proc is not None and self._proc.is_alive()):
                 raise TrainingActiveError(
@@ -646,11 +655,9 @@ class DiffusionTrainingService:
         reason: str,
         timeout: float = 30.0,
     ):
-        """Ask a running trainer to give back the GPU memory it holds only for speed (the DiT nf4 dequant
-        cache) before another Studio model loads on the card; it caches nothing until the block exits,
-        then re-sizes from what is free. Waits at most ``timeout`` for the acknowledgement (the trainer
-        answers between steps) and proceeds either way, as the load did before. Yields True if the
-        trainer acknowledged. No-op when nothing is training."""
+        """Frees the speed-only GPU cache (DiT nf4 dequant) before a model load; caches nothing
+        until exit, then re-sizes from free memory; waits up to timeout for an ack (answered
+        between steps), proceeds either way; yields True if acked; no-op when nothing trains."""
         waiter = self._send_vram_request("lend")
         acked = False
         if waiter is not None:
@@ -761,6 +768,7 @@ class DiffusionTrainingService:
                 in_model_load = True,
                 message = "Starting diffusion LoRA training...",
                 base_model = config.get("base_model") or config.get("model_name"),
+                instance_prompt = config.get("instance_prompt"),
                 started_at = now,
                 updated_at = now,
             )
@@ -907,8 +915,7 @@ class DiffusionTrainingService:
             return snap
 
     def sample_source(self, job_id: str) -> Optional[tuple[Optional[str], list]]:
-        """(output_dir, samples) for the live job ``job_id``, or None when it is not the live job or
-        belongs to another account (the run record answers for a finished one)."""
+        """(output_dir, samples) of the live job; None if foreign or not live (see run record)."""
         from core.training.account_jobs import job_is_foreign
 
         if job_is_foreign(self):
@@ -1001,8 +1008,7 @@ class DiffusionTrainingService:
                 self._persist_interim = False
                 self._persist_run_record(interim = True)
             if ev.get("type") in _TERMINAL:
-                # An exception raised on the current step is a terminal error and returns here rather than through
-                # the dead-process branch, so the discard has to be applied on this path too.
+                # Step exceptions skip the dead-process branch, so discard must run here too.
                 with self._lock:
                     discarding = self._discard_requested and self._proc is proc
                     child_cleared = self._child_cleared_own
@@ -1088,6 +1094,8 @@ class DiffusionTrainingService:
                 "audio_loss": s.get("audio_loss"),
                 "samples_per_second": s.get("samples_per_second"),
                 "peak_memory_gb": s.get("peak_memory_gb"),
+                # Flat, like the LLM run record's columns; None when never reported or unmeasurable here.
+                **{k: (s.get("memory_peaks") or {}).get(k) for k in MEMORY_PEAK_FIELDS},
                 "num_images": s.get("num_images"),
                 "started_at": s.get("started_at"),
                 "ended_at": s.get("updated_at"),
@@ -1147,6 +1155,8 @@ class DiffusionTrainingService:
                 return
             s = self._state
             s["updated_at"] = time.time()
+            if ev.get("memory_peaks") and etype in ("progress", "complete", "error"):
+                s["memory_peaks"] = merge_memory_peaks(s.get("memory_peaks"), ev["memory_peaks"])
             if etype == "model_load_started":
                 s.update(
                     in_model_load = True,
@@ -1223,6 +1233,13 @@ class DiffusionTrainingService:
                         else f"Preparing ({stage})..."
                     ),
                 )
+            elif etype == "block_swap":
+                swap = {
+                    k: ev.get(k)
+                    for k in ("swapped_blocks", "total_blocks", "host_gib", "pinned_gib")
+                    if _finite_or_none(ev.get(k)) is not None
+                }
+                s["block_swap"] = swap or None
             elif etype == "warning":
                 # Non-fatal trainer notes; keep training state, surface the text.
                 s["message"] = str(ev.get("message", "warning"))
@@ -1239,8 +1256,7 @@ class DiffusionTrainingService:
                 if ev.get("total_steps") is not None:
                     s["total_steps"] = int(ev["total_steps"])
             elif etype == "checkpoint_saved":
-                # Folded as each bundle lands, not only at the end, so a run that later crashes is still reported as
-                # resumable; a good write also clears an earlier failure.
+                # Per bundle, so a crash stays resumable; a good write clears an old failure.
                 s.update(
                     checkpoint_path = ev.get("checkpoint_path"),
                     checkpoint_step = ev.get("step"),

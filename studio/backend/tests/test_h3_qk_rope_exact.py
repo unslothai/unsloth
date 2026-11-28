@@ -294,8 +294,7 @@ def test_probe_inputs_stay_finite_in_the_target_dtype(dtype_name):
 
 
 def _exact_rotation(x, w, cos, sin, eps):
-    """float64 rotation of the bf16 / fp16 normed values with the activation-dtype table: the value the reference
-    kernel's float32 fma rounds once."""
+    """float64 rotation of normed bf16/fp16 values: the kernel's float32 fma rounds once."""
     import torch.nn.functional as F
 
     n = F.rms_norm(x, (x.shape[-1],), w, eps)

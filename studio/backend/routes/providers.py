@@ -179,9 +179,15 @@ _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only t
 
 
 def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
-    if "extra_headers" in getattr(payload, "model_fields_set", set()):
-        return normalize_provider_extra_headers(payload.extra_headers)
     provider_id = getattr(payload, "provider_id", None)
+    # A shared connection sends the owner's key: only the owner's saved headers go with it.
+    sent_headers = "extra_headers" in getattr(payload, "model_fields_set", set())
+    if sent_headers and (
+        not provider_id
+        or payload.encrypted_api_key
+        or providers_db.get_own_provider(provider_id) is not None
+    ):
+        return normalize_provider_extra_headers(payload.extra_headers)
     # Saved headers can carry credentials: same gate as the saved key.
     if not provider_id or payload.encrypted_api_key or via_api_key:
         return {}
@@ -219,6 +225,8 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         available_models = row.get("available_models") or [],
         max_output_tokens = row.get("max_output_tokens"),
         auto_compact_tokens = row.get("auto_compact_tokens"),
+        auto_compact_percent = row.get("auto_compact_percent"),
+        auto_compact_percent_by_model = row.get("auto_compact_percent_by_model") or {},
         compaction_mode = (
             row.get("compaction_mode")
             if row.get("compaction_mode") in ("summary", "rolling", "checkpoint")
@@ -440,6 +448,8 @@ async def create_provider_config(
             shared = payload.shared,
             auto_compact_tokens = payload.auto_compact_tokens,
             compaction_mode = payload.compaction_mode,
+            auto_compact_percent = payload.auto_compact_percent,
+            auto_compact_percent_by_model = payload.auto_compact_percent_by_model,
         )
         try:
             if api_key:
@@ -541,6 +551,8 @@ async def update_provider_config(
         "available_models",
         "max_output_tokens",
         "auto_compact_tokens",
+        "auto_compact_percent",
+        "auto_compact_percent_by_model",
         "compaction_mode",
         "api_type",
         "reasoning_config",
@@ -584,6 +596,12 @@ async def update_provider_config(
             metadata_updates["auto_compact_tokens"] = payload.auto_compact_tokens
         if "compaction_mode" in payload.model_fields_set:
             metadata_updates["compaction_mode"] = payload.compaction_mode
+        if "auto_compact_percent" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent"] = payload.auto_compact_percent
+        if "auto_compact_percent_by_model" in payload.model_fields_set:
+            metadata_updates["auto_compact_percent_by_model"] = (
+                payload.auto_compact_percent_by_model or {}
+            )
         if reasoning_config_requested:
             metadata_updates["reasoning_config"] = (
                 payload.reasoning_config.model_dump()
@@ -602,6 +620,8 @@ async def update_provider_config(
         available_models = existing.get("available_models") or [],
         max_output_tokens = existing.get("max_output_tokens"),
         auto_compact_tokens = existing.get("auto_compact_tokens"),
+        auto_compact_percent = existing.get("auto_compact_percent"),
+        auto_compact_percent_by_model = existing.get("auto_compact_percent_by_model") or {},
         compaction_mode = existing.get("compaction_mode"),
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
@@ -630,6 +650,8 @@ async def update_provider_config(
             if written is None and field not in {
                 "max_output_tokens",
                 "auto_compact_tokens",
+                "auto_compact_percent",
+                "auto_compact_percent_by_model",
                 "compaction_mode",
                 "reasoning_config",
                 "extra_headers",
@@ -787,7 +809,8 @@ def _bind_saved_provider_target(payload):
     """Use the saved provider's endpoint whenever its saved credential may be used."""
     if not payload.provider_id or payload.encrypted_api_key:
         return payload
-    config = providers_db.get_provider(payload.provider_id)
+    own = providers_db.get_own_provider(payload.provider_id)
+    config = own if own is not None else providers_db.get_provider(payload.provider_id)
     if config is None:
         raise HTTPException(
             status_code = 404,
@@ -802,10 +825,18 @@ def _bind_saved_provider_target(payload):
         "provider_type": config["provider_type"],
         "api_type": config.get("api_type", "chat_completions"),
     }
+    if (
+        own is not None
+        and config["provider_type"] == "custom"
+        and "api_type" in payload.model_fields_set
+    ):
+        update["api_type"] = payload.api_type
     # Pinning the saved endpoint keeps a saved credential off other hosts; a keyless row has none to protect, so an
     # edited base URL is used as sent.
+    # Another account's row is always pinned: whether its key is saved is itself a read that can fail.
     if (
         not payload.base_url
+        or own is None
         or config["provider_type"] == "openai_codex"
         or credential_secrets.provider_api_key_saved(config["id"])
     ):

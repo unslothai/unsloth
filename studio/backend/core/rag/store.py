@@ -294,9 +294,11 @@ def set_document_embedding_model(
     conn: sqlite3.Connection, document_id: str, embedding_model: str
 ) -> None:
     """Record which embedder actually produced this document's vectors. Written after
-    the encode, because the process can swap backends part way through a job."""
+    the encode, because the process can swap backends part way through a job. Same value is skipped:
+    the rag_vec_epoch trigger fires on any SET and would drop the warm vec cache."""
     conn.execute(
-        "UPDATE documents SET embedding_model=? WHERE id=?", (embedding_model, document_id)
+        "UPDATE documents SET embedding_model=? WHERE id=? AND embedding_model IS NOT ?",
+        (embedding_model, document_id, embedding_model),
     )
     conn.commit()
 
@@ -516,6 +518,13 @@ def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, c
         _insert_chunk(conn, scope, document_id, chunk, None)
 
 
+def _connection_moved(model_name: str, identity: str) -> bool:
+    if not config.is_connection_model(model_name):
+        return False
+    from .embed_connection import connection_identity
+    return connection_identity(model_name) != identity
+
+
 def replace_document_vectors(
     conn: sqlite3.Connection,
     document_id: str,
@@ -524,12 +533,17 @@ def replace_document_vectors(
     vectors,
     identity: str,
     model_name: str,
+    known_rowids: dict[str, list[int]] | None = None,
 ) -> bool:
     """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
 
     Writes only while the row is still the one that was encoded: present, still under
-    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
-    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model on the same
+    connection server. A delete, a re-upload, another re-embed, a model switch or a connection moved
+    to another server in between wins, and False is returned.
+
+    ``known_rowids`` (vec_rowids_by_document) spares the partition scan when its entry still holds
+    exactly this document's vectors, and takes the new rowids on a swap."""
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
@@ -549,19 +563,28 @@ def replace_document_vectors(
             or not current
             # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
             or config.effective_embedding_model(fresh = True) != model_name
+            or _connection_moved(model_name, identity)
         ):
             conn.rollback()
             return False
         scope = row["scope"]
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
-        # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
-        stale_rowids = [
-            r["rowid"]
-            for r in conn.execute(
-                "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
-                (scope, f"{document_id}:", f"{document_id};"),
+        if stale_model and stale_model.startswith(rag_db.VECTORS_DROPPED):
+            # ensure_vec marks only documents whose rows went with the old table.
+            stale_rowids = []
+        else:
+            stale_rowids = _verified_vec_rowids(
+                conn, scope, current, (known_rowids or {}).get(document_id)
             )
-        ]
+        if stale_rowids is None:
+            # One partition scan for the document's rows ('; sorts right after ':').
+            stale_rowids = [
+                r["rowid"]
+                for r in conn.execute(
+                    "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+                    (scope, f"{document_id}:", f"{document_id};"),
+                )
+            ]
         for start in range(0, len(stale_rowids), _ID_BATCH):
             batch = stale_rowids[start : start + _ID_BATCH]
             conn.execute(
@@ -580,7 +603,34 @@ def replace_document_vectors(
         conn.rollback()
         raise
     _remember_vec_rowids(conn, document_id, rowids)
+    if known_rowids is not None:
+        known_rowids[document_id] = rowids
     return True
+
+
+def vec_rowids_by_document(conn: sqlite3.Connection, scope: str) -> dict[str, list[int]]:
+    """Every document's chunks_vec rowids in ``scope``, from one partition scan."""
+    by_document: dict[str, list[int]] = {}
+    if not rag_db.vec_table_exists(conn):
+        return by_document
+    for r in conn.execute("SELECT rowid, chunk_id FROM chunks_vec WHERE scope=?", (scope,)):
+        by_document.setdefault(r["chunk_id"].rpartition(":")[0], []).append(r["rowid"])
+    return by_document
+
+
+def _verified_vec_rowids(conn, scope: str, chunk_ids: list[str], rowids) -> list[int] | None:
+    """``rowids`` if they are exactly the vectors of ``chunk_ids`` in ``scope``, else None."""
+    if not rowids or len(rowids) != len(chunk_ids):
+        return None
+    rows = []
+    for start in range(0, len(rowids), _ID_BATCH):
+        batch = rowids[start : start + _ID_BATCH]
+        rows += conn.execute(
+            f"SELECT scope, chunk_id FROM chunks_vec WHERE rowid IN ({','.join('?' * len(batch))})",
+            batch,
+        ).fetchall()
+    found = sorted(r["chunk_id"] for r in rows if r["scope"] == scope)
+    return list(rowids) if found == sorted(chunk_ids) else None
 
 
 def delete_document(
@@ -788,6 +838,35 @@ def linked_folder_rows_exist(conn: sqlite3.Connection) -> bool:
     )
 
 
+def _lexical_scope_filter(conn: sqlite3.Connection, scopes: list[str], placeholders: str):
+    """scope IN (...) on this snapshot as (SQL, params); (None, None) when no scope has a row."""
+    if not rag_db.fts_scope_index_exists(conn):
+        return f"chunks_fts.scope IN ({placeholders})", scopes
+    lo = hi = None
+    for scope in scopes:
+        first, last = conn.execute(
+            "SELECT (SELECT min(id) FROM chunks_fts_content WHERE c2=?), "
+            "(SELECT max(id) FROM chunks_fts_content WHERE c2=?)",
+            (scope, scope),
+        ).fetchone()
+        if first is not None:
+            lo = first if lo is None else min(lo, first)
+            hi = last if hi is None else max(hi, last)
+    if lo is None:
+        return None, None
+    if len(scopes) > 1:
+        # The index probe costs one seek per scope per match; past one scope the content read is cheaper.
+        return f"chunks_fts.rowid BETWEEN ? AND ? AND chunks_fts.scope IN ({placeholders})", [
+            lo,
+            hi,
+            *scopes,
+        ]
+    return (
+        f"chunks_fts.rowid BETWEEN ? AND ? AND EXISTS (SELECT 1 FROM chunks_fts_content x "
+        f"INDEXED BY {rag_db.FTS_SCOPE_INDEX} WHERE x.c2=? AND x.id=chunks_fts.rowid)"
+    ), [lo, hi, *scopes]
+
+
 def search_lexical(
     conn: sqlite3.Connection,
     scope,
@@ -812,6 +891,9 @@ def search_lexical(
     if own_read_txn:
         conn.execute("BEGIN")
     try:
+        scope_filter, scope_params = _lexical_scope_filter(conn, scopes, placeholders)
+        if scope_filter is None:
+            return []
         # Subqueries run before LIMIT; skip them unless a folder is linked (linked_folder_rows_exist).
         if oldest_first:
             # Mirrors _conversation_order; uses document rowid since re-embeds rewrite chunk rows.
@@ -819,7 +901,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NOT NULL, d.archive_ordinal ASC, "
                 f"d.created_at ASC, d.rowid ASC, c.chunk_index ASC LIMIT ?"
             )
@@ -829,7 +911,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s, d.archive_ordinal IS NULL, d.archive_ordinal DESC, "
                 f"d.created_at DESC, d.rowid DESC, c.chunk_index DESC LIMIT ?"
             )
@@ -838,7 +920,7 @@ def search_lexical(
                 f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
                 f"JOIN chunks c ON c.id=chunks_fts.chunk_id "
                 f"JOIN documents d ON d.id=c.document_id "
-                f"WHERE chunks_fts MATCH ? AND chunks_fts.scope IN ({placeholders}) "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"AND NOT EXISTS "
                 f"(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
                 f"AND (d.linked_folder_id IS NULL OR EXISTS "
@@ -847,11 +929,11 @@ def search_lexical(
             )
         else:
             sql = (
-                f"SELECT chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
-                f"WHERE chunks_fts MATCH ? AND scope IN ({placeholders}) "
+                f"SELECT chunks_fts.chunk_id, bm25(chunks_fts) AS s FROM chunks_fts "
+                f"WHERE chunks_fts MATCH ? AND {scope_filter} "
                 f"ORDER BY s LIMIT ?"
             )
-        rows = conn.execute(sql, (mq, *scopes, k)).fetchall()
+        rows = conn.execute(sql, (mq, *scope_params, k)).fetchall()
     finally:
         if own_read_txn:
             conn.commit()
@@ -1069,6 +1151,36 @@ def all_chunks_for_scope(conn: sqlite3.Connection, scope) -> list[dict]:
         list(scopes),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def opening_chunks(
+    conn: sqlite3.Connection,
+    scope: str,
+    min_tokens: int,
+    document_id: str,
+    max_chunks: int = 3,
+) -> list[dict]:
+    doc = conn.execute(
+        "SELECT id, filename FROM documents d WHERE scope=? AND id=? AND status='completed' "
+        "AND num_chunks > 0 AND NOT EXISTS "
+        "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope)",
+        (scope, document_id),
+    ).fetchone()
+    if doc is None:
+        return []
+    rows, total = [], 0
+    for r in conn.execute(
+        "SELECT id, text, document_id, chunk_index, page_number, source_page_index, "
+        "page_char_start, page_char_end, token_count "
+        # Chunks never span pages, so a sparse deck would otherwise pull in a chunk per page.
+        "FROM chunks WHERE document_id=? ORDER BY chunk_index LIMIT ?",
+        (doc["id"], max_chunks),
+    ):
+        rows.append({**dict(r), "filename": doc["filename"]})
+        total += r["token_count"] or max(1, len(r["text"] or "") // 4)
+        if total >= min_tokens:
+            break
+    return rows
 
 
 def scope_token_estimate(conn: sqlite3.Connection, scope) -> int:

@@ -380,8 +380,7 @@ def test_env_flag_one_overrides_the_cost_gates_only(monkeypatch):
 
 @pytest.mark.parametrize("offload_layers", [28, "auto"])
 def test_block_swap_keeps_the_eager_path(offload_layers):
-    """Forked workers share the trainer's host pages copy-on-write; with offloaded layers in host RAM the copies
-    OOM-killed a 122 GiB trainer before step 1."""
+    """Forked workers share pages copy-on-write; offloaded host-RAM layers OOM-killed a 122 GiB trainer."""
     decision = decide_online_tokenization(**_base_kwargs(offload_layers = offload_layers))
     assert not decision.enabled
     assert decision.as_log_line().startswith("Online tokenization: off (Block Swap")

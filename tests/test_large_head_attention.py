@@ -15,6 +15,7 @@ import pytest
 import torch
 
 from real_accelerator import has_real_cuda
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 pytest.importorskip("triton")
 
@@ -420,6 +421,7 @@ def test_install_sits_beneath_the_packed_router(monkeypatch):
     monkeypatch.setitem(sys.modules, "unsloth.utils.hf_packed_attention", packed)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     try:
         ALL_ATTENTION_FUNCTIONS["sdpa"] = packed_router
@@ -438,7 +440,11 @@ def test_autotune_skips_the_flush_buffer_benchmarker():
 
 
 def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
+    # SDPA serves the call, but the OOM is transient: caching it kept SDPA for the whole run.
+    calls = []
+
     def oom(*args, **kwargs):
+        calls.append(1)
         raise torch.cuda.OutOfMemoryError("CUDA out of memory.")
 
     monkeypatch.setattr(LH, "large_head_attention", oom)
@@ -446,6 +452,15 @@ def test_self_check_oom_falls_back_to_sdpa(monkeypatch):
     key = (str(torch.device("cpu")), torch.float32)
     monkeypatch.setitem(LH._SELF_CHECK, key, None)
     LH._SELF_CHECK.pop(key)
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert key not in LH._SELF_CHECK
+    assert LH._self_check(torch.device("cpu"), torch.float32) is False
+    assert len(calls) == 2 and key not in LH._SELF_CHECK
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("a real kernel failure")
+
+    monkeypatch.setattr(LH, "large_head_attention", broken)
     assert LH._self_check(torch.device("cpu"), torch.float32) is False
     assert LH._SELF_CHECK[key] is False
 
@@ -561,6 +576,7 @@ def test_install_skipped_when_every_self_check_fails(monkeypatch):
     monkeypatch.setattr(model, "parameters", lambda: iter([_Param()]))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     monkeypatch.setattr(LH, "_self_check", lambda device, dtype: False)
     saved = ALL_ATTENTION_FUNCTIONS["sdpa"]
@@ -608,6 +624,7 @@ def _install_with_params(monkeypatch, params, **attrs):
     monkeypatch.setattr(model, "parameters", lambda: iter(params))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", None)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(LH, "_PATCHED", [False])
     checked = []
     monkeypatch.setattr(

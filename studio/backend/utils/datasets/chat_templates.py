@@ -606,6 +606,7 @@ def apply_chat_template_to_dataset(
     batch_size = 1000,
     num_proc = None,
     progress_callback = None,
+    native_alpaca = False,
 ):
     """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
@@ -727,7 +728,54 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
+        dataset_template = None if native_alpaca else "alpaca"
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
+        uses_content_parts = hasattr(tokenizer, "image_processor") or hasattr(tokenizer, "tokenizer")
+        if native_alpaca:
+            # Later splits (a ChatML eval file) must not swap the template the masker reads.
+            remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+            if remembered is not None and remembered[0] == model_name:
+                _set_chat_template(tokenizer, remembered[1])
+            else:
+                try:
+                    setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, (model_name, tokenizer.chat_template))
+                except Exception:
+                    pass
+
+        def _render_alpaca(prompt, answer, system, parts):
+            def message(role, text):
+                return {"role": role, "content": [{"type": "text", "text": text}] if parts else text}
+
+            turns = [message("user", prompt), message("assistant", answer)]
+            if not (isinstance(system, str) and system.strip()):
+                return _render_messages(tokenizer, turns)
+            try:
+                return _render_messages(tokenizer, [message("system", system), *turns])
+            except Exception:
+                # Templates without a system role carry explicit instructions in the user turn.
+                turns[0] = message("user", system + "\n\n" + prompt)
+                return _render_messages(tokenizer, turns)
+
+        def _probe_content_parts():
+            # A list-only template given strings renders empty turns.
+            # Strings first: a string template on a processor prints a parts list as its repr.
+            probe = "unsloth-studio-alpaca-probe"
+            for parts in (False, True):
+                try:
+                    text = _render_alpaca(probe, probe, None, parts)
+                except Exception:
+                    continue
+                if probe in text and "'type': 'text'" not in text:
+                    return parts
+            return uses_content_parts
+
+        alpaca_parts = _probe_content_parts() if native_alpaca else uses_content_parts
+
+        def _native_alpaca(prompt, answer, system):
+            text = _render_alpaca(prompt, answer, system, alpaca_parts)
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("The model's chat template did not render the Alpaca example")
+            return text
 
         preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
 
@@ -742,6 +790,24 @@ def apply_chat_template_to_dataset(
             for instruction, input_, output, system in zip(
                 instructions, inputs, examples["output"], systems
             ):
+                if native_alpaca:
+                    prompt = cell_text(instruction)
+                    context = cell_text(input_)
+                    if context:
+                        prompt += "\n\n" + context
+                    trimmed_answer = cell_text(output).removesuffix(eos_token)
+                    text = _native_alpaca(prompt, trimmed_answer, system)
+                    if (
+                        eos_token
+                        and trimmed_answer.strip()
+                        and text.rstrip().endswith(trimmed_answer.rstrip())
+                    ):
+                        # The template closes no turn after the answer, so the row needs EOS.
+                        text = _native_alpaca(prompt, trimmed_answer + eos_token, system)
+                    if remove_bos_prefix and (bos := getattr(tokenizer, "bos_token", None)):
+                        text = text.removeprefix(bos)
+                    texts.append(text)
+                    continue
                 if not (isinstance(system, str) and system.strip()):
                     system = preamble
 
@@ -771,6 +837,7 @@ def apply_chat_template_to_dataset(
 
             return {
                 "dataset": formatted_dataset,
+                "dataset_template": dataset_template,
                 "success": True,
                 "warnings": warnings,
                 "errors": errors

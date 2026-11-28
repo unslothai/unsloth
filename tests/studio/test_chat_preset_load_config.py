@@ -49,7 +49,18 @@ def test_capture_reads_gguf_loaded_context():
 def test_apply_skips_missing_load_config():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
     assert "if (config == null)" in source
-    assert "selectedGpuIds: store.selectedGpuIds" in source
+    # A preset keeps the GPU selection: it starts from the current runtime config (#19154), which carries
+    # the store's selectedGpuIds, and never names selectedGpuIds itself.
+    assert "const current = currentRuntimePerModelConfig();" in source
+    assert "...current," in source
+    assert (
+        "selectedGpuIds"
+        not in source.split("export function applyPresetLoadConfig", 1)[1].split("\nexport ", 1)[0]
+    )
+    runtime = _read(
+        "studio/frontend/src/features/model-picker/model-config/apply-per-model-config.ts"
+    )
+    assert "selectedGpuIds: s.selectedGpuIds," in runtime
     sheet = _read("studio/frontend/src/features/chat/chat-settings-sheet.tsx")
     assert "if (p.loadConfig)" in sheet
 
@@ -540,7 +551,10 @@ def test_a_preset_records_a_self_sizing_load_s_pin_and_not_its_window():
     assert "requestableContextLength(\n    capturedContextLength(" in body, body
     assert "isServedByLlamaCpp({\n    loadedIsGguf: store.loadedIsGguf," in body, body
     assert not re.search(r"LlamaCpp\(\{[^}]*?(\w+): (?!store\.[\w.]*\1,)", body), body
-    assert "isServedByMlx(isGguf, platform.deviceType, platform.chatOnlyReason)" in body, body
+    assert (
+        "isServedByMlx(\n    isGguf,\n    platform.deviceType,\n    platform.chatOnlyReason,\n"
+        "    platform.mlxInference,\n  )" in body
+    ), body
     compare = source[source.index("function toComparablePerModelConfig(") :]
     compare = compare[: compare.index("\n}\n")]
     assert "const pin = savedContextPin(config);" in compare, compare

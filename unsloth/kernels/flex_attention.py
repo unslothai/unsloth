@@ -35,7 +35,7 @@ except:
 
 
 if not HAS_FLEX_ATTENTION:
-    # Logit softcapping
+
     @torch.compile(fullgraph = True, dynamic = True, options = torch_compile_options)
     def _compiled_slow_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len):
         # This rank's heads under tensor parallelism (models/tp_native.py); the config counts otherwise.
@@ -45,7 +45,6 @@ if not HAS_FLEX_ATTENTION:
         n_groups = self.num_key_value_groups
         actual_q_len = Q.shape[-2]
 
-        # Grouped query attention
         K = K[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
         V = V[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, kv_len, head_dim)
         K = K.reshape(bsz, n_heads, kv_len, head_dim)
@@ -80,6 +79,13 @@ if not HAS_FLEX_ATTENTION:
             except torch.OutOfMemoryError:
                 raise
             except Exception as error:
+                # Checkpoint control flow (the non-reentrant recompute's early stop, a CheckpointError) and an
+                # OOM raised while compiling are not compile failures: latching eager would hide them.
+                if type(error).__name__ in (
+                    "_StopRecomputationError",
+                    "CheckpointError",
+                ) or isinstance(getattr(error, "inner_exception", None), torch.OutOfMemoryError):
+                    raise
                 # ROCm torch 2.11 inductor rejects this graph (inductor::_alloc_from_pool aliasing) on gfx1151.
                 logger.warning_once(
                     f"Unsloth: compiled Gemma2 softcapping attention failed on {key}, using eager: {error}"
@@ -211,7 +217,6 @@ def slow_inference_attention_softcapping(Q, K, V, causal_mask, self, bsz, kv_len
     Q = Q * torch.tensor(s**-0.5, dtype = Q.dtype)
     A = torch_matmul(Q, K.transpose(2, 3))
 
-    # Logit softcapping
     A /= t
     torch_tanh(A, out = A)
     A *= t

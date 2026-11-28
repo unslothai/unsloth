@@ -627,6 +627,94 @@ def test_upload_allows_exact_name_overwrite_and_caption_sidecar(client, ds_root)
     assert (folder / "sample.txt").read_text(encoding = "utf-8") == "a caption"
 
 
+def test_upload_stores_a_caption_sidecar_of_any_case_as_its_caption(client, ds_root):
+    r = _upload(
+        client,
+        "styleset",
+        [
+            ("IMG.PNG", _png_bytes()),
+            ("IMG.TXT", b"a red square"),
+            ("dsc.png", _png_bytes()),
+            ("dsc.Caption", b"a blue square"),
+        ],
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["caption_count"] == 2
+    folder = ds_root / "styleset"
+    assert sorted(p.name for p in folder.iterdir() if not p.name.startswith(".")) == [
+        "IMG.PNG",
+        "IMG.txt",
+        "dsc.caption",
+        "dsc.png",
+    ]
+    r = _upload(client, "styleset", [("a.png", _png_bytes()), ("a.txt", b"x"), ("a.TXT", b"y")])
+    assert r.status_code == 400
+    assert "more than once" in r.json()["detail"]
+
+
+def test_upload_reads_an_uppercase_metadata_file(client, ds_root):
+    meta = json.dumps({"file_name": "cat.png", "text": "a cat"}).encode()
+    r = _upload(client, "styleset", [("cat.png", _png_bytes()), ("METADATA.JSONL", meta)])
+    assert r.status_code == 200, r.text
+    assert r.json()["caption_count"] == 1
+    assert (ds_root / "styleset" / "metadata.jsonl").is_file()
+
+
+def test_a_folder_copied_from_disk_reads_mixed_case_captions(client, ds_root):
+    folder = ds_root / "fromdisk"
+    folder.mkdir()
+    for stem in ("upper", "mixed", "both", "meta", "plain"):
+        _write_png(folder / f"{stem}.png")
+    (folder / "upper.TXT").write_text("upper txt", encoding = "utf-8")
+    (folder / "mixed.Caption").write_text("mixed caption", encoding = "utf-8")
+    (folder / "both.TXT").write_text("uppercase loses", encoding = "utf-8")
+    (folder / "both.txt").write_text("lowercase wins", encoding = "utf-8")
+    (folder / "Captions.JSONL").write_text(
+        json.dumps({"file_name": "meta.png", "text": "from metadata"}) + "\n", encoding = "utf-8"
+    )
+    body = client.get("/api/train/diffusion/dataset/fromdisk/images").json()
+    recs = {rec["filename"]: rec["caption"] for rec in body["images"]}
+    assert recs == {
+        "upper.png": "upper txt",
+        "mixed.png": "mixed caption",
+        "both.png": "lowercase wins",
+        "meta.png": "from metadata",
+        "plain.png": None,
+    }
+    from routes.training import _diffusion_dataset_summary
+
+    assert _diffusion_dataset_summary(folder).caption_count == 4
+
+
+def test_editing_a_caption_replaces_every_case_variant(client, ds_root):
+    folder = ds_root / "styleset"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    (folder / "cat.TXT").write_text("old", encoding = "utf-8")
+    (folder / "cat.Caption").write_text("older", encoding = "utf-8")
+    r = client.put("/api/train/diffusion/dataset/styleset/caption/cat.png", json = {"caption": "new"})
+    assert r.status_code == 200, r.text
+    assert r.json()["caption"] == "new"
+    # casefold: a case-insensitive filesystem keeps the old cat.TXT entry name on rewrite.
+    assert sorted(p.name.casefold() for p in folder.iterdir()) == ["cat.png", "cat.txt"]
+    r = client.put("/api/train/diffusion/dataset/styleset/caption/cat.png", json = {"caption": ""})
+    assert r.status_code == 200, r.text
+    assert r.json()["caption"] is None
+    assert sorted(p.name for p in folder.iterdir()) == ["cat.png"]
+
+
+def test_deleting_an_image_removes_its_uppercase_caption(client, ds_root):
+    folder = ds_root / "styleset"
+    folder.mkdir()
+    _write_png(folder / "cat.png")
+    _write_png(folder / "dog.png")
+    (folder / "cat.TXT").write_text("a cat", encoding = "utf-8")
+    (folder / "dog.txt").write_text("a dog", encoding = "utf-8")
+    r = client.delete("/api/train/diffusion/dataset/styleset/image/cat.png")
+    assert r.status_code == 200, r.text
+    assert sorted(p.name for p in folder.iterdir()) == ["dog.png", "dog.txt"]
+
+
 def test_create_only_upload_refuses_every_occupied_spelling(client, ds_root):
     folder = ds_root / "StyleSet"
     folder.mkdir()

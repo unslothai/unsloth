@@ -112,8 +112,7 @@ def test_other_major_does_not_count(tmp_path, _no_host_runtime):
 
 
 def test_the_marker_the_installer_writes_is_recognised(tmp_path):
-    # Through the real writer: a hand-written marker with fields the installer never records
-    # would pass here while every real install went unnoticed.
+    # Use the real writer; a hand-written marker can pass while real installs go unnoticed.
     choice = ip.AssetChoice(
         repo = "unslothai/llama.cpp",
         tag = "b1",

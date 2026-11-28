@@ -75,6 +75,8 @@ class MtmdSttModel:
     label: str
     # Qwen3-ASR emits "language English<asr_text>" before the transcript.
     transcript_marker: Optional[str] = None
+    # Audio tokens/s, prompt excluded so a cold Auto start never exceeds the counted size.
+    audio_tokens_per_second: float = 0.0
 
 
 # Every entry takes Qwen3-ASR's assistant-prefill language hint; see _post_transcribe before adding another family.
@@ -85,6 +87,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         label = "Qwen3-ASR 0.6B",
         transcript_marker = "<asr_text>",
+        audio_tokens_per_second = 13.0,
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
         repo = "unslothai/Qwen3-ASR-1.7B-GGUF",
@@ -92,6 +95,7 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
         mmproj_file = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
         label = "Qwen3-ASR 1.7B",
         transcript_marker = "<asr_text>",
+        audio_tokens_per_second = 13.0,
     ),
 }
 # Voxtral Mini answers audio instead of transcribing in chat mode; Parakeet and Nemotron lack llama.cpp text architectures.
@@ -105,6 +109,12 @@ _MAX_TRANSCRIPT_TOKENS = 16384
 _AUTO_CONTEXT_MIN = 4096
 _MAX_CONTEXT_LENGTH = 65536
 _CONTEXT_MARGIN = 64
+
+
+def _auto_start_size(hint: Optional[int]) -> int:
+    if type(hint) is int and _AUTO_CONTEXT_MIN < hint <= _MAX_CONTEXT_LENGTH and hint % 256 == 0:
+        return hint
+    return _AUTO_CONTEXT_MIN
 
 
 def _validate_context_length(value: Optional[int]) -> Optional[int]:
@@ -133,6 +143,15 @@ def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
         return _MIN_TRANSCRIPT_TOKENS
     scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
     return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
+
+
+def _cold_start_context(model_id: str, audio_seconds: Optional[float]) -> int:
+    """Lower bound of the counted size: a short guess still resizes, never adds a start."""
+    audio_tokens = int((audio_seconds or 0) * MTMD_STT_MODELS[model_id].audio_tokens_per_second)
+    try:
+        return _auto_context_length(audio_tokens, _transcript_token_budget(audio_seconds))
+    except SttContextSizeError:
+        return _AUTO_CONTEXT_MIN
 
 
 _SERVER_START_TIMEOUT_SECONDS = 180.0
@@ -185,6 +204,25 @@ def ensure_engine_available() -> str:
             "Run `unsloth studio update` to install it."
         )
     return binary
+
+
+def _open_server_log(port: int):
+    """None on any error: logging must never block a load. Epoch first: the log list presorts by name."""
+    try:
+        from core.inference.llama_cpp import _swa_cache_path
+        from utils.log_retention import prune_log_dir
+
+        log_dir = _swa_cache_path().parent / "logs" / "llama-server"
+        log_dir.mkdir(parents = True, exist_ok = True)
+        path = log_dir / f"llama-{int(time.time())}-dictation-port-{port}.log"
+        # Append: a relaunch in the same second on the same port must not erase a crash log.
+        handle = open(path, "a", encoding = "utf-8")
+        prune_log_dir(log_dir, "llama-*.log", protect = path)
+        logger.info("dictation llama-server stdout/stderr -> %s", path)
+        return handle
+    except Exception as exc:  # noqa: BLE001 - best effort
+        logger.warning("Could not open the dictation llama-server log file: %s", exc)
+        return None
 
 
 def _reap(process: Optional[subprocess.Popen]) -> None:
@@ -308,8 +346,7 @@ def _pair_in(directory: Path, spec: MtmdSttModel) -> Optional[tuple[str, str]]:
 def _location_candidates(
     spec: MtmdSttModel, listing, revision: Optional[str]
 ) -> list[tuple[str, Path]]:
-    """Hub caches holding the repo, then directories holding both files loose. Loose files never match a pinned
-    revision."""
+    """Hub caches of the repo, then dirs holding both files; loose ones skip pinned revisions."""
     found = [("cache", hub_cache) for hub_cache in listing.caches_holding(spec.repo)]
     if revision is None:
         found += [("loose", d) for d in listing.dirs_holding(spec.model_file, spec.mmproj_file)]
@@ -936,6 +973,7 @@ class MtmdSttSidecar:
         device: Optional[str] = None,
         *,
         context_length: Optional[int] = None,
+        auto_start_context: Optional[int] = None,
     ) -> None:
         """``device`` is the user's audio device preference; ``cpu`` starts
         llama-server at ``-ngl 0``, the same offload training already forces."""
@@ -960,6 +998,7 @@ class MtmdSttSidecar:
                 path_revision = path_revision,
                 device = device,
                 context_length = context_length,
+                auto_start_context = auto_start_context,
             )
 
     def _load_locked(
@@ -971,6 +1010,7 @@ class MtmdSttSidecar:
         path_revision: Optional[int] = None,
         device: Optional[str] = None,
         context_length: Optional[int] = None,
+        auto_start_context: Optional[int] = None,
         _context_size: Optional[int] = None,
         _active_request: bool = False,
     ) -> None:
@@ -994,7 +1034,7 @@ class MtmdSttSidecar:
                     if self._process_alive()
                     and self._model_id == model_id
                     and self._context_preference == 0
-                    else _AUTO_CONTEXT_MIN
+                    else _auto_start_size(auto_start_context)
                 )
             )
             other_requests = self._active_requests - int(_active_request)
@@ -1103,17 +1143,22 @@ class MtmdSttSidecar:
                 key_argv, key_env, key_file = _llama_server_key_launch(api_key)
                 # Right after the binary: --no-mmproj-offload has to stay last.
                 cmd[1:1] = key_argv
-            process = subprocess.Popen(
-                cmd,
-                # An undrained pipe blocks llama-server once its log output fills the buffer.
-                stdout = subprocess.DEVNULL,
-                stderr = subprocess.DEVNULL,
-                stdin = subprocess.DEVNULL,
-                # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
-                env = {**_llama_server_child_env(binary), **key_env},
-                # Die with Unsloth, so a crash never orphans a server on the GPU.
-                **child_popen_kwargs(),
-            )
+            # A file, never a pipe: an undrained pipe blocks llama-server once its output fills the buffer.
+            log_handle = _open_server_log(port)
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    stdout = log_handle if log_handle is not None else subprocess.DEVNULL,
+                    stderr = subprocess.STDOUT if log_handle is not None else subprocess.DEVNULL,
+                    stdin = subprocess.DEVNULL,
+                    # Like chat: bundled and pip CUDA libs on the loader path; secrets scrubbed.
+                    env = {**_llama_server_child_env(binary), **key_env},
+                    # Die with Unsloth, so a crash never orphans a server on the GPU.
+                    **child_popen_kwargs(),
+                )
+            finally:
+                if log_handle is not None:
+                    log_handle.close()
             # Published before the wait so training can preempt a startup that is already allocating.
             with self._lock:
                 self._starting_process = process
@@ -1208,6 +1253,7 @@ class MtmdSttSidecar:
         *,
         context_length: Optional[int] = None,
         prompt: Optional[str] = None,
+        decoded_audio = None,
     ) -> dict:
         """Transcribe encoded audio bytes, as the other sidecars do.
 
@@ -1220,7 +1266,8 @@ class MtmdSttSidecar:
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # No training guard: load() already pins the server to CPU while training runs.
         self._ensure_model_downloaded(model_id)
-        decoded_audio = _decode_audio_bounded(audio, cancel_event)
+        if decoded_audio is None:
+            decoded_audio = _decode_audio_bounded(audio, cancel_event)
         if cancel_event is not None and cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         # llama-server aborts (mtmd GGML_ASSERT) on a one-sample clip.
@@ -1228,10 +1275,12 @@ class MtmdSttSidecar:
             raise SttAudioDecodeError("Audio is too short (min 1 ms).")
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
         audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
+        start_context = 0 if context_length else _cold_start_context(model_id, audio_seconds)
         self.load(
             model_id,
             request_cancel_event = cancel_event,
             **({"context_length": context_length} if context_length is not None else {}),
+            **({"auto_start_context": start_context} if start_context > _AUTO_CONTEXT_MIN else {}),
         )
         with self._lock:
             port = self._port
@@ -1317,6 +1366,30 @@ class MtmdSttSidecar:
             "duration": audio_seconds,
             "model": model_id,
         }
+
+    def prepare_cold_start(
+        self,
+        audio: bytes,
+        model: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Optional[tuple[Optional[int], object]]:
+        """None (old path, same errors in the same order) for a warm Auto server, undownloaded model or bad clip."""
+        try:
+            model_id = resolve_mtmd_model_id(model)
+            keeps_window = (
+                self._process_alive()
+                and self._model_id == model_id
+                and self._context_preference == 0
+            )
+            if keeps_window or not is_model_downloaded(model_id):
+                return None
+            decoded = _decode_audio_bounded(audio, cancel_event)
+        except Exception:  # noqa: BLE001 - transcribe re-raises it after the load
+            return None
+        if len(decoded) < _TARGET_SAMPLE_RATE // 1000:
+            return None
+        start_context = _cold_start_context(model_id, len(decoded) / _TARGET_SAMPLE_RATE)
+        return (start_context if start_context > _AUTO_CONTEXT_MIN else None), decoded
 
     def _check_request_server(self, model_id: str, generation: int) -> None:
         if (

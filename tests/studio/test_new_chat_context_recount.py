@@ -307,6 +307,10 @@ function findLatestUserAudioBase64(_messages: any): string | null {
   return null;
 }
 
+function hasUncountableChatAudio(_messages: any): boolean {
+  return false;
+}
+
 // refresh-context-usage.ts declines to price a prompt carrying video, the same way
 // it declines audio and images. The emulator replays that module's body with its
 // imports stripped, so every name it imports has to exist here or the bail throws

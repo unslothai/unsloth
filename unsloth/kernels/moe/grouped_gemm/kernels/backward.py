@@ -44,7 +44,7 @@ TODO:
 """
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dX_kernel(
     dY_ptr,
     w_ptr,
@@ -179,7 +179,11 @@ def _grouped_gemm_dX_kernel(
                         w = tl.reshape(w, (BLOCK_SIZE_N, BLOCK_SIZE_K))
 
                     dY = dY.to(w.dtype)
-                    accumulator += tl.dot(dY, w)
+                    # float32: IEEE, not Triton's TF32 default.
+                    if w.dtype == tl.float32:
+                        accumulator += tl.dot(dY, w, input_precision = "ieee")
+                    else:
+                        accumulator += tl.dot(dY, w)
 
                     if not USE_TMA_LOAD_dY:
                         dY_ptrs += BLOCK_SIZE_N
@@ -231,7 +235,7 @@ to account for expert boundaries
 """
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dW_kernel(
     x_ptr,
     dY_ptr,
@@ -388,10 +392,11 @@ def _grouped_gemm_dW_kernel(
                                 mask = mn_mask,
                             )
 
-                        accumulator += tl.dot(
-                            dY.T.to(x.dtype),
-                            x,
-                        )
+                        # float32: IEEE, not Triton's TF32 default.
+                        if x.dtype == tl.float32:
+                            accumulator += tl.dot(dY.T.to(x.dtype), x, input_precision = "ieee")
+                        else:
+                            accumulator += tl.dot(dY.T.to(x.dtype), x)
 
                 # ACCUMULATE: dW is an existing gradient. This program alone owns the (expert, n, k)
                 # tile, so read-modify-write is race free. The old value is added after the reduction
@@ -428,7 +433,7 @@ _autotuned_grouped_gemm_dW_kernel = triton.autotune(
 )(_grouped_gemm_dW_kernel)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["NUM_TOKENS"])
 def _grouped_gemm_dW_per_expert_kernel(
     x_ptr,
     dY_ptr,
@@ -542,7 +547,11 @@ def _grouped_gemm_dW_per_expert_kernel(
                 mask = row_mask[:, None] & n_mask[None, :],
                 other = 0.0,
             )
-        accumulator += tl.dot(dY.T.to(x.dtype), x)
+        # float32: IEEE, not Triton's TF32 default.
+        if x.dtype == tl.float32:
+            accumulator += tl.dot(dY.T.to(x.dtype), x, input_precision = "ieee")
+        else:
+            accumulator += tl.dot(dY.T.to(x.dtype), x)
 
     store_row_offs = expert_idx.to(tl.int64) * N + n_offset + block_range_n
     nk_mask = n_mask[:, None] & k_mask[None, :]

@@ -126,8 +126,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     for (const name of PAGE_CLASSES) for (const el of doc.getElementsByClassName(name)) page.push(el);
     return page;
   };
-  /** Pause `el` (a surface that moves) for `ms` and, unless it is a tooltip, the page's standing glass for
-   *  `pageMs` with it; the standing glass is only ever held longer, since other motion may be holding it too. */
+  /** Pauses el for ms, and page glass for pageMs unless a tooltip; page glass is only extended. */
   const holdMotion = (el: Element | null, ms: number, pageMs = ms) => {
     if (el) hold(el, ms);
     if (el && el.matches(LOCAL_ONLY)) return;
@@ -140,8 +139,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     const out: Element[] = [];
     const own = scroller.closest(GLASS_MOTION_SURFACES);
     if (own) out.push(own);
-    // The glass floating over the chat (the composer dock, the scroll-to-bottom button) sits beside the
-    // thread viewport. Only those siblings' own subtrees are searched, never the viewport's.
+    // Chat glass sits beside the thread viewport; only those siblings' subtrees are searched.
     const parent = scroller.parentElement;
     if (parent && !own && scroller.matches(THREAD_SCROLLER)) {
       for (const sibling of parent.children) {
@@ -176,9 +174,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     holdMotion(null, SETTLE_MS);
   };
 
-  // A key or a press redraws the window like any motion: typing a character, pasting, an IME step or a click
-  // that opens a reasoning block would otherwise compute every blur on screen again for each of its frames.
-  // The standing glass, and the surface the event lands in (a dialog's search field, a menu), pause with it.
+  // A key or press pauses glass like any motion, or every blur on screen recomputes each frame.
   const onInteraction = (event: Event) => {
     const target = event.target;
     const own = isElement(target) ? target.closest(GLASS_MOTION_SURFACES) : null;
@@ -195,9 +191,7 @@ export function startGlassMotion(doc: Document = document): GlassMotion {
     if (isElement(el) && timers.has(el)) holdMotion(el, SETTLE_MS);
   };
 
-  // Menus, dialogs and tooltips mount into portals on <body>. Marking them before their first frame keeps
-  // even that frame (the costliest: the blur is created) free of the blur. Only body's own children are
-  // watched, not the subtree, so streaming chat text never wakes this.
+  // Portal popups are marked before their first frame; only body's children are watched.
   const onMutations = (records: MutationRecord[]) => {
     for (const record of records) {
       for (const node of record.addedNodes) {

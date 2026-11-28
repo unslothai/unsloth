@@ -3,9 +3,9 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 
-/** Media-picker runtime capability. The backend reports dense quant, since its name alone cannot
- *  distinguish unsupported accelerators. */
-export type HostClass = "unknown" | "gguf-only" | "accelerated" | "dense-quant";
+/** Backend reports dense quant; its name alone cannot distinguish unsupported accelerators. */
+/** "cpu-only": a "gguf-only" host with backend cpu; families with a GGUF row offer only GGUF rows. */
+export type HostClass = "unknown" | "gguf-only" | "cpu-only" | "accelerated" | "dense-quant";
 
 const ACCELERATED_BACKENDS = new Set(["cuda", "rocm", "xpu"]);
 
@@ -16,23 +16,32 @@ export function classifyHost({
   deviceBackend,
   budgetKnown,
   denseQuantSupported,
+  appleSilicon,
 }: {
   deviceType?: string | null;
   deviceBackend?: string | null;
   budgetKnown?: boolean;
   denseQuantSupported?: boolean;
+  appleSilicon?: boolean;
 }): HostClass {
   const backend = (deviceBackend ?? "").trim().toLowerCase();
   // Backend outranks the OS: deviceType can be the browser's platform (config/env.ts).
   if (backend && budgetKnown && ACCELERATED_BACKENDS.has(backend)) {
     return denseQuantSupported ? "dense-quant" : "accelerated";
   }
+  // Outranks the Mac fallback: an Intel Mac has no MPS. Apple Silicon reports cpu while its MLX stack is
+  // unusable, yet diffusers still runs dense rows on MPS there, so it keeps "gguf-only".
+  if (backend === "cpu" && budgetKnown && !appleSilicon) return "cpu-only";
   // Modular Diffusers needs mem_get_info, which torch.mps lacks.
   if (deviceType === "mac") return "gguf-only";
   if (!(backend && budgetKnown)) return "unknown";
   if (GGUF_ONLY_BACKENDS.has(backend)) return "gguf-only";
   // An unrecognised backend is a new accelerator, not a CPU.
   return "unknown";
+}
+
+export function hostIsGgufOnly(host: HostClass): boolean {
+  return host === "gguf-only" || host === "cpu-only";
 }
 
 export function hostIsAccelerated(host: HostClass): boolean {
@@ -51,13 +60,27 @@ const H3_PIPELINE_ID = "minimaxai/minimax-h3";
   *  CUDA / ROCm; its GGUF row runs there instead. */
 const UNPLACEABLE_WITHOUT_ACCELERATOR = new Set([H3_PIPELINE_ID, "minimaxai/minimax-h3-image"]);
 
-/** Only browse rows are filtered; a model already on disk keeps its row. */
+/** Structural, so this module imports no catalog types. */
+export interface OfferableGroup {
+  scope: string;
+  artifacts: ReadonlyArray<{ repoId: string; format: string }>;
+  nativeGgufRoute?: boolean;
+}
+
+/** Only browse rows are filtered; a model already on disk keeps its row. On a CPU-only host a family with a GGUF row
+ *  (or ``nativeGgufRoute``) offers only GGUF rows; the backend refuses dense loads there. */
 export function curatedArtifactIsOfferable(
   repoId: string,
   host: HostClass,
+  group?: OfferableGroup | null,
 ): boolean {
-  if (host !== "gguf-only") return true;
-  return !UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase());
+  if (!hostIsGgufOnly(host)) return true;
+  if (UNPLACEABLE_WITHOUT_ACCELERATOR.has(repoId.trim().toLowerCase())) return false;
+  if (host !== "cpu-only" || !group || (group.scope !== "image" && group.scope !== "video")) return true;
+  const id = repoId.trim().toLowerCase();
+  const artifact = group.artifacts.find((a) => a.repoId.trim().toLowerCase() === id);
+  if (!artifact || artifact.format === "gguf") return true;
+  return !(group.nativeGgufRoute || group.artifacts.some((a) => a.format === "gguf"));
 }
 
 const H3_GGUF_ID = "unsloth/minimax-h3-gguf";
@@ -81,7 +104,7 @@ export function ggufPerfSuffix(host: HostClass): string | null {
 
 /** An "unknown" host keeps the full list so an older backend does not lose controls. */
 export function hostOffersDensePrecision(host: HostClass): boolean {
-  return host !== "gguf-only";
+  return !hostIsGgufOnly(host);
 }
 
 export function h3PerfSuffix(
@@ -96,8 +119,7 @@ export function h3PerfSuffix(
   return null;
 }
 
-/** Video pipelines whose fp8 / int8 load runs a quantized DiT (a hosted pre-quantized checkpoint, else quantized at
- *  load). Other video rows stay bare: the dense-quant row rule is image-only. */
+/** Only these video pipelines run a quantized DiT on fp8/int8; dense-quant rule is image-only. */
 const DENSE_QUANT_VIDEO_PIPELINES = new Set(["lightricks/ltx-2.5-diffusers"]);
 
 /** Speed qualifier for those video rows, from the same host scheme list as the image rows. */

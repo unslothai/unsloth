@@ -100,6 +100,7 @@ def _encoder_forward(
         or (hidden_states.dtype == torch.float32 and not torch.is_autocast_enabled())
         or kwargs.get("encoder_hidden_states") is not None
         or kwargs.get("past_key_values") is not None
+        or kwargs.get("cache") is not None
         or (backend := _unpadding_backend()) is None
     ):
         return original_forward(hidden_states, attention_mask = attention_mask, **kwargs)
@@ -226,11 +227,12 @@ def enable_sentence_transformer_unpadding(model, auto = False):
         return False
 
     from transformers import AttentionInterface, AttentionMaskInterface
-    from transformers.masking_utils import sdpa_mask
+    from transformers.masking_utils import ALL_MASK_ATTENTION_FUNCTIONS
 
     AttentionInterface.register(_ATTENTION, _sentence_attention)
     # Without a registered mask builder the padded fallback would silently lose its padding mask.
-    AttentionMaskInterface.register(_ATTENTION, sdpa_mask)
+    # The registry entry, which carries the fully masked row fix (import_fixes).
+    AttentionMaskInterface.register(_ATTENTION, ALL_MASK_ATTENTION_FUNCTIONS["sdpa"])
     config._attn_implementation = _ATTENTION
     # None means ST forwards every feature key unfiltered.
     if transformer.model_forward_params is not None:

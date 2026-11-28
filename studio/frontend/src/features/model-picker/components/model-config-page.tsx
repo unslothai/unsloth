@@ -8,6 +8,12 @@ import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { InferenceEnginePicker } from "./inference-engines";
 import { modelDisplayName } from "../model-config/model-identity";
+import {
+  cachedStagedDims,
+  rememberStagedDims,
+  stagedDimsLastInconclusive,
+  type StagedDims,
+} from "../model-config/staged-dims-cache";
 import { type RunSettingsNaming, RunSettingsPicker } from "./saved-run-settings-row";
 import {
   adoptRememberedRunSettings,
@@ -131,8 +137,9 @@ import {
 import { type MemoryEstimate, type MlxOffloadablePart } from "../api/memory-estimate";
 import { fetchMlxDrafters } from "../api/mlx-drafters";
 import {
+  autoContextQuote,
+  fixedLayerContextPin,
   resolveEstimateContext,
-  resolveMlxEstimateContext,
   resolveMlxServedWindow,
   shouldRequestMemoryEstimate,
 } from "../model-config/estimate-context";
@@ -143,6 +150,7 @@ import {
   mlxOffloadModePatch,
   mlxOffloadSliderValue,
   resolveReclaimableMemoryCredit,
+  residentPlacementGpuIds,
 } from "../model-config/memory-fit";
 import {
   resolveResidentEstimateRequest,
@@ -243,7 +251,7 @@ import {
   subscribeAdvancedSettingsOpen,
   sameEngramPrecision,
 } from "../model-config/per-model-config";
-import { type EngramTableDetail, listGgufVariants } from "@/features/hub";
+import { type EngramTableDetail, formatBytes, listGgufVariants } from "@/features/hub";
 import { isAudioRuntimeGguf } from "../../audio/audio-cpp-catalog";
 import {
   isNpuModelId,
@@ -572,6 +580,7 @@ function GgufContextLengthSetting({
   max,
   nativeContextLength,
   activeLoadedContext,
+  refitsLoadedContext = null,
   inputRef,
   onChange,
   renderWarning,
@@ -583,6 +592,7 @@ function GgufContextLengthSetting({
   max: number;
   nativeContextLength: number | null;
   activeLoadedContext: number | null;
+  refitsLoadedContext?: number | null;
   inputRef?: Ref<NumericValueInputHandle>;
   onChange: (value: number) => void;
   renderWarning: (value: number) => ReactNode;
@@ -606,6 +616,17 @@ function GgufContextLengthSetting({
   );
   const shown = draft == null ? value : fromSlider(draft);
   const isAuto = shown === 0;
+  const reset = isAuto ? null : (
+    <button
+      type="button"
+      onClick={() => onChange(0)}
+      className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      aria-label="Reset context to Auto"
+      title="Reset to Auto"
+    >
+      <HugeiconsIcon icon={ArrowTurnBackwardIcon} className="size-4" strokeWidth={2} />
+    </button>
+  );
   const label = (
     // The hint and reset float after the label, so the slider's left gap counts from its text.
     <div className="relative flex shrink-0 items-center">
@@ -619,25 +640,14 @@ function GgufContextLengthSetting({
           {isAuto && activeLoadedContext != null
             ? ` Auto currently selected ${activeLoadedContext.toLocaleString()} tokens.`
             : ""}
+          {isAuto && refitsLoadedContext != null
+            ? ` The loaded ${refitsLoadedContext.toLocaleString()} tokens were fitted to other settings; Auto fits again on load.`
+            : ""}
           {nativeContextLength != null
             ? ` This model's native context is ${nativeContextLength.toLocaleString()} tokens.`
             : ""}
         </InfoHint>
-        {isAuto ? null : (
-          <button
-            type="button"
-            onClick={() => onChange(0)}
-            className="inline-flex size-[calc(18px*var(--ui-space-scale,1))] shrink-0 items-center justify-center rounded-full text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            aria-label="Reset context to Auto"
-            title="Reset to Auto"
-          >
-            <HugeiconsIcon
-              icon={ArrowTurnBackwardIcon}
-              className="size-4"
-              strokeWidth={2}
-            />
-          </button>
-        )}
+        {stacked ? null : reset}
       </span>
     </div>
   );
@@ -666,7 +676,8 @@ function GgufContextLengthSetting({
       />
     ) : null;
   const input = (
-    <div className="ml-auto flex shrink-0 items-center">
+    <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {stacked ? reset : null}
       <NumericValueInput
         ref={inputRef}
         value={isAuto ? autoValue : shown}
@@ -734,7 +745,6 @@ function VramBudgetRow() {
   return <VramBudgetControl modelLoading={modelLoading} />;
 }
 
-// --tensor-split is set per GPU row but not persisted per model.
 function GpuMemorySettings({
   config,
   update,
@@ -945,7 +955,7 @@ function GpuMemorySettings({
               {showSplit &&
                 (splitIsPercent
                   ? " The number beside each is its share of every layer, in percent (--tensor-split)."
-                  : " The number beside each is how many of the GPU Layers it holds (--tensor-split).")}
+                  : " The numbers set the relative layer split (--tensor-split). Estimated Memory Usage shows the resulting placement when available.")}
             </InfoHint>
             {showSplit && splitIsCustom && (
               <button
@@ -963,11 +973,17 @@ function GpuMemorySettings({
                 key={d.index}
                 className="flex items-center justify-between gap-3"
               >
-                <span className="min-w-0 truncate text-ui-12 text-muted-foreground">
+                <span className="min-w-0 break-words text-ui-12 text-muted-foreground">
                   GPU {d.index}: {d.name}
                   {d.memoryTotalGb
                     ? ` · ${Math.round(d.memoryTotalGb)} GiB`
                     : ""}
+                  {(d.pcieLinkWidth || d.pcieLinkGen) ? (
+                    <span className="whitespace-nowrap">
+                      {" · PCIe"}{d.pcieLinkGen ? ` Gen${d.pcieLinkGen}` : ""}
+                      {d.pcieLinkWidth ? ` ×${d.pcieLinkWidth}` : ""}
+                    </span>
+                  ) : null}
                 </span>
                 {showSplit && isGpuChecked(d.index) && (
                   <div className="ml-auto flex shrink-0 items-center gap-1">
@@ -981,14 +997,14 @@ function GpuMemorySettings({
                       ariaLabel={
                         splitIsPercent
                           ? `Share of each layer on GPU ${d.index}, percent`
-                          : `Layers on GPU ${d.index}`
+                          : `Layer split weight for GPU ${d.index}`
                       }
                       className="panel-field h-7 w-[calc(52px*var(--ui-space-scale,1))] shrink-0"
                       fixedWidth={true}
                       size={4}
                     />
                     <span className="w-[3.25em] text-ui-12 text-muted-foreground">
-                      {splitIsPercent ? "%" : "layers"}
+                      {splitIsPercent ? "%" : "share"}
                     </span>
                   </div>
                 )}
@@ -1206,6 +1222,180 @@ function AdvancedGroup({
       </h3>
       <div className="space-y-5">{children}</div>
     </section>
+  );
+}
+
+const GGUF_VISION_HINT =
+  "Loads the vision projector so the model can read images. Turning it off " +
+  "frees that VRAM for more layers on the GPU. Text generation is unaffected " +
+  "either way.";
+
+const MLX_VISION_HINT =
+  "Lets the model read images. Turning it off stops image input and frees the " +
+  "memory the vision weights hold. Text generation works either way. Adapters " +
+  "and models that take audio keep it on.";
+
+function VisionRow({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>Vision</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <Switch
+        className="shrink-0"
+        aria-label="Vision"
+        checked={!config.disableVision}
+        onCheckedChange={(checked) => update({ disableVision: !checked })}
+      />
+    </div>
+  );
+}
+
+const GGUF_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens. Leave blank for unlimited; 0 turns reasoning off.";
+
+const MLX_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens per reply. Leave blank for unlimited; 0 closes the " +
+  "thinking block as soon as it opens. While a budget is set, replies decode " +
+  "without a speculative drafter.";
+
+function ReasoningBudgetRows({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Reasoning Budget</span>
+          <InfoHint>{hint}</InfoHint>
+        </div>
+        {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
+        <input
+          type="number"
+          min={-1}
+          max={2_147_483_647}
+          step={1}
+          value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
+          placeholder="unlimited"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ reasoningBudget: -1 });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                reasoningBudget: Math.max(-1, Math.min(2_147_483_647, parsed)),
+              });
+            }
+          }}
+          aria-label="Reasoning Budget"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+          <InfoHint>
+            Optional text added before the end-of-thinking tag when the budget
+            runs out.
+          </InfoHint>
+        </div>
+        <input
+          type="text"
+          value={config.reasoningBudgetMessage}
+          placeholder="None"
+          onChange={(event) => {
+            if (isReasoningBudgetMessageValid(event.target.value)) {
+              update({ reasoningBudgetMessage: event.target.value });
+            }
+          }}
+          aria-label="Reasoning Budget Message"
+          className={TEXT_INPUT_CLASS}
+        />
+      </div>
+    </>
+  );
+}
+
+const MLX_BATCH_HINT =
+  "Most prompt tokens one prefill step reads across replies started together. " +
+  "Leave blank to read every waiting reply at once. Lower values hold less " +
+  "memory at once; below the micro-batch size, replies are read one at a time.";
+
+const MLX_CACHE_RAM_HINT =
+  "Memory in MiB kept for reusing earlier prompts, so a returning conversation " +
+  "is not read again. Leave blank for the default (15% of the memory the GPU may " +
+  "use); 0 turns it off. It comes out of the memory the model and its context can use.";
+
+const MLX_MICRO_BATCH_HINT =
+  "Prompt tokens each prefill step reads. Leave blank for the default (2048). " +
+  "Larger values read long prompts faster but use more memory; when experts " +
+  "are read from disk, Unsloth's own step is the most it uses.";
+
+/** A blank-means-default count, clamped to the batch bounds llama.cpp and MLX share. */
+function BatchCountRow({
+  label,
+  hint,
+  ariaLabel,
+  value,
+  onChange,
+  min = N_BATCH_MIN,
+  max = N_BATCH_MAX,
+}: {
+  label: string;
+  hint: string;
+  ariaLabel: string;
+  value: number | null | undefined;
+  onChange: (value: number | null) => void;
+  min?: number;
+  max?: number;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={LABEL_CLASS}>{label}</span>
+        <InfoHint>{hint}</InfoHint>
+      </div>
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={1}
+        value={value ?? ""}
+        placeholder="auto"
+        onChange={(event) => {
+          const raw = event.target.value;
+          if (raw === "") {
+            onChange(null);
+            return;
+          }
+          const parsed = Number.parseInt(raw, 10);
+          if (Number.isFinite(parsed)) {
+            onChange(Math.max(min, Math.min(max, parsed)));
+          }
+        }}
+        aria-label={ariaLabel}
+        className={NUMBER_INPUT_CLASS}
+      />
+    </div>
   );
 }
 
@@ -1669,6 +1859,9 @@ function MlxAdvancedSettings({
       ) : null}
         </div>
       )}
+      {servedByMlx && (
+        <VisionRow config={config} update={update} hint={MLX_VISION_HINT} />
+      )}
       {servedByMlx && (int8PrefillAvailable || config.mlxInt8Prefill) && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
@@ -1720,6 +1913,42 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Batch Size"
+          hint={MLX_BATCH_HINT}
+          ariaLabel="Prompt batch size"
+          value={config.nBatch}
+          onChange={(nBatch) => update({ nBatch })}
+        />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Micro-batch Size"
+          hint={MLX_MICRO_BATCH_HINT}
+          ariaLabel="Prompt micro-batch size"
+          value={config.nUbatch}
+          onChange={(nUbatch) => update({ nUbatch })}
+        />
+      )}
+      {servedByMlx && (
+        <BatchCountRow
+          label="Cache RAM"
+          hint={MLX_CACHE_RAM_HINT}
+          ariaLabel="Prompt cache size in MiB"
+          value={config.cacheRam}
+          onChange={(cacheRam) => update({ cacheRam })}
+          min={0}
+          max={CACHE_RAM_MAX}
+        />
+      )}
+      {servedByMlx && (
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={MLX_REASONING_BUDGET_HINT}
+        />
       )}
       {servedByMlx && (
         <MlxOffloadSettings
@@ -1833,10 +2062,6 @@ type EngramTableListing = {
   supported: boolean | null;
 };
 
-function formatTableSize(bytes: number): string {
-  return `${(bytes / 1e9).toFixed(1)} GB`;
-}
-
 /** Tables the repo publishes for this quant, or null when it publishes none (the row then hides). */
 function useEngramTables(source: EngramTableSource | null): EngramTableListing | null {
   const [listing, setListing] = useState<EngramTableListing | null>(null);
@@ -1900,13 +2125,13 @@ function EngramTableRow({
       ? "This llama.cpp build cannot load a separate table, so the next load fails. Update llama.cpp, or pick the built-in table."
       : "Swapping the table needs a newer llama.cpp. Update it to choose another precision.";
   } else if (swapped && table && !table.downloaded) {
-    note = `The next load downloads the ${table.precision} table (${formatTableSize(table.size_bytes)}).`;
+    note = `The next load downloads the ${table.precision} table (${formatBytes(table.size_bytes)}).`;
     if (!ownReady && ownTable) {
-      note += ` The built-in ${own} table (${formatTableSize(ownTable.size_bytes)}) is not needed.`;
+      note += ` The built-in ${own} table (${formatBytes(ownTable.size_bytes)}) is not needed.`;
     }
   } else if (!swapped && quantDownloaded && !ownReady && ownTable) {
     // On disk with another table in place of its own.
-    note = `The next load downloads the built-in ${own} table (${formatTableSize(ownTable.size_bytes)}).`;
+    note = `The next load downloads the built-in ${own} table (${formatBytes(ownTable.size_bytes)}).`;
   }
   return (
     <div className="space-y-1">
@@ -1947,7 +2172,7 @@ function EngramTableRow({
                   <span className="flex min-w-0 flex-1 items-baseline gap-2">
                     <span>{t.precision}</span>
                     <span className="text-ui-12 tabular-nums text-muted-foreground">
-                      {formatTableSize(t.size_bytes)}
+                      {formatBytes(t.size_bytes)}
                       {builtIn ? " · built-in" : downloaded ? " · downloaded" : ""}
                     </span>
                   </span>
@@ -2069,22 +2294,7 @@ function GgufAdvancedSettings({
       />
 
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Vision</span>
-            <InfoHint>
-              Loads the vision projector so the model can read images. Turning
-              it off frees that VRAM for more layers on the GPU. Text generation
-              is unaffected either way.
-            </InfoHint>
-          </div>
-          <Switch
-            className="shrink-0"
-            aria-label="Vision"
-            checked={!config.disableVision}
-            onCheckedChange={(checked) => update({ disableVision: !checked })}
-          />
-        </div>
+        <VisionRow config={config} update={update} hint={GGUF_VISION_HINT} />
       )}
       {!isDiffusion && (
         <EngramTableRow config={config} update={update} source={engramSource} />
@@ -2334,66 +2544,11 @@ function GgufAdvancedSettings({
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Reasoning Budget</span>
-            <InfoHint>
-              Maximum thinking tokens. Leave blank for unlimited; 0 turns
-              reasoning off.
-            </InfoHint>
-          </div>
-          {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
-          <input
-            type="number"
-            min={-1}
-            max={2_147_483_647}
-            step={1}
-            value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
-            placeholder="unlimited"
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                update({ reasoningBudget: -1 });
-                return;
-              }
-              const parsed = Number.parseInt(raw, 10);
-              if (Number.isFinite(parsed)) {
-                update({
-                  reasoningBudget: Math.max(
-                    -1,
-                    Math.min(2_147_483_647, parsed),
-                  ),
-                });
-              }
-            }}
-            aria-label="Reasoning Budget"
-            className={NUMBER_INPUT_CLASS}
-          />
-        </div>
-      )}
-
-      {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
-            <InfoHint>
-              Optional text added before the end-of-thinking tag when the budget
-              runs out.
-            </InfoHint>
-          </div>
-          <input
-            type="text"
-            value={config.reasoningBudgetMessage}
-            placeholder="None"
-            onChange={(event) => {
-              if (isReasoningBudgetMessageValid(event.target.value)) {
-                update({ reasoningBudgetMessage: event.target.value });
-              }
-            }}
-            aria-label="Reasoning Budget Message"
-            className={TEXT_INPUT_CLASS}
-          />
-        </div>
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={GGUF_REASONING_BUDGET_HINT}
+        />
       )}
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />
@@ -2678,6 +2833,7 @@ export function ModelConfigPage({
   // Wording only ("Unified" vs "Shared"); not the capacity signal, see hasUnifiedMemory.
   const isAppleUnifiedMemory = usePlatformStore((s) => s.appleSilicon);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
+  const platformMlxInference = usePlatformStore((s) => s.mlxInference);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
   const chatTemplateOverrideReason = useChatRuntimeStore(
     (s) => s.chatTemplateOverrideReason,
@@ -2689,6 +2845,8 @@ export function ModelConfigPage({
   const loadedGpuIds = useChatRuntimeStore((s) => s.loadedGpuIds);
   const loadedGpuIndexKind = useChatRuntimeStore((s) => s.loadedGpuIndexKind);
   const loadedCpuFallback = useChatRuntimeStore((s) => s.loadedCpuFallback);
+  const loadedGpuLayers = useChatRuntimeStore((s) => s.loadedGpuLayers);
+  const loadedSplitRatio = useChatRuntimeStore((s) => s.loadedSplitRatio);
   const residentModelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const residentEstimateSettings = useChatRuntimeStore(
     useShallow(selectResidentEstimateSettings),
@@ -2857,6 +3015,7 @@ export function ModelConfigPage({
     target.isGguf,
     platformDeviceType,
     platformChatOnlyReason,
+    platformMlxInference,
   );
   const prefillOptionPath =
     servedByMlx &&
@@ -2970,16 +3129,12 @@ export function ModelConfigPage({
   const contextFetchKey = target.isGguf && !sharedVariantUnresolved
     ? `${target.id}\n${target.ggufVariant ?? ""}\n${hfToken || ""}\n${nativePathToken ?? ""}`
     : null;
-  const [fetchedStagedDims, setFetchedStagedDims] = useState<{
-    key: string;
-    contextLength: number | null;
-    layerCount: number | null;
-    moeLayerCount: number | null;
-    isDiffusion?: boolean;
-    diffusionUnknown?: boolean;
-  } | null>(null);
+  const [fetchedStagedDims, setFetchedStagedDims] = useState<StagedDims | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
+      return;
+    }
+    if (cachedStagedDims(contextFetchKey)) {
       return;
     }
     let cancelled = false;
@@ -3010,6 +3165,7 @@ export function ModelConfigPage({
         nativePathToken,
       });
       if (!cancelled) {
+        rememberStagedDims({ key: contextFetchKey, ...dims });
         setFetchedStagedDims({ key: contextFetchKey, ...dims });
       }
     })().catch(() => {
@@ -3026,7 +3182,9 @@ export function ModelConfigPage({
     nativePathToken,
   ]);
   const stagedDims =
-    fetchedStagedDims?.key === contextFetchKey ? fetchedStagedDims : null;
+    fetchedStagedDims?.key === contextFetchKey
+      ? fetchedStagedDims
+      : cachedStagedDims(contextFetchKey);
   // Tri-state on purpose: collapsing unknown to false lets a compare pane inherit another split.
   const classifiedIsDiffusion = resolveStagedDiffusionClassification(
     isDiffusion,
@@ -3339,8 +3497,8 @@ export function ModelConfigPage({
       config.selectedGpuIds != null ||
       config.nBatch != null ||
       config.nUbatch != null);
-  const gpuIndexKind =
-    pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
+  const gpuSelectionContext = pinnableGpuContext(gpuDevices, resolvedIsDiffusion);
+  const gpuIndexKind = gpuSelectionContext.indexKind ?? null;
   const handleSharedConfigEdit = () => {
     cancelRunConfigImportForEdit(draftKey);
     setImportedConfig(null);
@@ -3366,8 +3524,6 @@ export function ModelConfigPage({
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
     isActiveModel && target.isGguf ? loadedContextLength : null;
-  // resolveLoadMaxSeqLength returns 0 for a builtin-default GGUF load, so do not fall back to it.
-  const activePresetSource = useChatRuntimeStore((s) => s.activePresetSource);
   const minContext = CONTEXT_LENGTH_MIN;
   const maxContext = Math.max(
     minContext,
@@ -3443,18 +3599,18 @@ export function ModelConfigPage({
       setExtraArgsLoadable(true);
     }
   }, [resolvedIsDiffusion]);
-  const pinFixedLayerContext =
-    target.isGguf &&
-    loadableConfig.gpuMemoryMode === "manual" &&
-    loadableConfig.gpuLayers != null &&
-    loadableConfig.gpuLayers >= 0 &&
-    loadableConfig.customContextLength == null &&
-    activeLoadedContext != null;
-  const runtimeConfig = target.isGguf
-    ? pinFixedLayerContext
-      ? { ...loadableConfig, customContextLength: activeLoadedContext }
-      : loadableConfig
-    : loadableConfig;
+  const fixedLayerPin = fixedLayerContextPin({
+    isGguf: target.isGguf === true,
+    gpuMemoryMode: loadableConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+    gpuLayers: loadableConfig.gpuLayers,
+    customContextLength: loadableConfig.customContextLength,
+    activeLoadedContext,
+  });
+  const autoQuote = autoContextQuote({ atBaseline, activeLoadedContext, fixedLayerPin });
+  const runtimeConfig =
+    fixedLayerPin != null
+      ? { ...loadableConfig, customContextLength: fixedLayerPin }
+      : loadableConfig;
   const runtimeGpuMemoryMode =
     runtimeConfig.gpuMemoryMode ?? gpuMemoryModeFallback;
   // Read the classification as a tri-state: an unclassified GGUF may be DiffusionGemma.
@@ -3470,18 +3626,11 @@ export function ModelConfigPage({
           hfToken: hfToken || null,
           nativePathToken,
           // The context Load sends, not the displayed one (which shows 32,768 before the header).
-          nCtx: resolveEstimateContext(
-            runtimeConfig.customContextLength ?? null,
-            activeLoadedContext,
-            (target.isGguf === true &&
-              runtimeGpuMemoryMode === "manual" &&
-              (runtimeConfig.gpuLayers ?? GPU_LAYERS_AUTO) < 0) ||
-              (target.isGguf === true && activePresetSource === "builtin-default"),
-          ),
+          nCtx: resolveEstimateContext(runtimeConfig.customContextLength ?? null),
           cacheTypeKv: runtimeConfig.kvCacheDtype,
           maxSeqLength: target.isGguf
             ? null
-            : resolveMlxEstimateContext(savedContextPin(config)),
+            : resolveEstimateContext(savedContextPin(config)),
           mlxKvQuant: runtimeConfig.mlxKvQuant ?? null,
           mlxPleOffload: targetIsMlx ? (runtimeConfig.mlxPleOffload ?? null) : null,
           mlxExpertOffload: targetIsMlx ? (runtimeConfig.mlxExpertOffload ?? null) : null,
@@ -3489,6 +3638,7 @@ export function ModelConfigPage({
           nBatch: runtimeConfig.nBatch,
           nUbatch: runtimeConfig.nUbatch,
           ctxCheckpoints: runtimeConfig.ctxCheckpoints ?? null,
+          cacheRam: targetIsMlx ? (runtimeConfig.cacheRam ?? null) : null,
           // Same substitution as applyPerModelConfigToRuntime: no per-model override sends null
           // (read as Auto) while the selector shows the global fallback, so a global Off row
           // charged an 11 GB DSpark sidecar.
@@ -3510,10 +3660,23 @@ export function ModelConfigPage({
               : null,
           nCpuMoe: runtimeConfig.nCpuMoe ?? null,
           selectedGpuIds: runtimeConfig.selectedGpuIds ?? null,
+          tensorSplit: target.isGguf ? (runtimeConfig.tensorSplit ?? null) : null,
           llamaExtraArgs: runtimeConfig.llamaExtraArgs ?? null,
         }
       : null;
-  const memoryEstimate = useMemoryEstimate(memoryEstimateRequest);
+  const estimateGpuDevices = gpuSelectionContext.indexKind
+    ? gpuSelectionContext.devices ?? []
+    : [];
+  const memoryEstimate = useMemoryEstimate(memoryEstimateRequest, {
+    gpuDevices: target.isGguf ? estimateGpuDevices : undefined,
+  });
+  // The header probe gates the request; hold the row's place while it runs.
+  const estimateAwaitingProbe =
+    memoryEstimateRequest == null &&
+    contextFetchKey != null &&
+    stagedDims == null &&
+    !isDiffusion &&
+    !stagedDimsLastInconclusive(contextFetchKey);
   // The loaded model's reason answers only the request it was given.
   const mlxOffloadNote = (
     value: MlxOffload | undefined,
@@ -3706,7 +3869,9 @@ export function ModelConfigPage({
       normalizePerModelConfig(storedSpeculativeAuto(runtimeConfig, targetIsMlx)),
       storedRecord.config,
     );
-  const modelName = modelDisplayName(configId);
+  // Name NPU sets after the picker's name; before the NPU list arrives, the bare id it falls back to.
+  const modelName =
+    npuName ?? (targetIsNpu ? configId.replace(/^lemonade:/, "") : modelDisplayName(configId));
   const savedSets = useSavedRunSettings(configId);
   const persistedSet = useSelectedRunSettings(configId, target.ggufVariant);
   // undefined: follow what is stored. Shared, or the other editor saves this set's values elsewhere.
@@ -3717,11 +3882,13 @@ export function ModelConfigPage({
   );
   const [naming, setNaming] = useState<RunSettingsNaming | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  // Until the NPU list arrives an NPU model has no name but its id, and an adopted set keeps its first name.
+  const npuNamePending = targetIsNpu && !npuCatalogListed;
   useEffect(() => {
-    if (storedRecord.remembered && persistedSet === undefined) {
+    if (storedRecord.remembered && persistedSet === undefined && !npuNamePending) {
       adoptRememberedRunSettings(configId, target.ggufVariant, storedRecord.config, modelName);
     }
-  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName]);
+  }, [storedRecord, persistedSet, configId, target.ggufVariant, modelName, npuNamePending]);
   const forSetStore = (next: PerModelConfig) =>
     normalizePerModelConfig(storedSpeculativeAuto(next, targetIsMlx));
   const persistedEntry =
@@ -3879,16 +4046,16 @@ export function ModelConfigPage({
             reasoningBudgetMessage: "",
           };
     // Recompute from effectiveConfig: the same-click GPU Layers draft was not yet committed.
-    const effectivePinFixedLayerContext =
-      target.isGguf &&
-      effectiveConfig.gpuMemoryMode === "manual" &&
-      effectiveConfig.gpuLayers != null &&
-      effectiveConfig.gpuLayers >= 0 &&
-      effectiveConfig.customContextLength == null &&
-      activeLoadedContext != null;
+    const effectiveFixedLayerPin = fixedLayerContextPin({
+      isGguf: target.isGguf === true,
+      gpuMemoryMode: effectiveConfig.gpuMemoryMode ?? gpuMemoryModeFallback,
+      gpuLayers: effectiveConfig.gpuLayers,
+      customContextLength: effectiveConfig.customContextLength,
+      activeLoadedContext,
+    });
     const effectiveRuntimeConfig = (hasPending || peerChanged)
-      ? effectivePinFixedLayerContext
-        ? { ...effectiveConfig, customContextLength: activeLoadedContext }
+      ? effectiveFixedLayerPin != null
+        ? { ...effectiveConfig, customContextLength: effectiveFixedLayerPin }
         : effectiveConfig
       : runtimeConfig;
     const effectiveMaxSeqLengthValue =
@@ -4053,7 +4220,7 @@ export function ModelConfigPage({
       return false;
     }
     keepSelection(target);
-    // The page stays mounted, so show a context pinFixedLayerContext stored (else it reads "Auto").
+    // The page stays mounted, so show the fixed-layer pin just saved (else it reads "Auto").
     // Not on a forget: that stored nothing, and pinning here would change the next load.
     // setConfig, not update: this mirrors what was just saved, so the draft must stay unedited.
     if (
@@ -4344,7 +4511,7 @@ export function ModelConfigPage({
         remember={remember}
         hasSavedSettings={savedRemember}
       />
-      <div className="space-y-5">
+      <div data-pinned-footer-above={variant === "page" || undefined} className="space-y-5">
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
           <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
@@ -4374,11 +4541,26 @@ export function ModelConfigPage({
             once it is loaded.
           </p>
         ) : null}
-        {memoryEstimateRequest != null && !audioRuntimeGguf && (
+        {(memoryEstimateRequest != null || estimateAwaitingProbe) && !audioRuntimeGguf && (
           <MemoryEstimateRow
             estimate={memoryEstimate.estimate}
-            loading={memoryEstimate.loading}
+            loading={memoryEstimate.loading || estimateAwaitingProbe}
             stale={memoryEstimate.stale}
+            gpuDevices={estimateGpuDevices}
+            residentGpuIds={residentPlacementGpuIds({
+              isActiveModel,
+              loadedCpuFallback,
+              loadedGpuLayers,
+              loadedGpuIds,
+              loadedGpuIndexKind,
+              loadedSplitRatio,
+              gpuIndexKind,
+            })}
+            placementMode={
+              target.isGguf && (pinnedGpuIds ?? gpuSelectionContext.ids ?? []).length > 1
+                ? memoryBudgetGovernsLaunch ? "auto" : "manual"
+                : undefined
+            }
             gpuCapacityGb={memoryGpuCapacityGb}
             totalCapacityGb={memoryTotalCapacityGb}
             systemRamCapacityGb={inferenceGpu.systemRamTotalGb}
@@ -4416,7 +4598,8 @@ export function ModelConfigPage({
               min={minContext}
               max={maxContext}
               nativeContextLength={nativeContextLength}
-              activeLoadedContext={activeLoadedContext}
+              activeLoadedContext={autoQuote.loaded}
+              refitsLoadedContext={autoQuote.refits}
               inputRef={contextInputRef}
               onChange={(v) => update({ customContextLength: v === 0 ? null : v })}
               stacked={variant === "sidebar"}

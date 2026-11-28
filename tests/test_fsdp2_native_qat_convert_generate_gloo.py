@@ -100,7 +100,6 @@ def _case(native):
         res["tokens"] = _greedy(model)
     except Exception as exc:
         res["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-    # Resharded on exit: every swapped-in Linear holds its DTensor shard again.
     res["weights_sharded_after"] = all(
         isinstance(m.weight, DTensor)
         for name, m in model.named_modules()

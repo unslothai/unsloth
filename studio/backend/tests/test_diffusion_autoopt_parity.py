@@ -235,6 +235,11 @@ def legacy_entry(
         from core.inference.diffusion_rocm_fused import install_for_pipe as rocm
 
         patches["qwenimage21_fast_step"] = _engaged(q21(pipe, None))
+        if type(getattr(pipe, "transformer", None)).__name__ == "Krea2Transformer2DModel":
+            from core.inference.diffusion_krea2_text_trim import install_for_pipe as krea2_trim
+            patches["krea2_text_trim"] = _engaged(
+                krea2_trim(pipe, None, explicit_off = speed == "off")
+            )
         patches["flux2_rope"] = _engaged(flux2(pipe, target.dtype, target.device, None))
         patches["flux3_rope"] = _engaged(flux3(pipe, target.device, None))
         from core.inference.diffusion_flux3_half_attn import install_for_pipe as flux3_attn

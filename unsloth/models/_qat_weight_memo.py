@@ -32,10 +32,12 @@ that limit is evicted. Eval mode (model.eval(), Trainer evaluation, for_inferenc
 cache and passes through, so evaluation and generation have the memory they had before. A CUDA out
 of memory error anywhere turns the cache off for the rest of the process. UNSLOTH_QAT_WEIGHT_MEMO=1
 lifts the limit, =0 turns the cache off. A weight is cached on its second call with the same
-tensor, so weights streamed in per forward (offloading) are never held. Skipped: weights that require grad (full
-fine-tuning), range learning, tensor subclasses / DTensors, multi-process runs (FSDP reshards
-weights), inference-mode calls (whose outputs autograd cannot save) and torch.compile traces: a
-compiled region (torch >= 2.11 block compile) keeps fake quantizing inside its graph, unchanged.
+tensor, so weights streamed in per forward (offloading) are never held. A cached weight is served
+only on the stream that produced it. Skipped: weights that require grad (full fine-tuning), range
+learning, static scales (quantizer state the key cannot see), inference tensors (no version
+counter), tensor subclasses / DTensors, multi-process runs (FSDP reshards weights), inference-mode
+calls (whose outputs autograd cannot save) and torch.compile traces: a compiled region
+(torch >= 2.11 block compile) keeps fake quantizing inside its graph, unchanged.
 PEFT merge / unmerge write the weight through .data (no version bump) and drop the cache; any other
 in place rewrite of a frozen base weight must bump its version (write it under torch.no_grad(), not
 through .data) or call clear_qat_weight_memo."""
@@ -62,8 +64,7 @@ _STATS = {
 }
 # device -> [limit bytes, used bytes]
 _BUDGET = {}
-# device -> {"main_peak": peak reserved bytes the run needs beside the cache, "cum_peak": last seen
-# max_memory_reserved, "max_used": most cache held since the last optimizer step}
+# main_peak (peak beside the cache), cum_peak (last reserved), max_used (cache since step).
 _DEVICE = {}
 # Process state: armed after the first optimizer step; disabled for good after an out of memory error.
 _STATE = {
@@ -195,9 +196,7 @@ def _rebudget():
         free, total, reserved, allocated, peak = stats
         state = _DEVICE.setdefault(device, {"main_peak": 0, "cum_peak": 0, "max_used": 0})
         if peak > state["cum_peak"]:
-            # A new high water mark since the last step. The cache fills during the first forward after
-            # a step (every weight was already seen), before the logits / backward / optimizer peaks,
-            # so it is full at the peak; eval mode peaks hold no cache and need no room for one.
+            # Cache is full at peak (it fills in the first forward); eval peaks need no room.
             state["main_peak"] = max(state["main_peak"], peak - max(state["max_used"], budget[1]))
         state["cum_peak"] = peak
         limit = _cache_limit(
@@ -221,6 +220,13 @@ def _on_optimizer_step(optimizer, args, kwargs):
     if not _MEMOS or _mode() in ("0", "false", "off"):
         return
     if not _STATE["armed"] and _STATE["steps"] < _steps_before_arming():
+        return
+    from ..kernels.dequant_cache import _GC_SKIP_WAIT_MAX, _checkpoint_skip_pending
+
+    waits = _STATE.get("gc_skip_waits", 0)
+    if not _STATE["armed"] and waits < _GC_SKIP_WAIT_MAX and _checkpoint_skip_pending():
+        # A checkpoint_skip_layers = "auto" plan has not run a step with its kept layers yet.
+        _STATE["gc_skip_waits"] = waits + 1
         return
     try:
         _rebudget()
@@ -314,13 +320,32 @@ class _WeightMemo:
         self.nbytes = 0
 
 
+def _current_stream(device):
+    """(stream id, device index) of the current stream on an accelerator, None on CPU or if unknown."""
+    if device.type == "cpu":
+        return None
+    current = getattr(getattr(torch, device.type, None), "current_stream", None)
+    if current is None:
+        return None
+    try:
+        stream = current(device)
+        return (stream.stream_id, stream.device_index)
+    except Exception:
+        return None
+
+
 def _weight_key(quantizer, w):
+    config = getattr(quantizer, "config", None)
     if (
         type(w) not in _PLAIN_TENSOR_TYPES
         or w.requires_grad
         or w.device.type == "meta"
+        # Inference tensors lack a version counter, so an in-place write goes undetected.
+        or w.is_inference()
         or not getattr(quantizer, "enabled", True)
-        or getattr(getattr(quantizer, "config", None), "range_learning", False)
+        or getattr(config, "range_learning", False)
+        # Static scales / zero points are quantizer state that can change while W stays the same.
+        or not getattr(config, "is_dynamic", True)
         or _multi_process()
     ):
         return None
@@ -335,6 +360,8 @@ def _weight_key(quantizer, w):
         w._version,
         autocast,
         torch.get_autocast_dtype(device_type) if autocast else None,
+        # The cached tensor carries no event: serve it only on the stream that wrote it.
+        _current_stream(w.device),
     )
 
 
@@ -348,8 +375,7 @@ def _memo_forward(quantizer, w, forward):
             _drop_all()  # switched off mid-run: give the cached copies back
         return forward(quantizer, w)
     if _STATE["disabled"] or not quantizer.training:
-        # After an out of memory error, or in eval mode (evaluation, generation): free every cached
-        # weight so these phases have the memory they had without the cache, and pass through.
+        # After out of memory or in eval mode, free every cached weight and pass through.
         if _STATE["live"]:
             if not _STATE["disabled"]:
                 _STATS["eval_drops"] += 1
@@ -370,7 +396,6 @@ def _memo_forward(quantizer, w, forward):
         return forward(quantizer, w)
     out = forward(quantizer, w)
     if not same:
-        # First sighting of this tensor: remember it; cache on the next call with the same tensor.
         memo.drop()
         try:
             memo.storage = weakref.ref(storage)

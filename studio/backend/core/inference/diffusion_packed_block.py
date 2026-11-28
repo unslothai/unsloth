@@ -40,8 +40,7 @@ def packed_block_layers(model: Any) -> int:
 
 
 def fp8_casts(device: Any) -> bool:
-    """Whether float8 tensors cast on ``device`` (CPU / CUDA / ROCm); elsewhere nvfp4 scales go by table and mxfp8
-    layers are not kept packed."""
+    """float8 casts on CPU/CUDA/ROCm only; else nvfp4 uses a table; mxfp8 stays unpacked."""
     return getattr(device, "type", str(device).split(":")[0]) in ("cpu", "cuda")
 
 

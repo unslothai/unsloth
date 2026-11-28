@@ -11,9 +11,7 @@ import {
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
-// index.css reveals the "i" when the row one or two levels up holds keyboard focus. That used to be
-// `ROW:has(:focus-visible) > [data-slot=info-hint]`, a style after a :has(), which WebKit re-checks
-// over the whole document on every keystroke, so the hint marks itself instead.
+// WebKit re-checks a :has() style over the whole document per keystroke, so the hint marks itself.
 const FIELD_ROW = ":is(.diffusion-surface, .hint-on-hover) *";
 
 function useNearFocus(hint: RefObject<HTMLElement | null>): void {
@@ -27,9 +25,8 @@ function useNearFocus(hint: RefObject<HTMLElement | null>): void {
       const near = rows.some((row) => row.querySelector(":focus-visible") !== null);
       if (near !== el.hasAttribute("data-near-focus")) el.toggleAttribute("data-near-focus", near);
     };
-    // After the event: :focus-visible has settled on the element gaining or losing focus. Keyboard
-    // input can turn it on without moving focus (a mouse-focused slider nudged with an arrow key),
-    // and a pointer press can turn it off, so those re-check too.
+    // Re-checks after focusin, focusout, keydown and pointerdown, once :focus-visible has settled:
+    // keyboard input can set it without moving focus, and a pointer press can clear it.
     const later = () => queueMicrotask(sync);
     const top = rows[rows.length - 1];
     const events = ["focusin", "focusout", "keydown", "pointerdown"] as const;
@@ -41,8 +38,7 @@ function useNearFocus(hint: RefObject<HTMLElement | null>): void {
   }, [hint]);
 }
 
-/** Small "i" affordance that reveals a styled tooltip on hover/focus. The
- *  standard inline help control across the settings UI. */
+/** Small "i" tooltip trigger on hover or focus; the standard inline help control in settings. */
 export function InfoHint({
   children,
   side = "top",

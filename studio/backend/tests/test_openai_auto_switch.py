@@ -778,6 +778,17 @@ def test_known_unloaded_model_switches_once(monkeypatch):
     assert backend.model_identifier == "unsloth/B-GGUF"
 
 
+def test_a_switch_into_the_primary_counts_as_its_use(monkeypatch):
+    from core.inference import model_slots
+
+    _wired(
+        monkeypatch, _FakeBackend("unsloth/A-GGUF"), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
+    )
+    monkeypatch.setattr(model_slots, "primary_last_used", 0.0)
+    _run_hook("unsloth/B-GGUF:Q4_K_M")
+    assert model_slots.primary_last_used > 0.0
+
+
 def test_a_late_cancel_keeps_the_completed_switch_metadata(monkeypatch):
     backend = _FakeBackend("unsloth/A-GGUF")
     cancel_event = threading.Event()
@@ -3795,7 +3806,8 @@ def test_saved_settings_are_found_under_the_on_disk_copy(monkeypatch, named):
     request = LoadRequest(**named, use_saved_settings = True)
     filled = asyncio.run(inference_route._with_saved_settings(request))
     assert asked == [("/cache/snap/A", "org/A-GGUF", "Q4_K_M")]
-    assert (filled.model_path, filled.cache_type_kv) == (named["model_path"], "q8_0")
+    assert (filled.model_path, filled.cache_type_kv) == ("org/A-GGUF", "q8_0")
+    assert filled.gguf_variant == "q4_k_m"
 
 
 def test_a_bare_id_reads_no_quant_the_load_may_not_pick(monkeypatch):
@@ -3861,6 +3873,27 @@ def test_fields_the_load_sent_beat_the_saved_ones(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "saved, sent, context",
+    [
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "auto"}, 4096),
+        ({"gpu_memory_mode": "manual"}, {"gpu_memory_mode": "manual", "gpu_layers": 20}, 4096),
+        ({}, {"gpu_memory_mode": "manual"}, 0),
+        ({}, {"gpu_memory_mode": "manual", "llama_extra_args": ["-ngl", "0"]}, 4096),
+        (
+            {},
+            {"gpu_memory_mode": "manual", "gpu_layers": 20, "llama_extra_args": ["-ngl", "auto"]},
+            0,
+        ),
+    ],
+)
+def test_the_saved_context_follows_the_placement_the_load_sent(monkeypatch, saved, sent, context):
+    _saved(monkeypatch, {"max_seq_length": 4096, **saved})
+    request = LoadRequest(model_path = "org/A-GGUF", use_saved_settings = True, **sent)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert filled.max_seq_length == context
+
+
+@pytest.mark.parametrize(
     "sent, saved, kept",
     [
         (True, ["--split-mode", "tensor", "-cmoe"], ["-cmoe"]),
@@ -3908,6 +3941,23 @@ def test_a_saved_gpu_pin_is_kept_only_while_this_machine_has_it(monkeypatch, pre
     filled = asyncio.run(inference_route._with_saved_settings(request))
     pin = ([0, 1], [2.0, 1.0]) if present else (None, None)
     assert (filled.gpu_ids, filled.tensor_split) == pin
+    assert filled.cache_type_kv == "q8_0"
+
+
+@pytest.mark.parametrize("extras", [["--device", "CUDA1"], ["-mg", "1"]])
+def test_a_sent_device_flag_beats_a_saved_gpu_pin(monkeypatch, extras):
+    _saved(
+        monkeypatch,
+        {"gpu_ids": [0, 1], "tensor_split": [2.0, 1.0], "kv_cache_dtype": "q8_0"},
+    )
+
+    async def _resolves(gpu_ids, kind = "physical"):
+        return True
+
+    monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _resolves)
+    request = LoadRequest(model_path = "org/A-GGUF", llama_extra_args = extras, use_saved_settings = True)
+    filled = asyncio.run(inference_route._with_saved_settings(request))
+    assert (filled.gpu_ids, filled.tensor_split) == (None, None)
     assert filled.cache_type_kv == "q8_0"
 
 
@@ -4658,6 +4708,18 @@ def test_chat_streaming_n_gt_1_rejected_before_switch(monkeypatch):
     assert rec.calls == []
 
 
+def test_chat_conflicting_raw_grammar_rejected_before_switch(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), ("/p/B", "Q8_0", "org/B-GGUF"))
+    payload = _chat_request(
+        model = "org/B-GGUF", grammar = 'root ::= "a"', json_schema = {"type": "object"}
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["param"] == "grammar"
+    assert rec.calls == []
+
+
 def test_resolver_cache_stamped_after_slow_build(monkeypatch):
     # Stamp the cache after _build_index, or a slow scan stores an already-expired cache.
     import core.inference.local_model_resolver as r
@@ -5204,6 +5266,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         require_audio_input = False,
         require_video = False,
         gguf_only = False,
+        gguf_only_reason = None,
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
@@ -6038,6 +6101,8 @@ def test_chat_count_tokens_forwards_enabled_tools(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         gate.update(tools_on = tools_on, mcp_allowed = mcp_allowed)
         return [{"type": "function", "function": {"name": "web_search"}}]
@@ -6089,6 +6154,8 @@ def test_chat_count_tokens_strips_replayed_tool_markup(monkeypatch, fields, expe
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6187,6 +6254,8 @@ def test_chat_count_tokens_prices_the_route_the_completion_takes(
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6215,6 +6284,8 @@ def _select_only(*names):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": name}} for name in names]
 
@@ -6429,6 +6500,8 @@ def test_chat_count_tokens_dates_only_api_server_tool_prompts(monkeypatch):
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -6810,6 +6883,8 @@ def test_chat_count_tokens_counts_an_empty_chat_the_cli_policy_fills(monkeypatch
         mcp_allowed,
         supports_vision = False,
         checkpoint_fitted = False,
+        engine = None,
+        encoder = None,
     ):
         return [{"type": "function", "function": {"name": "web_search"}}]
 
@@ -7249,6 +7324,59 @@ def test_a_busy_server_is_not_taken_for_a_refusal(refusing_client):
         backend.count_chat_tokens([], None, None, strict = True)
     assert [m for _, m in refusing_client.sent] == [[]], "a busy server is not retried"
     assert backend._empty_chat_render_refused is False
+
+
+class _NoUserQueryClient(_RefusingEmptyRenderClient):
+    """llama-server with the stock Qwen3.5 template: 'No user query found' without a user turn."""
+
+    def post(
+        self,
+        url,
+        json = None,
+    ):
+        messages = (json or {}).get("messages")
+        if url.endswith("/apply-template") and not any(
+            m.get("role") == "user" for m in messages or []
+        ):
+            type(self).sent.append(("apply-template", messages))
+            return _CountResponse(
+                {"error": {"code": 500, "message": "No user query found in messages."}},
+                status_code = 500,
+            )
+        return super().post(url, json = json)
+
+
+_RULES = {"role": "system", "content": "rules"}
+_USER = {"role": "user", "content": ""}
+_CALL = {"role": "assistant", "content": '{"name": "terminal"}'}
+
+
+@pytest.mark.parametrize("remembered", [False, True])
+@pytest.mark.parametrize(
+    "messages, retried",
+    [([_RULES], [_RULES, _USER]), ([_RULES, _CALL], [_RULES, _USER, _CALL])],
+    ids = ["instructions_alone", "instructions_and_pending_call"],
+)
+def test_instructions_a_template_will_not_render_alone_are_priced_behind_an_empty_user_turn(
+    monkeypatch, remembered, messages, retried
+):
+    _NoUserQueryClient.sent = []
+    _NoUserQueryClient.down = False
+    _NoUserQueryClient.empty_status = 500
+    monkeypatch.setattr(llama_cpp_mod.httpx, "Client", _NoUserQueryClient)
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = remembered
+    assert backend.count_chat_tokens(messages, None, None, strict = True) > 0
+    assert [m for _, m in _NoUserQueryClient.sent] == [messages, retried]
+    assert backend._empty_chat_render_refused is remembered, "only an empty chat's refusal is kept"
+
+
+def test_instructions_a_template_renders_alone_are_priced_as_sent(refusing_client):
+    """A remembered empty-chat refusal says nothing of instructions alone, which this template renders."""
+    backend = _CountBackend()
+    backend._empty_chat_render_refused = True
+    backend.count_chat_tokens([_RULES], None, None, strict = True)
+    assert refusing_client.sent == [("apply-template", [_RULES])]
 
 
 def test_a_count_never_spawns_mcp_servers():
@@ -8605,9 +8733,10 @@ def test_parallel_slots_are_stored_and_reach_either_backend():
     assert gguf["n_parallel"] == 8
     safetensors = settings.model_override_load_kwargs(override, is_gguf = False)
     assert safetensors["n_parallel"] == 8
-    for flag in ("n_batch", "n_ubatch"):
+    # MLX reads these too: its prefill step, its batched-prefill cap and its prompt cache size.
+    for flag in ("n_batch", "n_ubatch", "cache_ram"):
         stored = settings.normalize_model_override({flag: 512})
-        assert flag not in settings.model_override_load_kwargs(stored, is_gguf = False)
+        assert settings.model_override_load_kwargs(stored, is_gguf = False)[flag] == 512
     LoadRequest(model_path = "unsloth/B-GGUF", **gguf)
     LoadRequest(model_path = "unsloth/B", **safetensors)
 
@@ -10877,6 +11006,8 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         claim_resident = True,
         require_audio_input = False,
         require_video = False,
+        gguf_only = False,
+        gguf_only_reason = None,
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
@@ -12244,6 +12375,33 @@ def _wire_image_switch_target(monkeypatch, *, target_is_gguf):
         monkeypatch.setattr(inference_route, "get_inference_backend", lambda: orchestrator)
         monkeypatch.setattr(inference_route, "_peek_inference_backend", lambda: orchestrator)
     return backend, recorder
+
+
+def test_transformers_auto_switch_registers_image_swap_recipe(monkeypatch):
+    from core.inference import chat_media_swap
+    from models.inference import LoadResponse
+
+    llama, _ = _wire_image_switch_target(monkeypatch, target_is_gguf = False)
+    orchestrator = inference_route._peek_inference_backend()
+    monkeypatch.setattr(chat_media_swap, "_transformers_load", None)
+    monkeypatch.setenv(chat_media_swap.SWAP_ENV, "1")
+
+    async def load(request, *_args, **_kwargs):
+        llama.is_loaded = False
+        orchestrator.active_model_name = request.model_path
+        orchestrator.models[request.model_path] = {}
+        orchestrator._proc = object()
+        return LoadResponse(
+            status = "loaded", model = request.model_path, display_name = "Model B", inference = {}
+        )
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", load)
+    _run_hook("org/B-GGUF")
+
+    assert chat_media_swap.chat_can_swap()
+    assert chat_media_swap._transformers_load.launch.model_path == orchestrator.active_model_name
+    assert chat_media_swap._transformers_load.launch._advertised_id == "org/B-GGUF"
+    assert not chat_media_swap._transformers_load.extra["user_loaded"]
 
 
 def _chat_image_request(*urls):

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import glob
 import os
@@ -136,18 +137,39 @@ def _executable_refusal(resolved: str, owners: tuple[int, ...]) -> str | None:
     return None
 
 
+def _has_access_acl(path: str) -> bool:
+    """With an access ACL the group mode bits are its mask, so a named user may be the writer."""
+    try:
+        return "system.posix_acl_access" in os.listxattr(path, follow_symlinks = False)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return False
+        raise
+
+
 def _ancestor_refusal(resolved: str) -> str | None:
     """Why a directory above `resolved` would let a non-root user replace it, or None."""
     parent = os.path.dirname(resolved)
+    in_root_group = 0 in os.getresgid() or 0 in os.getgroups()
     try:
         while True:
             directory = os.stat(parent, follow_symlinks = False)
+            mode = directory.st_mode
             # Sticky (/nix/store is root:nixbld 1775): other writers cannot rename or delete root's entries.
-            shared = directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            # Group root write alone (/usr 0775 root:root) is safe while Studio is outside group root.
             if (
-                not stat.S_ISDIR(directory.st_mode)
+                not stat.S_ISDIR(mode)
                 or directory.st_uid != 0
-                or (shared and not directory.st_mode & stat.S_ISVTX)
+                or (
+                    mode & (stat.S_IWGRP | stat.S_IWOTH)
+                    and not mode & stat.S_ISVTX
+                    and (
+                        mode & stat.S_IWOTH
+                        or directory.st_gid != 0
+                        or in_root_group
+                        or _has_access_acl(parent)
+                    )
+                )
             ):
                 return f"its directory is replaceable: {parent}"
             ancestor = os.path.dirname(parent)
@@ -246,8 +268,9 @@ _NETWORK_FILES = (
 )
 # Bound at the jail's own HOME with HF_HOME pinned to match.
 _MODEL_CACHE_RELPATH = os.path.join(".cache", "huggingface")
-# Excludes $HF_HOME/token and executable modules; the writable hub is a deliberate tradeoff (#5603).
-_MODEL_CACHE_SUBDIRS = ("hub", "datasets", "xet", "assets")
+# Excludes $HF_HOME/token and executable modules; the writable hub is a tradeoff (#5603); datasets/
+# is out since Studio mmaps Arrow files and tool-rewritten offsets would be read past them.
+_MODEL_CACHE_SUBDIRS = ("hub", "xet", "assets")
 # NixOS keeps glibc here, so a store interpreter cannot link without it.
 _NIX_STORE = "/nix/store"
 # The NixOS system PATH (and nix-ld's loader) resolve through this link into the store.
@@ -689,7 +712,8 @@ def _runtime_read_paths(
         candidates.extend(os.path.join(prefix, "lib", multiarch) for prefix in prefixes)
 
     selected: list[str] = []
-    for candidate in candidates:
+    # sys.prefix == sys.exec_prefix in most venvs.
+    for candidate in dict.fromkeys(candidates):
         if not candidate or not os.path.isabs(candidate):
             continue
         # Check the candidate as WRITTEN, against both workdir spellings, or a symlinked venv/lib exposes its target.
@@ -774,8 +798,7 @@ def _inspect_cache_component(
 CACHE_MISSING = "does not exist"
 CACHE_STILL_CHECKING = "is still being checked; it will be shared once the check finishes"
 
-# Keeps timed-out workers until they finish, to prevent a thread leak on a wedged path; a later
-# launch joins one only until its give-up time.
+# Kept until finished to avoid thread leaks; later launches join one only until give-up.
 _cache_scan_pending: "dict[str, tuple[threading.Thread, list, float]]" = {}
 # Request threads must reserve and remove workers atomically.
 _cache_scan_lock = threading.Lock()
@@ -834,7 +857,7 @@ def _cache_hazard_within_deadline(name: str, path: str) -> "str | None":
 
 def _cache_hazard_memoized(name: str, path: str) -> "str | None":
     if not os.path.lexists(path):
-        # A fresh HF home has no datasets/ or assets/ yet; create it so the sandbox shares it too.
+        # A fresh HF home has no assets/ yet; create it so the sandbox shares it too.
         try:
             os.makedirs(path, exist_ok = True)
         except OSError as exc:
@@ -882,13 +905,12 @@ def _model_cache_binds(workdir: str) -> dict[str, str]:
         from utils.hf_cache_settings import effective_cache_home, get_hf_cache_paths
 
         paths = get_hf_cache_paths()
-        # datasets/assets live under the real HF home, not the display home (which can be the hub itself).
+        # assets lives under the real HF home, not the display home (which can be the hub itself).
         home = os.path.abspath(str(effective_cache_home()))
         resolved = {
             "hub": str(paths.hub_cache),
             "xet": str(paths.xet_cache),
-            # Portable installs point these at their own root while HF_HOME stays the default.
-            "datasets": os.path.expanduser(os.environ.get("HF_DATASETS_CACHE", "").strip()),
+            # Portable installs point this at their own root while HF_HOME stays the default.
             "assets": os.path.expanduser(os.environ.get("HF_ASSETS_CACHE", "").strip()),
         }
     except Exception:  # noqa: BLE001 - a launch never fails over a cache lookup
@@ -1048,8 +1070,13 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         for root in system_roots:
             argv += ["--ro-bind-try", root, root]
         # -try: a missing model folder must not fail the launch.
+        # A root under /tmp or /dev/shm is bound after their tmpfs, which would otherwise hide it.
+        tmp_silent_roots = tuple(
+            root for root in silent_roots if _within(root, "/tmp") or _within(root, "/dev/shm")
+        )
         for root in silent_roots:
-            argv += ["--ro-bind-try", root, root]
+            if root not in tmp_silent_roots:
+                argv += ["--ro-bind-try", root, root]
         trusted = tuple(p for p in _ETC_FILES_IF_TRUSTED if _trusted_system_file(p))
         for path in (*_ETC_FILES, *_etc_java_binds(), *trusted, *_NETWORK_FILES):
             argv += ["--ro-bind-try", path, path]
@@ -1069,6 +1096,8 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
         argv += ["--tmpfs", "/dev/shm", "--tmpfs", "/tmp"]
         for path in tmp_runtime_paths:
             argv += ["--ro-bind", path, path]
+        for root in tmp_silent_roots:
+            argv += ["--ro-bind-try", root, root]
         argv += ["--bind", workdir, inner]
         if inner != workdir:
             argv += ["--bind", workdir, workdir]
@@ -1127,7 +1156,7 @@ def prepare(plan: ToolLaunchPlan) -> PreparedSandboxLaunch:
             workdir = workdir,
             env = dict(plan.env),
             # --new-session covers the inner side only; tools.py's killpg still needs the outer setsid.
-            preexec_fn = sandbox_landlock.with_abstract_scope(plan.preexec_fn),
+            preexec_fn = sandbox_landlock.scoped_preexec(plan.preexec_fn),
             backend = BACKEND_NAME,
             pass_fds = (seccomp.fileno(),),
             owned_files = [seccomp],

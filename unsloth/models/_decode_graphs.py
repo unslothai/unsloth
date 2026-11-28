@@ -15,6 +15,7 @@ Graphs read weights and LoRA decode casts by address, so an optimizer step (in p
 UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING: whether graphs and their buffers stay through a training step:
 auto (default) when that fits the memory a measured training step left free, 1 always, 0 never."""
 
+import contextlib
 import math
 import os
 import sys
@@ -22,16 +23,17 @@ import threading
 
 import torch
 
-# Programmatic override (tests, harnesses): True / False force graphs on / off, None (default) follows
-# the environment variable read at call time and the RL / Studio generation scopes (enabled()).
+
+# Test override: True/False force graphs on/off; None follows the env var and RL/Studio scopes.
 ENABLED = None
 # Whole-step graphs (attention captured too, over a power-of-two span of cache rows).
 FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
-# Largest batch the whole-step capture takes; larger batches keep the segmented (bit-exact) capture.
-# Batched decode measured slower whole-step on a T4 (+9-15%: GPU bound, nothing to hide).
+# Larger batches stay segmented (bit-exact); batched whole-step 9-15% slower on T4: GPU bound.
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
+# Rows the Llama-family decode path adds to the KV cache past the prompt, and grows it by.
+KV_CACHE_INCREMENT = 512
 # T4 Qwen3-0.6B: 3-6 new tokens ran 5-58% slower graphed, 8 tokens 1.25x faster.
 CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
@@ -43,6 +45,7 @@ __all__ = [
     "ENABLED",
     "enabled",
     "rl_generation",
+    "rl_generating",
     "studio_generation",
     "generate_scope",
     "eager_scope",
@@ -70,8 +73,7 @@ __all__ = [
     "end_generation",
 ]
 
-# The graph-mode statics of the step this thread is warming up / capturing (static()); per thread,
-# so another thread's (or model's) eager decode never reads them.
+# Per-thread statics (static()) of the step being captured; other threads never read them.
 _TLS = threading.local()
 # Bumped whenever a persistent decode buffer is (re)allocated or resized.
 BUFFER_EPOCH = 0
@@ -105,15 +107,67 @@ def enabled():
 
 
 def _default_ok():
-    # The RL default is NVIDIA CUDA only: HIP graph replay is not verified bitwise against the eager
-    # step on ROCm (=1 still forces it), and XPU / MPS / CPU never take the graphed step.
+    # RL default is NVIDIA CUDA and gfx1151 ROCm with skinny linear on (measured token-equal and
+    # faster); other HIP archs unverified (=1 still forces); XPU, MPS, CPU never use graphs.
     try:
-        return torch.version.hip is None and torch.cuda.is_available()
+        if not torch.cuda.is_available():
+            return False
+        if torch.version.hip is None:
+            return True
+        return _rocm_default_ok()
     except Exception:
         return False
 
 
+def _rocm_default_ok():
+    if os.environ.get("UNSLOTH_ROCM_SKINNY_LINEAR", "1") == "0":
+        return False
+    from ..kernels import rocm_skinny_linear
+
+    if rocm_skinny_linear.triton is None:
+        return False
+    # Every visible GPU must be a measured arch (decode may use any), else the eager default.
+    count = torch.cuda.device_count()
+    archs = [torch.cuda.get_device_properties(i).gcnArchName.split(":")[0] for i in range(count)]
+    return count > 0 and all(arch in rocm_skinny_linear._ARCHS for arch in archs)
+
+
 _DEFAULT_OK = _default_ok()
+_MEASURED_WEIGHTS = "_unsloth_decode_graph_measured_weights"
+
+
+def default_covers(model):
+    """Whether graph decode chosen by the unset default was measured for this model. On ROCm (gfx1151) it was
+    measured with 16-bit projection weights only, the ones the skinny decode linear takes: a 4-bit / 8-bit /
+    fp8 model there decodes eagerly unless UNSLOTH_DECODE_CUDA_GRAPHS=1. NVIDIA CUDA is unchanged."""
+    if ENABLED is not None or torch.version.hip is None:
+        return True
+    if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS", "") == "1":
+        return True
+    d = getattr(model, "__dict__", None)
+    if d is None:
+        return True
+    ok = d.get(_MEASURED_WEIGHTS)
+    if ok is None:
+        ok = d[_MEASURED_WEIGHTS] = _plain_16bit_projections(model)
+    return ok
+
+
+def _plain_16bit_projections(model):
+    for name, module in model.named_modules():
+        if name.rsplit(".", 1)[-1] not in _PROJ_NAMES:
+            continue
+        base = module
+        while hasattr(base, "base_layer"):
+            base = base.base_layer
+        weight = getattr(base, "weight", None)
+        if (
+            type(weight) not in (torch.Tensor, torch.nn.Parameter)
+            or weight.dtype not in (torch.float16, torch.bfloat16)
+            or getattr(weight, "quant_state", None) is not None
+        ):
+            return False
+    return True
 
 
 class rl_generation:
@@ -123,11 +177,20 @@ class rl_generation:
 
     def __enter__(self):
         _TLS.rl_depth = getattr(_TLS, "rl_depth", 0) + 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth = getattr(_TLS, "rollout_depth", 0) + 1
         return self
 
     def __exit__(self, *exc):
         _TLS.rl_depth -= 1
+        if type(self) is rl_generation:
+            _TLS.rollout_depth -= 1
         return False
+
+
+def rl_generating():
+    """Whether this thread is in an RL trainer's generate() (rl_generation), not Studio scopes."""
+    return getattr(_TLS, "rollout_depth", 0) > 0
 
 
 # Native Windows CUDA capture is unverified: Studio default off there (=1 still forces).
@@ -186,9 +249,7 @@ class plan_scope:
 
 
 def call_plan():
-    """ "graph" / "eager" for the generate() call running on this thread, None outside Unsloth's
-    generate(). Per-call policies (the 16-bit LoRA fold threshold) read this, not enabled(), which only
-    says graphs are allowed."""
+    """Graph or eager for this thread's generate(), None outside it; policies read this, not enabled()."""
     if torch.compiler.is_compiling():
         return None
     if getattr(_TLS, "eager", 0):
@@ -272,7 +333,6 @@ def _call_bytes(
 
 
 def _allocator(device):
-    """(allocated, reserved, peak allocated) from one stats read."""
     try:
         stats = torch.cuda.memory_stats_as_nested_dict(device)
         return (
@@ -356,9 +416,8 @@ def plan_call(
     bsz = None,
     eager = False,
 ):
-    """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
-    fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
-    the expanded decode batch (decode_batch()). eager: only makes room, uncounted."""
+    """Returns (graph, token) or (eager, None); kept graphs are freed first if the call would not
+    fit; a too-big call runs eagerly up front, not via OOM redo; eager only makes room"""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -433,7 +492,6 @@ def decode_batch(
 
 
 def decode_batch_used(model):
-    """Batch size of the cache the last graph-mode decode ran on, or None."""
     for module in model.modules():
         d = module.__dict__
         store = d.get("_unsloth_graph_buffers")
@@ -451,18 +509,33 @@ HELD = "_unsloth_decode_held"
 KEEP_CASTS = "_unsloth_decode_keep_casts"
 
 
-def generate_with_fallback(model, generate, graphs, args, kwargs):
+def generate_with_fallback(
+    model,
+    generate,
+    graphs,
+    args,
+    kwargs,
+    fold = None,
+):
     """On a graph-mode OOM, free graphs and redo once eagerly; caller streamer / past_key_values /
-    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise."""
+    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise.
+    fold(retry): the LoRA fold scope of one attempt, exited (weights restored) before the redo."""
     global _OOM_WARNED, EAGER_REDOS
+
+    def attempt(retry):
+        with fold(retry) if fold is not None else contextlib.nullcontext():
+            return generate(*args, **kwargs)
+
     try:
-        return generate(*args, **kwargs)
+        return attempt(False)
     except torch.cuda.OutOfMemoryError:
         if (
             not graphs
             or not graphable(model)
             or kwargs.get("streamer", None) is not None
             or kwargs.get("past_key_values", None) is not None
+            # transformers 5.24 spells the caller cache cache=.
+            or kwargs.get("cache", None) is not None
             or kwargs.get("stopping_criteria", None)
             or kwargs.get("logits_processor", None)
         ):
@@ -479,12 +552,10 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
     _empty_cache()
     EAGER_REDOS += 1
     with eager_scope():
-        return generate(*args, **kwargs)
+        return attempt(True)
 
 
 def keep_only(model, bsz = None):
-    """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid. The batch
-    size decode actually ran at wins over `bsz`."""
     used = decode_batch_used(model)
     if used is not None:
         bsz = used
@@ -535,6 +606,23 @@ def _round_up(n, m):
     return -(-n // m) * m
 
 
+def decode_cache_rows(
+    prompt,
+    new_tokens,
+    increment = KV_CACHE_INCREMENT,
+):
+    """Upper bound on the KV-cache rows per layer that alloc_decode_buffers / resize_decode_buffers hold
+    for one call of `prompt` + `new_tokens`: the first allocation (increment + prompt + 1, however few
+    tokens are generated), grown by `increment` until the last token fits, rounded up to the graph
+    BUCKET, plus one more increment for the growth step (resize_ holds the old and new cache at once)."""
+    prompt, new_tokens, increment = int(prompt), max(0, int(new_tokens)), int(increment)
+    rows = increment + prompt + 1
+    need = prompt + new_tokens + 1
+    if need > rows:
+        rows += _round_up(need - rows, increment)
+    return _round_up(rows, BUCKET) + increment
+
+
 class _StepStatics:
     """What a graph-mode step reads instead of host state: the device cache slot, the RoPE table
     length, and (per replayed step) the true KV length + mask for the eager attention cores.
@@ -555,8 +643,7 @@ class _StepStatics:
         self.kv_len = None
         self.mask = None
         self.attention = _run_now
-        # Whole-step graphs: cache rows the captured attention reads, and their bool keep mask
-        # [bsz, 1, 1, rows] (refilled outside the graph before every replay).
+        # Whole-step cache rows read; bool keep [bsz, 1, 1, rows] refilled before every replay.
         self.span = span
         self.keep = keep
         self.drop = drop  # ~keep, so the graph does not invert it once per layer
@@ -631,8 +718,7 @@ def alloc_decode_buffers(
                 bufs = None
                 BUFFER_EPOCH += 1
             with _no_inference_tensors():
-                # Zeroed: a captured step reads every row of its bucket, and a masked row still
-                # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
+                # Zeroed: graphs read every row; masked V*0 is NaN for uninitialised NaN/inf.
                 paged = _vmm_zeros((rows, 2, bsz, n_kv_heads, head_dim), dtype, device)
                 if paged is None:
                     paged = torch.zeros(
@@ -650,13 +736,10 @@ def alloc_decode_buffers(
                 scores = torch.empty((bsz, n_heads, 1, rows), dtype = dtype, device = device)
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
         elif not _vmm_wake(bufs[0]) and FULL:
-            # (Woken from sleep: fresh zeroed pages at the same addresses, the captured graphs replay.)
-            # A reused buffer still holds the last generation's rows: a whole-step graph reads them
-            # past this one's length, and a masked inf / NaN there still turns 0 * V into NaN.
+            # Zero rows a whole-step graph reads past seq_len (NaN * 0 = NaN) unless just woken
             bufs[0][seq_len:].zero_()
         paged, temp_QA, temp_KV, RH_Q, temp_O, scores = bufs
-        # A new sequence: its first graph step re-checks the fingerprint (adapters toggled or
-        # merged since the last one, also in decode loops that do not go through generate()).
+        # New sequence re-checks fingerprint (adapters toggled/merged, also outside generate())
         GENERATION_EPOCH += 1
         attn.paged_attention = paged
         attn.paged_attention_K = paged[:, 0]
@@ -838,7 +921,6 @@ def invalidate(model):
 
 
 def release(model):
-    """Drops captured steps and the persistent decode buffers (frees their memory)."""
     global BUFFER_EPOCH
     found = False
     for module in model.modules():
@@ -865,10 +947,8 @@ def release(model):
 
 
 def release_for_training(model, force = False):
-    """release(), plus the eager decode buffers the last generate() left on the attention modules:
-    the next prefill allocates fresh ones, so training gets the KV cache memory back. Unless `force`, the
-    graphs and their buffers stay when keep_for_training() allows it (only the eager buffers go then).
-    Returns whether the graphs were released."""
+    """Frees KV memory for training; graphs stay if keep_for_training() allows (unless force), but
+    the eager decode buffers always go; returns whether graphs were released"""
     keep = not force and keep_for_training(model)
     if not keep:
         steps = _optimizer_steps()
@@ -890,15 +970,13 @@ def release_for_training(model, force = False):
     return not keep
 
 
-# Graphs + decode buffers through a training step: "0" never (frees them, as before), "1" always,
-# "auto" (default) only after a training step ran without them and its peak plus their bytes fits in
-# KEEP_FREE_FRACTION of the free memory.
+# 0 never, 1 always, auto (default) only after a training step ran without them and peak plus their
+# bytes fit KEEP_FREE_FRACTION of free memory
 KEEP_FREE_FRACTION = float(os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_FREE_FRACTION", "0.5"))
 KEEP_DECISIONS = {"kept": 0, "released": 0}
 
 
-# Graphs kept from the first round when their KV caches sleep and what stays resident (temporaries,
-# score rows) is at most this fraction of the card.
+# Graphs kept while KV caches sleep need resident temporaries under this fraction of the card.
 KEEP_RESIDUAL_FRACTION = float(os.environ.get("UNSLOTH_DECODE_GRAPHS_KEEP_RESIDUAL", "0.01"))
 
 
@@ -1003,8 +1081,7 @@ def _fingerprint(
     rope_len,
     refresh = False,
 ):
-    """Everything a captured step baked in; None when the model cannot be graphed. refresh: bring the
-    LoRA decode casts up to date first (in place where they still fit)."""
+    """What a captured step baked in; None if not graphable. refresh updates LoRA decode casts."""
     from ..kernels import utils as K
 
     items = []
@@ -1060,8 +1137,7 @@ def _fingerprint(
     if adapters is None:
         return None
     items.extend(adapters)
-    # No version / optimizer-step counter: graphs read weights by address, so an in-place update (optimizer
-    # step, adapter edit) replays correctly once the refresh above brought the decode casts up to date.
+    # Graphs read weights by address; no version counter; in-place edits replay after refresh.
     items.append(WEIGHTS_EPOCH)
     return tuple(items)
 
@@ -1236,8 +1312,7 @@ def decode_step(
         or paged.shape[2] != bsz
         or input_ids.shape[1] != 1
     ):
-        # First decode step after a prefill (allocates / fills the cache), or a cache this path
-        # did not size.
+        # First decode after prefill (allocates the cache), or a cache this path did not size.
         state.eager_steps += 1
         return None
     seq_len = past_key_values[0][0].shape[-2]
@@ -1250,8 +1325,7 @@ def decode_step(
 
     from ..kernels import utils as K
 
-    # RoPE rows the captured steps may read: the table is sized (and its address fingerprinted)
-    # for this many, so a position at or past it runs eagerly (the eager step grows the table).
+    # RoPE rows are sized for captured steps (fingerprinted); positions past them run eagerly.
     rope_len = max(state.rope_len or 0, cap + 1)
     # LongRoPE reads its long table once a position passes original: capture the short one only.
     rope_len = min(
@@ -1279,12 +1353,10 @@ def decode_step(
         if reason is not None:
             state.disabled = reason
             return None
-        # refresh: adapters may have moved (optimizer step, in-place edit), so the decode casts the graphs
-        # read are updated in place; one that had to be re-made changes the fingerprint (re-capture).
+        # Adapters may move: casts update in place; a re-made cast changes the fingerprint.
         fingerprint = _fingerprint(model, layers, rope_len, True)
         if fingerprint is None:
-            # Ineligible for this generation only (several / non-CUDA devices, or a DoRA / non-LoRA
-            # adapter, e.g. one side of a compare): free the captured steps and re-check next time.
+            # Ineligible for this generation (several or non-CUDA devices, DoRA or non-LoRA).
             state.clear()
             state.ineligible_epoch = GENERATION_EPOCH
             state.eager_steps += 1
@@ -1339,6 +1411,7 @@ def decode_step(
         except Exception as error:
             state.disabled = f"capture failed: {type(error).__name__}: {error}"
             state.clear()
+            _reset_rng_capture_flag(device)
             if os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_STRICT", "0") == "1":
                 raise
             return None
@@ -1444,6 +1517,36 @@ def _capture(
         # Also after a failed warmup / capture: the eager fallback must not race the side stream.
         torch.cuda.current_stream().wait_stream(stream)
         st.mask = None
+
+
+def _reset_rng_capture_flag(device):
+    """torch marks the CUDA RNG as capturing in capture_begin and clears it only in a capture_end that
+    succeeds, so a capture that fails in between leaves every later random op (sampling, dropout,
+    vLLM's sampler) raising "Offset increment outside graph capture encountered unexpectedly".
+    A tiny capture that ends cleanly clears the flag again. It is tried outside inference mode first,
+    then inside it: when another library (vLLM) captured first under inference mode, the RNG's graph
+    state tensors are inference tensors, and capture_begin can only refill them in inference mode
+    (that refill is also what makes our own capture fail in that case)."""
+    if torch.cuda.is_current_stream_capturing():
+        return
+    for inference in (False, True):
+        try:
+            with torch.cuda.device(device):
+                x = torch.zeros(1, device = device)
+                stream = torch.cuda.Stream()
+                stream.wait_stream(torch.cuda.current_stream())
+                graph = torch.cuda.CUDAGraph()
+                with torch.inference_mode(inference), torch.cuda.stream(stream):
+                    graph.capture_begin(capture_error_mode = "thread_local")
+                    try:
+                        x.add_(1)
+                    finally:
+                        graph.capture_end()
+                torch.cuda.current_stream().wait_stream(stream)
+                del graph
+            return
+        except Exception:
+            continue
 
 
 def _begin(graph, pool):

@@ -83,8 +83,7 @@ def log(message: str) -> None:
     print(f"audio.cpp: {message}", file = sys.stderr, flush = True)
 
 
-# Late-binding seam for prebuilt_core: its downloader and release lookup read USER_AGENT, log and the
-# asset names above from here, and see a test's monkeypatch of any core name set on this module.
+# Late-bound seam: prebuilt_core reads USER_AGENT, log and asset names here, so patches apply.
 _OPS = core.ModuleOps(globals())
 
 _OS_TOKENS = {
@@ -115,8 +114,7 @@ def _pinned_tag() -> Optional[str]:
 
 
 def _user_picked_release() -> bool:
-    """The user chose the repo or tag, so a release without a sha256 index is theirs to trust
-    on GitHub's digest."""
+    """User picked the repo or tag, so an unindexed release is trusted on GitHub's digest."""
     return (
         bool((os.environ.get("UNSLOTH_AUDIO_CPP_REPO") or "").strip()) or _pinned_tag() is not None
     )
@@ -161,9 +159,7 @@ _GLIBC_MIN_OS = re.compile(r"glibc-(\d+)\.(\d+)")
 
 
 def _glibc_below(min_os: Optional[str]) -> Optional[str]:
-    """The host glibc when it is older than a Linux bundle's manifest ``min_os`` (``glibc-2.35``),
-    else ``None``. Checked before the download: without it the start check fails after a full
-    download (~1 GB for CUDA) on every setup run. No manifest (a user-picked release) skips it."""
+    """Host glibc below min_os else None; pre-download so start cannot fail; no manifest skips."""
     if not sys.platform.startswith("linux") or not isinstance(min_os, str):
         return None
     floor = _GLIBC_MIN_OS.fullmatch(min_os.strip())
@@ -179,20 +175,21 @@ def _glibc_below(min_os: Optional[str]) -> Optional[str]:
     return version
 
 
-def _accelerator_from_env() -> str:
-    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), for hosts whose GPU is not visible
-    at install time (a Docker build). Set, it is an explicit request and never downgraded."""
+def _accelerator_from_env(install_dir: Path) -> str:
+    """``UNSLOTH_AUDIO_CPP_ACCELERATOR`` (auto|cpu|cuda|vulkan|metal), an explicit request never
+    downgraded (a Docker build whose GPU is not visible); unset or invalid, the request the install in
+    ``install_dir`` was made with, so an update keeps it."""
     raw = (os.environ.get("UNSLOTH_AUDIO_CPP_ACCELERATOR") or "").strip().lower()
-    if not raw:
-        return "auto"
-    if raw not in ACCELERATORS:
+    if raw in ACCELERATORS:
+        return raw
+    if raw:
         print(
             f"audio.cpp: ignoring UNSLOTH_AUDIO_CPP_ACCELERATOR={raw!r} (expected one of {', '.join(ACCELERATORS)})",
             file = sys.stderr,
             flush = True,
         )
-        return "auto"
-    return raw
+    recorded = read_install_record(install_dir).get("accelerator_request")
+    return recorded if recorded in ACCELERATORS else "auto"
 
 
 def _expected_sha256(release: dict, asset: dict) -> Optional[str]:
@@ -608,8 +605,7 @@ def resolve(
             repo,
             want,
             token = token,
-            # Trust follows the user's own repo/tag pick, so the in-app update can install the tag it
-            # offered from that repo too; the default fork release always publishes its index.
+            # User-picked repo/tag may be unindexed; the default fork release always has one.
             allow_unindexed = _user_picked_release(),
         )
     except core.ReleaseIntegrityError:
@@ -849,8 +845,7 @@ def _sweep_retired_trees(target: Path) -> None:
 
 
 def _retire_tree(target: Path, retired: Path) -> None:
-    """os.replace, or on EXDEV copy then remove: overlayfs will not rename an image-layer
-    directory, where the Docker image keeps audio.cpp (#17638)."""
+    """Copies aside on EXDEV: overlayfs cannot rename a Docker image layer dir (#17638)."""
     try:
         os.replace(target, retired)
         return
@@ -878,9 +873,7 @@ def _retire_tree(target: Path, retired: Path) -> None:
 
 
 def _is_unreadable(target: Path) -> bool:
-    """Whether this account cannot look inside ``target``: a tree an elevated run staged under
-    mkdtemp's Windows ACL is owned by Administrators and denies the same user unelevated (#14052).
-    Renaming it is refused too, so only an elevated shell can clear it."""
+    """Owned by Administrators (#14052): renames fail too; only an elevated shell clears it."""
     try:
         os.stat(target / OWNERSHIP_MARKER)
     except PermissionError:
@@ -939,8 +932,7 @@ def _intact_install(target: Path, record: dict) -> Optional[Path]:
 
 
 def _record_fits_request(record: dict, requested: str, detected: Optional[str]) -> bool:
-    """The record was installed for the same accelerator request (and, for auto, the same detected
-    host), and is not a CPU fallback that torch's CUDA runtime, here now, would replace."""
+    """Same accelerator request (and host for auto); not a CPU fallback CUDA would now replace."""
     if record.get("accelerator_request") != requested:
         return False
     if requested == "auto" and record.get("detected_accelerator") != detected:
@@ -1021,9 +1013,8 @@ def _loader_env(server: Path, extra_dirs: Sequence[Path] = ()) -> dict:
 
 
 def _cuda_runtime_dirs(backend: str) -> list[str]:
-    """The CUDA libraries the backend's ``child_env`` puts after the bundle dir: the Linux CUDA server
-    links cuBLAS, cudart, cuFFT and NCCL dynamically and finds them in torch's nvidia-* wheels, and a
-    Windows bundle installed without its cudart archive uses torch's DLLs."""
+    """Dirs the backend's child_env adds after the bundle: Linux CUDA finds cuBLAS, cudart, cuFFT
+    and NCCL in torch's nvidia wheels; Windows without a cudart archive uses torch's DLLs."""
     if backend != "cuda" or sys.platform == "darwin":
         return []
     try:
@@ -1136,28 +1127,28 @@ def _runtime_wheels_marker(requested: str, detected: Optional[str]) -> bool:
     return requested == "auto" and detected == "cuda" and _cuda_runtime_wheels_installable()
 
 
-def _mark_runtime_wheels_tried(
+def _refresh_kept_record(
     target: Path, record: dict, requested: str, detected: Optional[str]
 ) -> None:
-    """A kept CPU install records the wheel attempt too, or every run would retry it."""
+    """Record this run's request (and, for CPU, the wheel attempt) on a kept install."""
+    updated = {**record, "accelerator_request": requested, "detected_accelerator": detected}
     if (
-        record.get("accelerator") != "cpu"
-        or record.get("cuda_runtime_wheels_tried")
-        or not _runtime_wheels_marker(requested, detected)
+        record.get("accelerator") == "cpu"
+        and not record.get("cuda_runtime_wheels_tried")
+        and _runtime_wheels_marker(requested, detected)
     ):
+        updated["cuda_runtime_wheels_tried"] = True
+    if updated == record:
         return
     try:
-        (target / INSTALL_RECORD).write_text(
-            json.dumps({**record, "cuda_runtime_wheels_tried": True}, indent = 2), encoding = "utf-8"
-        )
+        (target / INSTALL_RECORD).write_text(json.dumps(updated, indent = 2), encoding = "utf-8")
     except OSError:
         pass
 
 
 def _linux_cuda_runtime_available(major: Optional[int]) -> bool:
-    """Whether the CUDA libraries a line-``major`` Linux bundle links but does not ship (cudart,
-    cuBLAS, cuFFT) are in torch's nvidia-* wheels or on the system loader path. True off Linux,
-    where the bundle (or its cudart archive) carries them."""
+    """Whether the CUDA libs (cudart, cuBLAS, cuFFT) a major-line Linux bundle links but does not
+    ship are in torch's nvidia wheels or on the loader path; always True off Linux."""
     if not sys.platform.startswith("linux"):
         return True
     if major is None:
@@ -1205,9 +1196,8 @@ def smoke_test_staged_server(
     extra_dirs: Sequence[Path] = (),
     require_vulkan_device: bool = False,
 ) -> Optional[str]:
-    """Start the staged server once with ``--help``: a bundle this host cannot load (a newer glibc, a
-    missing DLL) raises here, before it replaces a working tree. Returns its ``--version`` text
-    (build and enabled backends) when it prints one."""
+    """Runs the staged server with --help: a bundle this host cannot load (newer glibc, missing DLL)
+    raises before a working tree is replaced; returns --version text or None."""
     env = _loader_env(server, extra_dirs)
     if require_vulkan_device:
         try:
@@ -1334,8 +1324,7 @@ def _install_locked(
         and _record_is_current(existing.get("release_tag"), release_tag)
         and _record_fits_request(existing, requested, detected)
     ):
-        # Checked under the install lock: a setup run that got here first with a newer release wins over a
-        # stale offer the in-app update pinned.
+        # Under the install lock, a newer release from setup beats a stale in-app update offer.
         server = _intact_install(target, existing)
         if server is not None:
             print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
@@ -1394,7 +1383,7 @@ def _install_locked(
         and _intact_install(target, existing) is not None
     ):
         print(f"audio.cpp: already matches {chosen}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
     if (
         not force
@@ -1407,7 +1396,7 @@ def _install_locked(
     ):
         # The lookup named an older release than the one installed: never downgrade to it.
         print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
-        _mark_runtime_wheels_tried(target, existing, requested, detected)
+        _refresh_kept_record(target, existing, requested, detected)
         return _intact_install(target, existing)
 
     cudart = cudart_asset_for(list(assets), chosen)
@@ -1519,10 +1508,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     p = argparse.ArgumentParser(description = "Install a prebuilt audiocpp_server (audio.cpp).")
     p.add_argument(
         "--accelerator",
-        default = _accelerator_from_env(),
+        default = None,
         type = lambda value: value.strip().lower(),
         choices = list(ACCELERATORS),
-        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else auto (detect; CPU when no bundle covers the GPU)",
+        help = "default: UNSLOTH_AUDIO_CPP_ACCELERATOR, else the installed request, else auto (detect; CPU when no bundle covers the GPU)",
     )
     p.add_argument("--install-dir", default = None)
     p.add_argument("--force", action = "store_true", help = "reinstall even when the bundle matches")
@@ -1540,17 +1529,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = p.parse_args(argv)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     release_tag = (args.published_release_tag or "").strip() or None
+    install_dir = Path(args.install_dir).expanduser() if args.install_dir else None
+    accelerator = args.accelerator or _accelerator_from_env(install_dir or default_install_dir())
     try:
         if args.print_asset:
-            detected = detect_accelerator() if args.accelerator == "auto" else None
+            detected = detect_accelerator() if accelerator == "auto" else None
             _, repo, release, chosen = resolve_for_request(
-                args.accelerator, detected, token, release_tag, supply_runtime = False
+                accelerator, detected, token, release_tag, supply_runtime = False
             )
             print(f"{repo} {release.get('tag_name') if release else '-'} {chosen or '(none)'}")
             return EXIT_OK if chosen else EXIT_FAILED
         install(
-            install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
-            accelerator = args.accelerator,
+            install_dir = install_dir,
+            accelerator = accelerator,
             force = args.force,
             release_tag = release_tag,
             keep_newer = args.keep_newer,

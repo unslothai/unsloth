@@ -514,6 +514,68 @@ class TestPipelineNeed(_GpuCacheResetMixin, unittest.TestCase):
         self.assertIsNotNone(need)
         self.assertGreaterEqual(need.weights_mib, 20000)
 
+    def test_a_base_without_its_transformer_adds_the_cached_prequant_file_at_its_own_size(self):
+        (self.root / "scheduler").mkdir()
+        (self.root / "scheduler" / "scheduler_config.json").write_text("{}")
+        (self.root / "tokenizer").mkdir()
+        (self.root / "tokenizer" / "tokenizer_config.json").write_text("{}")
+        (self.root / "tokenizer" / "tokenizer.json").write_text("{}")
+        (self.root / "text_encoder").mkdir()
+        (self.root / "text_encoder" / "config.json").write_text("{}")
+        _sparse(self.root / "text_encoder" / "model.safetensors", 8000)
+        self.assertIsNone(self._need())
+        quant = Path(self._tmp.name) / "z-int8"
+        _sparse(quant / "transformer_int8.pt", 6000)
+        # An older checkpoint beside its successor: the loader reads one.
+        _sparse(quant / "transformer_int8.safetensors", 5000)
+        source = SimpleNamespace(
+            kind = "repo",
+            location = str(quant),
+            candidate_filenames = ("transformer_int8.safetensors", "transformer_int8.pt"),
+        )
+        fam = SimpleNamespace(name = "z-image", prequant_repos = (("int8", str(quant)),))
+        with (
+            patch("core.inference.diffusion_families.detect_family_for_pick", return_value = fam),
+            patch(
+                "core.inference.diffusion_prequant.resolve_prequant_source",
+                return_value = source,
+            ),
+            patch(
+                "core.inference.diffusion_auto_policy._base_key",
+                return_value = "tongyi-mai/z-image-turbo",
+            ),
+        ):
+            need = self._need()
+        self.assertIsNotNone(need)
+        # The fp32 base's halving applies to base files only, never to the int8 checkpoint.
+        self.assertGreaterEqual(need.weights_mib, 6000 + 8000)
+        self.assertLess(need.weights_mib, 6000 + 5000 + 8000)
+
+    def test_a_flux3_pipeline_is_checked_against_its_modular_manifest(self):
+        from core.inference.diffusion_flux3 import (
+            FLUX3_COMPONENT_FOLDERS,
+            FLUX3_FAMILY_NAMES,
+            FLUX3_INDEX,
+        )
+
+        seen = []
+
+        def complete(root, name, **kw):
+            seen.append((name, kw.get("fixed_component_folders")))
+            return False
+
+        fam = SimpleNamespace(name = next(iter(FLUX3_FAMILY_NAMES)), prequant_repos = ())
+        with (
+            patch("core.inference.diffusion_families.detect_family_for_pick", return_value = fam),
+            patch(
+                "core.inference.diffusion_families.local_pipeline_components_are_complete",
+                side_effect = complete,
+            ),
+        ):
+            self._need()
+        self.assertTrue(seen)
+        self.assertTrue(all(entry == (FLUX3_INDEX, FLUX3_COMPONENT_FOLDERS) for entry in seen))
+
 
 class TestFailedLoadPrice(_ArbiterResetMixin, unittest.TestCase):
     def test_a_price_counts_only_while_its_model_is_loaded_or_loading(self):

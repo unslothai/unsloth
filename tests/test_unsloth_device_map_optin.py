@@ -63,11 +63,13 @@ def _load(
         "torch": types.SimpleNamespace(cuda = _FakeCuda(devices, free)),
         "DEVICE_TYPE_TORCH": device_type,
         "is_distributed": lambda: distributed,
+        "unsloth_logging_enabled": lambda: False,
     }
     for node in ast.parse(_SRC).body:
         if isinstance(node, ast.FunctionDef) and node.name in (
             "requested_device_map",
             "resolve_unsloth_device_map",
+            "_placement_report",
             "planner_quantization_kwargs",
             "planner_class_mismatch_reason",
             "_as_bytes",
@@ -115,8 +117,7 @@ class _Plan:
     ],
 )
 def test_every_existing_device_map_is_returned_untouched(device_map):
-    """The whole opt-in claim in one test. If any of these changed, every multi-GPU user
-    who never asked for planning would silently get a different placement."""
+    """Existing device_maps pass through; planning them would move non-opt-in multi-GPU users."""
     ns = _load(planner = lambda *a, **k: pytest.fail("the planner must not run"))
     assert ns["resolve_unsloth_device_map"](device_map, "some/model") is device_map
 
@@ -143,8 +144,7 @@ def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
 
 
 def test_the_env_var_can_turn_planning_back_off(monkeypatch):
-    """The multi-GPU operator who wants accelerate's greedy fill back needs a switch that
-    does not require editing call sites, so `0` has to reach the default itself."""
+    """UNSLOTH_AUTO_DEVICE_MAP=0 must reach the default; accelerate's greedy fill returns."""
     ns = _load()
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "0")
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
@@ -183,8 +183,7 @@ def test_planning_is_declined_where_something_else_owns_placement(kwargs, why):
 
 
 def test_a_caller_that_vetoes_planning_is_obeyed():
-    """Only the leaf knows when the config it is about to load is not the one the planner
-    would rebuild from the repo, so it needs a way to say so."""
+    """Only the leaf knows its config differs from the repo, so it vetoes via skip_reason."""
     ns = _load(planner = lambda *a, **k: pytest.fail("planned despite the veto"))
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", skip_reason = "text_only") == "sequential"
     # A veto is not a licence to reinterpret a placement the caller chose.
@@ -300,8 +299,7 @@ def test_a_distributed_launch_never_gets_an_intra_model_split():
 
 @pytest.mark.parametrize("device_type", ["xpu", "mps", "cpu", "hpu"])
 def test_a_non_cuda_backend_never_reaches_the_cuda_planner(device_type):
-    """The planner sizes cards through torch.cuda. On XPU or MPS that is either absent or
-    lying, so falling back beats planning against numbers from the wrong device."""
+    """Planner reads torch.cuda, absent or wrong on XPU/MPS, so non-CUDA backends fall back."""
     ns = _load(
         device_type = device_type,
         planner = lambda *a, **k: pytest.fail("CUDA planner on a non-CUDA backend"),
@@ -332,8 +330,7 @@ def test_a_planner_that_raises_falls_back_rather_than_failing_the_load():
 
 
 def test_an_infeasible_plan_is_raised_not_swallowed():
-    """The planner raises this instead of spilling a bitsandbytes model to CPU. Turning it
-    back into "sequential" would hand the user an OOM in place of the diagnosis."""
+    """Raise DeviceMapInfeasible rather than spill bitsandbytes to CPU; sequential would OOM."""
 
     class DeviceMapInfeasible(RuntimeError):
         pass
@@ -371,8 +368,7 @@ def test_the_balanced_sentinel_declines_to_balanced_on_one_device_too(devices):
 
 
 def test_both_names_plan_identically_when_the_planner_answers():
-    """The name chooses the fallback and nothing else, so a plan is not a second code
-    path that could drift."""
+    """The name only picks the fallback; both names share one plan path that cannot drift."""
     planned = {"": 0, "model.vision_tower": 1}
     for name in ("unsloth", "unsloth_balanced"):
         ns = _load(planner = lambda *a, **k: _Plan(dict(planned)))
@@ -394,8 +390,7 @@ def test_an_infeasible_plan_is_still_raised_for_the_balanced_name():
 
 
 def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
-    """An omitted device_map resolves to the planner, whose decline stays sequential as it was
-    before planning existed; widening that to balanced would change single-card loads."""
+    """Unset device_map: planner declines stay sequential; balanced would change 1-card loads."""
     ns = _load()
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
 
@@ -419,8 +414,7 @@ def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
 
 
 def test_free_memory_is_planned_against_not_total():
-    """Planning against total memory OOMed the notebook's first attempt (unsloth-zoo#1048): a
-    resident CUDA context leaves far less than 16 GB free on each 16 GB card."""
+    """Planning on total memory OOMed (unsloth-zoo#1048); a CUDA context leaves little free."""
     seen = {}
     ns = _load(
         free = {0: 4 * 2**30, 1: 15 * 2**30},
@@ -851,8 +845,7 @@ def test_a_max_position_embeddings_override_reaches_the_planner():
 
 
 def test_the_diffusion_leaf_plans_with_the_code_revision_too():
-    """Same reason as its locality: this leaf builds the helper's input itself, so a key
-    added to the helper does not reach it unless it is named here."""
+    """Diffusion leaf builds its own helper input, so code_revision must be named here too."""
     source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "planner_hub_kwargs":

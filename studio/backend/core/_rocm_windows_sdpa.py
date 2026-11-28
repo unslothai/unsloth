@@ -47,20 +47,23 @@ def _math_off() -> None:
 
 
 def _wide_cuda_head(query: Any) -> bool:
+    # Device first; size(-1) for a nested query, since strided NestedTensor .shape raises.
+    if getattr(getattr(query, "device", None), "type", None) != "cuda":
+        return False
+    if getattr(query, "is_nested", False):
+        try:
+            return int(query.size(-1)) > WIDEST_FUSED_HEAD_DIM
+        except Exception:  # noqa: BLE001 -- a ragged head dim: no fixed width to judge
+            return False
     shape = getattr(query, "shape", None) or ()
-    return (
-        len(shape) > 0
-        and int(shape[-1]) > WIDEST_FUSED_HEAD_DIM
-        and getattr(getattr(query, "device", None), "type", None) == "cuda"
-    )
+    return len(shape) > 0 and int(shape[-1]) > WIDEST_FUSED_HEAD_DIM
 
 
 _ORIGINALS: dict = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
 
 
 def _math_only(token: str, query: Any, key: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
-    """allow_in_graph (as unsloth.import_fixes does): Dynamo cannot enter the lock, and the restore must use the
-    run-time backends, not the trace-time ones."""
+    """allow_in_graph: Dynamo can't enter the lock; restore run-time, not trace-time, backends."""
     _math_on()
     try:
         return _ORIGINALS[token](query, key, value, *args, **kwargs)

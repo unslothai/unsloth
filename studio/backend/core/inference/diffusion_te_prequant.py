@@ -81,8 +81,7 @@ TE_INT8_CONVROT_FILES: dict[str, dict[str, tuple[str, ...]]] = {
             "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors",
         ),
     },
-    # Qwen2.5-VL-7B, shared by every Qwen-Image release and HunyuanImage-2.1; the vision tower stays bf16 (edit runs
-    # it).
+    # Qwen2.5-VL-7B (all Qwen-Image, HunyuanImage-2.1); vision tower stays bf16 (edit runs it).
     "qwen-image": {"text_encoder": _QWEN25VL_INT8},
     "qwen-image-edit": {"text_encoder": _QWEN25VL_INT8},
     "qwen-image-layered": {"text_encoder": _QWEN25VL_INT8},
@@ -173,8 +172,7 @@ TE_INT8_CONVROT_VARIANT_FILES: dict[str, dict[str, dict[str, tuple[str, str]]]] 
     },
 }
 
-# Table files the Hub listed on 2026-11-11. Others are pending: used only once local or Hub-listed, else int8 takes the
-# fp8 file beside it. Pending rows stay so an upload needs no Studio release.
+# Pending rows: used once local or listed (else int8 takes the fp8 file); kept for uploads.
 TE_INT8_CONVROT_PUBLISHED: frozenset[tuple[str, str]] = frozenset(
     {
         ("unsloth/flux.2-dev-fp8", "FLUX.2-dev-text_encoder-INT8-ConvRot.safetensors"),
@@ -359,15 +357,13 @@ def te_prequant_mirror_path(repo_id: Optional[str], name: Optional[str]) -> Opti
 # Components the pipeline-assembly injection covers; text_encoder_4 lives in diffusion_hidream.py.
 TE_PREQUANT_COMPONENTS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
-# Pre-cast fp8 size vs bf16; dense embeddings/norms keep it above 0.5.
-# 0.65 is the measured max rounded up: overestimating is the safe direction.
+# Fp8 size is above 0.5 of bf16 (dense embeddings/norms); 0.65 is the measured max, rounded up.
 TE_PREQUANT_BUDGET_SCALE = 0.65
 # The int8 ConvRot encoder alone (no fp8 fallback to cover): Qwen-Image-2.1's is 9,349,769,248 bytes against
 # 17,534,339,488 for the dense encoder, 0.533, rounded up.
 TE_INT8_CONVROT_BUDGET_SCALE = 0.56
-# Per-family int8 ConvRot budget scales where the default understates (an encoder whose bf16
-# embedding table is a large share keeps more bytes dense): measured ratios, rounded up: Lumina-2
-# 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579 (its Qwen-Image file).
+# Per-family int8 ConvRot scales: default understates for large bf16 embedding tables; measured,
+# rounded up: Lumina-2 0.613, Krea-2 0.591, FLUX.3 0.591, Wan UMT5 0.593, HunyuanImage-2.1 0.579.
 _TE_INT8_CONVROT_BUDGET_SCALES = {
     "hunyuanimage-2.1": 0.60,
     "lumina-2": 0.62,
@@ -497,7 +493,6 @@ def explicit_int8_hosted_components(
             if component == "text_encoder_4":
                 from .diffusion_hidream import HIDREAM_LLAMA_REPO
                 standalone = {"text_encoder_4": HIDREAM_LLAMA_REPO}
-            # TE4 is matched against its own standalone repo, the rest against the selected base.
             component_base = standalone.get(component) or base or getattr(fam, "base_repo", "")
             with _cache_only_scope(local_files_only):
                 got = te_prequant_sources_for_base(
@@ -550,9 +545,7 @@ def explicit_int8_unavailable_reason(
     supplied: Iterable[str] = (),
     local_files_only: Optional[bool] = None,
 ) -> Optional[str]:
-    """Why an explicit int8 request cannot take the int8 ConvRot file(s) ``fam`` names, or None when it can (or the
-    family names none). Names each unconfirmed file so an int8-only host (Apple Silicon) reports the missing file.
-    Never raises."""
+    """Why int8 can't use fam's files (unconfirmed ones named), or None; never raises."""
     token = _TE_INT8_INCLUDE_PENDING.set(True)
     try:
         name = str(getattr(fam, "name", "") or "").strip().lower()
@@ -618,9 +611,8 @@ def _hub_offline() -> bool:
 def te_prequant_sources_confirmed(
     sources: dict[str, "TePrequantSource"], *, local_files_only: Optional[bool] = None
 ) -> bool:
-    """Whether every hosted pre-cast file in ``sources`` is CONFIRMED: on disk (path, mirror, Hub cache), or listed
-    by the Hub. Offline, or when the Hub cannot answer, only what is on disk counts. An automatic pick budgets the
-    dense encoder unless this holds, since that is what its load falls back to."""
+    """Whether every hosted pre-cast file in ``sources`` is confirmed on disk or Hub-listed; offline
+    or unanswered, only disk counts; an auto pick budgets the dense encoder otherwise."""
     import os
     import time
 
@@ -646,7 +638,6 @@ def te_prequant_sources_confirmed(
         except Exception:  # noqa: BLE001
             local_files_only = False
     if local_files_only or _hub_offline():
-        # A load that may not fetch can only use what is on disk.
         return False
     key = tuple(
         sorted((c, s.location, tuple(te_candidate_filenames(s))) for c, s in pending.items())
@@ -712,9 +703,8 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "qwen/qwen-image-2.1-turbo",
         }
     ),
-    # UMT5-XXL: Wan2.2 TI2V-5B and T2V-A14B ship byte-identical bf16 text_encoder/ shards, Wan2.1 T2V-1.3B and 14B
-    # byte-identical fp32 ones, and every Wan2.1 fp32 tensor rounds to the Wan2.2 bf16 one bit for bit (all 242,
-    # compared 2026-10-16), so a bf16 load of either gives bit-identical prompt embeddings.
+    # UMT5-XXL: Wan2.2 and Wan2.1 shards are byte-identical per pair; Wan2.1 fp32 rounds to Wan2.2
+    # bf16 bit for bit, so bf16 loads give bit-identical prompt embeddings.
     frozenset(
         {
             "wan-ai/wan2.2-ti2v-5b-diffusers",
@@ -738,9 +728,8 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux-3-image-klein-base",
         }
     ),
-    # Qwen3-VL-4B: identical sha256 across the Krea-2 pair (compared 2026-08-25). The tensors are Qwen3-VL-4B-Instruct's
-    # (all 713 match, 2026-10-22), but packed as one file without the ``model.`` prefix, so the sha256 differs from
-    # FLUX.3 Klein's two shards and the pair stays its own group.
+    # Krea-2 pair: identical sha256. Tensors are Qwen3-VL-4B-Instruct's, packed without the
+    # ``model.`` prefix, so sha256 differs from FLUX.3 Klein's and the pair is its own group.
     frozenset(
         {
             "krea/krea-2-turbo",
@@ -776,11 +765,12 @@ _TE_EQUIVALENT_BASES: tuple[frozenset[str], ...] = (
             "black-forest-labs/flux.2-klein-base-4b",
         }
     ),
-    # Stock Qwen3-8B (= unsloth/Qwen3-8B): likewise for the 9B pair (compared 2026-10-16)
+    # Stock Qwen3-8B (= unsloth/Qwen3-8B), 9B pair and 9B KV checkpoint share identical shards.
     frozenset(
         {
             "black-forest-labs/flux.2-klein-9b",
             "black-forest-labs/flux.2-klein-base-9b",
+            "black-forest-labs/flux.2-klein-9b-kv",
         }
     ),
     # MOSS-Image SFT and Base share identical text_encoder shards (LFS sha256).
@@ -831,12 +821,41 @@ TE_INT8_FP16_ENV = "UNSLOTH_TE_INT8_FP16"
 _TE_INT8_FP16_FAMILIES = frozenset({"qwen-image-2.1"})
 
 
-def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
-    """float16 CUDA (no bf16/fp8) runs the hosted int8 ConvRot encoder; ``UNSLOTH_TE_INT8_FP16=0`` keeps the dense one."""
+# One float16 encoder pick per load: ``_run_load`` decides it before staging (the planner then skips the dense shards
+# only when it picked int8) and hands it to ``load_pipeline``, which runs under the same pick, so assembly never re-reads
+# host RAM. A direct ``load_pipeline`` call decides on first use and keeps that answer for the rest of the load. State:
+# {"pick": Optional[bool], "supplied": tuple of components the load takes from elsewhere}.
+_FP16_TE_PICK: ContextVar[Optional[dict]] = ContextVar("unsloth_fp16_te_pick", default = None)
+
+
+@contextmanager
+def fp16_te_pick_scope(pick: Optional[bool] = None, supplied: Iterable[str] = ()):
+    token = _FP16_TE_PICK.set({"pick": pick, "supplied": tuple(supplied)})
+    try:
+        yield
+    finally:
+        _FP16_TE_PICK.reset(token)
+
+
+def fp16_te_pick_applies(fam: Any, target: Any, te_quant_mode: Any) -> bool:
+    """Host-RAM rule applies to automatic int8 on a listed family, float16 CUDA, switch unset."""
     import os
 
-    if os.environ.get(TE_INT8_FP16_ENV, "1").strip().lower() in ("0", "false", "no", "off"):
+    try:
+        from .diffusion_precision import normalize_te_quant, te_quant_picked_automatically
+        if normalize_te_quant(te_quant_mode) != "int8" or not te_quant_picked_automatically(
+            te_quant_mode
+        ):
+            return False
+    except Exception:  # noqa: BLE001
         return False
+    raw = (os.environ.get(TE_INT8_FP16_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off", "1", "true", "yes", "on"):
+        return False
+    return _fp16_family_target(fam, target)
+
+
+def _fp16_family_target(fam: Any, target: Any) -> bool:
     name = str(getattr(fam, "name", fam) or "").strip().lower()
     if name not in _TE_INT8_FP16_FAMILIES or getattr(target, "device", None) != "cuda":
         return False
@@ -845,6 +864,137 @@ def int8_convrot_te_runs_fp16(fam: Any, target: Any) -> bool:
         return getattr(target, "dtype", None) is torch.float16
     except Exception:  # noqa: BLE001
         return False
+
+
+def _base_components(
+    fam: Any,
+    base: Optional[str],
+    supplied: Iterable[str] = (),
+) -> tuple[dict, str]:
+    """The components the dense load reads from the base, chosen as the loader chooses them
+    (``diffusion_small_host.small_host_components``: the snapshot minus what the load supplies from elsewhere), with
+    the source that priced them. A snapshot that is not complete for those components (an interrupted or partial
+    download: the loader downloads before it decides) is priced from the family's bf16 table instead, minus the same
+    supplied components."""
+    from .diffusion_small_host import (
+        StoredComponent,
+        resolve_snapshot_dir,
+        small_host_components,
+        snapshot_weights_complete,
+        stored_components,
+    )
+
+    supplied = tuple(supplied)
+    repo = base or str(getattr(fam, "base_repo", "") or "")
+    if repo:
+        try:
+            from utils.hf_cache_settings import active_hf_hub_cache
+            cache = active_hf_hub_cache()
+        except Exception:  # noqa: BLE001
+            cache = None
+        snapshot = resolve_snapshot_dir(repo, cache)
+        if snapshot is not None and snapshot_weights_complete(snapshot, skip = supplied):
+            comps = small_host_components(stored_components(snapshot), supplied)
+            if "text_encoder" in comps:
+                return comps, "snapshot"
+    from .diffusion_auto_policy import family_bf16_components_gb
+
+    table = family_bf16_components_gb(fam, repo or None)
+    if table is None:
+        return {}, "none"
+    mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
+    return {
+        name: StoredComponent(name, int(gb * mib_per_gb), "bfloat16")
+        for name, gb in zip(("transformer", "text_encoder", "vae"), table)
+        if gb and name not in supplied
+    }, "family table"
+
+
+def dense_fp16_encoder_fits_host(
+    fam: Any,
+    base: Optional[str] = None,
+    supplied: Iterable[str] = (),
+) -> tuple[Optional[bool], str]:
+    """Whether the dense load (dense encoder plus every other component the load reads from the base, float16) fits
+    host RAM, priced by the small-host route's own resolver (``diffusion_small_host.dense_load_fits``) on the
+    loader's own component selection: (fits, why). fits is None when the components or host RAM cannot be read."""
+    try:
+        import torch
+
+        from .diffusion_small_host import dense_load_fits, host_commit_mib, host_ram_mib
+        from .safetensors_pread import pread_available
+
+        comps, source = _base_components(fam, base, supplied)
+        if "text_encoder" not in comps:
+            return None, "text encoder size unknown"
+        total, available = host_ram_mib()
+        fits, dense = dense_load_fits(
+            comps,
+            torch.float16,
+            host_total_mib = total,
+            host_available_mib = available,
+            host_commit_mib = host_commit_mib(),
+            pread_libraries = ("transformers",) if pread_available() else (),
+        )
+        return fits, (
+            f"dense float16 load ~{dense} MiB ({', '.join(sorted(comps))}; {source}), {available} MiB available host RAM"
+        )
+    except Exception as exc:  # noqa: BLE001
+        return None, f"host RAM check failed: {exc}"
+
+
+def decide_fp16_te_int8(
+    fam: Any,
+    base: Optional[str] = None,
+    supplied: Iterable[str] = (),
+) -> bool:
+    """The automatic float16 pick: int8 only when the dense load does not fit host RAM (or cannot be priced, the
+    memory-safe side). Reads host RAM once; callers carry the answer (``fp16_te_pick_scope``)."""
+    fits, why = dense_fp16_encoder_fits_host(fam, base, supplied)
+    use_int8 = fits is not True
+    name = str(getattr(fam, "name", fam) or "").strip().lower()
+    log = _module_logger()
+    if log is not None:
+        log.info(
+            "diffusion.te_prequant: float16 card, automatic %s text encoder for %s (%s)",
+            "int8 ConvRot" if use_int8 else "dense",
+            name,
+            why if fits is not None else f"{why}; dense fit unknown",
+        )
+    return use_int8
+
+
+def int8_convrot_te_runs_fp16(
+    fam: Any,
+    target: Any,
+    *,
+    auto: bool = False,
+    base: Optional[str] = None,
+) -> bool:
+    """float16 CUDA (no bf16/fp8) may run the hosted int8 ConvRot encoder. An explicit int8 request takes it; an
+    automatic pick takes it only when the dense float16 encoder cannot be held in host RAM (the load would otherwise
+    take the low-RAM route and re-read the encoder from disk per prompt), and keeps the dense encoder when it fits:
+    the int8 encoder is 0.045 relative L2 from an fp32 encode against 0.009 for the dense fp16 one (Qwen-Image-2.1-Turbo,
+    T4, renders +0.027 LPIPS). ``UNSLOTH_TE_INT8_FP16=1`` always takes the int8 encoder, ``=0`` never does. Inside a
+    load the automatic pick is decided once and reused (``fp16_te_pick_scope``)."""
+    import os
+
+    raw = (os.environ.get(TE_INT8_FP16_ENV) or "").strip().lower()
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if not _fp16_family_target(fam, target):
+        return False
+    if raw in ("1", "true", "yes", "on") or not auto:
+        return True
+    state = _FP16_TE_PICK.get()
+    if state is not None and state.get("pick") is not None:
+        return bool(state["pick"])
+    use_int8 = decide_fp16_te_int8(
+        fam, base, state.get("supplied", ()) if state is not None else ()
+    )
+    if state is not None:
+        state["pick"] = use_int8
+    return use_int8
 
 
 def hosted_int8_convrot_te_runs_on(fam: Any, target: Any) -> bool:
@@ -1009,8 +1159,7 @@ def resolve_te_prequant_source(
             and fp8.location.lower() == repo_id.lower()
             and not _family_has_torchao_int8(fam)
         ):
-            # A family with a keep-bf16 int8 schedule (Qwen-Image and its releases, FLUX.2-dev) keeps the on-the-fly
-            # torchao int8 as the fallback for a missing file, as before the file existed; fp8 comes after that.
+            # Keep-bf16 families: on-the-fly torchao int8 for a missing file first, then fp8.
             fallback = te_candidate_filenames(fp8)
         return TePrequantSource(
             kind = "repo",
@@ -1047,6 +1196,7 @@ def te_prequant_sources(
     te_quant_mode: Optional[str],
     target: Any,
     components: Iterable[str] = TE_PREQUANT_COMPONENTS,
+    base: Optional[str] = None,
 ) -> dict[str, TePrequantSource]:
     """Shares the download plan's resolver, so the plan and load agree on which dense encoders to fetch."""
     try:
@@ -1072,7 +1222,10 @@ def te_prequant_sources(
         fp8_runs = te_quant_supported(target, TE_QUANT_FP8)
         if not fp8_runs and not (
             mode == "int8"
-            and (int8_convrot_te_runs_on(target) or int8_convrot_te_runs_fp16(fam, target))
+            and (
+                int8_convrot_te_runs_on(target)
+                or int8_convrot_te_runs_fp16(fam, target, auto = auto, base = base)
+            )
         ):
             return {}
         sources: dict[str, TePrequantSource] = {}
@@ -1126,6 +1279,7 @@ def te_prequant_sources_for_base(
         te_quant_mode = te_quant_mode,
         target = target,
         components = components,
+        base = base,
     )
     registered_base = str(getattr(fam, "base_repo", "") or "")
     standalone = standalone_component_bases or {}
@@ -1177,9 +1331,7 @@ def te_variant_family_view(fam: Any, base: Optional[str]) -> Any:
     return fam
 
 
-# Weight files a dense encoder folder holds. Everything else (config.json, the shard index, tokenizer JSON) is kept
-# when the pre-cast checkpoint replaces the weights: the pre-cast loader still meta-inits from the base repo component
-# config.
+# Config, shard index and tokenizer stay: the pre-cast loader meta-inits from the base config.
 _TE_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pth", ".pt", ".msgpack", ".h5")
 
 
@@ -1207,6 +1359,7 @@ def load_prequant_text_encoder(
     trim_lm_head: bool = False,
     failures: Optional[list] = None,
     config_source: Optional[str] = None,
+    drop_vision: bool = False,
 ) -> Optional[Any]:
     """Load the pre-cast text encoder described by ``source`` (on CPU, for pipeline
     assembly to place), with the layerwise upcast hooks already installed.
@@ -1224,7 +1377,8 @@ def load_prequant_text_encoder(
     (``diffusion_text_encoder_trim``). ``failures`` collects the error text of a load that raised.
     ``config_source`` is where the encoder config is read when it is not ``base``: the staged directory the
     pipeline itself assembles from, which a cache-only load may have resolved under another cache root. ``base``
-    stays the canonical id the checkpoint is validated against."""
+    stays the canonical id the checkpoint is validated against. ``drop_vision`` builds the encoder without its vision
+    tower and never reads the tower's tensors (``diffusion_te_vision``), for a family that never runs it."""
     try:
         if source.kind == "path" and not _local_prequant_path_allowed(source.location):
             _warn(
@@ -1265,15 +1419,29 @@ def load_prequant_text_encoder(
             trim_text_encoder,
         )
 
+        from .diffusion_te_vision import (
+            VISION_TOWER_PREFIXES,
+            drop_vision_tower,
+            is_vision_tower_key,
+            vision_tower_skipped,
+        )
+
         te_class = None
         skip = ()
         if is_safetensors_checkpoint(path):
             if trim_lm_head:
                 te_class = _safetensors_te_class(path)
             skip = (LM_HEAD_KEY,) if trim_lm_head and class_trims_lm_head(te_class) else ()
-            ckpt = load_plain_prequant_safetensors(path, skip_names = skip)
+            ckpt = load_plain_prequant_safetensors(
+                path,
+                skip_names = skip,
+                skip_prefixes = VISION_TOWER_PREFIXES if drop_vision else (),
+            )
         else:
             ckpt = torch.load(path, weights_only = True, map_location = "cpu")
+            if drop_vision and isinstance(ckpt, dict) and isinstance(ckpt.get("state_dict"), dict):
+                for key in [k for k in ckpt["state_dict"] if is_vision_tower_key(k)]:
+                    del ckpt["state_dict"][key]
         # By format tag: an int8 request accepts its fp8 fallback; an fp8 request never accepts an int8 file.
         file_scheme = (
             "int8"
@@ -1315,9 +1483,8 @@ def load_prequant_text_encoder(
         config = transformers.AutoConfig.from_pretrained(
             config_from, **config_kwargs, **pinned_revision_kwargs(config_from)
         )
-        # Krea-2 ships transformers-5.x configs whose rope lives under rope_parameters; the runtime component loader
-        # remaps it for a 4.x runtime, and the meta-init here must match or the rebuilt encoder forwards with a broken
-        # rope.
+        # Krea-2 configs (transformers 5.x) put rope under rope_parameters; the meta-init must match
+        # the runtime loader's 4.x remap or the rebuilt encoder forwards with a broken rope.
         from .diffusion_krea2 import remap_rope_parameters
 
         remap_rope_parameters(getattr(config, "text_config", config))
@@ -1325,7 +1492,7 @@ def load_prequant_text_encoder(
             setattr(config, key, value)
         if file_scheme == "int8":
             encoder = _build_int8_convrot_encoder(
-                encoder_cls, config, state_dict, dtype = dtype, trim = trim
+                encoder_cls, config, state_dict, dtype = dtype, trim = trim, drop_vision = drop_vision
             )
             setattr(encoder, TE_PREQUANT_SCHEME_ATTR, "int8")
             _tag_weight_files(encoder, path)
@@ -1351,13 +1518,18 @@ def load_prequant_text_encoder(
             encoder = encoder_cls(config)
         if trim:
             trim_text_encoder(encoder)
+        if drop_vision:
+            drop_vision_tower(encoder)
         _fill_tied_aliases(encoder, state_dict)
         encoder.load_state_dict(state_dict, strict = True, assign = True)
         if _has_meta_tensors(encoder):
             # Non-persistent buffers stay on meta: rebuild on CPU, then re-assign cast weights.
-            encoder = encoder_cls(config)
+            with vision_tower_skipped(drop_vision):
+                encoder = encoder_cls(config)
             if trim:
                 trim_text_encoder(encoder)
+            if drop_vision:
+                drop_vision_tower(encoder)
             encoder.load_state_dict(state_dict, strict = True, assign = True)
         # assign=True unties tied weights (e.g. Qwen3 lm_head); re-tie them.
         tie = getattr(encoder, "tie_weights", None)
@@ -1404,8 +1576,7 @@ def supplied_component_pipe_kwargs(
     family: Optional[str] = None,
     logger: Any = None,
 ) -> dict[str, Any]:
-    """Supplied text-encoder / VAE modules by component. Never swallows a failure: the base repo's weights for
-    these components were not downloaded, so there is nothing to fall back to."""
+    """Supplied modules by component; failures are never swallowed (no base fallback)."""
     from .diffusion_comfy_components import active_component_overrides, load_override_modules
 
     overrides = active_component_overrides()
@@ -1494,6 +1665,7 @@ def _te_prequant_pipe_kwargs(
     cause = ""
     try:
         from .diffusion_precision import TE_QUANT_FP8, normalize_te_quant, te_quant_supported
+        from .diffusion_te_vision import family_drops_vision_tower
         from .diffusion_text_encoder_trim import family_trims_lm_head
 
         with _cache_only_scope(local_files_only):
@@ -1511,6 +1683,9 @@ def _te_prequant_pipe_kwargs(
                 continue
             failures.clear()
             trim = component == "text_encoder" and family_trims_lm_head(getattr(fam, "name", None))
+            drop_vision = component == "text_encoder" and family_drops_vision_tower(
+                getattr(fam, "name", None)
+            )
             encoder = load_prequant_text_encoder(
                 base,
                 component,
@@ -1523,6 +1698,7 @@ def _te_prequant_pipe_kwargs(
                 trim_lm_head = trim,
                 failures = failures,
                 config_source = config_source,
+                drop_vision = drop_vision,
             )
             fp8_names = tuple(
                 n for n in te_candidate_filenames(source) if n != getattr(source, "filename", None)
@@ -1553,6 +1729,7 @@ def _te_prequant_pipe_kwargs(
                     trim_lm_head = trim,
                     failures = failures,
                     config_source = config_source,
+                    drop_vision = drop_vision,
                 )
             if (
                 encoder is None
@@ -1578,8 +1755,7 @@ def _te_prequant_pipe_kwargs(
                 cause = f" ({failures[-1]})" if failures else cause
         if not unavailable and not unbudgeted:
             if built_failed and logger is not None:
-                # Dense shards already cached off MPS: the cached-plan path priced max(file, scanned dense), so the
-                # dense encoder is inside the plan.
+                # Dense cached off MPS is in the plan, which priced max(file, scanned dense).
                 logger.warning(
                     "diffusion.te_prequant: automatic %s %s for %s is present but could not be loaded%s; loading the "
                     "cached dense encoder, which the memory plan covered",
@@ -1670,8 +1846,7 @@ def _fetch_dense_components(
             if len(parts) < 3 or parts[-2] != "snapshots" or not parts[-3].startswith("models--"):
                 return False
             repo_id = parts[-3][len("models--") :].replace("--", "/")
-            # Into the SAME snapshot assembly opens: its cache root (the secondary one included) and its revision, so
-            # a staged snapshot gains the shards rather than a new one appearing elsewhere.
+            # Same snapshot: cache root (secondary included) and revision, not a new snapshot.
             revision, cache_dir = parts[-1], os.sep.join(parts[:-3]) or os.sep
         fetched = snapshot_download(
             repo_id,
@@ -1698,10 +1873,8 @@ def _dense_component_pickles(
     hf_token: Optional[str],
     cache_dir: Optional[str] = None,
 ) -> list:
-    """ignore_patterns for a dense encoder fetch: every .pt / .pth / .ckpt / .pkl, plus a component's .bin shards when
-    the repo lists a safetensors weight for it. A component whose .bin is already cached and matches the Hub's sha256
-    (and whose safetensors is not cached) skips its safetensors instead, so nothing is downloaded twice. Without a
-    listing only the never-read pickles are dropped, so a component whose only copy is a .bin still loads."""
+    """Ignore patterns: .pt/.pth/.ckpt/.pkl always; .bin when safetensors are listed, except cached
+    .bin matching the Hub sha256 (uncached safetensors skipped); no listing: pickles only."""
     from .diffusers_safetensors import (
         _is_model_safetensors,
         pipeline_pickle_files,
@@ -1790,10 +1963,17 @@ def _dense_component_cached(source: str, component: str) -> bool:
 
 
 def _build_int8_convrot_encoder(
-    encoder_cls: Any, config: Any, state_dict: dict, *, dtype: Any, trim: bool
+    encoder_cls: Any,
+    config: Any,
+    state_dict: dict,
+    *,
+    dtype: Any,
+    trim: bool,
+    drop_vision: bool = False,
 ) -> Any:
     """Every Linear with a ``<name>.weight_scale`` becomes MiniMax-H3's ``Int8ConvRotLinear``, the rest loads dense in
-    ``dtype``. Plain tensors, so ``Module.to()`` and group offloading work. Raises on any mismatch."""
+    ``dtype``. Plain tensors, so ``Module.to()`` and group offloading work. Raises on any mismatch. ``drop_vision``
+    builds no vision tower; ``state_dict`` must then carry none of its tensors."""
     import torch
     from accelerate import init_empty_weights
 
@@ -1818,8 +1998,12 @@ def _build_int8_convrot_encoder(
     if not quantized:
         raise ValueError("no int8 ConvRot projections in this checkpoint")
     # include_buffers=False: rotary inv_freq buffers are built for real; parameters arrive via assign=True.
-    with init_empty_weights(include_buffers = False):
+    from .diffusion_te_vision import drop_vision_tower, vision_tower_skipped
+
+    with init_empty_weights(include_buffers = False), vision_tower_skipped(drop_vision):
         encoder = encoder_cls(config)
+    if drop_vision:
+        drop_vision_tower(encoder)
     # An encoder-only class (UMT5EncoderModel) has no head at all; one that has a head needs the trim, as the file
     # carries no lm_head and a kept one would load random.
     if getattr(encoder, "lm_head", None) is not None and not trim:
@@ -1831,8 +2015,7 @@ def _build_int8_convrot_encoder(
         and not is_trimmed(encoder)
         and config_ties_lm_head(config)
     ):
-        # A tied head (FLUX.3's Qwen3-VL-4B) is kept by the trim, but this file has no lm_head key for it and the
-        # family reads hidden states only, so drop it here: a meta head would fail the strict load below.
+        # Hidden states only, so drop the tied head: a meta head would fail the strict load.
         head = encoder.lm_head
         encoder.lm_head = _no_logits_head_class()(head.in_features, head.out_features)
     linear_cls = _int8_convrot_linear_class()
@@ -1881,8 +2064,7 @@ def _build_int8_convrot_encoder(
             and not (tensor.dtype == torch.float32 and _kept_fp32(key))
         ):
             state_dict[key] = tensor.to(dtype)
-    # A dense block projection would load as bf16 and outgrow the budget this path is priced at (the encoder's own
-    # fp32-kept modules, UMT5's ``wo``, stay dense by design).
+    # Dense block Linears would overrun the budget; fp32-kept modules (UMT5 wo) stay dense.
     dense = [
         n
         for n, m in encoder.named_modules()
@@ -2142,7 +2324,6 @@ def te_prequant_hub_files(
             _warn(logger, f"hub_files:{source.location}", exc)
             continue
         sizes = {s.rfilename: int(getattr(s, "size", 0) or 0) for s in (info.siblings or [])}
-        # First candidate the repo holds and this install can open, in resolver order.
         from .diffusion_prequant import prefer_cached_pickle_twins
 
         ordered = prefer_cached_pickle_twins(

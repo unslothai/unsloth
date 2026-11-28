@@ -7,7 +7,7 @@ import test from "node:test";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
-const { allowedPages, pageModels, recommendedPageModels, rowOnPage } =
+const { allowedPages, emptyStateModels, pageModels, pickLabel, rowOnPage } =
   await import("../src/features/audio/page-models.ts");
 const { audioModelsForTask } = await import("../src/features/audio/catalog.ts");
 const { AUDIO_CPP_MODELS, audioCppWorkflowsFor } = await import(
@@ -62,16 +62,6 @@ test("each page lists the seed models whose catalog entry runs there, in the pag
   assert.deepEqual(
     music,
     SEED.filter((row) => music.includes(row.id)).map((row) => row.id),
-  );
-  assert.deepEqual(
-    recommendedPageModels("music", SEED, { isMac: false }).map((r) =>
-      folder(r.id),
-    ),
-    ["ACE-Step1.5-GGUF", "Stable-Audio-3-Small-Music-GGUF"],
-  );
-  assert.equal(
-    recommendedPageModels("clone", SEED, { isMac: false }).length,
-    2,
   );
 });
 
@@ -219,4 +209,39 @@ test("the Audio page builds its picker lists from pageModels and the catalog hoo
     page,
     /\b(speak|clone|edit|convert|separate|music)PageModels\b/,
   );
+});
+
+test("an empty output pane offers GGUF models only, and Speak and Music name theirs", () => {
+  const picks = (page: Parameters<typeof pageModels>[0], isMac = false) =>
+    emptyStateModels(page, SEED, { isMac }).map((row) => row.id.split("/").pop());
+  assert.deepEqual(picks("speak"), [
+    "Kokoro-82M-GGUF",
+    "Chatterbox-Turbo-GGUF",
+    "VibeVoice-1.5B-GGUF",
+  ]);
+  assert.deepEqual(picks("music"), [
+    "ACE-Step1.5-GGUF",
+    "Stable-Audio-3-Small-Music-GGUF",
+  ]);
+  for (const isMac of [false, true]) {
+    for (const page of ["speak", "clone", "edit", "convert", "music", "separate"] as const) {
+      const offered = picks(page, isMac);
+      assert.ok(offered.length > 0 && offered.length <= 3, `${page}: ${offered.join(", ")}`);
+      for (const name of offered) assert.match(String(name), /-GGUF$/, `${page}: ${name}`);
+    }
+  }
+});
+
+test("the blocker menu offers the empty pane's picks, under the same names", () => {
+  const page = readSrc("features/audio/audio-page.tsx");
+  assert.match(
+    page,
+    /emptyStateModels\(page, MODELS_BY_MODE\.speak, pagePrefs\)\.map\(\s*\(model\) => \(\{\s*label: `use \$\{pickLabel\(model\.name\)\}`,/,
+  );
+  assert.doesNotMatch(page, /recommendedPageModels/);
+  const picks = readSrc("features/audio/components/recommended-model-picks.tsx");
+  assert.match(picks, /\{pickLabel\(model\.name\)\}/);
+  assert.equal(pickLabel("HTDemucs-GGUF"), "HTDemucs");
+  assert.equal(pickLabel("BS-RoFormer-ep368-GGUF"), "BS-RoFormer-ep368");
+  assert.equal(pickLabel("Kokoro-82M"), "Kokoro-82M");
 });

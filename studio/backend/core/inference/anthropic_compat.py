@@ -229,6 +229,7 @@ def anthropic_messages_to_openai(
     system: Optional[Union[str, list]] = None,
     preserve_thinking: bool = False,
     tool_result_images: bool = True,
+    tools: Optional[list] = None,
 ) -> list[dict]:
     """Convert Anthropic messages + system to OpenAI-format message dicts.
 
@@ -246,6 +247,7 @@ def anthropic_messages_to_openai(
     carries only ciphertext and is always dropped.
     """
     result: list[dict] = []
+    client_tool_names: Optional[set[str]] = None
 
     if system:
         if isinstance(system, str):
@@ -387,6 +389,20 @@ def anthropic_messages_to_openai(
                                 parts.append({"type": "text", "text": item["text"]})
                             elif reference := anthropic_reference_block_text(item):
                                 parts.append({"type": "text", "text": reference})
+                            elif item.get("type") == "tool_reference" and not b.get("is_error"):
+                                if client_tool_names is None:
+                                    client_tool_names = {
+                                        tool["function"]["name"]
+                                        for tool in anthropic_tools_to_openai(tools or [])
+                                    }
+                                name = item.get("tool_name")
+                                if isinstance(name, str) and name in client_tool_names:
+                                    parts.append(
+                                        {
+                                            "type": "text",
+                                            "text": f"Tool loaded: {name}. Its schema is available in the tools list.",
+                                        }
+                                    )
                             elif item.get("type") == "image":
                                 if not tool_result_images:
                                     parts.append(
@@ -411,8 +427,17 @@ def anthropic_messages_to_openai(
                         }
                     )
 
-            for tr in tool_results:
-                result.append(tr)
+            # Anthropic pairs results by id, ID-less local templates by position: restore call order.
+            if len(tool_results) > 1 and result and result[-1].get("role") == "assistant":
+                calls = result[-1].get("tool_calls") or []
+                by_id = {item["tool_call_id"]: item for item in tool_results}
+                call_ids = [call["id"] for call in calls]
+                if (
+                    len(call_ids) == len(by_id) == len(tool_results)
+                    and set(call_ids) == by_id.keys()
+                ):
+                    tool_results = [by_id[call_id] for call_id in call_ids]
+            result.extend(tool_results)
 
             if has_image:
                 result.append({"role": "user", "content": user_parts})
@@ -779,6 +804,10 @@ class AnthropicStreamEmitter:
         elif etype == "status" and not event.get("text"):
             # A new cumulative segment can start without a tool_end (a rejected call).
             self._prev_text = ""
+            if event.get("new_pass"):
+                self._reset_turn()
+                if self._text_block_open or self._thinking_block_open:
+                    return [self._close_block()]
             return []
         return []
 
@@ -1075,6 +1104,10 @@ class AnthropicStreamEmitter:
                     },
                 )
             )
+        self._reset_turn()
+        return events
+
+    def _reset_turn(self) -> None:
         # Reset per synthesis turn: a new turn may legitimately open with its own leading <think> block
         self._prev_text = ""
         self._tag_buf = ""
@@ -1085,7 +1118,6 @@ class AnthropicStreamEmitter:
         self._active_wrap = None
         self._wrap_chars = 0
         self._close_skip = 0
-        return events
 
     def _alloc_block_index(self) -> None:
         if self._block_index_used:

@@ -4,7 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { apiUrl } from "@/lib/api-base";
 import {
-  formatFastApiDetail,
+  formatApiErrorBody,
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
@@ -208,16 +208,11 @@ async function parseErrorResponse(response: Response): Promise<string> {
   }
   try {
     const parsed = JSON.parse(text) as {
-      detail?: unknown;
-      message?: string;
       // biome-ignore lint/style/useNamingConvention: api schema
       raw_detail?: string;
     };
-    // Use ||, not ??: formatFastApiDetail returns null when it cannot flatten the value.
-    const formatted = formatFastApiDetail(parsed.detail);
+    const formatted = formatApiErrorBody(parsed);
     if (formatted) return formatted;
-    if (typeof parsed.message === "string" && parsed.message)
-      return parsed.message;
     if (typeof parsed.raw_detail === "string" && parsed.raw_detail)
       return parsed.raw_detail;
     return text;
@@ -305,13 +300,13 @@ export async function createRecipeJob(
 export async function getRecipeJobStatus(
   jobId: string,
 ): Promise<JobStatusResponse> {
-  return getJson<JobStatusResponse>(`/jobs/${jobId}/status`);
+  return getJson<JobStatusResponse>(`/jobs/${encodeURIComponent(jobId)}/status`);
 }
 
 export async function getRecipeJobAnalysis(
   jobId: string,
 ): Promise<Record<string, unknown>> {
-  return getJson<Record<string, unknown>>(`/jobs/${jobId}/analysis`);
+  return getJson<Record<string, unknown>>(`/jobs/${encodeURIComponent(jobId)}/analysis`);
 }
 
 export async function getRecipeJobDataset(
@@ -324,7 +319,7 @@ export async function getRecipeJobDataset(
   const limit = options?.limit ?? 20;
   const offset = options?.offset ?? 0;
   return getJson<JobDatasetResponse>(
-    `/jobs/${jobId}/dataset?limit=${limit}&offset=${offset}`,
+    `/jobs/${encodeURIComponent(jobId)}/dataset?limit=${limit}&offset=${offset}`,
   );
 }
 
@@ -347,7 +342,7 @@ export async function downloadRecipeJobDataset(
     params.set("filename", options.filename);
   }
   const { path, filename } = await getJson<{ path: string; filename: string }>(
-    `/jobs/${jobId}/download-url?${params.toString()}`,
+    `/jobs/${encodeURIComponent(jobId)}/download-url?${params.toString()}`,
   );
   // Drop the trailing slash: the native downloader refuses every 3xx redirect.
   const base = DATA_DESIGNER_API_BASE.replace(/\/+$/, "");
@@ -357,14 +352,14 @@ export async function downloadRecipeJobDataset(
 export async function cancelRecipeJob(
   jobId: string,
 ): Promise<JobStatusResponse> {
-  return postJson<JobStatusResponse>(`/jobs/${jobId}/cancel`, {});
+  return postJson<JobStatusResponse>(`/jobs/${encodeURIComponent(jobId)}/cancel`, {});
 }
 
 export async function publishRecipeJob(
   jobId: string,
   payload: PublishRecipeJobRequest,
 ): Promise<PublishRecipeJobResponse> {
-  return postJson<PublishRecipeJobResponse>(`/jobs/${jobId}/publish`, payload);
+  return postJson<PublishRecipeJobResponse>(`/jobs/${encodeURIComponent(jobId)}/publish`, payload);
 }
 
 export async function inspectSeedDataset(
@@ -408,7 +403,7 @@ export async function streamRecipeJobEvents(options: {
 
   const response = await openStreamResponse(
     authFetch,
-    `${DATA_DESIGNER_API_BASE}/jobs/${options.jobId}/events${query}`,
+    `${DATA_DESIGNER_API_BASE}/jobs/${encodeURIComponent(options.jobId)}/events${query}`,
     { headers, signal: options.signal },
   );
   if (!response.ok) {

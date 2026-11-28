@@ -13,8 +13,7 @@ try:
 
     os.environ["UNSLOTH_NB_SHIM"] = "1"
 
-    # per-kernel, so concurrent notebooks do not read each other's pin; the shim is
-    # a child, so writer and reader agree
+    # Per-kernel: notebooks never read each other's pin; the shim is a child, so both agree.
     if not os.environ.get("UNSLOTH_NB_TF_MARKER"):
         _kid = ""
         try:

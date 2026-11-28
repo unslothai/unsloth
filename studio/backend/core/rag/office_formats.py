@@ -290,11 +290,13 @@ _BUILTIN_NUMBER_FORMATS = {
 }
 _MAX_FORMAT_CHARS = 1024
 _FORMAT_LITERALS = frozenset(" $-+/():!^&'~{}<>=\u20ac\u00a3\u00a5")
+_FORMAT_COLOR = re.compile(r"black|blue|cyan|green|magenta|red|white|yellow|color\d+", re.I)
+_FORMAT_SYSTEM_DATE = re.compile(r"-(f400|f800|x-sys)", re.I)  # long date and time of the OS
 
 
 def _format_tokens(code: str) -> list[tuple[str, str]] | None:
-    """("lit" | "ph" | "exp" | "sep", text) tokens of a number format, or None if unsupported."""
-    tokens, i = [], 0
+    """("lit" | "ph" | "exp" | "sep" | "color" | "fill", text) tokens of a number format, or None if unsupported."""
+    tokens, i, separators = [], 0, 0
     while i < len(code):
         ch = code[i]
         if ch == '"':
@@ -309,14 +311,19 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             end = code.find("]", i)
             inner = code[i + 1 : end] if end > 0 else ""
             if inner.startswith("$"):  # currency and locale, such as [$EUR-407]
+                if _FORMAT_SYSTEM_DATE.search(inner):
+                    return None
                 tokens.append(("lit", inner[1:].split("-")[0]))
-            elif not inner.isalnum():  # conditions such as [>100]
+            elif _FORMAT_COLOR.fullmatch(inner):
+                tokens.append(("color", inner))
+            else:  # conditions such as [>100], elapsed time
                 return None
-            i = end + 1  # colours are dropped
+            i = end + 1
         elif ch == "_":  # space the width of the next character
             tokens.append(("lit", " "))
             i += 2
         elif ch == "*":  # fill with the next character
+            tokens.append(("fill", code[i + 1 : i + 2]))
             i += 2
         elif ch in "0#?.,%":
             tokens.append(("ph", ch))
@@ -325,8 +332,15 @@ def _format_tokens(code: str) -> list[tuple[str, str]] | None:
             tokens.append(("exp", code[i + 1]))
             i += 2
         elif ch == ";":
+            separators += 1
+            if separators == 3:  # the fourth section formats text, not numbers
+                break
             tokens.append(("sep", ";"))
             i += 1
+        elif ch == "@":  # a section holding @ formats text too, wherever it sits
+            while tokens and tokens.pop()[0] != "sep":
+                pass
+            break
         elif ch in _FORMAT_LITERALS:
             tokens.append(("lit", ch))
             i += 1
@@ -353,8 +367,26 @@ def _section_plan(tokens: list[tuple[str, str]]):
         return "".join(text for kind, text in tokens if kind == "lit")
     marks = [i for i, (kind, _) in enumerate(tokens) if kind in ("ph", "exp")]
     first, last = marks[0], marks[-1]
+    inserts: list[tuple[int, str]] = []
     if any(kind == "lit" for kind, _ in tokens[first:last]):
-        return None
+        # Only 000-00-0000 style: fractions, decimals, grouping, exponents and a # right of a 0
+        # (0-## would pad globally and show 1 as -1) stay unsupported.
+        span = tokens[first : last + 1]
+        if any(ch not in "0#" if kind == "ph" else kind != "lit" or "/" in ch for kind, ch in span):
+            return None
+        if "".join(ch for kind, ch in span if kind == "ph").lstrip("#").strip("0"):
+            return None
+        digits = 0
+        for kind, text in reversed(span):
+            if kind == "ph":
+                digits += 1
+            elif inserts and inserts[-1][0] == digits:
+                inserts[-1] = (digits, text + inserts[-1][1])
+            else:
+                inserts.append((digits, text))
+        inserts.reverse()  # leftmost first
+        tokens = tokens[:first] + [token for token in span if token[0] == "ph"] + tokens[last + 1 :]
+        last = first + digits - 1
     prefix = "".join(text for kind, text in tokens[:first] if kind == "lit")
     suffix = "".join(text for kind, text in tokens[last + 1 :] if kind == "lit")
     pattern = "".join(ch if kind == "ph" else "E" + ch for kind, ch in tokens[first : last + 1])
@@ -384,10 +416,16 @@ def _section_plan(tokens: list[tuple[str, str]]):
         max(len(whole), 1),
         "#" in whole,
         exponent.count("0"),
+        tuple(inserts),
     )
 
 
+_GENERAL = object()
+
+
 def _apply_section(value: float, plan) -> str | None:
+    if plan is _GENERAL:
+        return _number(value)
     if plan is None or isinstance(plan, str):
         return plan
     (
@@ -404,6 +442,7 @@ def _apply_section(value: float, plan) -> str | None:
         width,
         hashed,
         exp_digits,
+        inserts,
     ) = plan
     value *= 100 ** len(percent)
     for _ in range(thousands):
@@ -423,6 +462,13 @@ def _apply_section(value: float, plan) -> str | None:
     int_part = "" if int_part == "0" and min_whole == 0 else int_part.zfill(min_whole)
     if grouped and int_part:
         int_part = _group(int_part)
+    if inserts:  # digits beyond the placeholders stay in the leftmost group
+        pieces, start = [], 0
+        for count, insert in inserts:
+            at = max(len(int_part) - count, 0)
+            pieces += [int_part[start:at], insert]
+            start = at
+        int_part = "".join(pieces) + int_part[start:]
     text = int_part + (dot + frac_part if dot else "")
     if sign_style:
         exp_sign = "-" if power < 0 else ("+" if sign_style == "+" else "")
@@ -431,7 +477,7 @@ def _apply_section(value: float, plan) -> str | None:
 
 
 def _number_plan(code: str):
-    """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
+    """Each section of a numeric format read once, or None if unsupported."""
     tokens = _format_tokens(code) if code else None
     if not tokens:
         return None
@@ -441,17 +487,23 @@ def _number_plan(code: str):
             sections.append([])
         else:
             sections[-1].append(token)
-    return [(bool(section), _section_plan(section)) for section in sections]
+    # An empty section hides its values; Excel reads a colour-only one as General.
+    return [
+        _GENERAL
+        if section and all(kind == "color" for kind, _ in section)
+        else _section_plan([token for token in section if token[0] in ("lit", "ph", "exp")])
+        for section in sections
+    ]
 
 
 def _apply_number(value: float, plan) -> str | None:
     if plan is None:
         return None
-    if value < 0 and len(plan) > 1 and plan[1][0]:
-        return _apply_section(-value, plan[1][1])
-    if value == 0 and len(plan) > 2 and plan[2][0]:
-        return _apply_section(0.0, plan[2][1])
-    text = _apply_section(abs(value), plan[0][1])
+    if value < 0 and len(plan) > 1:
+        return _apply_section(-value, plan[1])
+    if value == 0 and len(plan) > 2:
+        return _apply_section(0.0, plan[2])
+    text = _apply_section(abs(value), plan[0])
     return None if text is None else ("-" + text if value < 0 else text)
 
 
@@ -503,6 +555,9 @@ def _column_index(ref: str) -> int:
         if not ch.isalpha():
             break
         index = index * 26 + (ord(ch.upper()) - 64)
+        if index > _MAX_COLUMNS:
+            # Past every kept column: more letters would only grow a huge integer (quadratic).
+            return _MAX_COLUMNS
     return index - 1
 
 
@@ -1009,14 +1064,22 @@ def _email_parts(part, html_text) -> list[str]:
         return []
     if part.get_content_type() not in ("text/plain", "text/html"):
         return []
-    try:
-        content = part.get_content()
-    except (LookupError, ValueError):
-        content = part.get_payload(decode = True) or b""
-        content = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-    if part.get_content_subtype() == "html":
-        return [html_text(content.encode("utf-8") if isinstance(content, str) else content)]
-    return [content]
+    is_html = part.get_content_subtype() == "html"
+    content = None
+    # The stdlib reads an undeclared charset as ASCII (Chrome MHTML omits it), so sniff the bytes.
+    if part.get_content_charset() is not None:
+        try:
+            content = part.get_content()
+        except (LookupError, ValueError):
+            pass
+    if not isinstance(content, str):
+        raw = part.get_payload(decode = True) or b""
+        if is_html:
+            return [html_text(raw)]
+        from .parsers import _decode_text
+
+        return [_decode_text(raw)]
+    return [html_text(content.encode("utf-8")) if is_html else content]
 
 
 def _email_text(message, html_text) -> str:
@@ -1743,10 +1806,13 @@ def ppt(path: str) -> list[Section]:
                 slides[-1][2][-1] = _ppt_text(data, child, child_body, child_stop)
 
     notes: dict[int, list[str]] = {}
+    read_notes: set[int] = set()
     for ref in notes_refs:
-        page = _ppt_record_at(data, persist.get(ref), _PPT_NOTES)
-        if page is None:
+        offset = persist.get(ref)
+        page = _ppt_record_at(data, offset, _PPT_NOTES)
+        if page is None or offset in read_notes:
             continue
+        read_notes.add(offset)
         atom = next(
             (r for r in _ppt_records(data, *page) if r[0] == _PPT_NOTES_ATOM and r[3] - r[2] >= 4),
             None,
@@ -1755,11 +1821,21 @@ def ppt(path: str) -> list[Section]:
         if atom is not None and lines:
             notes[struct.unpack_from("<I", data, atom[2])[0]] = lines
 
+    # A slide list can name one slide (or one slide id's notes) many times: charge the reuses.
+    budget, drawn, noted = _Budget(), set(), set()
     sections: list[Section] = []
     for number, (ref, slide_id, listed) in enumerate(slides, 1):
-        slide = _ppt_record_at(data, persist.get(ref), _PPT_SLIDE)
+        offset = persist.get(ref)
+        slide = _ppt_record_at(data, offset, _PPT_SLIDE)
+        if slide:
+            if offset in drawn:
+                budget.spend(slide[1] - slide[0])
+            drawn.add(offset)
         lines = _ppt_sheet_lines(data, *slide, listed) if slide else [t for t in listed if t]
         if slide_id in notes:
+            if slide_id in noted:
+                budget.spend(sum(map(len, notes[slide_id])))
+            noted.add(slide_id)
             lines += ["Notes:"] + notes[slide_id]
         if lines:
             sections.append(("\n".join(lines), number))

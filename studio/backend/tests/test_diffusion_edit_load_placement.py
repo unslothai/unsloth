@@ -145,7 +145,9 @@ def test_where_the_encoder_can_cover_an_edit_text_to_image_keeps_it_resident(q21
     assert plan.resident_transformer_mib in (None, 6922)
     # the guidance-free 1024 edit: 768 x 2 joint sequence + 2048 MiB condition cache x 1.15 -> 4096
     assert plan.estimates["measured_reference_need_mib"] == 4096
-    assert plan.resident_text_encoder_mib == min(8959, _room(budget))
+    # the edit is priced on the flat room; the encoders may keep more (a priced edit releases the live shortfall)
+    flat = plan.estimates.get("flat_resident_text_encoder_mib", plan.resident_text_encoder_mib)
+    assert flat == min(8959, _room(budget)) <= plan.resident_text_encoder_mib
     assert plan.estimates["measured_reference_te_cut_mib"] == 0
     # the edit is priced from its tokens (not the flat 3014 MiB) and the resident encoder alone covers it: no hooks
     extra = _edit_extra(q21, plan)
@@ -170,7 +172,9 @@ def test_kill_switch_keeps_the_text_to_image_placement(q21, monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_EDIT_LOAD_PLACEMENT", "0")
     plan = _refine(q21, _plan(14500, 16376))
     room = 14500 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-    assert plan.resident_text_encoder_mib == room
+    assert (
+        plan.estimates.get("flat_resident_text_encoder_mib", plan.resident_text_encoder_mib) == room
+    )
     assert "measured_reference_reserve_mib" not in plan.estimates
     assert _edit_extra(q21, plan) == FLAT_EXTRA > room
 

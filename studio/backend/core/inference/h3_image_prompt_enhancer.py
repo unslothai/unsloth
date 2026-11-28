@@ -166,8 +166,7 @@ def build_chat_payload(
 
 
 def visible_text(text: Optional[str]) -> str:
-    """The reply after the reasoning, as the template's text node returns it: what follows ``</think>``, and nothing
-    when the thinking never closed (the generation budget ran out inside it)."""
+    """Text after ``</think>``; empty if thinking never closed (generation budget ran out)."""
     text = text or ""
     reasoning, sep, rest = text.partition("</think>")
     if sep:
@@ -239,8 +238,7 @@ def prepare_reference(image: Any) -> bytes:
 
 
 def raw_references_hash(images: Optional[list]) -> str:
-    """A digest of the references as uploaded (data URLs, or PIL images), in order: the cache key, computed without
-    decoding or resizing anything."""
+    """Cache-key digest of uploaded references in order, hashed without decoding or resizing."""
     import hashlib
 
     digest = hashlib.sha256()
@@ -491,8 +489,7 @@ def upsample(
     edit = bool(reference_images)
     mmproj = mmproj_path() if edit else None
     with_images = edit and mmproj is not None
-    # Keyed on the uploads as sent, so a repeat (another seed, a re-render) skips the 4 MP resizes as well as the
-    # generation. The render seed is not part of it: the templates fix the enhancer's own seed at 0.
+    # Keyed on uploads as sent so repeats skip resizes and generation; render seed excluded.
     key = (
         ENHANCER_ID,
         prompt,

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Startup-time gate. Budgets are 2x the observed median rounded up to 0.5s, floored at
-# 1.4x the slowest median, so runner luck does not fail PRs; it catches torch-sized
-# regressions. Raise a budget in the PR that needs it. Not a required check while
-# path-filtered: a skipped workflow never reports.
+# Budget: 2x median rounded up to 0.5s, floored at 1.4x slowest median: luck can't fail PRs,
+# torch-sized regressions do; raise it in its PR; path-filtered skips never report, so not required.
 
 name: Startup profile
 
@@ -117,6 +115,8 @@ jobs:
 
       - name: Profile startup
         shell: bash
+        env:
+          REPEATS: ${{ inputs.repeats || '3' }}
         run: |
           # Explicit pipefail: the gate's exit code reaches this step only through the tee pipe.
           set -o pipefail
@@ -130,7 +130,7 @@ jobs:
           python3 scripts/profile_startup.py \
             --python "$PY" \
             ${BIN:+--bin "$BIN"} \
-            --repeats "${{ inputs.repeats || '3' }}" \
+            --repeats "$REPEATS" \
             --max-healthz-seconds "${{ matrix.max_healthz_seconds }}" \
             --json "startup-${{ matrix.os }}.json" 2>&1 | tee logs/profile.log
 

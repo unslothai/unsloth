@@ -17,12 +17,10 @@ export function useNpuDisplayNames(
   const wantsListing = npuInUse && models === null && !listed;
   const [status] = useNpuStatus(wantsListing);
   useEffect(() => {
-    // A model loaded on an earlier visit is named before any picker lists the catalog.
-    // Listing starts lemond, so only on a validated runtime.
+    // Loaded models are named before listing; lemond starts only on a validated runtime.
     if (!wantsListing || status?.ready !== true) return;
     listed = true;
     void refreshNpuModels().then((ok) => {
-      // Retry a failed listing on a later render, at most every 30 s.
       if (!ok) setTimeout(() => (listed = false), 30_000);
     });
   }, [wantsListing, status?.ready]);

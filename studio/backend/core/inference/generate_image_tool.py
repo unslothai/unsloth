@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat tool: one image on the loaded image model for the caller's account; never loads/unloads models"""
+"""Chat tool: one image on the loaded image model; loads/unloads models only via the opt-in chat_media_swap"""
 
 from __future__ import annotations
 
@@ -36,9 +36,10 @@ ERR_NO_LOOP = "Error: Unsloth Studio could not reach its server loop to run this
 _DESCRIPTION = (
     "Generate one image with the image model loaded in Unsloth Studio. Write the full prompt "
     "yourself from the user's request: subject, setting, style, lighting and composition. Steps "
-    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024. It "
-    "never loads or unloads a model."
+    "and guidance follow the loaded model's own defaults; the size defaults to 1024x1024."
 )
+# Kept while the opt-in swap is off, so the tool prompt every other chat sees is unchanged.
+_NO_SWAP_NOTE = " It never loads or unloads a model."
 
 # Even a no-limit chat gets a ceiling, so a stuck render cannot hold the turn forever.
 _MAX_WAIT_S = 900.0
@@ -87,7 +88,9 @@ def generate_image_schema(status: dict) -> dict:
             "type": "string",
             "description": "What the image should not show.",
         }
-    description = _DESCRIPTION
+    from core.inference.chat_media_swap import swap_enabled
+
+    description = _DESCRIPTION if swap_enabled() else _DESCRIPTION + _NO_SWAP_NOTE
     hint = status.get("prompt_hint")
     if hint:
         description += " " + str(hint)
@@ -132,26 +135,39 @@ def _build_request(arguments: dict, prompt: str, status: dict):
     if arguments.get("width") is not None or arguments.get("height") is not None:
         fields["width"], fields["height"] = _snap_size(arguments, status)
     if arguments.get("seed") is not None:
-        fields["seed"] = int(arguments["seed"])
+        fields["seed"] = arguments["seed"]
     negative = arguments.get("negative_prompt")
     if status.get("supports_negative_prompt") and isinstance(negative, str) and negative.strip():
         fields["negative_prompt"] = negative.strip()
     return DiffusionGenerateRequest(**fields)
 
 
-async def _generate(request, ticket):
+async def _generate(
+    request,
+    ticket,
+    *,
+    swap_holds_admission = False,
+    pinned_resident = None,
+):
     from core.inference import media_keepwarm
+    from core.inference.diffusion_families import pin_checkpoint
     from core.inference.generation_ticket import generation_ticket
     from core.inference.gpu_arbiter import DIFFUSION
     from routes.inference import _generate_diffusion_image_core
 
     # The HTTP route is counted by the keep-warm middleware; this path never goes through it.
-    await media_keepwarm.begin_request(DIFFUSION)
+    if not swap_holds_admission:
+        await media_keepwarm.begin_request(DIFFUSION)
     try:
         with generation_ticket(ticket):
-            return await _generate_diffusion_image_core(request)
+            if pinned_resident is None:
+                return await _generate_diffusion_image_core(request)
+            identity, filename = pinned_resident
+            with pin_checkpoint(filename):
+                return await _generate_diffusion_image_core(request, pinned_load = identity)
     finally:
-        media_keepwarm.end_request(DIFFUSION)
+        if not swap_holds_admission:
+            media_keepwarm.end_request(DIFFUSION)
 
 
 def _stop(future, ticket) -> None:
@@ -192,7 +208,7 @@ def _save_to_workdir(image, workdir: str, account) -> dict:
     os.makedirs(workdir, exist_ok = True)
     target = os.path.join(workdir, name)
     shutil.copyfile(source, target)
-    return {"name": name, "size": os.path.getsize(target)}
+    return {"name": name, "size": os.path.getsize(target), "gallery_image_id": image.id}
 
 
 def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) -> str:
@@ -215,7 +231,26 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_NO_LOOP
     status = media_chat_status("text-to-image")
     if status is None:
-        return ERR_NOT_LOADED
+        from core.inference import chat_media_swap
+        if not chat_media_swap.swap_enabled():
+            return ERR_NOT_LOADED
+        return _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop)
+    from core.inference.chat_media_swap import request_image_model
+
+    pinned_resident = None
+    if selected := request_image_model.get():
+        from core.inference.media_auto_switch import _resolve_pick, _retired_copy_as_base
+        from core.inference.media_model_index import IMAGE_TASK, resident_is_pick, same_identity
+        from routes.inference import _resident_load
+
+        pick = _resolve_pick(DIFFUSION, selected, IMAGE_TASK)
+        if pick is not None:
+            matches = resident_is_pick(status, selected, _retired_copy_as_base(pick))
+        else:
+            matches = same_identity(selected, status.get("repo_id") or "")
+        if not matches:
+            return "Error: a different image model is loaded. Unload it before using the selected generator."
+        pinned_resident = _resident_load(status)
     if not offers_txt2img(status):
         return ERR_EDIT_ONLY
     engine = engine_if_imported(DIFFUSION)
@@ -231,7 +266,9 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return f"Error: invalid generate_image arguments: {message}"
 
     ticket = GenerationTicket()
-    future = asyncio.run_coroutine_threadsafe(arun_as(account, _generate(request, ticket)), loop)
+    future = asyncio.run_coroutine_threadsafe(
+        arun_as(account, _generate(request, ticket, pinned_resident = pinned_resident)), loop
+    )
     limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
     deadline = time.monotonic() + limit
     stopped = None
@@ -255,6 +292,10 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
         return ERR_OTHER_ACCOUNT
     except HTTPException as exc:
         return _http_error(exc)
+    return _result_text(response, prompt, workdir, account)
+
+
+def _result_text(response, prompt: str, workdir: str, account) -> str:
     if not response.images:
         return "Error: the image model returned no image."
     image = response.images[0]
@@ -266,6 +307,49 @@ def _run(arguments: dict, workdir: str, cancel_event, timeout: Optional[float]) 
     )
     return (
         text + "\n__FILES__:" + json.dumps([saved]) + "\n__IMAGES__:" + json.dumps([saved["name"]])
+    )
+
+
+def _run_with_swap(arguments, prompt, workdir, cancel_event, timeout, account, loop) -> str:
+    from fastapi import HTTPException
+
+    from core.inference import chat_media_swap
+    from core.inference.generation_ticket import GenerationTicket
+    from core.inference.gpu_arbiter import GpuBusyForAnotherAccountError
+    from core.inference.media_chat_tools import media_chat_status
+
+    ticket = GenerationTicket()
+
+    async def render(should_abort) -> str:
+        import asyncio
+
+        status = await asyncio.to_thread(media_chat_status, "text-to-image")
+        if status is None:
+            return ERR_NOT_LOADED
+        if not offers_txt2img(status):
+            return ERR_EDIT_ONLY
+        try:
+            request = _build_request(arguments, prompt, status)
+        except (TypeError, ValueError) as exc:
+            return f"Error: invalid generate_image arguments: {exc}"
+        if should_abort():
+            return ERR_STOPPED
+        try:
+            response = await _generate(request, ticket, swap_holds_admission = True)
+        except GpuBusyForAnotherAccountError:
+            return ERR_OTHER_ACCOUNT
+        except HTTPException as exc:
+            return _http_error(exc)
+        return await asyncio.to_thread(_result_text, response, prompt, workdir, account)
+
+    limit = _MAX_WAIT_S if timeout is None or timeout >= 9999 else max(1.0, float(timeout))
+    return chat_media_swap.run_in_tool(
+        loop = loop,
+        account = account,
+        render = render,
+        cancel_event = cancel_event,
+        render_limit_s = limit,
+        stop_render = ticket.stop,
     )
 
 

@@ -324,15 +324,13 @@ def test_a_chosen_project_folder_is_named_in_every_mode(full_access):
     assert "rather than asking the user to upload or paste them" in nudge
     # A read can fail or an approval be denied: the model reports that, not a blanket "no access".
     assert "if a read fails or is denied, say what failed" in nudge
-    # Additive: nothing the nudge said before is dropped.
     assert nudge == plain + " " + _project_folder_tip({"python", "terminal"})
     assert ("where Unsloth Studio is running" in nudge) == full_access
 
 
 @pytest.mark.parametrize("names", [{"web_search"}, {"edit_file"}, {"web_search", "edit_file"}])
 def test_the_folder_sentence_needs_a_tool_that_can_read(names):
-    """Neither web_search nor edit_file can list or read the folder, so the sentence would ask
-    for a look the model cannot take."""
+    """Without a tool that can list or read the folder, the folder sentence is left out."""
     tools = [t for t in ALL_TOOLS if t["function"]["name"] in names]
     nudge = _build_tool_action_nudge(tools = tools, model_name = "test-8B", user_folder = True)
     assert _FOLDER_MARKER not in nudge
@@ -348,8 +346,7 @@ def test_the_folder_sentence_needs_a_tool_that_can_read(names):
     ],
 )
 def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
-    """Told only "a tool call", Qwen3.5-4B listed the folder and then web-searched how to read
-    app.py until it gave up with an empty answer."""
+    """Told only 'a tool call', Qwen3.5-4B listed the folder, then web-searched and gave up."""
     tip = _project_folder_tip(names)
     assert reader in tip
     assert ("web_search cannot see them" in tip) == web
@@ -357,8 +354,7 @@ def test_the_folder_sentence_names_the_tools_that_can_read(names, reader, web):
 
 @pytest.mark.parametrize("full_access", [False, True], ids = ["sandboxed", "full_access"])
 def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
-    """External providers and Codex run python/terminal in the same workdir, with only the
-    environment sentences."""
+    """External providers and Codex run in the same workdir with only environment sentences."""
     only = _build_tool_action_nudge(
         tools = _CODE_TOOLS,
         model_name = "test-8B",
@@ -372,8 +368,7 @@ def test_the_studio_tool_loop_paths_carry_the_folder_sentence(full_access):
 
 
 def test_every_nudge_call_site_passes_the_folder_flag():
-    """Structural on purpose: the eight call sites are completions and counts on different
-    backends, and one that drops the flag silently loses the sentence or skews the count."""
+    """Structural: call sites are spread over backends; a dropped flag fails silently."""
     import ast
     from pathlib import Path
 
@@ -478,8 +473,7 @@ def _sandbox_site_dir():
     reason = "root ignores a mode-500 directory",
 )
 def test_the_mkdir_clause_promises_an_attempt_not_a_created_directory(tmp_path):
-    """The mkdir clause promises only an attempt: os.makedirs is wrapped, but _makedirs calls only
-    _remap, so an unwritable path outside convention prefixes raises and creates nothing."""
+    """Mkdir only promises an attempt: an unwritable path outside convention prefixes raises."""
     import subprocess
 
     workdir = tmp_path / "work"

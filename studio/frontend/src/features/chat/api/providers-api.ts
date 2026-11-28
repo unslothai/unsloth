@@ -3,7 +3,7 @@
 
 import type forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody, readFastApiError } from "@/lib/format-fastapi-error";
 import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
 import type { CustomReasoningConfig } from "../custom-reasoning";
 import type { ProviderCompactionMode } from "../utils/auto-compaction";
@@ -57,6 +57,8 @@ export interface ProviderConfig {
   available_models?: string[];
   max_output_tokens?: number | null;
   auto_compact_tokens?: number | null;
+  auto_compact_percent?: number | null;
+  auto_compact_percent_by_model?: Record<string, number>;
   compaction_mode?: ProviderCompactionMode | null;
   reasoning_config?: CustomReasoningConfig | null;
   extra_headers?: Record<string, string>;
@@ -115,21 +117,10 @@ export interface ProviderTestResult {
   error_kind?: ProviderTestErrorKind | null;
 }
 
-function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
-}
-
 async function parseJsonOrThrow<T>(response: Response): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(formatApiErrorBody(body) ?? `Request failed (${response.status})`);
   }
   return body as T;
 }
@@ -250,6 +241,8 @@ export async function createProviderConfig(payload: {
   availableModels?: string[];
   maxOutputTokens?: number | null;
   autoCompactTokens?: number | null;
+  autoCompactPercent?: number | null;
+  autoCompactPercentByModel?: Record<string, number>;
   compactionMode?: ProviderCompactionMode | null;
   reasoningConfig?: CustomReasoningConfig | null;
   extraHeaders?: Record<string, string>;
@@ -273,6 +266,12 @@ export async function createProviderConfig(payload: {
         ...(payload.autoCompactTokens === undefined
           ? {}
           : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.autoCompactPercent === undefined
+          ? {}
+          : { auto_compact_percent: payload.autoCompactPercent }),
+        ...(payload.autoCompactPercentByModel === undefined
+          ? {}
+          : { auto_compact_percent_by_model: payload.autoCompactPercentByModel }),
         ...(payload.compactionMode === undefined
           ? {}
           : { compaction_mode: payload.compactionMode }),
@@ -299,8 +298,7 @@ export async function deleteProviderConfig(providerId: string): Promise<void> {
     return;
   }
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(await readFastApiError(response));
   }
 }
 
@@ -315,6 +313,8 @@ export async function updateProviderConfig(
     availableModels?: string[];
     maxOutputTokens?: number | null;
     autoCompactTokens?: number | null;
+    autoCompactPercent?: number | null;
+    autoCompactPercentByModel?: Record<string, number>;
     compactionMode?: ProviderCompactionMode | null;
     reasoningConfig?: CustomReasoningConfig | null;
     extraHeaders?: Record<string, string>;
@@ -342,6 +342,12 @@ export async function updateProviderConfig(
         ...(payload.autoCompactTokens === undefined
           ? {}
           : { auto_compact_tokens: payload.autoCompactTokens }),
+        ...(payload.autoCompactPercent === undefined
+          ? {}
+          : { auto_compact_percent: payload.autoCompactPercent }),
+        ...(payload.autoCompactPercentByModel === undefined
+          ? {}
+          : { auto_compact_percent_by_model: payload.autoCompactPercentByModel }),
         ...(payload.compactionMode === undefined
           ? {}
           : { compaction_mode: payload.compactionMode }),
@@ -556,8 +562,7 @@ export async function cancelCodexOAuthFlow(
     { method: "DELETE" },
   );
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(await readFastApiError(response));
   }
 }
 
@@ -566,7 +571,6 @@ export async function cancelCodexOAuthFlow(
 export async function disconnectCodexOAuth(providerId: string): Promise<void> {
   const response = await authFetch(`/api/providers/${providerId}/oauth`, { method: "DELETE" });
   if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    throw new Error(parseErrorText(response.status, body));
+    throw new Error(await readFastApiError(response));
   }
 }

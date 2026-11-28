@@ -49,6 +49,7 @@ mod process_identity;
 mod shell_path;
 mod staged_update;
 mod studio_home;
+mod tcp_listeners;
 mod update;
 mod webview_permissions;
 mod windows_job;
@@ -199,6 +200,10 @@ fn resolve_launched_hidden(app: &tauri::AppHandle) -> bool {
     let relaunched = in_app_relaunch_config_dir(app)
         .map(|dir| take_in_app_relaunch_marker(&dir))
         .unwrap_or(false);
+    // On Windows, NSIS relaunches the app and forwards the previous session's arguments.
+    #[cfg(windows)]
+    let relaunched =
+        relaunched || std::env::args_os().any(|arg| arg == OsStr::new("--show-after-update"));
     let hidden = argv_has_hidden_flag();
     // The marker is gone now, so a GPU crash before the window reports in must not relaunch
     // hidden.
@@ -1082,7 +1087,9 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
     let window = app.get_webview_window("main").ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::NotFound, "main window not found")
     })?;
-    window.with_webview(|webview| {
+    let handle = app.handle().clone();
+    // Runs synchronously here (setup is on the main thread), before any command is served.
+    window.with_webview(move |webview| {
         let webview = webview.inner();
         if let Some(settings) = webview.settings() {
             settings.set_enable_media_stream(true);
@@ -1092,6 +1099,11 @@ fn setup_linux_media_permissions(app: &tauri::App) -> Result<(), Box<dyn std::er
             );
             if !linux_webkit::smooth_scrolling_enabled(policy_never) {
                 settings.set_enable_smooth_scrolling(false);
+            }
+            // Not compositing paints on the CPU, also when WebKit turned it off itself (no variable).
+            let launch = handle.state::<gpu_rendering::LaunchState>();
+            if policy_never && launch.note_cpu_painting() {
+                info!("GPU rendering: WebKitGTK is not compositing; cpu_painting=true");
             }
         }
         // Process-wide in WebKit. An empty list = the locale's dictionary, else the first one
@@ -2392,9 +2404,11 @@ fn main() {
             webkit_rendering.wayland_session,
         ),
         webkit_rendering.cpu_painting,
+        linux_webkit::legacy_compositor(webkit_rendering.webkit_version),
     );
     #[cfg(not(target_os = "linux"))]
-    let gpu_launch = gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false);
+    let gpu_launch =
+        gpu_rendering::LaunchState::new(gpu_setting, false, None, None, None, false, false);
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -2409,6 +2423,13 @@ fn main() {
         info!(
             "AppImage WebKitGTK runtime: {}; WebKitGTK {major}.{minor}.{micro}",
             appimage_webkit::mode_label(|name| std::env::var_os(name))
+        );
+    }
+    #[cfg(target_os = "linux")]
+    if appimage_webkit::host_lacks_audio_sink() {
+        warn!(
+            "GStreamer has no autoaudiosink plugin: WebKitGTK aborts a page on its first audio or \
+             video. Install GStreamer's good plugins (gst-plugins-good, gstreamer1.0-plugins-good)."
         );
     }
     #[cfg(target_os = "macos")]
@@ -2433,7 +2454,7 @@ fn main() {
         }
         let (major, minor, micro) = webkit_rendering.webkit_version;
         info!(
-            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} cpu_painting={}",
+            "GPU rendering: setting={} path={} reason={} webkit={major}.{minor}.{micro} env_override={} flag={} supervised={} hardware_gl={} cpu_painting={}",
             gpu_setting.as_str(),
             if webkit_rendering.gpu_path.is_some() { "gpu" } else { "default-or-cpu" },
             webkit_rendering
@@ -2443,6 +2464,11 @@ fn main() {
             webkit_rendering.env_override.unwrap_or("none"),
             gpu_fallback_active,
             gpu_child.supervised,
+            match webkit_rendering.hardware_gl {
+                Some(true) => "true",
+                Some(false) => "false",
+                None => "unchecked",
+            },
             webkit_rendering.cpu_painting,
         );
     }
@@ -2511,6 +2537,7 @@ fn main() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
             app_menu::set_app_menu_actions,
+            appimage_webkit::missing_media_codec_packages,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
             browser_webview::browser_view_open_background,
@@ -2593,6 +2620,7 @@ fn main() {
             native_file_dialogs::finish_native_file_save,
             native_file_dialogs::cancel_native_file_save,
             native_file_dialogs::save_native_file_from_url,
+            native_file_dialogs::finish_native_file_save_from_url,
             native_file_dialogs::pick_native_download_directory,
             native_file_dialogs::save_native_file_in_directory,
             native_file_dialogs::release_native_download_directory,

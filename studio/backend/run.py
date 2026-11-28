@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import NoReturn, Optional, Sequence, Tuple
+from typing import Callable, NoReturn, Optional, Sequence, Tuple
 
 
 def _normalize_standard_streams():
@@ -111,8 +111,7 @@ except ValueError as exc:
     configured = os.environ.get("UNSLOTH_CPU_THREADS")
     raise SystemExit(f"Error: Invalid UNSLOTH_CPU_THREADS value {configured!r}: {exc}") from None
 
-# Windows ROCm has no distributed backend, so torchao and xformers die on import. Stubs must
-# precede the first import below.
+# Windows ROCm lacks a distributed backend, so torchao/xformers die on import; stubs go first.
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
@@ -508,6 +507,48 @@ def _display_host_for_bind(host: str) -> str:
     return ipv4_display_host or "::"
 
 
+def _start_display_host_resolution(host: str) -> Callable[[], str]:
+    """Runs _display_host_for_bind off the main thread so its network lookups overlap the app import.
+
+    Returns a getter that joins and yields the same value, or raises the same exception, as a direct
+    call. A non-wildcard bind needs no lookup: no thread, the host itself."""
+    if not wildcard_ip_versions(host):
+        return lambda: host
+
+    # Imported here, not in the thread, so it never waits on the import lock held by `from main import app`.
+    import socket  # noqa: F401
+    import ssl  # noqa: F401
+    import urllib.request  # noqa: F401
+    from threading import Thread
+
+    # main.py installs these before its first connection; the worker connects before main.py runs,
+    # so install them here (both idempotent) to keep the OS trust store and the RFC 8305 connector.
+    from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
+
+    activate_native_tls()
+    activate_happy_eyeballs()
+
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            outcome["host"] = _display_host_for_bind(host)
+        except BaseException as exc:  # noqa: BLE001
+            outcome["error"] = exc
+
+    worker = Thread(target = _resolve, name = "studio-display-host", daemon = True)
+    worker.start()
+
+    def _result() -> str:
+        worker.join()
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["host"]
+
+    return _result
+
+
 def _network_share_host_for_bind(host: str) -> str:
     """LAN address for bound families only: a wildcard WAN IP is unroutable; IPv6-only gets no IPv4."""
     wildcard_versions = wildcard_ip_versions(host)
@@ -766,8 +807,7 @@ def _print_cloudflare_line(
 
 
 def _get_pid_on_port(port: int) -> "tuple[int, str] | None":
-    """(pid, process_name) listening on *port*, or None. Uses psutil when available, else None so
-    callers can still report the conflict without process details."""
+    """(pid, name) listening on port; None without psutil so callers still report the conflict."""
     try:
         import psutil
     except ImportError:
@@ -826,8 +866,7 @@ def _is_port_free(host: str, port: int) -> bool:
             bound.append((family, sockaddr))
             probe = socket.socket(family, socktype, proto)
             sockets.append(probe)
-            # Windows SO_REUSEADDR lets a second socket bind a listening port, so the probe would lie.
-            # POSIX keeps it so a TIME_WAIT listener does not strand the port.
+            # Windows SO_REUSEADDR lets a probe bind a live port; POSIX keeps it for TIME_WAIT.
             if sys.platform != "win32":
                 probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6 and hasattr(socket, "IPV6_V6ONLY"):
@@ -841,8 +880,7 @@ def _is_port_free(host: str, port: int) -> bool:
         for probe in sockets:
             probe.close()
 
-    # A successful bind can still sit beside a live listener, so a connect that lands means taken. Short
-    # timeout: Windows only refuses a free port after ~2 s of SYN retries.
+    # Connect decides: a bind can succeed beside a live listener. Short timeout: Windows ~2s.
     if is_wildcard_host(host):
         targets = [
             (socket.AF_INET, ("127.0.0.1", port)),
@@ -1324,8 +1362,7 @@ def _write_pid_file(port: int, host: str = ""):
         address = ",".join(sorted(_bind_addresses(host, port))) if host else ""
         identity = linux_process_identity(os.getpid())
         body = f"{os.getpid()}\n{'' if created is None else repr(created)}\n{address}\n{identity or ''}\n"
-        # Write-then-rename: `stop` reads these concurrently, and a reader that
-        # catches the truncate window sees a corrupt record and deletes it.
+        # Write-then-rename so a concurrent stop never reads a truncated record and deletes it.
         tmp = path.with_name(path.name + ".tmp")
         try:
             tmp.write_text(body, encoding = "utf-8")
@@ -1348,8 +1385,7 @@ def _write_pid_file(port: int, host: str = ""):
 
 
 def _legacy_heir() -> "int | None":
-    """Another live server's PID, to hand the legacy studio.pid over to. Only one server owns studio.pid
-    at a time, so its exit would otherwise drop the single record an older CLI can read."""
+    """A live sibling's PID to inherit studio.pid, since an older CLI reads only that file."""
     try:
         paths = sorted(_studio_root().glob(PID_FILE_GLOB))
     except OSError:
@@ -1455,8 +1491,7 @@ def _note_quit_signal():
 
 
 def _graceful_shutdown(server = None):
-    """Shut down all subprocess backends and the uvicorn server. Called from signal handlers to clean up
-    children before exit; critical on Windows where atexit handlers are unreliable after Ctrl+C."""
+    """Shut down subprocess backends and uvicorn; atexit is unreliable on Windows after Ctrl+C."""
     logger.info("Graceful shutdown initiated -- cleaning up subprocesses...")
 
     # 0a. Latch "quitting" first: in-flight loads can reach spawners whose step already ran.
@@ -1572,8 +1607,7 @@ def _flush_standard_streams() -> None:
 
 
 def _wait_for_server_shutdown(timeout: Optional[float] = _SERVER_SHUTDOWN_JOIN_TIMEOUT) -> None:
-    """Join the uvicorn thread so the prompt returns only after its shutdown logs flush. Skip the
-    self-join when called from the server thread."""
+    """Join the uvicorn thread so shutdown logs flush; skip the self-join on the server thread."""
     import threading
 
     thread = _server_thread
@@ -1640,13 +1674,7 @@ def _iter_frontend_fallback_candidates() -> "list[Path]":
     import re
 
     out: list[Path] = []
-    home_str = (
-        os.environ.get("UNSLOTH_STUDIO_HOME")
-        or os.environ.get("STUDIO_HOME")
-        or str(Path.home() / ".unsloth" / "studio")
-    )
-    venv_dir = Path(home_str).expanduser() / "unsloth_studio"
-    # Installer venv site-packages.
+    venv_dir = _studio_root() / "unsloth_studio"
     for pattern in (
         "lib/python*/site-packages/studio/frontend/dist",
         "Lib/site-packages/studio/frontend/dist",
@@ -1876,16 +1904,7 @@ def _setup_server_disk_logging():
     if os.environ.get("UNSLOTH_STUDIO_NO_FILE_LOG") == "1":
         return None
     try:
-        from utils.paths import studio_root
-        log_dir = Path(studio_root()) / "logs" / "server"
-    except Exception:
-        home = (
-            os.environ.get("UNSLOTH_STUDIO_HOME")
-            or os.environ.get("STUDIO_HOME")
-            or os.path.join(os.path.expanduser("~"), ".unsloth", "studio")
-        )
-        log_dir = Path(home) / "logs" / "server"
-    try:
+        log_dir = _studio_root() / "logs" / "server"
         log_dir.mkdir(parents = True, exist_ok = True, mode = 0o700)
         _restrict_server_log_perms(log_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S")
@@ -1897,8 +1916,7 @@ def _setup_server_disk_logging():
                 os.fchmod(fd, 0o600)
             except OSError:
                 pass
-        # Line-buffered so the tail survives a hard kill; errors="replace" so a console encoding quirk can
-        # never take the server down.
+        # Line-buffered so the tail survives a kill; errors="replace" stops encoding crashes.
         log_fh = os.fdopen(fd, "w", encoding = "utf-8", errors = "replace", buffering = 1)
     except Exception:
         return None
@@ -1932,13 +1950,30 @@ def _setup_server_disk_logging():
 def _cloudflare_tunnel_should_start(
     *, cloudflare: bool, host: str, secure: bool, api_only: bool, is_colab: bool
 ) -> bool:
-    """Whether to start the Cloudflare tunnel. --secure exposes only the tunnel (loopback bind), so it
-    tunnels even api-only; otherwise tunnel wildcard binds, never api-only (Tauri) or Colab."""
+    """No Colab; --secure tunnels (loopback bind), else only wildcard binds, not api-only."""
     if is_colab or not cloudflare:
         return False
     if secure:
         return True
     return is_wildcard_host(host) and not api_only
+
+
+async def _hold_ipv6_loopback(protocol_factory, server, host: str, backlog: int):
+    """Also listen on [::1] when serving plain HTTP on 127.0.0.1. Browsers may send http://localhost to ::1
+    first, so whoever else listens there (another OS user, a sandboxed tool sharing the host network) would
+    get the page's requests and session token. Best effort: no IPv6 or a taken ::1 leaves 127.0.0.1 alone."""
+    import asyncio
+
+    if host != "127.0.0.1":
+        return None
+    try:
+        port = _final_bound_port(server, 0)
+        return await asyncio.get_running_loop().create_server(
+            protocol_factory, host = "::1", port = port, backlog = backlog
+        )
+    except (OSError, RuntimeError) as exc:
+        logger.debug("Not listening on [::1]: %s", exc)
+        return None
 
 
 def _final_bound_port(server, requested_port: int) -> int:
@@ -2234,8 +2269,7 @@ def _apply_supplied_password(password_value: "Optional[str]") -> None:
 
 
 def _apply_cli_tool_policy(enable_tools: "Optional[bool]") -> None:
-    """None leaves policy unset, so each request decides; a tools-on default would reach launches
-    where omitted means off."""
+    """None leaves policy unset per request; tools-on default would reach omitted-off launches."""
     if enable_tools is None:
         return
     from state.tool_policy import set_tool_policy
@@ -2258,8 +2292,7 @@ def _drops_its_marker_on_failure(start):
         try:
             return start(*args, **kwargs)
         except BaseException:
-            # Only with no server thread left: a Ctrl+C during readiness leaves uvicorn finishing lifespan,
-            # and dropping the marker then would let a sibling clear the cache under a live backend.
+            # Only with no server thread alive: a sibling could clear a live backend's cache.
             thread = _server_thread
             if thread is None or not thread.is_alive():
                 _remove_startup_marker()
@@ -2405,8 +2438,7 @@ def run_server(
     # `unsloth studio run` installs its own resolved policy and passes None here.
     _apply_cli_tool_policy(enable_tools)
 
-    # Set env vars BEFORE importing main so CORS middleware picks them up. secure api-only keeps
-    # any-origin CORS (remote behind Cloudflare); plain api-only stays locked to the Tauri app.
+    # Set env before importing main; api-only CORS is any-origin when secure, else Tauri-only.
     if api_only:
         os.environ["UNSLOTH_API_ONLY"] = "1"
     if secure:
@@ -2441,6 +2473,9 @@ def run_server(
         print("  - loading PyTorch, Unsloth and Transformers...", flush = True)
 
     import_started = time.perf_counter()
+
+    # Host lookup for banner/probe starts early, overlapping import; log line resolves its own.
+    display_host_result = _start_display_host_resolution(host)
 
     # Before the import, to shrink the window where two launches think they are alone. The cache env
     # must be seeded first: UNSLOTH_COMPILE_LOCATION is part of the coordination key.
@@ -2532,13 +2567,8 @@ def run_server(
                 ", ".join(str(p) for p in attempted) or "(none)",
             )
         else:
-            home_str = (
-                os.environ.get("UNSLOTH_STUDIO_HOME")
-                or os.environ.get("STUDIO_HOME")
-                or str(Path.home() / ".unsloth" / "studio")
-            )
             # Windows $STUDIO_HOME/bin/unsloth.exe; Linux/macOS $STUDIO_HOME/unsloth_studio/bin/unsloth.
-            home = Path(home_str).expanduser()
+            home = _studio_root()
             if sys.platform == "win32":
                 installer_bin = home / "bin" / "unsloth.exe"
             else:
@@ -2565,8 +2595,7 @@ def run_server(
                 "  - reinstall: curl -fsSL https://unsloth.ai/install.sh | sh"
             )
 
-    # For the banner and the reachability probe; the startup log line resolves its own, LAN-only, answer.
-    display_host = _display_host_for_bind(host)
+    display_host = display_host_result()
     _install_uvicorn_startup_log_rewrite(host)
     # LoggingMiddleware already logs these with tracebacks; avoid duplicates in tauri.log.
     install_uvicorn_duplicate_exception_filter()
@@ -2582,11 +2611,16 @@ def run_server(
 
     class _ReadyServer(uvicorn.Server):
         loopback_http = None
+        loopback_v6 = None
 
         async def startup(self, *args, **kwargs):
             await super().startup(*args, **kwargs)
             if tls is not None and getattr(self, "started", False) and not self.should_exit:
                 await self._start_loopback_http()
+            if tls is None and getattr(self, "started", False) and not self.should_exit:
+                self.loopback_v6 = await _hold_ipv6_loopback(
+                    self._protocol_factory(), self, self.config.host, self.config.backlog
+                )
             if getattr(self, "started", False) and not self.should_exit:
                 logger.info(
                     "Uvicorn startup hook completed in %.1fms",
@@ -2594,9 +2628,7 @@ def run_server(
                 )
                 ready_event.set()
 
-        async def _start_loopback_http(self):
-            # Plain HTTP on an ephemeral loopback port for Studio's own /v1 self-calls (utils/studio_tls.py). Kept out
-            # of self.servers: _final_bound_port and _bound_request_host read the user's listener from there.
+        def _protocol_factory(self):
             config = self.config
 
             def _protocol(_loop = None):
@@ -2607,14 +2639,20 @@ def run_server(
                     _loop = _loop,
                 )
 
+            return _protocol
+
+        async def _start_loopback_http(self):
+            # Plain HTTP loopback for self-calls; not in self.servers, which port lookups read.
             self.loopback_http = await asyncio.get_running_loop().create_server(
-                _protocol, host = "127.0.0.1", port = 0, backlog = config.backlog
+                self._protocol_factory(), host = "127.0.0.1", port = 0, backlog = self.config.backlog
             )
             app.state.loopback_http_port = self.loopback_http.sockets[0].getsockname()[1]
 
         async def shutdown(self, *args, **kwargs):
             if self.loopback_http is not None:
                 self.loopback_http.close()
+            if self.loopback_v6 is not None:
+                self.loopback_v6.close()
             await super().shutdown(*args, **kwargs)
 
     # server_header=False suppresses uvicorn's "Server: uvicorn"; SecurityHeadersMiddleware sets its own.

@@ -159,7 +159,6 @@ async def chat(
         notes.append(f"{answered} answered; {model} is not the model that served this request.")
     if finish_reason == "length":
         notes.append(
-            # Thinking models can spend the whole budget before the visible reply starts.
             "The reply ran out of tokens before any text, likely spent on the model's reasoning; raise max_tokens."
             if not text.strip()
             else "The reply was cut off at max_tokens; raise max_tokens for the rest."

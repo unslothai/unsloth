@@ -123,7 +123,6 @@ def test_hub_probe_reads_the_explicit_file(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize("subfolder", [None, "sub"])
 def test_absolute_explicit_name_inside_the_model_dir_decides_the_layout(tmp_path, subfolder):
-    # transformers accepts an absolute name inside the real model dir (+ subfolder).
     path = _repo(tmp_path, SPLIT, SPLIT)
     root = tmp_path / "ckpt" / subfolder if subfolder else tmp_path / "ckpt"
     root.mkdir(exist_ok = True)

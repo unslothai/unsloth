@@ -939,7 +939,7 @@ class TestSharedHubModelInfo:
     @pytest.fixture(autouse = True)
     def hub(self, monkeypatch):
         """A fake hub whose every response identifies the call that produced it."""
-        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(mc, "hf_env_offline", lambda: False)
         state = _types.SimpleNamespace(calls = [], raises = None, siblings = ("model.safetensors",))
 
         def _fake(repo_id, **kwargs):
@@ -1013,7 +1013,7 @@ class TestSharedHubModelInfo:
         hub.raises = None
         with shared_hub_model_info():
             _hub_model_info("org/repo", "tok")
-            monkeypatch.setattr(mc, "_env_offline", lambda: True)
+            monkeypatch.setattr(mc, "hf_env_offline", lambda: True)
             _hub_model_info("org/repo", "tok")
 
         assert len(hub.calls) == 5
@@ -1845,16 +1845,14 @@ class TestSpawnWindowKeepsTheParentOffline:
         from utils.hf_cache_settings import child_environment_for_spawn
         from utils.utils import force_hf_offline
 
-        from utils.transformers_version import _env_offline
         from utils.utils import force_hf_offline, hf_env_offline
 
         with force_hf_offline():
-            assert _env_offline() is True and hf_env_offline() is True
+            assert hf_env_offline() is True
             with child_environment_for_spawn({}):
                 assert "HF_HUB_OFFLINE" not in os.environ
-                assert _env_offline() is True
                 assert hf_env_offline() is True
-            assert _env_offline() is True
+            assert hf_env_offline() is True
 
     def test_guarded_metadata_fetch_stays_local_during_a_concurrent_spawn(
         self, monkeypatch, clean_offline_env
@@ -3117,6 +3115,9 @@ class TestValidateGuardCoversMetadataPreflights:
         remote = {
             "check_upgrade_for_model",
             "latest_tier_active_for",
+            "latest_tier_forces_16bit",
+            "latest_tier_load_policy",
+            "latest_tier_upgrade_keeps_4bit",
             "get_base_model_from_lora_identifier",
             "_guard_chat_load_against_training",
         }
@@ -3199,7 +3200,13 @@ class TestGuardIsKeyedOnWhatIsRead:
                 continue
             targets, read = node.args[1], node.args[2]
             read_name = getattr(read, "id", None) or getattr(read, "attr", None)
-            if read_name in ("latest_tier_active_for", "_guard_chat_load_against_training"):
+            if read_name in (
+                "latest_tier_active_for",
+                "latest_tier_forces_16bit",
+                "latest_tier_load_policy",
+                "latest_tier_upgrade_keeps_4bit",
+                "_guard_chat_load_against_training",
+            ):
                 if isinstance(targets, ast.Name):
                     bad.append((read_name, node.lineno))
             if read_name == "check_upgrade_for_model":
@@ -3239,16 +3246,13 @@ class TestTransformersOfflineDoesNotSilenceDatasets:
 
 
 class TestModelConfigPredicateHonoursTheWindow:
-    """model_config._env_offline gates detect_audio_type's raw requests.get, which the
-    patched hub constant does not cover. During hf_environment_restored_for_spawn the env
-    is back to the user's values, so an env-only predicate would fire that 15s request."""
+    """The spawn window restores the user's env, so an env-only predicate would fire a 15s raw request."""
 
     def test_predicate_is_true_inside_the_spawn_window(self, monkeypatch):
         from utils.utils import force_hf_offline
         import threading
 
-        from utils.models.model_config import _env_offline
-        from utils.utils import force_hf_offline, hf_environment_restored_for_spawn
+        from utils.utils import force_hf_offline, hf_env_offline, hf_environment_restored_for_spawn
 
         for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
             monkeypatch.delenv(key, raising = False)
@@ -3264,18 +3268,18 @@ class TestModelConfigPredicateHonoursTheWindow:
                 checked.wait(5)
 
         with force_hf_offline():
-            assert _env_offline() is True
+            assert hf_env_offline() is True
             t = threading.Thread(target = _spawn_window)
             t.start()
             assert in_window.wait(5)
-            seen["predicate_during"] = _env_offline()
+            seen["predicate_during"] = hf_env_offline()
             checked.set()
             t.join(5)
-            assert _env_offline() is True
+            assert hf_env_offline() is True
 
         assert seen["env_during"] is None
         assert seen["predicate_during"] is True
-        assert _env_offline() is False
+        assert hf_env_offline() is False
 
     def test_raw_fetch_is_skipped_during_the_window(self, monkeypatch, tmp_path):
         """The gate protects _detect_audio_from_tokenizer's own requests.get, so drive that function."""

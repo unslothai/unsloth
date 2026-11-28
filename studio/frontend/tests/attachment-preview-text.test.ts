@@ -335,6 +335,61 @@ test("extractHtmlAttachmentText keeps the ticked state of check boxes", async ()
   assert.equal(extracted, "☒ Ship\n\n☐ Docs\n\nSmoker: ☒ Yes ☐ No");
 });
 
+test("extractHtmlAttachmentText keeps superscript exponents", async () => {
+  const sup = (text: string, attrs: Record<string, string> = {}) => ({
+    ...element("sup", textNode(text)),
+    getAttribute: (name: string) => attrs[name] ?? null,
+  });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element("p", textNode("Mass is 1.898×10"), sup("27"), textNode(" kg; MAX is "), element("b", textNode("2")), sup("53"), textNode(" - 1.")),
+        element("p", sup("2"), textNode("Tolerance is 10"), sup("-3"), textNode(" m over 40 km"), sup("2"), textNode(".")),
+        element(
+          "p",
+          textNode("Held on the 21"),
+          sup("st"),
+          textNode(" of June."),
+          sup("4"),
+          textNode(" See Smith"),
+          sup("[2]"),
+          textNode(" and Jones"),
+          sup("3", { class: "footnote-ref" }),
+        ),
+        element("p", textNode("Price SAR ١٩"), sup("٩٩"), textNode(" for ١٠"), sup("٦"), textNode(" and 𝑥"), sup("2")),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(
+    extracted,
+    "Mass is 1.898×10^27 kg; MAX is 2^53 - 1.\n\n2Tolerance is 10^-3 m over 40 km^2.\n\nHeld on the 21st of June.4 See Smith[2] and Jones3\n\nPrice SAR ١٩٩٩ for ١٠^٦ and 𝑥^2",
+  );
+});
+
+test("extractHtmlAttachmentText keeps footnote links as references", async () => {
+  const sup = (child: StubNode) => ({ ...element("sup", child), getAttribute: () => null });
+  const extracted = await withStubDom(
+    () =>
+      element(
+        "body",
+        element(
+          "p",
+          textNode("Smith"),
+          sup(element("a", textNode("1"))),
+          textNode(" and Lee"),
+          element("a", sup(textNode("3"))),
+          textNode(" cover "),
+          element("a", textNode("40 km"), sup(textNode("2"))),
+        ),
+      ),
+    () => extractHtmlAttachmentText("<html/>"),
+  );
+
+  assert.equal(extracted, "Smith1 and Lee3 cover 40 km^2");
+});
+
 test("extractHtmlAttachmentText keeps the indentation of preformatted code", async () => {
   const extracted = await withStubDom(
     () =>
@@ -507,11 +562,13 @@ test("extractPdfAttachmentText destroys the PDF proxy after success and failure"
       _pdfInfo: {},
       numPages: 1,
       getPage: async () => ({
+        view: [0, 0, 200, 200],
         getTextContent: async () => ({
           items: [
-            { str: "page one", hasEOL: true },
-            { str: "page two", hasEOL: false },
+            { str: "page one", hasEOL: true, transform: [1, 0, 0, 1, 20, 100] },
+            { str: "page two", hasEOL: false, transform: [1, 0, 0, 1, 20, 90] },
           ],
+          styles: {},
         }),
       }),
       getFieldObjects: async () => null,

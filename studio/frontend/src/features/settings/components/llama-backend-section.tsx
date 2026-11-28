@@ -12,10 +12,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { formatBytes } from "@/features/hub";
-import {
-  FolderBrowser,
-  invalidateLlamaFlagCatalog,
-} from "@/features/model-picker";
+import { FolderBrowser } from "@/features/model-picker";
+import { afterLlamaFolderChanged } from "@/hooks/use-llama-update-check";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect, useState } from "react";
@@ -23,6 +21,7 @@ import {
   type LlamaBackendOption,
   isLlamaBackend,
   llamaBackendSelectionNeedsApply,
+  llamaBackendUnavailableKey,
   visibleLlamaBackendOptions,
 } from "../api/llama-backend";
 import {
@@ -247,6 +246,10 @@ export function LlamaBackendSection() {
     selected ?? status?.backendRequest ?? null,
   );
   const pending = options.find((option) => option.backend === value);
+  // A greyed option can only say a few words; its fix (the usermod line) goes below the row.
+  const unavailableHints = options.filter(
+    (option) => !option.available && option.unavailableHint,
+  );
   const dirty = !running && llamaBackendSelectionNeedsApply(status, selected);
   const unsupportedKey =
     status && !status.supported && !running
@@ -295,11 +298,31 @@ export function LlamaBackendSection() {
                   {t("settings.resources.environment.unknown")}
                 </SelectItem>
               ) : null}
-              {options.map((option) => (
-                <SelectItem key={option.backend} value={option.backend}>
-                  {optionLabel(option)}
-                </SelectItem>
-              ))}
+              {options.map((option) => {
+                const unavailableKey = llamaBackendUnavailableKey(option);
+                return (
+                  <SelectItem
+                    key={option.backend}
+                    value={option.backend}
+                    // The recorded choice stays pickable so the Select keeps a value.
+                    disabled={
+                      unavailableKey !== null &&
+                      option.backend !==
+                        (selected ?? status?.backendRequest ?? null)
+                    }
+                    data-testid={`llama-backend-option-${option.backend}`}
+                  >
+                    {unavailableKey
+                      ? t("settings.resources.llamaBackend.unavailableOption", {
+                          backend: optionLabel(option),
+                          reason: t(
+                            `settings.resources.llamaBackend.unavailable.${unavailableKey}`,
+                          ),
+                        })
+                      : optionLabel(option)}
+                  </SelectItem>
+                );
+              })}
             </SelectContent>
           </Select>
           <Button
@@ -319,7 +342,7 @@ export function LlamaBackendSection() {
 
       <LlamaCppPathRow
         onChanged={() => {
-          invalidateLlamaFlagCatalog();
+          afterLlamaFolderChanged();
           void refresh(true);
         }}
       />
@@ -336,6 +359,19 @@ export function LlamaBackendSection() {
           </p>
         </div>
       ) : null}
+
+      {unavailableHints.map((option) => (
+        <p
+          key={option.backend}
+          className="pb-3 text-xs text-muted-foreground"
+          data-testid={`llama-backend-hint-${option.backend}`}
+        >
+          {t("settings.resources.llamaBackend.unavailableHint", {
+            backend: optionLabel(option),
+            hint: option.unavailableHint ?? "",
+          })}
+        </p>
+      ))}
 
       {dirty ? (
         <p className="pb-3 text-xs text-muted-foreground">

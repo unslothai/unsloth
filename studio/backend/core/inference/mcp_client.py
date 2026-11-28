@@ -11,6 +11,7 @@ import hashlib
 import importlib
 import ipaddress
 import json
+import ssl
 import mimetypes
 import os
 import re
@@ -533,9 +534,8 @@ def _oauth_store():
 
 
 def _strip_client_id_under_basic_auth(auth) -> None:
-    """The SDK leaves client_id in the body under Basic auth; strict servers (Notion) read that as
-    two auth methods -- RFC 6749 2.3 -- and 401. Safe to drop: 3.2.1 makes client_id a MAY once
-    authenticated, and an unauthenticated client sends no header, so it keeps it."""
+    """Strict servers (Notion) 401 on client_id in the body under Basic auth, as two auth methods
+    (RFC 6749 2.3); RFC 6749 3.2.1 makes it a MAY once authenticated, so dropping it is safe."""
     context = getattr(auth, "context", None)
     prepare = getattr(context, "prepare_token_auth", None)
     if prepare is None:
@@ -726,8 +726,7 @@ def _is_node_command(command: str) -> bool:
 
 
 def _command_selects_runtime(command: Optional[str]) -> bool:
-    """A path to a ``node`` launcher picks the runtime explicitly and runs regardless of PATH, so
-    handing its children a different Node would only split the two."""
+    """A path to node picks the runtime regardless of PATH; children must share that Node."""
     return (
         command is not None and bool(os.path.dirname(command)) and _launcher_name(command) == "node"
     )
@@ -955,8 +954,7 @@ _CANCEL_UNWIND_TIMEOUT = 2.0
 # With no read cap, a still-open abandoned reply is bounded by retiring its session after the old cap or a pile-up.
 _ABANDONED_REPLY_TIMEOUT = 300.0
 _MAX_ABANDONED_REPLIES = 8
-# Idle HTTP sessions are re-proved with tools/list before the next dispatch, as servers may expire
-# them (MCP lets a server terminate a session at any time) and no HTTP liveness probe exists
+# Idle HTTP sessions are re-proved with tools/list: servers may expire them and HTTP has no probe.
 _HTTP_IDLE_RECHECK = 30.0
 _DEFAULT_MAX_SESSIONS = 32
 
@@ -1589,6 +1587,19 @@ def close_mcp_sessions(
         worker.join(_SESSION_CLOSE_TIMEOUT + 5.0)
 
 
+def close_mcp_scopes(matches) -> None:
+    """Close every session whose scope ``matches``; one still mid-call closes on its release."""
+    idle = []
+    with _mcp_sessions_lock:
+        for key in [k for k in _mcp_sessions if k[2] and matches(k[2])]:
+            session = _mcp_sessions.pop(key)
+            _discard_key_lock(key)
+            session.defunct = True
+            if session.in_flight == 0:
+                idle.append(session)
+    _close_detached(idle)
+
+
 def _close_all(sessions: list) -> None:
     """Closes at most _MAX_CLOSE_THREADS at once; serial closes could stall a request for minutes."""
     if not sessions:
@@ -1720,6 +1731,8 @@ class McpToolList(list):
     """Tools plus the resources listed on the same connection."""
 
     resources: Optional[list[dict]] = None
+    complete: bool = True
+    use_oauth: bool = False
 
 
 def _capabilities(client) -> Any:
@@ -1727,25 +1740,7 @@ def _capabilities(client) -> Any:
     return getattr(client, "server_capabilities", None)
 
 
-async def _list_resources(client) -> Optional[list[dict]]:
-    capabilities = _capabilities(client)
-    if capabilities is not None and getattr(capabilities, "resources", None) is None:
-        return None
-    listed, cursors = [], set()
-    cursor = None
-    try:
-        while len(listed) < MAX_MCP_RESOURCES:
-            page = await client.list_resources_mcp(cursor = cursor)
-            listed.extend(getattr(page, "resources", None) or ())
-            cursor = getattr(page, "next_cursor", None)
-            # A repeated cursor would loop forever.
-            if not cursor or cursor in cursors:
-                break
-            cursors.add(cursor)
-    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
-        logger.debug("MCP resources/list failed: %s", exc)
-        if not listed:
-            return None
+def _resource_entries(listed: list) -> Optional[list[dict]]:
     resources = []
     for resource in listed:
         uri = str(getattr(resource, "uri", "") or "")
@@ -1764,6 +1759,35 @@ async def _list_resources(client) -> Optional[list[dict]]:
             {"uri": uri, **{k: v for k, v in fields.items() if isinstance(v, str) and v}}
         )
     return resources[:MAX_MCP_RESOURCES] or None
+
+
+_METHOD_NOT_FOUND = -32601
+
+
+async def _list_resources(client, tools: McpToolList) -> None:
+    """Fills tools.resources page by page; complete stays False if the listing fails or is cut off."""
+    capabilities = _capabilities(client)
+    if capabilities is not None and getattr(capabilities, "resources", None) is None:
+        return
+    listed, cursors = [], set()
+    cursor = None
+    tools.complete = False
+    try:
+        while len(listed) < MAX_MCP_RESOURCES:
+            page = await client.list_resources_mcp(cursor = cursor)
+            listed.extend(getattr(page, "resources", None) or ())
+            tools.resources = _resource_entries(listed)
+            cursor = getattr(page, "next_cursor", None)
+            # A repeated cursor would loop forever.
+            if not cursor or cursor in cursors:
+                break
+            cursors.add(cursor)
+    except Exception as exc:  # noqa: BLE001 - resources are optional, the tools still load
+        logger.debug("MCP resources/list failed: %s", exc)
+        # Method not found will not change on a retry.
+        if not (_is_protocol_error(exc) and getattr(exc.error, "code", None) == _METHOD_NOT_FOUND):
+            return
+    tools.complete = True
 
 
 async def list_tools_async(
@@ -1790,8 +1814,9 @@ async def list_tools_async(
                     raise
                 raw_tools = []
             tools = McpToolList(t.model_dump(exclude_none = True) for t in raw_tools)
+            tools.use_oauth = use_oauth
             listed.append(tools)
-            tools.resources = await _list_resources(client)
+            await _list_resources(client, tools)
         return tools
 
     try:
@@ -1799,11 +1824,12 @@ async def list_tools_async(
     except asyncio.TimeoutError:
         # A slow resources/list must not cost the server its tools.
         if listed:
+            listed[0].complete = False
             return listed[0]
         raise
 
 
-# Probe only on cache miss, off the chat send's critical path. Successful probes cached forever.
+# Probe only on cache miss, off the chat send's critical path. Complete probes cached forever.
 _tool_cache: dict[str | tuple[str, str], list[dict]] = {}
 
 # Failed server's re-probe cooloff (monotonic time); cleared on a good probe or eviction.
@@ -1847,7 +1873,10 @@ def get_cached_resources(server_id: str) -> Optional[list[dict]]:
 
 def cache_tools(server_id: str, tools: list[dict]) -> None:
     _tool_cache[_account_key(server_id)] = tools
-    _probe_cooloff_until.pop(_account_key(server_id), None)
+    if getattr(tools, "complete", True):
+        _probe_cooloff_until.pop(_account_key(server_id), None)
+    else:
+        record_probe_failure(server_id, tools.use_oauth)
 
 
 def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
@@ -1857,6 +1886,13 @@ def record_probe_failure(server_id: str, use_oauth: bool = False) -> None:
 
 def in_failure_cooloff(server_id: str) -> bool:
     return _probe_cooloff_until.get(_account_key(server_id), 0.0) > time.monotonic()
+
+
+def needs_discovery(server_id: str) -> bool:
+    tools = get_cached_tools(server_id)
+    return (tools is None or not getattr(tools, "complete", True)) and not in_failure_cooloff(
+        server_id
+    )
 
 
 def invalidate_tool_cache(server_id: Optional[str] = None) -> None:
@@ -2325,8 +2361,7 @@ def _call_session_tool(
         raise _MCPCancelled
     if dispatch is None:
         rpc = ("tools/call", name)
-    # One deadline covers the key-lock wait, connect, call-lock wait, and the call itself, matching the one-shot path
-    # where the caller's timeout wrapped connect plus call in a single window.
+    # One deadline spans every wait and the call, as the one-shot path's single window did.
     deadline = None if timeout is None else time.monotonic() + timeout
 
     def _remaining() -> Optional[float]:
@@ -2465,8 +2500,7 @@ def _call_session_tool(
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)
-            # Drop the broken session from the cache before its borrow is released, so no caller
-            # reuses it.
+            # Drop the broken session from the cache before release, so no caller reuses it.
             if discard_session:
                 _drop_session(key, session)
             _release_session(session, defer_close = not ephemeral)
@@ -2530,10 +2564,40 @@ def call_tool_sync(
         suffix = f" after {timeout:g}s" if timeout is not None else ""
         return f"Error: MCP tool '{name}' timed out{suffix}"
     except Exception as exc:
+        if server_unreachable(exc):
+            # The app behind the server is closed; say so, or models sleep and retry.
+            logger.warning("MCP server unreachable for %s: %s", name, exc)
+            return (
+                f"Error: MCP tool '{name}' did not run: {UNREACHABLE_SERVER}. {UNREACHABLE_ADVICE}"
+            )
         logger.exception("MCP call_tool failed for %s: %s", name, exc)
         return f"Error: MCP tool '{name}' failed: {exc}"
 
     return _flatten_result(result, ui_resource_uri)
+
+
+UNREACHABLE_SERVER = "the MCP server is not reachable (nothing answered the connection)"
+UNREACHABLE_ADVICE = "It is probably not running. Tell the user to start it; waiting or calling it again will not help until it runs."
+
+
+def server_unreachable(exc: BaseException) -> bool:
+    """Refused/unanswered connection in cause chain; name match (httpx vendored); TLS excluded."""
+    chain, seen = [], 0
+    while exc is not None and seen < 10:
+        chain.append(exc)
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    if any(
+        isinstance(item, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(item) for item in chain
+    ):
+        return False
+    for exc in chain:
+        if type(exc).__name__ in (
+            "ConnectError",
+            "ConnectionRefusedError",
+        ) or "All connection attempts failed" in str(exc):
+            return True
+    return False
 
 
 MAX_UI_TOOL_RESULT_CHARS = 4_000_000

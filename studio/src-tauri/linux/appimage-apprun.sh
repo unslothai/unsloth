@@ -68,7 +68,8 @@ unsloth_host_env() {
 }
 
 # UNSLOTH_APPIMAGE_WEBKIT=auto (default) uses a host WebKitGTK >= 2.54 when the probe proves the
-# host stack and its appindicator load; host forces it; bundled, or anything else, keeps the bundle.
+# host stack and its appindicator load and its GStreamer has autoaudiosink; host forces it;
+# bundled, or anything else, keeps the bundle.
 unsloth_host_exe="$APPDIR/usr/bin/host/unsloth-studio"
 unsloth_webkit_request="${UNSLOTH_APPIMAGE_WEBKIT:-auto}"
 unsloth_webkit_mode=bundled
@@ -176,9 +177,8 @@ printf 'unsloth-studio: AppImage WebKitGTK runtime=%s (%s)\n' \
 if [ -n "${UNSLOTH_APPIMAGE_NO_AT_BRIDGE:-}" ]; then
   unset NO_AT_BRIDGE UNSLOTH_APPIMAGE_NO_AT_BRIDGE
 fi
-# The bundled WebKit's web process aborts on KDE Plasma once AT-SPI clients query it (#15260), so
-# its atk-bridge stays off there unless NO_AT_BRIDGE is set (0 keeps it). process.rs reads the
-# marker to give host programs their bridge back.
+# Bundled WebKit's web process aborts on KDE Plasma once AT-SPI clients query it (#15260), so
+# atk-bridge stays off unless NO_AT_BRIDGE is set (0 keeps it); process.rs reads the marker.
 if [ "$unsloth_webkit_mode" = bundled ]; then
   case ":${XDG_CURRENT_DESKTOP:-}:" in
   *:KDE:*)

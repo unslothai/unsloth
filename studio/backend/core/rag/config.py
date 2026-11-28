@@ -128,7 +128,14 @@ OCR_MAX_TOKENS = int(os.environ.get("RAG_OCR_MAX_TOKENS", "2048"))
 EMBED_BACKEND = os.environ.get("RAG_EMBED_BACKEND", "auto")
 
 # The model name alone is not the embedding space: llama-server embeds through the GGUF companion and pools its own way.
-EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server")
+EMBEDDING_IDENTITY_TAGS = ("sentence-transformers", "llama-server", "connection")
+
+# An embedding model of this form is served by a saved connection's /embeddings endpoint (embed_connection).
+CONNECTION_MODEL_PREFIX = "connection:"
+
+
+def is_connection_model(name: str | None) -> bool:
+    return isinstance(name, str) and name.strip().lower().startswith(CONNECTION_MODEL_PREFIX)
 
 
 def _escape_identity_segment(value: str) -> str:

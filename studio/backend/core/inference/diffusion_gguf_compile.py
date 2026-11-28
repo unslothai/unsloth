@@ -29,7 +29,6 @@ _DISABLED = {"0", "off", "false", "no"}
 
 
 def _enabled(env_name: str) -> bool:
-    """Enabled unless explicitly disabled (default ON)."""
     return str(os.environ.get(env_name, "1")).strip().lower() not in _DISABLED
 
 
@@ -60,14 +59,8 @@ _forward_patched = False
 
 
 def _q8_0_blocks_dequant_cast(raw: Any, dtype: Any) -> Any:
-    """Q8_0 bytes (any shape, ``n_blocks * 34`` bytes) -> ``(n_blocks, 32)`` weight in ``dtype``. Same ops and order
-    as diffusers' ``dequantize_blocks_Q8_0`` (fp16 scale * int8 code -> fp16) followed by ``.to(dtype)``; the dtype
-    views are taken on the contiguous byte tensor before slicing, so no slice is materialised.
-
-    Inductor computes a fused fp16 product in fp32 and would round it once to ``dtype`` (bf16: a different result
-    than fp16 round then bf16 round, and no fp16 overflow to inf). The int16 bitcast forces the fp16 store rounding
-    inside the kernel; the ``& -1`` keeps inductor from folding the bitcast pair away. Eager it is a no-op. The
-    result stays in the block layout: a reshape to the symbolic row width inside the graph costs a second copy."""
+    """Q8_0 bytes (n_blocks*34) to (n_blocks, 32) in dtype; Inductor fuses fp16 product (rounds
+    once, no overflow); int16 bitcast forces store rounding; & -1 stops folding; eager no-op."""
     import torch  # noqa: PLC0415
 
     blocks = raw.reshape(-1, _Q8_0_TYPE_SIZE)
@@ -132,8 +125,7 @@ def install_compiled_dequant(logger: Any = None) -> bool:
 
         eager = gguf_utils.dequantize_gguf_tensor
         compiled = _guard(torch.compile(eager, dynamic = True), eager, logger)
-        # force=True: the compiled callable's fingerprint differs from the original, which can_safely_patch would
-        # correctly reject.
+        # force=True: the compiled fingerprint differs, which can_safely_patch would reject.
         if apply_patch(gguf_utils, _DEQUANT_ATTR, compiled, force = True):
             _compiled_dequant_installed = True
             _compile_error = None
@@ -183,8 +175,7 @@ def _guard(compiled: Any, eager: Any, logger: Any) -> Any:
 
 
 def _install_fused_q8_0(gguf_utils: Any, logger: Any) -> bool:
-    """Patch ``GGUFLinear.forward_native``: Q8_0 dequant+cast in one kernel, an fp16 dequant cast to bf16 in place;
-    anything else takes the stock forward."""
+    """GGUFLinear.forward_native: Q8_0 fused dequant+cast, fp16 in-place bf16 cast, else stock."""
     global _fused_q8_0_installed, _fused_cast_installed, _forward_patched
     q8_0 = _enabled(_ENV_FUSED_Q8_0)
     fused_cast = _enabled(_ENV_FUSED_CAST)

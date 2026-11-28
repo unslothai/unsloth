@@ -222,6 +222,53 @@ def test_gradient_path_runs_a_hooked_head_and_its_backward_hook():
     assert os.environ.get("UNSLOTH_RETURN_HIDDEN_STATES") is None
 
 
+def _lora_head_model():
+    lora = pytest.importorskip("peft.tuners.lora.layer")
+    from peft import LoraConfig
+
+    model = _TinyLM()
+    model.lm_head.weight.requires_grad_(False)
+    model.lm_head = lora.Linear(
+        model.lm_head, "default", config = LoraConfig(r = 2, lora_alpha = 2), r = 2, lora_alpha = 2
+    )
+    with torch.no_grad():
+        model.lm_head.lora_B["default"].weight.copy_(
+            torch.linspace(-0.5, 0.5, VOCAB * 2).reshape(VOCAB, 2)
+        )
+    return model
+
+
+def test_gradient_path_scores_and_trains_an_unmerged_head_adapter():
+    """On a PEFT LoRA head .weight is the base weight: the hidden-states scorer drops the adapter generate() used."""
+    function = _patched_gradient_function(_ZOO_SHAPED)
+    model = _lora_head_model()
+    trainer = type("Trainer", (), {"model": model})()
+    input_ids = torch.randint(0, VOCAB, (2, 5), generator = torch.Generator().manual_seed(1))
+    with torch.no_grad():
+        expected = torch.log_softmax(model.lm_head(model.embed(input_ids)).float(), dim = -1)
+
+    scored = function(trainer, input_ids)
+    torch.testing.assert_close(scored, expected)
+    assert model.hidden_state_calls == 0
+    scored[..., 0].sum().backward()
+    for name in ("lora_A", "lora_B"):
+        grad = getattr(model.lm_head, name)["default"].weight.grad
+        assert grad is not None and grad.abs().sum() > 0, name
+
+
+def test_merged_disabled_and_fast_inference_head_adapters_keep_hidden_states():
+    model = _lora_head_model()
+    model.lm_head.merge()
+    assert rl._unsloth_grpo_head_hooked(model) is False
+    model = _lora_head_model()
+    model.lm_head.enable_adapters(False)
+    assert rl._unsloth_grpo_head_hooked(model) is False
+    # vLLM samples without a head LoRA, which get_peft_model warns stays untrained under fast inference.
+    model = _lora_head_model()
+    model.vllm_engine = object()
+    assert rl._unsloth_grpo_head_hooked(model) is False
+
+
 def test_installed_zoo_gradient_path_requests_hidden_states_only_through_the_check():
     source = rl._patch_grpo_accumulated_loss_head_hooks(
         rl._patch_grpo_accumulated_loss_hidden_states_dispatch(rl.grpo_accumulated_loss)
@@ -270,12 +317,21 @@ def test_nograd_path_requests_hidden_states_only_for_an_unhooked_head():
     assert [ast.unparse(node.value) for node in checks] == [
         "_unsloth_grpo_head_hooked(unwrapped_model)"
     ]
-    requests = [
+    # A write-back of the value read on entry restores the caller's setting (#19699); it is not a request.
+    snapshots = {
+        ast.unparse(node.targets[0])
+        for node in ast.walk(function)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and ast.unparse(node.value) == "os.environ.get('UNSLOTH_RETURN_HIDDEN_STATES')"
+    }
+    writes = [
         ast.unparse(node.value)
         for node in ast.walk(function)
         if isinstance(node, ast.Assign)
         and [ast.unparse(t) for t in node.targets] == ["os.environ['UNSLOTH_RETURN_HIDDEN_STATES']"]
     ]
+    requests = [value for value in writes if value not in snapshots]
     assert requests, "the no-grad path no longer sets UNSLOTH_RETURN_HIDDEN_STATES"
     for value in requests:
         assert value in ("'0'", "'0' if _unsloth_head_hooked else '1'"), value

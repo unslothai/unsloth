@@ -76,7 +76,7 @@ def test_the_check_follows_the_core_step_and_the_rerun_starts_outside_the_pass_l
     body = ast.get_source_segment(source, func)
     core = body.rindex('"Updating core packages"')
     check = body.index("_installer_replaced()")
-    assert core < check < body.index("_mlx_vlm_spec_now = ")
+    assert core < check < body.index("_mlx_specs_now = ")
     main = source[source.index('if __name__ == "__main__":') :]
     assert "except _InstallerReplaced:" in main
     assert "_rerun_replaced_installer()" in main

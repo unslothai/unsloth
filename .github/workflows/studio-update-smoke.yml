@@ -7,8 +7,7 @@ name: Unsloth Update CI
 
 on:
   pull_request:
-    # ready_for_review: Windows/macOS jobs below skip draft pull requests, so marking
-    # one ready has to start the run that tests it.
+    # ready_for_review: Windows/macOS jobs skip draft PRs, so marking ready must start the run.
     types: [opened, synchronize, reopened, ready_for_review]
     paths:
       - 'install.sh'
@@ -123,9 +122,7 @@ on:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
-  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
-  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
+  # Latest-only on PR; on main cancel-in-progress is false, so running runs are never killed.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -270,8 +267,7 @@ jobs:
           echo "incomplete install correctly reported not-ready"
 
       - name: Update repairs an incomplete install
-        # `--local` bypasses the PyPI version compare; the non-local fast path is covered by
-        # tests/studio/install/test_setup_fast_path_guard.py.
+        # --local skips PyPI compare; see tests/studio/install/test_setup_fast_path_guard.py
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -402,8 +398,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Node 22 ships npm 10, below setup.ps1's npm 11 floor, so this job takes the
-      # bundled Node path as the macOS job does; the Linux job covers the system-Node one.
+      # Node 22 has npm 10, below setup.ps1's npm 11 floor, so it takes the bundled Node path.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: '22'

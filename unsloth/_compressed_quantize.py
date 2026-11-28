@@ -51,15 +51,12 @@ def _has_mtp(config):
 
 
 def compressed_ignore_patterns(config):
-    """Modules the compressed recipe refuses to quantize (llm-compressor ignore entries);
-    stdlib-only so save.py sizes from the same list, and only ever executed by file path. A re:
-    prefix is re.match on the qualified name, else exact name or parent class name
-    (compressed-tensors is_match)."""
+    """Unquantized modules; stdlib-only, run by file path so save.py shares them. A re: prefix is
+    re.match on qualified name, else exact or parent class (compressed-tensors is_match)."""
     ignore = ["lm_head"]
     # Skip what RedHatAI/NVIDIA skip for Qwen3.5 / Qwen3-Next: shapes not divisible by group_size.
     ignore += ["re:.*\\.linear_attn\\..*", "re:.*\\.visual\\..*", "re:.*mtp.*"]
     if _is_moe(config):
-        # Keep MoE routing layers unquantized: the router gate and (Qwen) shared-expert gate.
         ignore += ["re:.*\\.gate$", "re:.*\\.shared_expert_gate$"]
     return ignore
 
@@ -85,7 +82,6 @@ def _build_calibration_dataset(tokenizer, kind, value, num_samples, max_seq_leng
         except (ValueError, KeyError):
             from datasets import get_dataset_split_names
             try:
-                # Resolve the split name so only num_samples rows are fetched.
                 split = get_dataset_split_names(value)[0]
                 ds = load_dataset(value, split = f"{split}[:{num_samples}]")
             except Exception:
@@ -269,8 +265,7 @@ def main():
             args.num_calibration_samples,
             args.max_seq_length,
         )
-        # Sequential pipeline onloads layer by layer; tracing works only in this clean process without
-        # Unsloth's attention patches. Fall back to the memory-hungry basic pipeline if tracing fails.
+        # Sequential tracing needs no Unsloth attention patches; else basic (memory-hungry).
         try:
             oneshot(
                 model = model,

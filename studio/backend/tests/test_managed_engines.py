@@ -2888,6 +2888,42 @@ def test_vllm_retries_once_without_a_drafter_that_breaks_startup(isolated, monke
 
 
 @_LOCAL_ENGINE_HOST
+@pytest.mark.parametrize(
+    ("initial_outcome", "use_drafter"),
+    [("mamba", False), ("crash", True)],
+)
+def test_vllm_automatic_retry_preserves_both_logs(
+    isolated, monkeypatch, initial_outcome, use_drafter
+):
+    from core.inference import engine_adapters
+    from utils import debug_log_sources
+
+    if use_drafter:
+        monkeypatch.setattr(
+            engine_adapters, "vllm_speculative_args", lambda _: ["--speculative-config", "{}"]
+        )
+    engine, launches = _scripted_engine(isolated, monkeypatch, [initial_outcome, "crash"])
+    with pytest.raises(RuntimeError, match = "Engine failed to start") as failure:
+        engine.start("model", 4096, [0], dict(os.environ))
+
+    assert len(launches) == 2
+    paths = sorted(
+        Path(source.realpath)
+        for source in debug_log_sources.list_sources()
+        if source.family == "vllm"
+    )
+    assert len(paths) == 2
+    first, final = paths
+    assert str(final) == failure.value.managed_engine_log_path
+    initial_output = _MAMBA_LIMIT_LINE if initial_outcome == "mamba" else "CUDA out of memory"
+    assert initial_output in first.read_text(encoding = "utf-8")
+    assert "CUDA out of memory" in final.read_text(encoding = "utf-8")
+    for path in paths:
+        assert "Managed engine stopped." in path.read_text(encoding = "utf-8")
+    assert engine.process is None and engine._attempt_log is None
+
+
+@_LOCAL_ENGINE_HOST
 def test_vllm_drafter_retry_respects_an_external_stop(isolated, monkeypatch):
     import os
     from core.inference import engine_adapters, managed_engine
@@ -3130,3 +3166,86 @@ def test_download_size_counts_the_flashinfer_kernel_wheel(isolated, kernel_host,
     assert (
         with_kernels - install.download_bytes("vllm") == table[f"{version}+cu130"]["x86_64"]["size"]
     )
+
+
+def test_windows_local_checkpoint_served_names(monkeypatch):
+    from contextlib import nullcontext
+    from core.inference import managed_engine
+
+    class CommandCaptured(Exception):
+        pass
+
+    monkeypatch.setattr(managed_engine, "installed", lambda _: {"host": "wsl"})
+    monkeypatch.setattr(managed_engine, "engine_lease", lambda _: nullcontext())
+    monkeypatch.setattr(managed_engine, "_free_port", lambda _: 12345)
+
+    def launch(engine, model, path):
+        managed = ManagedEngine(engine)
+
+        def capture(info, env, gpu_ids, options, trust, served_name, model_path, port):
+            assert model_path == path
+            assert served_name == managed.model
+            raise CommandCaptured
+
+        monkeypatch.setattr(managed, "_wsl_command", capture)
+        with pytest.raises(CommandCaptured):
+            managed._start_once(model, 1024, [0], {}, None, {}, False, path)
+        return managed.model
+
+    first = r"C:\checkpoints\model"
+    second = r"D:\checkpoints\model"
+    alias = launch("sglang", first, first)
+    assert alias and ":" not in alias
+    assert launch("sglang", first, first) == alias
+    assert launch("sglang", second, second) != alias
+    assert launch("sglang", "org/model", None) == "org/model"
+    assert launch("sglang", "custom", first) == "custom"
+    assert launch("vllm", first, first) == first
+
+
+@_LOCAL_ENGINE_HOST
+def test_local_sglang_checkpoint_served_name(isolated, monkeypatch):
+    from types import SimpleNamespace
+    from core.inference import managed_engine
+
+    class CommandCaptured(Exception):
+        pass
+
+    def command(python, model_path, *args, **kwargs):
+        assert model_path == "/mnt/c/checkpoints/model"
+        assert kwargs["served_model_name"] == managed.model
+        raise CommandCaptured
+
+    active(isolated, "sglang")
+    monkeypatch.setattr(managed_engine, "gpu_memory_fraction", lambda *_: 0.8)
+    managed = ManagedEngine("sglang")
+    managed.adapter = SimpleNamespace(
+        command = command, environment = lambda _: {}, key_environment = lambda _: {}
+    )
+    # Studio inside WSL maps a typed drive path for the engine but keeps it as the identifier.
+    with pytest.raises(CommandCaptured):
+        managed._start_once(
+            r"C:\checkpoints\model", 1024, [0], {}, None, {}, False, "/mnt/c/checkpoints/model"
+        )
+    assert ":" not in managed.model
+
+
+@pytest.mark.parametrize(
+    ("name", "platform", "version", "wsl", "expected"),
+    [
+        ("vllm", "cuda", "0.26.0", True, "1"),
+        ("vllm", "cuda", "0.26.0", False, None),
+        ("vllm", "rocm", "0.26.0", True, None),
+        ("vllm", "cuda", "0.30.0", True, None),
+        ("sglang", "cuda", "0.5.17", True, None),
+    ],
+)
+def test_native_worker_wsl_pinned_memory(monkeypatch, name, platform, version, wsl, expected):
+    from core.inference import managed_engine
+    from utils.paths import path_utils
+
+    monkeypatch.setattr(path_utils, "_is_wsl", lambda: wsl)
+    monkeypatch.setattr(managed_engine, "_deep_gemm_unloadable", lambda _: False)
+    engine = managed_engine.ManagedEngine(name)
+    env = engine._native_runtime_env({"platform": platform, "version": version, "path": "/env"}, 1)
+    assert env.get("VLLM_WSL2_ENABLE_PIN_MEMORY") == expected

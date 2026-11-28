@@ -15,6 +15,12 @@ import {
   useTrainingResourceNotices,
   useTrainingTransformersUpgradeNotice,
 } from "@/features/training";
+import {
+  PARALLEL_MODE_LABEL_KEYS,
+  runGpuCount,
+  showsGpuSection,
+} from "@/features/training/lib/parallel-plan";
+import { useTrainingParallelStore } from "@/features/training/stores/training-parallel-store";
 import { useGpuInfo } from "@/hooks";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
@@ -374,7 +380,31 @@ export function RunPreviewCard({
     })),
   );
 
-  const gpu = useGpuInfo();
+  const hostGpuInfo = useGpuInfo();
+  // Only where the GPUs section shows, so a single-GPU preview is unchanged.
+  const hostGpuCount = useTrainingParallelStore(
+    (s) => s.capabilities?.gpus.length ?? 1,
+  );
+  const parallelPlan = useTrainingParallelStore((s) =>
+    s.capabilities && showsGpuSection(s.capabilities.gpus.length) && !s.plan?.error
+      ? s.plan
+      : null,
+  );
+  const hostGpus = useTrainingParallelStore((s) => s.capabilities?.gpus);
+  // Only the plan's GPUs, so unticked cards do not count.
+  const runGpus =
+    parallelPlan && hostGpus
+      ? hostGpus.filter((g) => parallelPlan.gpuIds.includes(g.index))
+      : [];
+  const gpu =
+    runGpus.length > 0
+      ? {
+          ...hostGpuInfo,
+          name: runGpus[0].name,
+          deviceCount: runGpus.length,
+          memoryTotalGb: runGpus.reduce((sum, g) => sum + (g.totalGb ?? 0), 0),
+        }
+      : hostGpuInfo;
   const hfToken = useHfTokenStore((s) => s.token);
   const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
@@ -517,13 +547,36 @@ export function RunPreviewCard({
         <MetaRow
           label={t("studio.preview.hardware")}
           wrap
-          value={gpu.available ? gpu.name : t("studio.preview.noGpu")}
+          value={
+            gpu.available ? (
+              <>
+                {gpu.name}
+                {gpu.deviceCount > 1 ? (
+                  <span className="whitespace-nowrap text-muted-foreground">
+                    {" "}
+                    {t("onboarding.device.moreGpus", {
+                      count: gpu.deviceCount - 1,
+                    })}
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              t("studio.preview.noGpu")
+            )
+          }
         />
         {gpu.available && (
+          // memoryTotalGb sums every visible GPU, so say so when there is more than one.
           <MetaRow
             label={t("studio.preview.vram")}
             title={`${gpu.memoryTotalGb} GiB`}
-            value={`${Math.round(gpu.memoryTotalGb)} GiB`}
+            value={
+              gpu.deviceCount > 1
+                ? t("studio.preview.vramTotal", {
+                    size: `${Math.round(gpu.memoryTotalGb)} GiB`,
+                  })
+                : `${Math.round(gpu.memoryTotalGb)} GiB`
+            }
           />
         )}
         <MetaRow
@@ -532,6 +585,21 @@ export function RunPreviewCard({
             hasToken ? t("studio.preview.saved") : t("studio.preview.notSet")
           }
         />
+        {parallelPlan && (
+          <MetaRow
+            label={t("studio.preview.gpus")}
+            value={
+              runGpuCount(parallelPlan, hostGpuCount) === 1
+                ? t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode])
+                : t("studio.gpus.runChip", {
+                    mode: t(PARALLEL_MODE_LABEL_KEYS[parallelPlan.mode]),
+                    count: numberFormatter.format(
+                      runGpuCount(parallelPlan, hostGpuCount),
+                    ),
+                  })
+            }
+          />
+        )}
       </section>
 
       <ResourceNoticeList notices={resourceNotices} />

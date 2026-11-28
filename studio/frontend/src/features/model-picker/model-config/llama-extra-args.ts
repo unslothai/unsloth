@@ -618,6 +618,16 @@ const RATIO_VALUE_FLAGS = new Set(["--tensor-split", "-ts"]);
 /** llama.cpp splits on this class, so "3/1" is "3,1". */
 const RATIO_DELIMITER = /[,/]+/;
 
+export function tensorSplitOverrideCount(tokens: readonly string[]): number | null {
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const flag = extraArgFlagName(tokens[i]);
+    if (flag === null || !RATIO_VALUE_FLAGS.has(flag)) continue;
+    const value = valueIsAttached(tokens[i], flag) ? tokens[i].split("=")[1] : tokens[i + 1];
+    return value?.split(RATIO_DELIMITER).filter((part) => part.trim() !== "").length ?? 0;
+  }
+  return null;
+}
+
 const NON_FINITE = /^[+-]?(nan|inf(inity)?)$/i;
 
 /** Python float() grammar: Number() accepts 0x/0b/0o and refuses PEP 515 `1_0`. */

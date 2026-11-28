@@ -21,6 +21,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from autograd_fork import fork_can_backward
+from real_accelerator import has_real_accelerator
 
 import unsloth  # noqa: F401
 from unsloth import context_parallel as cp
@@ -155,7 +157,6 @@ MUTANTS = {
     "slope_rate_slice": ("module.slope_rate[head]", "module.slope_rate[:heads]"),
     "diagonal_decay_slice": ("module.diagonal_decay[:, head]", "module.diagonal_decay[:, :heads]"),
     "query_decay_slice": ("module.query_decay[head]", "module.query_decay[:heads]"),
-    # A partial block read with the tail of the query decay instead of its head.
     "partial_block_query_decay": ("query_decay[:, :n]", "query_decay[:, -n:]"),
     # The carried state is not decayed between blocks.
     "undecayed_state": ("state * torch.exp(-slope * n)", "state"),
@@ -165,7 +166,6 @@ MUTANTS = {
         "qkv.reshape(bsz, local_len, 3, module.num_attention_heads, dim).transpose(2, 3)"
         ".reshape(bsz, local_len, module.num_attention_heads, 3 * dim)",
     ),
-    # Output gate applied before the full-width norm.
     "gate_before_norm": (
         "out = module.norm(out.reshape(bsz, local_len, -1))\n"
         "    out = torch.sigmoid(module.output_gate(hidden_states)) * out",
@@ -229,16 +229,18 @@ LIGHTNING_CASES = {
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof.
+    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof. A real GPU host
+    # needs no spoof, and once this process ran a backward there, forked children refuse autograd.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
+    start_method = "fork" if not has_real_accelerator() or fork_can_backward() else "spawn"
     with tempfile.TemporaryDirectory() as d:
         mp.start_processes(
             _entry,
             args = (world, os.path.join(d, "init"), fn, args),
             nprocs = world,
             join = True,
-            start_method = "fork",
+            start_method = start_method,
         )
 
 
@@ -279,8 +281,7 @@ def test_lightning_mutants_break_parity(mutant):
 
 
 def _batch(dp_rank, vocab = 64):
-    """Right padded rows of unequal length; labels stop before position 12, so the CP=2 rank 1
-    shard has none and position 10's target (token 11) crosses the CP=2 seam."""
+    """Labels end before 12: CP=2 rank 1 has none; position 10's target (token 11) crosses the CP=2 seam."""
     g = torch.Generator().manual_seed(10 + dp_rank)
     ids = torch.randint(1, vocab, (2, SEQ), generator = g)
     lengths = [(SEQ, 9), (17, SEQ)][dp_rank]
@@ -401,7 +402,6 @@ def _model_worker(rank, world, kind, cp_size, lora, control, model_kwargs):
         assert calls["lightning"] == runs * layer_types.count("linear_attention"), calls
         assert calls["attention"] == runs * layer_types.count("full_attention"), calls
 
-    # Outputs: valid positions of the gathered CP shards against the reference.
     gathered = [torch.empty_like(out.logits) for _ in range(cp_size)]
     dist.all_gather(gathered, out.logits.detach().contiguous(), group = manager.group)
     logits = torch.cat(gathered, dim = 1)[:, :SEQ]
@@ -453,8 +453,7 @@ MODEL_CASES = {
     "m2_dp2_cp2": ("m2", 2, 4, False, {}),
     # MiniMax with full attention layers only: no Lightning mixer, so main's generic Ulysses route alone.
     "m1_full_attention_only_cp2": ("m1", 2, 2, False, {"layer_types": ["full_attention"] * 2}),
-    # The parallel_capabilities MoE x cp cells (aux loss off): eager attention, HF checkpointing,
-    # full finetuning, attention LoRA and LoRA on the fused experts, CP 2 and DP2 x CP2.
+    # MoE x cp cells (aux loss off): eager attn, HF checkpointing, full FT, attn/expert LoRA.
     "m1_cp2_eager_checkpoint": (
         "m1",
         2,

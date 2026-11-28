@@ -249,12 +249,15 @@ import weakref
 _LIVE: "weakref.WeakSet" = weakref.WeakSet()
 
 
-def pool_bytes(device: Optional[int] = None) -> int:
-    """Unused graph-private bytes; retained outputs already count as allocated."""
+def pool_bytes(device: Optional[int] = None, only: Optional[set] = None) -> int:
+    """Unused graph-private bytes; retained outputs already count as allocated. ``only``: ids of the ``_Shared``
+    states to count (default every live one)."""
     total = 0
     tracked = 0
     pools: set = set()
     for shared in tuple(_LIVE):
+        if only is not None and id(shared) not in only:
+            continue
         index = getattr(shared, "device_index", None)
         if device is not None and index is not None and index != device:
             continue
@@ -440,6 +443,7 @@ class BlockGraph:
             "evictions": 0,
             "refused_float": 0,
             "refused_object": 0,
+            "refused_branch": 0,
             "refused_host_input": 0,
             "refused_kv_write": 0,
             "refused_host_weight": 0,
@@ -533,8 +537,8 @@ class BlockGraph:
             placement = (placement, protect_graph_key(self.protect))
         try:
             extra = _root_key_extra(self.shared.root)
-        except Exception:  # noqa: BLE001 - a branch flag that cannot be read: nothing safe to replay
-            self.stats["refused_object"] += 1
+        except Exception:  # noqa: BLE001 - a declined or unreadable branch flag: nothing safe to replay
+            self.stats["refused_branch"] = self.stats.get("refused_branch", 0) + 1
             return self._eager(args, kwargs)
         if extra is not None:
             placement = (placement, extra)
@@ -1435,6 +1439,7 @@ class BlockGraphSet:
             ("refused_kv_write", "prefix K/V prefill steps"),
             ("refused_float", "a float argument"),
             ("refused_object", "a non-tensor argument"),
+            ("refused_branch", "a branch key that declined recording"),
             ("refused_output", "an output the graph cannot hand back"),
         ):
             if s.get(field):

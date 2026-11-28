@@ -31,7 +31,6 @@ class Stop(NamedTuple):
 
 # read(caller, job_id, rows = ..., offset = ..., return_media = ..., preview_px = ...)
 Read = Callable[..., Awaitable[ToolResult]]
-# cancel(caller, job_id, save)
 Cancel = Callable[[Caller, Optional[str], bool], Awaitable[Stop]]
 
 
@@ -44,7 +43,6 @@ class Kind:
     poll_after_s: float = 15
     # Without an id a read follows the current job rather than listing recent ones, so it can wait.
     follows_current: bool = False
-    # What a cancel's id is, for a kind whose cancel needs one.
     needs_id: Optional[str] = None
     # False for a kind whose cancel stops whatever is running and takes no id.
     takes_id: bool = True

@@ -3,6 +3,7 @@
 
 import __future__
 import ast
+import importlib.util
 import inspect
 import fnmatch
 import os
@@ -61,6 +62,42 @@ def _loader_utils_functions(
     return [
         defs[imported[name]] for name in sorted(used & imported.keys()) if imported[name] in defs
     ]
+
+
+def _real_function(path, name):
+    """One self-contained function compiled from its module's source, so the fixture runs the real code without
+    importing the module (unsloth.models._utils pulls in torch). Module-level literal constants the function
+    reads (gguf_packed.GGUF_PACKED_KWARG) come with it."""
+    body = ast.parse(path.read_text(encoding = "utf-8")).body
+    node = next(n for n in body if isinstance(n, ast.FunctionDef) and n.name == name)
+    reads = {n.id for n in ast.walk(node) if isinstance(n, ast.Name)}
+    constants = [
+        n
+        for n in body
+        if isinstance(n, ast.Assign)
+        and len(n.targets) == 1
+        and isinstance(n.targets[0], ast.Name)
+        and n.targets[0].id in reads
+        and _is_literal(n.value)
+    ]
+    namespace = {}
+    exec(compile(ast.Module([*constants, node], type_ignores = []), str(path), "exec"), namespace)
+    return namespace[name]
+
+
+def _is_literal(node):
+    try:
+        ast.literal_eval(node)
+    except ValueError:
+        return False
+    return True
+
+
+def _gguf_load_module(path):
+    spec = importlib.util.spec_from_file_location("_unsloth_gguf_load_for_tests", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _module_definitions(tree):
@@ -150,7 +187,22 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
+        _refuse_network_share_raw_adapter_base = lambda *args, **kwargs: None,
+        _resolved_revision = lambda model_name, revision, *args, **kwargs: revision,
+        # #19464: from_pretrained starts every load with a backend switch that needs a real torch.
+        _unsloth_load_begins = lambda: None,
+        # #19889: the real helper. No case passes gguf_file, so it returns the 4bit / 8bit flags unchanged.
+        gguf_drop_bitsandbytes = _real_function(path.parent / "_utils.py", "gguf_drop_bitsandbytes"),
+        # #20022: the real check. No case passes gguf_packed, so it pops nothing and answers False.
+        check_gguf_packed_request = _real_function(
+            path.parent / "gguf_packed.py", "check_gguf_packed_request"
+        ),
     )
+    # #19947: from_pretrained imports its GGUF checks from unsloth/_gguf_load.py. That module needs only the stdlib,
+    # so the fixture loads all of it (helpers added there later included) instead of stubbing one name at a time.
+    for name, value in vars(_gguf_load_module(path.parent.parent / "_gguf_load.py")).items():
+        if callable(value) and not name.startswith("__"):
+            env.setdefault(name, value)
     # No fixture is Mistral-format: stub each loader.py helper deciding that, new ones included.
     for name in _mistral_format_names(tree):
         env.setdefault(name, RuntimeError if name[0].isupper() else (lambda *args, **kwargs: False))
@@ -171,8 +223,31 @@ def loader():
     for node in helpers:
         if isinstance(node, ast.FunctionDef):
             node.decorator_list = []
+    # Relative imports inside from_pretrained cannot run here (no package context): a stubbed name
+    # is read from env instead, and an unstubbed one fails by name if a test reaches it.
+    ast.fix_missing_locations(_RelativeImports(env).visit(method))
     exec(compile(ast.Module(body = [*helpers, method], type_ignores = []), str(path), "exec"), env)
     return env, captured
+
+
+class _RelativeImports(ast.NodeTransformer):
+    def __init__(self, env):
+        self.env = env
+
+    def visit_ImportFrom(self, node):
+        if not node.level:
+            return node
+        missing = [a.name for a in node.names if (a.asname or a.name) not in self.env]
+        if not missing:
+            return ast.copy_location(ast.Pass(), node)
+        message = f"from_pretrained reached `from {'.' * node.level}{node.module or ''} import {', '.join(missing)}`: stub it in the loader fixture"
+        return ast.copy_location(
+            ast.Raise(
+                exc = ast.Call(ast.Name("AssertionError", ast.Load()), [ast.Constant(message)], []),
+                cause = None,
+            ),
+            node,
+        )
 
 
 @pytest.mark.parametrize(
@@ -308,6 +383,25 @@ def test_modelscope_conflicts_do_not_download_weights(
     assert len(calls) == 1
 
 
+def test_modelscope_adapter_with_network_share_base_is_refused(
+    loader, modelscope_snapshot, monkeypatch
+):
+    env, captured = loader
+    cache, _, _ = modelscope_snapshot
+    env["USE_MODELSCOPE"] = True
+    use_modelscope_adapter(env, cache, r"\\evil.example\share\model")
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "unsloth_zoo.vision_utils",
+        SimpleNamespace(_is_network_share = lambda path: path.startswith("\\\\")),
+    )
+
+    with pytest.raises(ValueError, match = "network share"):
+        env["from_pretrained"](model_name = "owner/model", load_in_4bit = False)
+    assert "dispatch" not in captured
+
+
 @pytest.mark.parametrize(
     "kwargs, adapter_base, expected_4bit",
     [
@@ -349,3 +443,13 @@ def test_modelscope_adapter_base_missing_there_loads_from_the_hub(loader, models
 
     assert captured["dispatch"]["model_name"] == "hf-only/base"
     assert ("hf-only/base", None) in calls
+
+
+def test_the_real_gguf_packed_check_runs_at_the_entry_point(loader):
+    """The fixture binds the real check_gguf_packed_request, so a packed request without a file is refused
+    before any config probe or dispatch, as it is for users."""
+    env, captured = loader
+    with pytest.raises(ValueError, match = "gguf_file"):
+        env["from_pretrained"](gguf_packed = True)
+    assert captured["config_calls"] == 0
+    assert "dispatch" not in captured

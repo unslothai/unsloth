@@ -21,8 +21,7 @@ from torch.torch_version import TorchVersion  # noqa: E402
 from core.inference import diffusion_compile_config as cc  # noqa: E402
 from core.inference import diffusion_speed as ds  # noqa: E402
 
-# A CUDA build's version tag: Studio reads ROCm from the "+rocm" tag too (AMD SDK / Radeon wheels leave
-# torch.version.hip unset), so a test that fakes NVIDIA clears both.
+# Studio reads +rocm too (AMD wheels leave torch.version.hip unset); fake NVIDIA clears both.
 _CUDA_TORCH_VERSION = TorchVersion(str(torch.__version__).split("+")[0] + "+cu130")
 
 _SM120 = (12, 0)
@@ -226,4 +225,16 @@ def test_flux3_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch
     _on(monkeypatch, cap)
     assert cc.family_filters_reductions(fam) is True
     assert _filter_reaching_compile(monkeypatch, fam) is True
+    assert fam.cudnn_benchmark is False
+
+
+# Krea-2 pins on all arches: cached reduction configs made one INT8 seed render two ways.
+@pytest.mark.parametrize("cap", [(8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0), None])
+def test_krea2_pins_the_reduction_filter_and_conv_pick_on_every_arch(monkeypatch, cap):
+    _on(monkeypatch, cap)
+    fam = _family("krea-2")
+    assert fam.filter_reduction_configs is True
+    assert cc.family_filters_reductions(fam) is True
+    assert _filter_reaching_compile(monkeypatch, fam) is True
+    # cudnn.benchmark decoded one fixed latent 3 ways over 3 fresh L4 homes.
     assert fam.cudnn_benchmark is False

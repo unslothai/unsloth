@@ -36,7 +36,7 @@ DECLARED_TOKENIZERS_WINDOW = {
     "4.57.6": ">=0.22.0,<=0.23.0",
     # Sidecar-only releases (.venv_t5_*): installed --no-deps, they import the main env's tokenizers.
     "5.3.0": ">=0.22.0,<=0.23.0",
-    "5.13.1": ">=0.22.0,<=0.23.0",
+    "5.15.1": ">=0.22.0,<=0.23.0",
 }
 
 # Named, not computed, so the negative control cannot drift with PyPI.
@@ -139,8 +139,7 @@ def _sidecar_transformers_pins() -> dict[str, str]:
 
 
 def test_every_sidecar_release_accepts_the_main_env_tokenizers():
-    """The sidecars install transformers --no-deps over the main env, so each one imports the
-    main env's tokenizers and enforces its own window on it at import."""
+    """Sidecars install --no-deps and import main env's tokenizers, each enforcing its window."""
     pins = _sidecar_transformers_pins()
     assert {
         "TRANSFORMERS_530_VERSION",
@@ -161,8 +160,7 @@ def test_every_sidecar_release_accepts_the_main_env_tokenizers():
 
 
 def test_the_tokenizers_line_covers_both_python_branches():
-    """The transformers pins split on python_version, so the tokenizers line must split the same
-    way; an unconditional line is only correct while both releases declare the same window."""
+    """Transformers pins split on python_version; tokenizers must follow unless windows match."""
     for path in _installing_files():
         reqs = _requirements(path)
         if not _pinned_versions(reqs, "transformers"):
@@ -176,8 +174,7 @@ def test_the_tokenizers_line_covers_both_python_branches():
 
 
 def test_no_requirements_file_admits_a_tokenizers_outside_the_window():
-    """Including the non-installing files: a constraint or override that admits 0.23.1+
-    lets a later resolve walk tokenizers past what the pinned transformers accepts."""
+    """Constraints and overrides admitting 0.23.1+ let a resolve walk tokenizers past the pin."""
     offenders = {}
     for path in sorted(REQ_ROOT.rglob("*.txt")):
         if path.name.startswith("."):
@@ -246,8 +243,7 @@ _RESOLVER_VERDICT_MARKERS = (
     "because",
     "conflict",
 )
-# Long enough for a cold cache on a loaded runner, short enough that a hung index cannot
-# hold a CI job for ten minutes.
+# Long enough for cold caches on a loaded runner; no hung index may hold CI for ten minutes.
 _COMPILE_TIMEOUT_S = 180
 
 

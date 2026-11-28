@@ -86,8 +86,7 @@ def rag_available() -> bool:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    """Create the RAG tables if absent (once per process). ``chunks_vec`` is skipped: its column type needs the
-    embedding dim, so ensure_vec() makes it lazily at first ingest."""
+    """Creates RAG tables once per process; chunks_vec is deferred to ensure_vec() for the dim."""
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(
         """
@@ -292,6 +291,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "ON documents(linked_folder_id) WHERE linked_folder_id IS NOT NULL"
     )
     ensure_linked_folder_columns(conn)
+    _ensure_fts_scope_index(conn)
     if conn.execute("PRAGMA user_version").fetchone()[0] < 1:
         conn.executemany(
             "UPDATE chunks_fts SET text=? WHERE rowid=?",
@@ -302,12 +302,44 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ],
         )
         conn.execute("PRAGMA user_version = 1")
+    if conn.execute("PRAGMA user_version").fetchone()[0] < 2:
+        from core.rag.embed_connection import stamp_legacy_identities
+        try:
+            stamp_legacy_identities(conn)
+        except Exception:  # noqa: BLE001 - an unstamped row is only offered for re-embedding
+            logger.warning("Could not stamp connection embedding identities", exc_info = True)
+        conn.execute("PRAGMA user_version = 2")
     conn.commit()
 
 
+# B-tree on the FTS5 content table's scope column (c2); FTS5 never reads it, so bm25 is unchanged.
+FTS_SCOPE_INDEX = "idx_chunks_fts_content_scope"
+
+
+def _ensure_fts_scope_index(conn: sqlite3.Connection) -> None:
+    """Skipped if the columns are not (text, chunk_id, scope); search then keeps the unindexed filter."""
+    columns = [r[1] for r in conn.execute("PRAGMA table_info(chunks_fts)").fetchall()]
+    if columns != ["text", "chunk_id", "scope"]:
+        return
+    try:
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {FTS_SCOPE_INDEX} ON chunks_fts_content(c2)")
+    except sqlite3.OperationalError as exc:
+        logger.info("RAG lexical scope index unavailable (%s)", exc)
+
+
+def fts_scope_index_exists(conn: sqlite3.Connection) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name=? "
+            "AND tbl_name='chunks_fts_content'",
+            (FTS_SCOPE_INDEX,),
+        ).fetchone()
+        is not None
+    )
+
+
 def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
-    """Adds linked-folder columns missing from older builds; also called on the metadata connection,
-    which skips _ensure_schema so scope retirement works without the vector extension"""
+    """Adds missing linked-folder columns; also run on metadata connections without vec."""
     job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     # the queued follow-up request; it replaced a flag that only recorded rebuilds
     if job_cols and "successor_kind" not in job_cols:
@@ -641,8 +673,7 @@ def _id_batches(ids):
 
 
 def _delete_document_chunks(conn, document_id: str) -> None:
-    """Deletes chunk rows, keeps the documents row; retrieval filters by scope, so leftovers stay
-    citable."""
+    """Deletes chunk rows only; retrieval filters by scope, so leftovers stay citable."""
     _delete_documents_chunks(conn, [document_id])
 
 
@@ -667,8 +698,7 @@ def _delete_documents_chunks(
 
 
 def reconcile_orphaned_ingestion_jobs() -> int:
-    """Fails crash-orphaned ingestion jobs so they can re-run; another live backend's work is left
-    alone until its lease expires; no-op without RAG"""
+    """Fails crash-orphaned ingestion jobs (live leases are respected); no-op without RAG."""
     # rag_available(): the package may be installed without the vec0 binary.
     if not rag_available():
         return 0

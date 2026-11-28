@@ -91,8 +91,7 @@ class TestPythonIndexResolversAreAskedDirectly:
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCH_INPUTS)
     @pytest.mark.parametrize("is_windows", [False, True], ids = ["linux", "windows"])
     def test_no_unsupported_arch_reaches_repo_amd_com(self, arch, is_windows):
-        """The same claim stated as the consequence, so that a resolver which starts
-        returning some other truthy non-index string still fails here."""
+        """Stated as consequence: a resolver returning another truthy non-index string fails."""
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch) or ""
         assert "repo.amd.com" not in url, f"{arch} reaches an AMD wheel index: {url!r}"
@@ -100,8 +99,7 @@ class TestPythonIndexResolversAreAskedDirectly:
     @pytest.mark.parametrize("arch,family", _ROUTABLE_ARCHES)
     @pytest.mark.parametrize("is_windows", [False, True], ids = ["linux", "windows"])
     def test_a_covered_arch_still_gets_its_index(self, arch, family, is_windows):
-        """The positive control. Without it every assertion above passes on a build
-        where the resolvers were gutted to `return None`."""
+        """Positive control: without it, every assertion passes if the resolvers return None."""
         with patch.object(stack_mod, "IS_WINDOWS", is_windows):
             url = stack_mod._amd_arch_index_url(arch)
         assert url is not None, f"{arch} lost its wheel index"
@@ -116,8 +114,7 @@ class TestPythonIndexResolversAreAskedDirectly:
 
     @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCHES)
     def test_no_unsupported_arch_is_a_key_of_the_family_map(self, arch):
-        """The shape half, kept alongside the behavioural one: a table entry and a
-        code bypass are different mistakes and each should name itself."""
+        """Table entry and code bypass are different mistakes; each should name itself."""
         assert arch not in stack_mod._GFX_TO_AMD_INDEX_ARCH
 
 
@@ -164,8 +161,7 @@ class TestRdna1RoutesOnWindowsOnly:
 
 
 def _sh_function_body(source: str, name: str) -> str:
-    """Same extraction as test_rdna1_unsupported_message_8529.py: take the function verbatim from
-    the installer so the shell evaluates the shipped text, not a Python copy."""
+    """Extracts the function verbatim so the shell evaluates shipped text, not a Python copy."""
     needle = f"{name}() {{"
     start = source.find(needle)
     assert start != -1, f"{name}() not found"
@@ -220,8 +216,7 @@ class TestInstallShIndexFamilyRuns:
         assert (rc, out) == (0, family), f"{arch} resolved to {out!r} (rc {rc})"
 
     def test_the_index_selector_is_still_the_function_under_test(self):
-        """The extraction above is only meaningful while install.sh actually asks this
-        function; a renamed selector would leave the tests green against dead code."""
+        """Only valid while install.sh calls this function; else tests pass against dead code."""
         src = _INSTALL_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
         calls = len(
             re.findall(r"^\s*[^#\n]*_amd_arch_index_family_for_gfx \"\$", src, re.MULTILINE)
@@ -326,8 +321,7 @@ class TestInstallShIndexSelectorRuns:
             ), f"{arch} reaches the per-arch handoff, which reroutes to repo.amd.com"
 
     def test_the_selector_still_reaches_its_amd_branch(self):
-        """Second positive control: with a readable ROCm version on the same stubbed host the
-        selector returns a ROCm index, which requires the AMD branch the tests above rely on."""
+        """Positive control: readable ROCm on the stubbed host must reach the AMD branch."""
         url, _err = _run_sh_get_torch_index_url("gfx1030", rocm_tag = "rocm6.4")
         assert url.endswith("/rocm6.4"), f"the AMD branch was not reached: {url!r}"
 
@@ -377,8 +371,7 @@ def test_setup_sh_never_feeds_the_unsupported_lookup_into_a_routed_variable():
 
 @pytest.mark.parametrize("arch", _UNSUPPORTED_ARCHES)
 def test_setup_sh_never_assigns_an_unsupported_arch_to_the_routed_variable(arch):
-    """The same property from the other end: whatever names the unsupported arches,
-    none of them may be written into the variable that becomes --rocm-gfx."""
+    """Reverse: no unsupported arch may be written into the variable that becomes --rocm-gfx."""
     src = _SETUP_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
     hits = [
         line.strip()
@@ -406,8 +399,7 @@ def _ps_block(source: str, header: str, opener: str, closer: str) -> str:
 
 
 def _ps_table_arches(path: Path, header: str, opener: str, closer: str) -> "list[str]":
-    """Every gfx arch one PowerShell routing table routes, read out of its own file.
-    CRLF-normalised first: install.ps1 and setup.ps1 both ship CRLF."""
+    """Arches in a PowerShell table, CRLF-normalised as install.ps1 and setup.ps1 ship CRLF."""
     return _ps_arches(
         _ps_block(path.read_text(encoding = "utf-8").replace("\r\n", "\n"), header, opener, closer)
     )
@@ -440,8 +432,7 @@ _PS_MAP_WRITE = re.compile(
 class TestPowerShellRoutingTables:
     @pytest.mark.parametrize("path,header,opener,closer", _PS_TABLES, ids = _PS_TABLE_IDS)
     def test_the_table_parses_and_still_routes_a_covered_arch(self, path, header, opener, closer):
-        """The positive control for the two tests below, which are both bans and would
-        otherwise pass on a block that parsed to nothing."""
+        """Positive control: the two bans below would otherwise pass on an empty parse."""
         arches = _ps_table_arches(path, header, opener, closer)
         assert arches, f"{path.name}: {header} parsed empty (moved or renamed?)"
         for _arch, _family in _ROUTABLE_ARCHES:
@@ -475,8 +466,7 @@ class TestPowerShellRoutingTables:
             f"{path.name}: $archFamilyMap is modified after its declaration ({writes}), "
             f"so the routing this file checks is not the routing the installer performs"
         )
-        # Positive control: the map is still consulted below the declaration, so the region searched above is the one a
-        # late addition would have to live in.
+        # Positive control: the map is read below its declaration, so late writes are scanned.
         assert (
             "$archFamilyMap.ContainsKey" in rest
         ), f"{path.name}: nothing reads $archFamilyMap any more (renamed or removed?)"
@@ -569,8 +559,7 @@ _SUMMARY_GUARD_ANCHOR = "_covered_disp_gfx=$(_infer_linux_amd_gfx_arch"
 
 
 def _summary_guard_snippet() -> str:
-    """The peer guard as install.sh ships it. Extracted rather than retyped, so gutting
-    it there fails here."""
+    """The install.sh peer guard, extracted rather than retyped so gutting it fails here."""
     src = _INSTALL_SH.read_text(encoding = "utf-8").replace("\r\n", "\n")
     start = src.find(_SUMMARY_GUARD_ANCHOR)
     assert start != -1, "install.sh: the CPU summary's peer guard was not found"
@@ -596,6 +585,10 @@ def _run_summary_guard(tmp_path, lspci_lines: "list[str]") -> str:
             "_amd_gpu_present_via_pci",
         )
     )
+    # Only lspci describes this host; runner's files would add a covered gfx1151 beside it.
+    missing = (tmp_path / "missing").as_posix()
+    for host_path in ("/proc/cpuinfo", "/proc/version", "/dev/dxg", "/sys/bus/pci/devices"):
+        funcs = funcs.replace(host_path, missing + host_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok = True)
     fixture = tmp_path / "lspci.txt"
@@ -677,8 +670,7 @@ def _run_setup_report(
     lspci_lines: "list[str]",
     mkt: str = "",
 ) -> str:
-    """setup.sh's lookup on the KFD path, where no market name is available and the
-    lookup falls back to lspci. Same fixtures as the install.sh summary above."""
+    """setup.sh lookup on the KFD path, with no market name and a fallback to lspci."""
     source = _SETUP_SH.read_text(encoding = "utf-8")
     funcs = "\n".join(textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS)
     bin_dir = tmp_path / "bin"
@@ -731,8 +723,7 @@ class TestSetupShReportBlamesTheRightCard:
         ids = ["kfd-no-name", "generic-name", "vendor-only"],
     )
     def test_an_unmapped_market_name_still_reaches_the_lspci_scan(self, tmp_path, mkt):
-        """rocminfo can return a nonempty name that maps to nothing; returning that failure ended
-        the lookup before the lspci scan, falling back to the plain AMD ROCm line."""
+        """A nonempty rocminfo name that maps to nothing must not end the lookup before lspci."""
         assert _run_setup_report(tmp_path, [_RX_5700], mkt).startswith(
             "UNCOVERED"
         ), f"an unmapped market name ({mkt!r}) hides an uncovered card lspci can see"
@@ -764,14 +755,12 @@ class TestSetupShReportBlamesTheRightCard:
         ids = ["5700-first", "7900-first"],
     )
     def test_a_named_hit_is_guarded_by_the_peers_too(self, tmp_path, lines):
-        """amd-smi reports ONE market name, the first device's, so on a mixed host that name may be
-        the uncovered card; accepting it before the peer scan reintroduces the false verdict."""
+        """amd-smi's one name may be the uncovered card, so the peer scan must run first."""
         verdict = _run_setup_report(tmp_path, lines, "AMD Radeon RX 5700 XT")
         assert verdict == "GENERIC", f"a named hit skipped the covered-peer guard: {verdict!r}"
 
     def test_a_named_hit_survives_a_host_with_no_lspci(self, tmp_path):
-        """The guard must not become a silencer: with no adapter list there is no peer to
-        find, and the single-card host this report exists for still has to be told."""
+        """The guard must not silence a single-card host, which has no peer and must be told."""
         source = _SETUP_SH.read_text(encoding = "utf-8")
         funcs = "\n".join(
             textwrap.dedent(_sh_function_body(source, name)) for name in _SETUP_SH_FUNCS
@@ -791,8 +780,7 @@ class TestSetupShReportBlamesTheRightCard:
         assert out.stdout.strip() == "gfx1010"
 
     def test_the_supported_matcher_still_answers(self, tmp_path):
-        """Positive control on the extracted table: without it the guard above would be
-        vacuous, since a matcher that never matches also keeps the report quiet."""
+        """Positive control: a matcher that never matches would also keep the report quiet."""
         source = _SETUP_SH.read_text(encoding = "utf-8")
         script = (
             textwrap.dedent(_sh_function_body(source, "_setup_supported_gfx_from_name"))
@@ -936,8 +924,7 @@ def _ps_unsupported(path: Path, names):
 @pytest.mark.skipif(os.name == "nt", reason = "POSIX shell only")
 @pytest.mark.skipif(shutil.which("sh") is None, reason = "no POSIX sh on this host")
 def test_the_five_unsupported_tables_agree_on_every_name():
-    """Five hand-kept copies of the unsupported-arch table; compare by evaluation in each source's
-    language, so a row added to one copy is caught (RX 540 -> gfx803)."""
+    """The five hand-kept table copies, compared by evaluation: a row added to one is caught."""
     names = _PARITY_NAMES
     answers = {
         "install_python_stack.py": _py_unsupported(names),

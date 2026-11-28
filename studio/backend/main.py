@@ -37,6 +37,15 @@ try:
 except Exception:
     pass
 
+# Windows ROCm: PAL_DISABLE_SDMA=1 before HIP initialises (rocm-systems#12571 stale copy after an event record).
+try:
+    from utils.rocm_pal_env import (
+        apply_windows_rocm_pal_defaults as _apply_windows_rocm_pal_defaults,
+    )
+    _apply_windows_rocm_pal_defaults()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
@@ -175,8 +184,7 @@ def _process_tree_rss_mb(process: Any) -> int:
     return round(total / 1024**2)
 
 
-# Windows AMD ROCm DLL injection: Python 3.8+ ignores PATH for extension modules, so register ROCm bin
-# dirs with os.add_dll_directory() to find amdhip64.dll etc. before any torch import.
+# Python 3.8+ ignores PATH for DLLs; add ROCm bin dirs via os.add_dll_directory() before torch.
 if sys.platform == "win32":
     # Module scope: the handle removes the search-path entry when garbage collected.
     _ROCM_DLL_HANDLES: list = []
@@ -304,6 +312,11 @@ from utils.happy_eyeballs import activate_happy_eyeballs
 activate_native_tls()
 activate_happy_eyeballs()
 
+# accelerate's meta init patches torch process-wide; Studio builds skeletons from several threads at once.
+from utils.meta_init import install_on_import as _install_thread_safe_meta_init
+
+_install_thread_safe_meta_init()
+
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
 
@@ -382,12 +395,15 @@ from utils.sentencepiece_guard import disable_sentencepiece_on_windows as _no_se
 _no_sentencepiece()
 del _no_sentencepiece
 
+import functools
 import hashlib
 import mimetypes
 import re as _re
 import shutil
+import stat as _stat
 import warnings
 from contextlib import asynccontextmanager
+from email.utils import parsedate
 from importlib.metadata import PackageNotFoundError, version as package_version
 from urllib.parse import urlparse
 
@@ -430,6 +446,7 @@ if os.getenv("ENVIRONMENT_TYPE", "production") == "production":
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.staticfiles import NotModifiedResponse
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
 from pathlib import Path
@@ -635,6 +652,15 @@ def _run_llama_cpp_startup_probes(app: FastAPI) -> None:
         _bin = LlamaCppBackend._find_llama_server_binary()
         _caps = LlamaCppBackend.probe_server_capabilities(_bin)
         app.state.llama_cpp_capabilities = _caps
+        # Warm the --version cache read by the first GGUF load.
+        if _caps.get("found"):
+            try:
+                LlamaCppBackend.probe_build_number(_bin)
+            except Exception as _build_exc:
+                import structlog as _structlog
+                _structlog.get_logger(__name__).debug(
+                    "llama.cpp build probe failed: %s", _build_exc
+                )
         _freshness = check_prebuilt_freshness(_bin)
         app.state.llama_cpp_freshness = _freshness
 
@@ -780,8 +806,7 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     if _post_warm_retired(generation):
         return
 
-    # Repair only after hardware is needed. A cold Apple Silicon launch must not
-    # import mlx_lm/transformers merely to check whether they need repairing.
+    # Repair waits for hardware; Apple Silicon cold starts must not import mlx_lm/transformers.
     def repair_mlx() -> None:
         try:
             from utils.mlx_repair import start_mlx_autorepair_if_needed
@@ -1030,8 +1055,7 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
 
     try:
-        # Boot pass settles only orphaned runs; a wedged run is swept on an interval once its lease
-        # expires.
+        # Boot settles only orphaned runs; wedged runs are swept on a timer after lease expiry.
         from core.inference.chat_generation_runs import start_lease_sweeper
         start_lease_sweeper(app)
     except Exception as exc:
@@ -1383,6 +1407,16 @@ def _reportable_hf_endpoints(request) -> dict:
     return reported
 
 
+def _modelscope_page_links() -> dict:
+    from utils.hub_settings import MODELSCOPE
+
+    if _active_hub_source() != MODELSCOPE:
+        return {}
+    from hub.modelscope.upstream import page_links
+
+    return {"modelscope_pages": page_links()}
+
+
 _CSP_CACHE: dict = {}
 
 
@@ -1549,8 +1583,7 @@ def _nonced_docs_response(html: str, *, tag: "_re.Pattern[str]") -> HTMLResponse
     return HTMLResponse(nonced, headers = {_CSP_SCRIPT_NONCE_HEADER: nonce})
 
 
-# FastAPI's own /openapi.json builds the schema on the event loop: seconds for ~550 routes, fetched by older chat
-# sidebars every session, stalling every request behind it (#9712). Built once in a worker thread instead.
+# Schema built on the event loop stalls requests (#9712); built once in a worker thread.
 _openapi_build_lock = threading.Lock()
 _build_openapi_schema = app.openapi
 
@@ -1679,9 +1712,7 @@ _BODY_PROTECTED_PREFIXES = (
     # llama-server passthrough POSTs; keyless inference scope admits them.
     "/tokenize",
     "/detokenize",
-    # Everything else, root routes included (/models/load). FastAPI reads a body before the route's auth
-    # dependency runs, so an unlisted prefix let an unauthenticated client stream an unbounded body into memory.
-    # Uploads that need more are the explicit passthroughs below.
+    # Bodies read before auth: unlisted prefixes let unauthenticated clients stream unbounded.
     "/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
@@ -1811,8 +1842,7 @@ async def _send_411(send) -> None:
 
 
 async def _send_401(send) -> None:
-    # The status and detail the route's own auth check gives an expired or missing token, so the
-    # frontend refreshes its session exactly as it would have.
+    # Same 401 and detail as the route's own auth check, so the frontend refreshes its session.
     payload = _json_for_413.dumps({"detail": "Invalid or expired token"}).encode("utf-8")
     await send(
         {
@@ -2199,6 +2229,7 @@ app.add_middleware(
     # exposed, and Studio is cross-origin from tauri://localhost and tunnels.
     expose_headers = [
         "X-Unsloth-Conflict-Kind",
+        "X-Unsloth-Chat-Revision",
         "X-Unsloth-Refusal",
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
@@ -2323,8 +2354,9 @@ async def _await_hardware_detection(budget: float) -> bool:
     return True
 
 
-def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
-    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply."""
+def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str], bool]]:
+    """Seqlock read so a half-finished re-detect is never returned; config/env.ts caches the first reply.
+    Returns (chat_only, reason, detail, device is MLX)."""
     for _ in range(3):
         if not _hw_module.DETECTION_COMPLETE.is_set():
             return None
@@ -2342,7 +2374,7 @@ def _hardware_snapshot() -> Optional[tuple[bool, Optional[str], Optional[str]]]:
             and _hw_module.DETECTION_COMPLETE.is_set()
             and _hw_module.DETECTION_GENERATION == generation
         ):
-            return chat_only, reason, detail
+            return chat_only, reason, detail, device == _hw_module.DeviceType.MLX
     return None
 
 
@@ -2543,6 +2575,7 @@ async def health_check(request: Request, detect_hardware: bool = False):
         # Unauthenticated on purpose: an endpoint URL is not a host fingerprint.
         **_reportable_hf_endpoints(request),
         "hub_source": _active_hub_source(),
+        **_modelscope_page_links(),
         "hub_proxy": _hub_endpoint_proxy.relay_path(
             _hub_endpoint_proxy.HUB_PREFIX,
             browser_hf_endpoint(),
@@ -2609,6 +2642,8 @@ async def health_check(request: Request, detect_hardware: bool = False):
                 pass
         # chat_only stays set: chat stays GGUF-only and Export and Video keep their own verdicts.
         authed["cpu_training"] = bool(snapshot[0]) and _hw_module.trains_on_cpu(snapshot[1])
+        # Not the reason: no_torch covers a Chat only Mac with and without a working MLX stack.
+        authed["mlx_inference"] = snapshot[3]
         # What specifically blocked that reason, when detection recorded one. Only the MLX gate does today, and only
         # because it is all-or-nothing: without it the greyed-out Train row can only say "run `unsloth studio
         # update`". From the snapshot, so it cannot come from a different detection pass than the reason beside it.
@@ -2719,8 +2754,7 @@ def _schedule_shutdown(request: Request) -> dict:
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            # Runs cleanup on its own thread so uvicorn can close the port; main thread still waits
-            # on _shutdown_event before exit; one cleanup per shutdown trigger.
+            # Own thread: uvicorn can close port; main awaits _shutdown_event; one per trigger.
             with _shutdown_thread_lock:
                 state = request.app.state
                 if getattr(state, "_shutdown_trigger", None) is not trigger:
@@ -2792,6 +2826,7 @@ def _get_cached_system_gpu_info(
     from utils.hardware import (
         LIVE_GPU_TELEMETRY_KEYS,
         amd_driver_warning_report,
+        get_apple_metal_inference_gpu_info,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_mixed_vulkan_inference_gpu_info,
@@ -2915,7 +2950,7 @@ def _get_cached_system_gpu_info(
                 # SMI row numbers, not the ordinals a pin is applied in.
                 inference_gpu_info = {**cross_vendor_info, "gguf_gpu_ids_supported": False}
             else:
-                inference_gpu_info = gpu_info
+                inference_gpu_info = get_apple_metal_inference_gpu_info() or gpu_info
             if vulkan_info is None:
                 # A CUDA + Vulkan llama.cpp also runs on the cards only Vulkan reaches (#15444).
                 with (
@@ -3099,6 +3134,24 @@ def _checkpoint_quant_formats() -> list[str]:
         return []
 
 
+def _checkpoint_quant_dequant_only(formats: list[str]) -> list[str]:
+    """Formats in ``formats`` that load but run dequantized here. Torch-free."""
+    try:
+        from utils.hardware.nvidia import get_checkpoint_quant_dequant_only
+        return get_checkpoint_quant_dequant_only(formats)
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
+
+
+def _repair_recommendation() -> Optional[dict]:
+    """Torch-free; None off Windows, off CUDA, or when the install already has the managed torch."""
+    try:
+        from utils.hardware.windows_repair import windows_repair_recommendation
+        return windows_repair_recommendation()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return None
+
+
 def _dense_quant_schemes() -> list[str]:
     """The scheme ladder for ``/api/system``, a pure read of already-resolved state: the polled route
     must never import torch, and the entry beside it refreshed both in one pass."""
@@ -3134,8 +3187,7 @@ def get_system_info(
 
     logger = logging.getLogger(__name__)
 
-    # The image/video picker explicitly asks on first use; ordinary system polls
-    # must not import torchao or diffusers just to populate optional picker tiers.
+    # Media probes run only when the picker asks; polls must not import torchao or diffusers.
     if probe_media:
         # Like an image or video load: the probes import torchao and diffusers, which must not race Dynamo.
         gate_torch_stack_import("media capability probe", logger)
@@ -3264,7 +3316,11 @@ def get_system_info(
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
         # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
-        "checkpoint_quant_formats": _checkpoint_quant_formats(),
+        "checkpoint_quant_formats": (_quant_formats := _checkpoint_quant_formats()),
+        # FP8 kinds this torch runs dequantized: fp8_rowwise without a row-wise or tensorwise fp8 GEMM. Additive key.
+        "checkpoint_quant_dequant_only": _checkpoint_quant_dequant_only(_quant_formats),
+        # Windows: an existing home older than the managed torch. Additive key, null otherwise.
+        "repair_recommendation": _repair_recommendation(),
     }
 
 
@@ -3378,8 +3434,7 @@ def get_disk_space(
     if readings:
         tightest = min(readings, key = lambda r: r["free_gb"])
         answer = dict(tightest)
-        # Redact the path for non-owners (API keys, managed accounts); use the INVENTORY redactor,
-        # since redact_host_paths leaves a field named 'path' alone.
+        # Redact for non-owners via INVENTORY redactor; redact_host_paths leaves 'path' alone.
         from utils.account_context import is_owner_context
 
         return redact_inventory_host_paths(
@@ -3415,9 +3470,11 @@ def get_hardware_info(
         export_capability,
         video_capability,
     )
+    from utils.hardware.hardware import _backend_label
 
     body = {
         "gpu": get_gpu_summary(),
+        "device_backend": _backend_label(get_device()),
         "versions": get_package_versions(),
         # Export capability + torch-aware reason; the Export UI grays out with the message.
         **export_capability(),
@@ -3598,6 +3655,85 @@ class ImmutableStaticFiles(StaticFiles):
         return response
 
 
+# Build-root files keep their name across builds: without a policy the browser runs a stale boot script.
+_ROOT_SCRIPT_CACHE_CONTROL = "no-cache"
+_ROOT_RESOURCE_CACHE_CONTROL = "public, max-age=86400"
+_ROOT_CODE_SUFFIXES = frozenset((".js", ".mjs", ".css", ".html"))
+_INDEX_ROOT_SCRIPT_SRC = _re.compile(rb'(<script\b[^>]*?\ssrc=")(/(?!/)[^"?#]+)(")', _re.IGNORECASE)
+
+
+def _root_file_version(stat_result: os.stat_result) -> str:
+    # inode + ctime: a same-size copy that restores mtime (cp -p, rsync -a) must still change it.
+    return _root_file_version_of(
+        stat_result.st_size, stat_result.st_mtime_ns, stat_result.st_ino, stat_result.st_ctime_ns
+    )
+
+
+@functools.lru_cache(maxsize = 256)
+def _root_file_version_of(size: int, mtime_ns: int, ino: int, ctime_ns: int) -> str:
+    return hashlib.blake2b(
+        f"{size}:{mtime_ns}:{ino}:{ctime_ns}".encode(), digest_size = 6
+    ).hexdigest()
+
+
+def _root_file_cache_control(file_path: Path, stat_result: os.stat_result, version) -> str:
+    if version is not None and version == _root_file_version(stat_result):
+        return _IMMUTABLE_ASSET_CACHE_CONTROL
+    if file_path.suffix.lower() in _ROOT_CODE_SUFFIXES:
+        return _ROOT_SCRIPT_CACHE_CONTROL
+    return _ROOT_RESOURCE_CACHE_CONTROL
+
+
+def _root_file_not_modified(response_headers, request_headers) -> bool:
+    # RFC 9110 13.1.3: If-None-Match decides alone; starlette < 1.0 fell back to If-Modified-Since.
+    if_none_match = request_headers.get("if-none-match")
+    if if_none_match:
+        if if_none_match.strip() == "*":
+            return True
+        etag = response_headers["etag"]
+        return etag in (tag.strip().removeprefix("W/") for tag in if_none_match.split(","))
+    since = parsedate(request_headers.get("if-modified-since") or "")
+    last_modified = parsedate(response_headers.get("last-modified") or "")
+    return since is not None and last_modified is not None and since >= last_modified
+
+
+def _root_script_locator(build_path: Path):
+    """Map an index.html script URL to its file in the build root (not /assets), else None."""
+    root = build_path.resolve()
+
+    @functools.lru_cache(maxsize = 64)
+    def _locate(url: bytes) -> Optional[str]:
+        try:
+            target = (build_path / url[1:].decode("utf-8")).resolve()
+        except (OSError, UnicodeDecodeError, ValueError):
+            return None
+        if not target.is_relative_to(root) or target.is_relative_to(root / "assets"):
+            return None
+        return str(target)
+
+    return _locate
+
+
+def _version_root_scripts(html_bytes: bytes, locate) -> bytes:
+    """Append ``?v=<version>`` to index.html's root-level boot scripts (index.html itself is never cached)."""
+
+    def _versioned(match):
+        url = match.group(2)
+        target = locate(url)
+        if target is None:
+            return match.group(0)
+        try:
+            stat_result = os.stat(target)
+        except OSError:
+            return match.group(0)
+        if not _stat.S_ISREG(stat_result.st_mode):
+            return match.group(0)
+        version = _root_file_version(stat_result).encode("ascii")
+        return match.group(1) + url + b"?v=" + version + match.group(3)
+
+    return _INDEX_ROOT_SCRIPT_SRC.sub(_versioned, html_bytes)
+
+
 class _AssetGZipMiddleware(GZipMiddleware):
     """Serve range requests uncompressed; gzip + 206 mislabels Content-Range."""
 
@@ -3709,12 +3845,15 @@ def setup_frontend(
         app.mount("/assets", assets_app, name = "assets")
         _match_assets_before_api_routes(app)
 
+    locate_root_script = _root_script_locator(build_path)
+
     def _frontend_request_allowed(request: Request) -> bool:
         return not tunnel_only or _is_remote_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
         content = _strip_crossorigin(content)
+        content = _version_root_scripts(content, locate_root_script)
         # Bootstrap pw only to same-origin direct-loopback (or Colab proxy). Vary: Origin.
         if _should_inject_bootstrap(request):
             content, nonce = _inject_bootstrap(content, app)
@@ -3743,20 +3882,37 @@ def setup_frontend(
         # Unknown /api and /v1 paths raise a real 404 so the api_errors handlers pick the right envelope.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
-        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
-        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        # MCP clients read a 200 app shell as OAuth and log in instead of sending the API key.
         if full_path.startswith(".well-known/oauth-"):
             raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
+        # No asset is this long, and resolving a deep path costs the square of its parts on the event loop.
+        if len(full_path) > 1024:
+            return Response(status_code = 404)
 
-        file_path = (build_path / full_path).resolve()
+        from utils.datasets.remote_images import is_network_share
+
+        joined = build_path / full_path
+        # Unauthenticated: resolve() on a share path makes Windows sign in to that host (NTLM).
+        if is_network_share(full_path) or is_network_share(str(joined)):
+            return Response(status_code = 404)
+        file_path = joined.resolve()
 
         if not file_path.is_relative_to(build_path.resolve()):
             return Response(status_code = 403)
 
         if file_path.is_file():
-            return FileResponse(file_path)
+            stat_result = file_path.stat()
+            response = FileResponse(file_path, stat_result = stat_result)
+            # Starlette's ETag is size + mtime only, so a cp -p swap would answer 304 forever.
+            response.headers["etag"] = f'"{_root_file_version(stat_result)}"'
+            if _root_file_not_modified(response.headers, request.headers):
+                response = NotModifiedResponse(response.headers)
+            response.headers["Cache-Control"] = _root_file_cache_control(
+                file_path, stat_result, request.query_params.get("v")
+            )
+            return response
 
         # A non-string type is unsupported too; an unhashable value would raise TypeError and escape as a 500 instead of a clean 400.
         if is_engine_probe_path(full_path):

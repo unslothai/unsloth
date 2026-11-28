@@ -13,6 +13,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 import torch.nn.functional as F
+from autograd_fork import fork_can_backward
+from real_accelerator import has_real_accelerator
 
 import unsloth  # noqa: F401
 from unsloth import context_parallel as cp
@@ -160,9 +162,8 @@ def _parity_worker(rank, world, kind, control):
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model(kind)
-    # transformers' V3.2 / V4 indexers are not invariant to appending tokens (top-k over zero-score
-    # ties, or over not-yet-causal compressed blocks), so the reference must see exactly the length
-    # CP runs: 16 needs no padding at cp = 2. V4's rate-8 compressed layers then see two blocks.
+    # V3.2 / V4 indexers are not invariant to appended tokens, so the reference must match the CP
+    # length.
     seq = 16 if kind in ("v32", "v4") else 15
     ids = torch.randint(0, VOCAB, (2, seq), generator = torch.Generator().manual_seed(1))
     shift = F.pad(ids, (0, 1), value = -100)[:, 1:]
@@ -209,16 +210,18 @@ def _parity_worker(rank, world, kind, control):
 
 
 def _spawn(fn, world, *args):
-    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof.
+    # Fork: a spawned child would re-import unsloth without the conftest CUDA spoof. A real GPU host
+    # needs no spoof, and once this process ran a backward there, forked children refuse autograd.
     if "fork" not in mp.get_all_start_methods():
         pytest.skip("needs the fork start method")
+    start_method = "fork" if not has_real_accelerator() or fork_can_backward() else "spawn"
     with tempfile.TemporaryDirectory() as d:
         mp.start_processes(
             _entry,
             args = (world, os.path.join(d, "init"), fn, args),
             nprocs = world,
             join = True,
-            start_method = "fork",
+            start_method = start_method,
         )
 
 
@@ -262,9 +265,8 @@ def test_deepseek_v4_gates():
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_ulysses_deepseek_route(kind):
-    # V2 / V3 MLA (YaRN scale, value heads narrower than q / k) are plain registry attention: main's generic
-    # route runs their own attention function. V3.2 / V4 must take their own forward instead: on the generic
-    # route the indexer / compressor would see one shard and the rebuilt causal mask would drop the top-k.
+    # V3.2 / V4 need their own forward: the generic route gives the indexer one shard and drops
+    # top-k.
     model = _model(kind)
     _manager(2, 0).attach_attention_hooks(model)
     layers = [m for n, m in model.named_modules() if n.endswith("self_attn")]
@@ -409,9 +411,8 @@ def test_ulysses_sft_turns_padding_free_off_for_attention_that_refuses_packing(k
 
 @pytest.mark.parametrize("name", ["DeepseekV32Attention", "DeepseekV4Attention"])
 def test_ulysses_deepseek_forward_runs_eager_inside_compiled_layers(name, monkeypatch):
-    """Unsloth compiles each decoder layer as one region; traced, the V3.2 / V4 Ulysses forwards (list
-    all_gather, the sequence gather, the no_grad indexer top-k) segfaulted the first CP=2 SFT step on L4
-    (torch 2.14 and 2.8). They must run eagerly inside a compiled layer."""
+    """Traced in a compiled layer, V3.2 / V4 Ulysses forwards segfaulted at CP=2 on torch 2.14 and
+    2.8; they must run eagerly"""
     from unsloth.utils import ulysses_deepseek as ud
 
     seen = []
@@ -551,18 +552,15 @@ def _block_compile_checkpoint_worker(rank, world):
 
 @pytest.mark.skipif("v32" not in KINDS, reason = "transformers without DeepSeek-V3.2")
 def test_ulysses_deepseek_checkpointing_with_block_compile():
-    """V3.2 fp32 CP=2 SFT failed with CheckpointError (62 vs 61 saved tensors): the eager Ulysses
-    forward split each compiled decoder layer, the MoE layer's post-attention part failed to compile,
-    and the dense layer that ran it compiled recomputed it eagerly in backward."""
+    """fp32 V3.2 CP=2: eager Ulysses split compiled layers; a failed MoE tail compile gave
+    CheckpointError (62 vs 61 saved tensors)"""
     _spawn(_block_compile_checkpoint_worker, 2)
 
 
 @pytest.mark.parametrize("packing", [False, True])
 @pytest.mark.parametrize("kind", [k for k in KINDS if k in ("v3", "v32", "v4")])
 def test_ulysses_sft_string_model_gets_the_instance_outcome(kind, packing, monkeypatch, caplog):
-    """A model ID string defers the module walk, so the Ulysses packing check must classify the
-    resolved config instead: V3.2 kept packed / padding-free batches from a string and the
-    attention wrapper raised NotImplementedError on the first CP step, while an instance trained."""
+    """A model ID string defers the walk, so Ulysses packing must classify its resolved config."""
     import logging
     from types import SimpleNamespace
 
@@ -633,9 +631,8 @@ def _load_ulysses_deepseek_copy(path, name):
 
 @pytest.mark.parametrize("device", ["cuda", "xpu"])
 def test_ulysses_deepseek_imports_on_torch_without_amp_custom_fwd(device, monkeypatch):
-    """torch.amp.custom_fwd / custom_bwd are 2.4+, and this module is imported by plain `import
-    unsloth` (models/llama.py -> context_parallel). A class-body decorator using them raised
-    AttributeError at import on torch 2.1 - 2.3; the module must fall back to torch.cuda.amp."""
+    """torch.amp.custom_fwd needs 2.4+, but import unsloth loads this module: fall back to
+    torch.cuda.amp."""
     import unsloth.device_type as device_type
     from unsloth.utils import ulysses_deepseek as ud
 

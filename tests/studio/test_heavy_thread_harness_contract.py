@@ -164,8 +164,7 @@ def test_the_smoke_page_is_served_and_owns_its_dev_server() -> None:
 
 
 def test_the_fork_count_stub_answers_the_shape_the_endpoint_returns() -> None:
-    # The badge renders nothing for a message missing from the counts Map, so `{"counts":{}}`
-    # is "no forks" by contract; any other shape is empty by accident.
+    # Only {"counts":{}} is a valid no-forks answer; any other shape is empty only by accident.
     page = (FRONTEND / "smoke-heavy-thread-main.tsx").read_text(encoding = "utf-8")
     # Scoped to the fork-count entry: other allowlisted endpoints legitimately answer "{}".
     forks = next(

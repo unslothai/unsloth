@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Import cycle: loaded-models/index -> indicator -> settings -> general-tab -> loaded-models.
-// Exporting the preference module first avoids a TDZ error on its top-level const. The indicator now
-// imports the settings dialog store itself, which breaks the cycle; the order stays as a guard.
+// Export the preference module first; the order only guards a TDZ error on a top-level const.
 
 import assert from "node:assert/strict";
 import test from "node:test";

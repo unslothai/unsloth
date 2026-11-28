@@ -215,10 +215,8 @@ def _try_lock(handle: BinaryIO) -> None:
 
 
 def _acquire_lock(model: FlmModelFiles) -> BinaryIO:
-    """One downloader per model across processes on this home. An OS lock, so a process that dies
-    releases it and no stale-lock cleanup can race a live owner."""
-    # Beside the folder, not in it: FastFlowLM owns the folder's contents.
-    # Unbuffered: a buffered read would reach the locked byte.
+    """One downloader per model: an OS lock frees on process death, so no stale-lock cleanup."""
+    # Beside the folder (FastFlowLM owns it); unbuffered so reads cannot hit the locked byte.
     path = model.folder.with_name(model.folder.name + ".unsloth-download.lock")
     handle = open(path, "a+b", buffering = 0)
     try:
@@ -257,8 +255,7 @@ def download_files(
     client: Optional[httpx.Client] = None,
     cancel: Optional[threading.Event] = None,
 ) -> Iterator[dict[str, Any]]:
-    """Raises FlmDownloadError on a stall, bad hash, full disk or cancel; partial files are kept
-    so the next call resumes."""
+    """Raises FlmDownloadError on stall, bad hash, full disk or cancel; partial files are kept."""
     cancel = cancel or threading.Event()
     model.folder.mkdir(parents = True, exist_ok = True)
     lock = _acquire_lock(model)

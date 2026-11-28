@@ -2006,7 +2006,7 @@ def test_route_start_refuses_non_bf16_gpu_without_freeing_gpu(client, monkeypatc
     monkeypatch.setattr(tr, "_free_gpu_for_diffusion_training", lambda: freed.append(1))
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: (
+        lambda fam, prec, cfg = None: (
             "This trainer requires a bfloat16-capable GPU (Ampere or newer)."
             if fam != "sdxl"
             else None
@@ -2094,6 +2094,25 @@ def test_complete_event_records_family_and_catalog():
     assert st["family"] == "sdxl"
     assert st["base_model"] == "b"
     assert st["catalog_path"] == "/loras/w.safetensors"
+
+
+def test_status_reports_the_jobs_trigger_for_deploy(_isolated_runs_dir):
+    svc = DiffusionTrainingService(ctx = _FakeCtx(), target = _happy_target)
+    job_id = svc.start({**_CFG, "instance_prompt": "a photo in mystyle"})
+    st = _wait_status(svc, "completed")
+    assert st["instance_prompt"] == "a photo in mystyle"
+    record = _wait_record(_isolated_runs_dir, job_id)
+    assert record["instance_prompt"] == st["instance_prompt"]
+
+    svc.start(dict(_CFG))
+    assert _wait_status(svc, "completed")["instance_prompt"] is None
+
+
+def test_status_route_returns_the_trigger(client):
+    client._fake.status_extra = {"instance_prompt": "a photo in mystyle"}
+    assert (
+        client.get("/api/train/diffusion/status").json()["instance_prompt"] == "a photo in mystyle"
+    )
 
 
 def test_status_route_returns_preparation_counts(client):
@@ -2194,7 +2213,7 @@ def test_start_ungated_base_preflight_is_noop(client, monkeypatch):
     # Pin the precision preflight so a GPU-less host does not 400 for another reason.
     monkeypatch.setattr(
         "core.training.diffusion_train_common.training_precision_preflight_error",
-        lambda fam, prec: None,
+        lambda fam, prec, cfg = None: None,
     )
     monkeypatch.setattr("utils.utils.auth_safe_open", lambda req, timeout = None: object())
     r = client.post(
@@ -2506,19 +2525,70 @@ def test_route_refuses_an_output_dir_that_is_the_outputs_root(client):
     assert Path(client._fake.started_with["output_dir"]).name == "run-1"
 
 
-def test_route_treats_a_root_cond_cache_dir_as_the_in_memory_cache(client, dit_train_host):
-    # Same collapse on the cache side, but it falls back to off rather than the root.
+def test_route_treats_a_root_cond_cache_dir_as_the_default_cache(client, dit_train_host):
+    # Same collapse on the cache side, but it falls back to the default cache rather than the root.
+    from pathlib import Path
+
+    from core.training.diffusion_train_extras import default_cond_cache_dir
+    from utils.paths import outputs_root
+
     for name in (".", "./.", "outputs", " . "):
         r = client.post(
             "/api/train/diffusion/start",
             json = {**_BODY, "model_family": "z-image", "cond_cache_dir": name},
         )
         assert r.status_code == 200, r.text
-        assert client._fake.started_with["cond_cache_dir"] is None, name
+        chosen = client._fake.started_with["cond_cache_dir"]
+        assert chosen == str(default_cond_cache_dir()), name
+        assert Path(chosen).resolve() != outputs_root().resolve()
+
+
+def test_route_fills_in_the_default_conditioning_cache_when_unset(client, dit_train_host):
+    # Unset: the account's default cache, outside the outputs root the run listings scan.
+    from pathlib import Path
+
+    from utils.paths import outputs_root, studio_root
+    for extra in ({}, {"cond_cache_dir": None}, {"cond_cache_dir": "   "}):
+        r = client.post(
+            "/api/train/diffusion/start", json = {**_BODY, "model_family": "z-image", **extra}
+        )
+        assert r.status_code == 200, r.text
+        chosen = Path(client._fake.started_with["cond_cache_dir"])
+        assert chosen.is_absolute() and chosen.name == "diffusion-train-cond"
+        assert studio_root().resolve() in chosen.resolve().parents
+        assert outputs_root().resolve() not in chosen.resolve().parents
+
+
+def test_route_passes_an_off_conditioning_cache_through(client, dit_train_host, monkeypatch):
+    # An explicit off value, and the env switch for the default, reach the trainer as "off" (never a directory).
+    for value in ("off", "OFF", "none", "0"):
+        r = client.post(
+            "/api/train/diffusion/start",
+            json = {**_BODY, "model_family": "z-image", "cond_cache_dir": value},
+        )
+        assert r.status_code == 200, r.text
+        assert client._fake.started_with["cond_cache_dir"] == "off", value
+    # An off value is not a directory, so even SDXL accepts it.
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "model_family": "sdxl", "cond_cache_dir": "off"},
+    )
+    assert r.status_code == 200, r.text
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_TRAIN_COND_CACHE", "0")
+    r = client.post("/api/train/diffusion/start", json = {**_BODY, "model_family": "z-image"})
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["cond_cache_dir"] == "off"
+    # The env switch only turns the DEFAULT off: an explicit directory is still honoured.
+    r = client.post(
+        "/api/train/diffusion/start",
+        json = {**_BODY, "model_family": "z-image", "cond_cache_dir": "cond-cache"},
+    )
+    assert r.status_code == 200, r.text
+    assert client._fake.started_with["cond_cache_dir"].endswith("cond-cache")
 
 
 def test_route_rejects_cond_cache_dir_for_sdxl(client, dit_train_host):
-    # Only the DiT trainer reads cond_cache_dir, so refuse it for SDXL rather than ignore it.
+    # The SDXL trainer never reads cond_cache_dir, so refuse it for SDXL rather than ignore it.
     r = client.post(
         "/api/train/diffusion/start",
         json = {**_BODY, "model_family": "sdxl", "cond_cache_dir": "cond-cache"},

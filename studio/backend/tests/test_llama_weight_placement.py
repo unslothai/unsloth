@@ -22,6 +22,7 @@ from core.inference.llama_cpp import (  # noqa: E402
     LlamaCppBackend,
     _extra_weight_file_bytes,
     _gguf_set_bytes,
+    _log_shows_load_stages,
     parse_weight_placement,
 )
 
@@ -318,6 +319,186 @@ def test_no_load_signal_reports_no_figure(tmp_path, monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: None))
     monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: None))
     assert inst.load_progress() is None
+
+
+def test_fit_probe_reads_are_not_weight_progress(tmp_path, monkeypatch):
+    """Header re-reads by --fit probes and shared libraries in RssFile are not weights loaded."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 30, "rss": 200}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
+    )
+    pid = inst._process.pid
+    log = [
+        "0.00.244.400 I cmn  common_fit_a: fitting params to device memory ...",
+        "0.00.244.417 I common_params_fit_impl: getting device memory data for initial parameters:",
+        "0.12.606.382 I common_fit_params: successfully fit params to free device memory",
+    ]
+    for line in log:
+        assert inst._note_load_stage(pid, line) is False
+    counters["read"] = 450
+    assert inst.load_progress() == {
+        "phase": "fit",
+        "bytes_loaded": 0,
+        "bytes_total": 1000,
+        "fraction": 0.0,
+    }
+
+    line = "0.12.758.987 I load_tensors: loading model tensors, this can take a while... (load_mode = mmap)"
+    assert inst._note_load_stage(pid, line) is True
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 0)
+    counters["rss"] = 200 + 600
+    assert inst.load_progress()["bytes_loaded"] == 600
+
+
+def test_load_without_fit_counts_from_the_first_weight_read(tmp_path, monkeypatch):
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 20, "rss": 200}
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
+    )
+    assert inst.load_progress()["bytes_loaded"] == 200
+    inst._note_load_stage(
+        inst._process.pid,
+        "I load_tensors: loading model tensors, this can take a while... (load_mode = none)",
+    )
+    # The raw 200 seen before the marker is libraries, not weights: it must not hold the bar up.
+    assert inst.load_progress()["bytes_loaded"] == 0
+    counters["read"] = 20 + 700  # --load-mode none reads the weights with read()
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 700)
+
+
+def test_a_stage_from_an_earlier_process_is_ignored(tmp_path, monkeypatch):
+    """Each retry is a new llama-server: a finished one's fit stage or baseline must not apply."""
+    inst = _fake_load(tmp_path, 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 300))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 0))
+    inst._load_stage = (inst._process.pid + 1, "fit", 0, 0)
+    assert inst.load_progress()["phase"] == "mmap"
+    inst._load_stage = (inst._process.pid + 1, "weights", 0, 250)
+    assert inst.load_progress()["bytes_loaded"] == 300
+
+
+_PROBE_TENSORS = "0.00.796.864 I load_tensors: loading model tensors, this can take a while... (load_mode = none)"
+_REAL_TENSORS = "0.12.758.987 I load_tensors: loading model tensors, this can take a while... (load_mode = mmap)"
+
+
+def _drain(inst, argv, lines, monkeypatch, counters):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: counters["rss"])
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: counters["read"])
+    )
+    proc = type("P", (), {})()
+    proc.pid, proc.args, proc.returncode = inst._process.pid, argv, None
+    proc.stdout = iter(line + "\n" for line in lines)
+    proc.poll = lambda: None
+    inst._process = proc
+    inst._stdout_lines = []
+    inst._process_env = (proc, {})
+    inst._drain_stdout()
+
+
+def test_a_probe_weight_line_inside_the_search_is_not_the_load(tmp_path, monkeypatch):
+    """At verbosity 5 each probe prints its own weight-load line; only the one after the search counts."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 30, "rss": 200}
+    log = [
+        "0.00.244.400 I cmn  common_fit_a: fitting params to device memory ...",
+        "0.00.244.417 I common_params_fit_impl: getting device memory data for initial parameters:",
+        _PROBE_TENSORS,
+    ]
+    _drain(inst, ["llama-server", "--verbosity", "5"], log, monkeypatch, counters)
+    assert inst.load_progress()["phase"] == "fit"
+    counters["read"] = 450
+    inst._note_load_stage(inst._process.pid, _PROBE_TENSORS)
+    inst._note_load_stage(
+        inst._process.pid, "I common_fit_params: successfully fit params to free device memory"
+    )
+    assert inst.load_progress()["phase"] == "fit"
+    assert inst._note_load_stage(inst._process.pid, _REAL_TENSORS) is True
+    counters["rss"] = 200 + 600
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 600)
+
+
+def test_below_trace_verbosity_the_raw_counters_stay(tmp_path, monkeypatch):
+    """At verbosity 2 the search's end never prints, so progress stays raw rather than stuck on "fit"."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 450, "rss": 200}
+    log = [
+        "0.00.500.000 W common_params_fit_impl: --moe-cache-mib auto needs a MoE model on a single GPU, not using a MoE cache",
+        "0.12.606.000 W common_fit_params: failed to fit params to free device memory: n_ctx too large",
+    ]
+    _drain(inst, ["llama-server", "-lv", "2"], log, monkeypatch, counters)
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 450)
+
+
+def test_an_older_build_ends_the_search_with_llama_params_fit(tmp_path, monkeypatch):
+    """b8864 and earlier run the fitter in libllama: its lines and its end carry llama_params_fit."""
+    inst = _fake_load(tmp_path, 1000)
+    counters = {"read": 450, "rss": 200}
+    log = [
+        "0.00.240.000 I common_init_result: fitting params to device memory, for bugs during this step try to reproduce them with -fit off",
+        "0.00.240.100 D llama_params_fit_impl: getting device memory data for initial parameters:",
+        "0.00.500.000 I llama_params_fit_impl: projected to use 436311 MiB of device memory vs. 69621 MiB of free device memory",
+        _PROBE_TENSORS,
+        "0.12.606.382 I llama_params_fit: successfully fit params to free device memory",
+        "0.12.606.384 I llama_params_fit: fitting params to free memory took 12.36 seconds",
+        _REAL_TENSORS,
+    ]
+    _drain(inst, ["llama-server", "--verbose"], log, monkeypatch, counters)
+    counters["rss"] = 200 + 600
+    out = inst.load_progress()
+    assert (out["phase"], out["bytes_loaded"]) == ("mmap", 600)
+
+
+def test_a_second_search_for_the_drafter_ignores_its_probes_too(tmp_path, monkeypatch):
+    inst = _fake_load(tmp_path, 1000)
+    monkeypatch.setattr(LlamaCppBackend, "_read_rss_bytes", staticmethod(lambda pid: 0))
+    monkeypatch.setattr(LlamaCppBackend, "_read_load_bytes", staticmethod(lambda pid: 0))
+    pid = inst._process.pid
+    for line in (
+        "I common_params_fit_impl: getting device memory data for initial parameters:",
+        "I common_fit_params: successfully fit params to free device memory",
+        "I common_params_fit_impl: getting device memory data for initial parameters:",
+        _PROBE_TENSORS,
+    ):
+        assert inst._note_load_stage(pid, line) is False
+    assert inst.load_progress()["phase"] == "fit"
+
+
+@pytest.mark.parametrize(
+    "argv, env, shows",
+    [
+        (["llama-server", "--verbosity", "4"], {}, True),
+        (["llama-server", "-lv=5"], {}, True),
+        (["llama-server", "-v"], {}, True),
+        (["llama-server", "--log_verbosity", "5"], {}, True),
+        (["llama-server", "--log_verbosity=5"], {}, True),
+        (["llama-server", "--log_verbose"], {}, True),
+        (["llama-server", "--verbosity", "4", "--log_disable"], {}, False),
+        (["llama-server", "-lv", "3"], {}, False),
+        (["llama-server"], {}, False),
+        (["llama-server"], {"LLAMA_ARG_LOG_VERBOSITY": "4"}, True),
+        # The command line wins over the environment.
+        (["llama-server", "-lv", "2"], {"LLAMA_ARG_LOG_VERBOSITY": "4"}, False),
+        (["llama-server", "--verbosity", "4", "--log-disable"], {}, False),
+        (None, {}, False),
+    ],
+)
+def test_stages_are_tracked_only_when_the_log_shows_them(argv, env, shows):
+    assert _log_shows_load_stages(argv, env) is shows
 
 
 def test_each_os_reads_its_own_load_counter(monkeypatch):

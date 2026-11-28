@@ -54,6 +54,9 @@ export interface GpuInfo {
   nvfp4Diffusion: boolean;
   /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") this host runs natively. Empty until system info arrives. */
   checkpointQuantFormats: readonly string[];
+  /** Checkpoint kinds that load but run dequantized to 16-bit ("fp8_rowwise": per-channel FP8 on a torch build without
+   * the row-wise FP8 GEMM). Empty until system info arrives, and on older backends. */
+  checkpointQuantDequantOnly?: readonly string[];
   /** Group offload can stream torchao weights. Absent or false until resolved and on older backends. */
   quantisedStreaming?: boolean;
   extraOffloadFitTiers?: Readonly<
@@ -66,8 +69,7 @@ export interface GpuInfo {
   dedicatedMemoryTotalGb: number;
   /** Image/video loads live on ONE device, so their fit math must not use the multi-GPU sum. */
   maxDeviceMemoryGb: number;
-  /** Lowest visible ordinal, where a bare "cuda" diffusion load lands; NOT maxDeviceMemoryGb on a
-   * heterogeneous host. */
+  /** Lowest visible ordinal, where bare "cuda" diffusion lands; not maxDeviceMemoryGb if mixed. */
   loadDeviceMemoryGb: number;
   loadDeviceSharedMemory: boolean;
   /** Includes Linux ROCm APUs, which report only unified_memory; offload frees nothing on either. */
@@ -82,7 +84,7 @@ export interface GpuInfo {
   /** Whether host available memory was reported, including a real zero. */
   systemRamAvailableKnown?: boolean;
   systemRamTotalGb: number;
-  /** Apple MLX only: what llama.cpp and MLX admit right now, `min(working set, free) * 0.85`
+  /** Apple Silicon only: what llama.cpp (and MLX) admit right now, `min(working set, free) * 0.85`
    *  (`_apple_metal_memory_budget_bytes`). Null on every other host and on older backends. */
   unifiedLoadBudgetGb?: number | null;
   /** `min(working set, free + AGX in use) * 0.85`: the budget once the loader has freed a resident model. */
@@ -107,19 +109,26 @@ function finiteNonNegative(value: number | null | undefined): number | null {
 
 function appleUnifiedLoadBudgetGb(
   data: SystemInfoResponse | null,
+  inventoryBackend: string | null | undefined,
   devices: readonly GpuDevice[],
   afterUnload = false,
 ): number | null {
-  if (data?.device_backend !== "mlx" || devices.length !== 1) return null;
+  const metalInventory = inventoryBackend === "metal";
+  if (
+    (data?.device_backend !== "mlx" && !metalInventory) ||
+    devices.length !== 1
+  ) {
+    return null;
+  }
   const device = devices[0];
   const workingSetGb = finitePositive(device.metal_working_set_gb);
   if (device.shared_memory !== true || workingSetGb === null) return null;
   let freeGb =
     finiteNonNegative(device.vram_free_gb) ??
-    finiteNonNegative(data.memory?.available_gb);
-  if (afterUnload) {
-    // The AGX in-use figure holds the resident model's Metal buffers, which the loader frees first;
-    // other apps' memory stays counted. Unknown usage leaves only the working-set ceiling.
+    finiteNonNegative(data?.memory?.available_gb);
+  // The Metal inventory cannot see the resident's share, so a switch keeps the live budget.
+  if (afterUnload && !metalInventory) {
+    // Resident Metal buffers free on unload; other apps count; unknown usage: ceiling only.
     const usedGb = finiteNonNegative(device.vram_used_gb);
     freeGb = freeGb !== null && usedGb !== null ? freeGb + usedGb : null;
   }
@@ -143,6 +152,7 @@ const DEFAULT_GPU: GpuInfo = {
   denseQuantSchemes: [],
   nvfp4Diffusion: false,
   checkpointQuantFormats: [],
+  checkpointQuantDequantOnly: [],
   quantisedStreaming: false,
   name: "Unknown",
   memoryTotalGb: 0,
@@ -175,6 +185,9 @@ function toGpuInfo(
     nvfp4Diffusion: data?.nvfp4_diffusion === true,
     checkpointQuantFormats: normalizeDenseQuantSchemes(
       data?.checkpoint_quant_formats,
+    ),
+    checkpointQuantDequantOnly: normalizeDenseQuantSchemes(
+      data?.checkpoint_quant_dequant_only,
     ),
     quantisedStreaming: data?.quantised_streaming === true,
     extraOffloadFitTiers: normalizeReportedOffloadFitTiers(
@@ -225,9 +238,25 @@ function toGpuInfo(
       unifiedMemory: loadDevice?.unified_memory === true,
     }),
     deviceCount: devices.length,
-    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(data, devices),
-    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(data, devices, true),
+    unifiedLoadBudgetGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+    ),
+    unifiedLoadCeilingGb: appleUnifiedLoadBudgetGb(
+      data,
+      gpuData.backend,
+      devices,
+      true,
+    ),
   };
+}
+
+function deviceFreeMemory(device: GpuDevice) {
+  const freeBytes = finiteNonNegative(device.vram_free_bytes);
+  const freeGb =
+    freeBytes === null ? finiteNonNegative(device.vram_free_gb) : freeBytes / 2 ** 30;
+  return { memoryFreeGb: freeGb ?? 0, memoryFreeKnown: freeGb !== null };
 }
 
 function toGpuDevices(
@@ -248,9 +277,7 @@ function toGpuDevices(
         indexKind: d.index_kind === "vulkan" ? ("vulkan" as const) : null,
         name: d.name ?? `GPU ${d.index}`,
         memoryTotalGb: d.memory_total_gb ?? 0,
-        memoryFreeGb: d.vram_free_gb ?? 0,
-        memoryFreeKnown:
-          Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
+        ...deviceFreeMemory(d),
         sharedMemory: d.shared_memory === true,
         sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
         unifiedMemory: d.unified_memory === true,
@@ -276,11 +303,11 @@ function toGpuDevices(
           : null,
       name: d.name ?? `GPU ${d.index}`,
       memoryTotalGb: d.memory_total_gb ?? 0,
-      memoryFreeGb: d.vram_free_gb ?? 0,
-      memoryFreeKnown:
-        Number.isFinite(d.vram_free_gb) && (d.vram_free_gb as number) >= 0,
+      ...deviceFreeMemory(d),
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
+      pcieLinkWidth: d.pcie_link_width,
+      pcieLinkGen: d.pcie_link_gen,
       unifiedMemory: d.unified_memory === true,
       // The XPU ban covers torch-xpu ordinals, not Vulkan ones.
       pinnable:
@@ -294,19 +321,33 @@ function toGpuDevices(
     }));
 }
 
-/** Keep the previous array when unchanged: polls re-probe memory, and consumers memoise picker
- * options on this list. */
+function sameSchemes(
+  held: readonly string[],
+  fresh: readonly string[],
+): boolean {
+  return (
+    held === fresh ||
+    (held.length === fresh.length &&
+      held.every((scheme, index) => scheme === fresh[index]))
+  );
+}
+
+/** Keep array identity when unchanged: consumers memoise pickers and disk probes on these. */
 export function withStableSchemes(current: GpuInfo, next: GpuInfo): GpuInfo {
-  const held = current.denseQuantSchemes;
-  const fresh = next.denseQuantSchemes;
-  if (held === fresh) return next;
-  if (
-    held.length === fresh.length &&
-    held.every((scheme, index) => scheme === fresh[index])
-  ) {
-    return { ...next, denseQuantSchemes: held };
-  }
-  return next;
+  const keepDense =
+    current.denseQuantSchemes !== next.denseQuantSchemes &&
+    sameSchemes(current.denseQuantSchemes, next.denseQuantSchemes);
+  const keepCheckpoint =
+    current.checkpointQuantFormats !== next.checkpointQuantFormats &&
+    sameSchemes(current.checkpointQuantFormats, next.checkpointQuantFormats);
+  if (!keepDense && !keepCheckpoint) return next;
+  return {
+    ...next,
+    ...(keepDense ? { denseQuantSchemes: current.denseQuantSchemes } : {}),
+    ...(keepCheckpoint
+      ? { checkpointQuantFormats: current.checkpointQuantFormats }
+      : {}),
+  };
 }
 
 const RAM_DRIFT_TOLERANCE_GB = 0.25;
@@ -426,8 +467,7 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
 /** Empty when there is nothing to choose; diffusion checkpoints are never sharded. */
 export function useDiffusionGpuChoices(): SystemGpuDevice[] {
   const devices = useGpuDevices(true);
-  // Memoized: a fresh array per render cascaded into the GGUF picker re-POSTing download plans
-  // on every status poll.
+  // Memoized: fresh arrays each render made the GGUF picker re-POST download plans every poll.
   return useMemo(() => {
     const context = pinnableGpuContext(devices, true);
     return (context.ids?.length ?? 0) > 1 ? (context.devices ?? []) : [];

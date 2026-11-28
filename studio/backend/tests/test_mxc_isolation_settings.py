@@ -172,3 +172,10 @@ def test_the_remediation_names_the_same_host_prep_command(monkeypatch):
     advice = mxc_probe.host_prep_remediation()
     assert subprocess.list2cmdline(command) in advice
     assert "Settings > Sandbox" in advice
+
+
+@pytest.fixture(autouse = True)
+def _dacl_capable_pin(monkeypatch):
+    # The AppContainer + DACL tier exists only in the MXC 1.0.1 pin; 1.1.0 turns all of it off.
+    from core.inference import mxc_runtime
+    monkeypatch.setenv(mxc_runtime.PIN_ENV, mxc_runtime.LEGACY_PIN.version)

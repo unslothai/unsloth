@@ -467,6 +467,19 @@ def _save_checkpoint(
     return directory
 
 
+def _save_refused(model):
+    """save_pretrained of a sharded load before apply: (message or "ran", what the destination holds after)."""
+    dest = tempfile.mkdtemp()
+    with open(os.path.join(dest, "keep.txt"), "w") as f:
+        f.write("x")
+    try:
+        model.save_pretrained(dest)
+        said = "ran"
+    except RuntimeError as exc:
+        said = str(exc)
+    return said, sorted(os.listdir(dest))
+
+
 def _case_sharded_load(
     rank,
     world,
@@ -499,8 +512,10 @@ def _case_sharded_load(
     stats = dict(model._unsloth_tp_load_stats)
     ids = _batch(ref)
     unapplied = _raised(lambda: model(input_ids = ids))
+    unapplied_save = _save_refused(model)
     model = peft(model)
     tpn.apply_tensor_parallel(model, mesh["tp"])
+    applied_holds = tpn._holds_unapplied_shards(model)
     # Every local tensor equals the v1 shard bitwise (weights, biases, LoRA, buffers).
     a, b = full_tp.state_dict(), model.state_dict()
     local = lambda t: t.to_local() if tpn._is_dtensor(t) else t  # noqa: E731
@@ -530,6 +545,8 @@ def _case_sharded_load(
         "diffs": diffs,
         "stats": stats,
         "unapplied": unapplied,
+        "unapplied_save": unapplied_save,
+        "applied_holds": applied_holds,
         "local_numel": (full_local, sharded_local),
         "saved_ref": load_file(os.path.join(ref_dir, "adapter_model.safetensors")),
         "saved_tp": load_file(os.path.join(tp_dir, "adapter_model.safetensors"))
@@ -1406,6 +1423,9 @@ def test_sharded_loading_matches_full_load(arch, world, overrides):
         assert stats["sharded_numel"] > 0 and stats["regions"] > 0, stats
         full_local, sharded_local = res["local_numel"]
         assert full_local == sharded_local
+        # Saving the whole model before apply would write only this rank's slices: refused, nothing written.
+        assert "apply_tensor_parallel" in res["unapplied_save"][0], res["unapplied_save"]
+        assert res["unapplied_save"][1] == ["keep.txt"] and res["applied_holds"] is False, res
 
 
 def test_sharded_loading_refuses_weight_dependent_lora_init():

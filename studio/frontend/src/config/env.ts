@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl, getApiPort, isTauri } from "@/lib/api-base";
-import { setHfEndpoints } from "@/lib/hf-endpoint";
+import { DEFAULT_HF_ENDPOINT, setHfEndpoints, setHubPageLinks } from "@/lib/hf-endpoint";
 import {
   isDetectionDeferred,
   isProvisionalVerdict,
@@ -46,6 +46,8 @@ interface PlatformState {
   videoCpuOptIn: boolean;
   // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
   cpuTraining: boolean;
+  // authed /api/health mlx_inference; null on an older backend, where MLX checks use chatOnlyReason.
+  mlxInference: boolean | null;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -85,6 +87,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyHint: null,
   videoCpuOptIn: false,
   cpuTraining: false,
+  mlxInference: null,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -105,8 +108,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   },
 }));
 
-// Never let a non-forced response overwrite an authoritative platform: the early unauthed fetch
-// in main.tsx can resolve late. Forced refreshes still write.
+// Non-forced reads keep an authoritative platform; an early unauthed fetch may resolve late.
 function shouldKeepAuthoritativePlatform(force?: boolean): boolean {
   return !force && usePlatformStore.getState().fetched;
 }
@@ -160,8 +162,7 @@ export function refreshDeviceTypeAfterSystemInfo(
   void entry.promise.then(release, release);
 }
 
-// main.tsx and __root.tsx's beforeLoad both read at startup: an unforced call joins an unforced
-// read in flight for the same token, URL and backend generation. Forced refreshes never share.
+// Unforced reads share in-flight reads per token, URL and backend generation; forced never.
 let sharedHealthRead: {
   token: string | null;
   url: string;
@@ -230,8 +231,7 @@ async function readHealth(
   const generation = backendGeneration;
   try {
     const token = knownToken === undefined ? readAuthToken() : knownToken;
-    // Re-read while the backend is still detecting: chat_only is its pre-detection default and
-    // __root.tsx's beforeLoad acts on it.
+    // Re-read while detecting: chat_only is a pre-detection default that beforeLoad acts on.
     const headers = token ? { Authorization: `Bearer ${token}` } : undefined;
     // Wait only when authed (else beforeLoad stalls /login), and only once. Claim the latch after.
     const spendWait = Boolean(token) && !hardwareWaitSpent;
@@ -273,6 +273,7 @@ async function readHealth(
         chat_only_reason?: string | null;
         video_cpu_opt_in?: boolean;
         cpu_training?: boolean;
+        mlx_inference?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -282,6 +283,7 @@ async function readHealth(
         hub_source?: string;
         hub_proxy?: string | null;
         datasets_server_proxy?: string | null;
+        modelscope_pages?: unknown;
       };
       if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
       if (
@@ -313,6 +315,11 @@ async function readHealth(
         data.hub_source,
         { endpoint: hubProxy !== null, datasetsServer: datasetsProxy !== null },
       );
+      // A saved endpoint is reported as the default; `useHubPageUrl` asks the owner route instead.
+      setHubPageLinks(
+        hubProxy && data.hf_endpoint !== DEFAULT_HF_ENDPOINT ? data.hf_endpoint : null,
+        data.modelscope_pages,
+      );
       if (shouldKeepAuthoritativePlatform(options?.force)) {
         return usePlatformStore.getState().deviceType;
       }
@@ -337,8 +344,7 @@ async function readHealth(
           ? { chatOnly: previous.chatOnly, chatOnlyReason: null, chatOnlyDetail: null, chatOnlyHint: null }
           : previous,
       );
-      // Cache only server-reported platforms: browser fallbacks differ from the host, so retry
-      // until authed.
+      // Cache only server-reported platforms: browser fallbacks may differ; retry till authed.
       usePlatformStore.setState({
         deviceType,
         appleSilicon,
@@ -354,6 +360,13 @@ async function readHealth(
             : data.video_cpu_opt_in === true,
         cpuTraining:
           data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
+        // Absent from a settled reply = older backend: null, so the reason answers.
+        mlxInference:
+          isProvisionalVerdict(data) || isDetectionDeferred(data)
+            ? previous.mlxInference
+            : typeof data.mlx_inference === "boolean"
+              ? data.mlx_inference
+              : null,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,

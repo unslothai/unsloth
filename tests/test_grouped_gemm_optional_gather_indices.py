@@ -56,8 +56,7 @@ def test_the_default_survives_the_wrapper_when_nothing_permutes():
 
 @pytest.mark.parametrize("permute_x, permute_y", [(True, False), (False, True)])
 def test_permuting_without_indices_still_fails_with_the_explicit_message(permute_x, permute_y):
-    """The guard is the whole reason the parameter can be optional, so it must
-    keep firing ahead of anything that would dereference None."""
+    """Guard makes gather_indices optional, so it must fire before anything dereferences None."""
     X, W, m_sizes = _operands("cpu")
     with pytest.raises(AssertionError, match = "gather_indices is required"):
         grouped_gemm(

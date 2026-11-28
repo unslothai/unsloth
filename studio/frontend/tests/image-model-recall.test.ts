@@ -60,6 +60,7 @@ test("recalling a quantized model carries the selected adapters into its load", 
       textEncoderQuant: "auto",
       attentionBackend: "auto",
       int8Attention: "auto",
+      loraFuse: "auto",
       memoryMode: "auto",
       transformerCache: "auto",
       selectedGpu: "auto",
@@ -79,6 +80,11 @@ test("recalling a quantized model carries the selected adapters into its load", 
       workflow: "txt2img",
       handleGenerate: () => {
         throw new Error("generation must wait for the load");
+      },
+      // The resident build can run the selection: no LoRA reload in this recall.
+      loraReload: null,
+      reloadWithLoras: () => {
+        throw new Error("no LoRA reload on a recall");
       },
       handleLoad: async (...args: unknown[]) => {
         loads.push(args);

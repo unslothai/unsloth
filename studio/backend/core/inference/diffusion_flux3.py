@@ -41,9 +41,8 @@ FLUX3_COMPONENT_FOLDERS = {
 }
 
 
-# The prompt upsampler step Diffusers main puts first in both auto block graphs since huggingface/diffusers#15058
-# (2026-10-16). It needs the separate ~19 GB Qwen3.5-9B upsampler, which Studio never loads, and would otherwise run
-# on every call (its text-to-image branch has no trigger input), so it is dropped, as its docstring prescribes.
+# Diffusers main puts this step first in both auto block graphs (huggingface/diffusers#15058); needs
+# ~19 GB Qwen3.5-9B upsampler Studio never loads, and would run every call, so it's dropped.
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
 
 
@@ -130,6 +129,25 @@ def flux3_blocks(blocks_class_name: str) -> Any:
     return blocks
 
 
+# BFL's reference shift (``alpha`` in src/flux3/pipeline.py), raised 6.93 -> 16 in flux-3-image-klein 62e90b9278;
+# diffusers 0.42.1's block graph still uses 6.93. LPIPS vs BFL fell 0.095 -> 0.007 (distilled), 0.079 -> 0.026 (base).
+FLUX3_REFERENCE_SHIFT = 16.0
+
+
+def flux3_reference_scheduler(scheduler: Any) -> Any:
+    """``scheduler`` at BFL's reference shift; unchanged if already there or it has no static ``shift``."""
+    config = getattr(scheduler, "config", None)
+    try:
+        current = config.get("shift") if config is not None else None
+        if current is None or float(current) == FLUX3_REFERENCE_SHIFT:
+            return scheduler
+        if config.get("use_dynamic_shifting", False):
+            return scheduler
+    except (AttributeError, TypeError, ValueError):
+        return scheduler
+    return type(scheduler).from_config(config, shift = FLUX3_REFERENCE_SHIFT)
+
+
 def is_flux3_family(fam: Any) -> bool:
     return getattr(fam, "name", None) in FLUX3_FAMILY_NAMES
 
@@ -152,7 +170,12 @@ def _live_cache_dir() -> str:
     return active_hf_hub_cache()
 
 
-def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -> dict:
+def _read_index(
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
+) -> dict:
     try:
         root = Path(repo_id).expanduser()
         if root.is_dir():
@@ -171,6 +194,7 @@ def _read_index(repo_id: str, hf_token: Optional[str], local_files_only: bool) -
         token = hf_token or None,
         local_files_only = local_files_only,
         cache_dir = _live_cache_dir(),
+        **({"revision": revision} if revision else {}),
     )
     payload = json.loads(Path(path).read_text(encoding = "utf-8-sig"))
     return payload if isinstance(payload, dict) else {}
@@ -218,9 +242,8 @@ def flux3_family_blocks_mismatch(
 
 
 def flux3_blocks_class(index: dict, transformer: Any = None) -> str:
-    """The block graph a checkpoint runs. The loaded denoiser decides first: a flow-map DiT (it has the target-time
-    embedder) runs the distilled graph, a CFG DiT the base graph, whatever repo supplied the companions (a single
-    file or GGUF of one variant may sit on the other variant's base). Else the index names it."""
+    """The loaded denoiser decides first: flow-map DiT (has target_timestep_embedder) runs distilled
+    graph, CFG DiT the base, whatever repo gave companions; else the index names it."""
     flow_map = None
     if transformer is not None:
         if hasattr(transformer, "target_timestep_embedder"):
@@ -312,6 +335,34 @@ def flux3_pipeline_class() -> type:
         )
         _PIPELINE_CLASS = type("Flux3KleinPipeline", bases, {})
     return _PIPELINE_CLASS
+
+
+def _guider_runs_both(mp: Any) -> bool:
+    """Both CFG branches on every step. A guidance interval answers False throughout: mixed prefix / no-prefix steps
+    would change the CUDA graph key and the sealed scope would send the later key eager."""
+    guider = getattr(mp, "guider", None)
+    if guider is None or int(getattr(guider, "num_conditions", 1)) <= 1:
+        return False
+    config = getattr(guider, "config", None)
+    try:
+        start = float(getattr(config, "start", 0.0) or 0.0)
+        stop = float(
+            getattr(config, "stop", 1.0) if getattr(config, "stop", None) is not None else 1.0
+        )
+    except (TypeError, ValueError):
+        return False
+    return start <= 0.0 and stop >= 1.0
+
+
+def _reset_guider_step(mp: Any) -> None:
+    """Rewind the guider's step state. diffusers keeps the last call's step: after a call whose last steps ran past a
+    Fast CFG stop, the next text step would read one condition and skip the negative embeddings its CFG steps need."""
+    guider = getattr(mp, "guider", None)
+    if guider is None:
+        return
+    guider._step = 0
+    guider._num_inference_steps = None
+    guider._timestep = None
 
 
 class _Flux3KleinPipelineMixin:
@@ -410,15 +461,38 @@ class _Flux3KleinPipelineMixin:
         with torch.no_grad():
             return run_selected(self.text_encoder, layers, call)
 
-    def _set_guidance(self, mp, guidance_scale: Optional[float]) -> None:
-        guider = getattr(mp, "guider", None)
-        if guider is None or guidance_scale is None:
-            return
-        if float(getattr(guider.config, "guidance_scale", -1.0)) == float(guidance_scale):
-            return
-        from diffusers import ClassifierFreeGuidance
+    def _set_guidance(
+        self,
+        mp,
+        guidance_scale: Optional[float],
+        guidance_stop: Optional[float] = None,
+    ) -> None:
+        """Install a guider for this call's scale and interval. ``guidance_stop`` < 1 drops the unconditional
+        branch for the steps from that fraction on (diffusers ``ClassifierFreeGuidance(stop = ...)``)."""
+        from .diffusion_cfg_batch import set_guided_step_probe
 
-        mp.update_components(guider = ClassifierFreeGuidance(guidance_scale = float(guidance_scale)))
+        guider = getattr(mp, "guider", None)
+        stop = 1.0 if guidance_stop is None else float(guidance_stop)
+        # CFG batching: the steps past the stop run one branch by design, not a missed second branch
+        set_guided_step_probe(
+            self,
+            None if guider is None or stop >= 1.0 else (lambda: mp.guider.num_conditions > 1),
+        )
+        if guider is None:
+            return
+        current = getattr(guider.config, "guidance_scale", None)
+        # No scale keeps the guider's own, but never an interval a previous Fast CFG render left on it.
+        scale = guidance_scale if guidance_scale is not None else current
+        if scale is not None and (
+            current is None
+            or float(current) != float(scale)
+            or float(getattr(guider.config, "stop", 1.0)) != stop
+        ):
+            from diffusers import ClassifierFreeGuidance
+            mp.update_components(
+                guider = ClassifierFreeGuidance(guidance_scale = float(scale), stop = stop)
+            )
+        _reset_guider_step(mp)
 
     def __call__(
         self,
@@ -437,18 +511,20 @@ class _Flux3KleinPipelineMixin:
         return_dict: bool = True,
         callback_on_step_end: Optional[Callable] = None,
         callback_on_step_end_tensor_inputs = ("latents",),
+        guidance_stop: Optional[float] = None,
     ):
         self._interrupt = False
         mp = self.modular_pipeline()
-        self._set_guidance(mp, guidance_scale)
+        if guidance_stop is not None and not 0.0 < float(guidance_stop) <= 1.0:
+            raise ValueError("guidance_stop must be in (0, 1].")
+        self._set_guidance(mp, guidance_scale, None if self.is_distilled else guidance_stop)
 
         prompts = prompt if isinstance(prompt, (list, tuple)) else [prompt]
         if any(not isinstance(p, str) for p in prompts):
             raise ValueError("FLUX.3 takes a text prompt (str) per image.")
         generators = generator if isinstance(generator, (list, tuple)) else None
         negatives = list(negative_prompt) if isinstance(negative_prompt, (list, tuple)) else None
-        # The text encoder sizes its window per prompt, so the blocks take ONE prompt per call. A batch of
-        # distinct prompts, or one prompt with a generator per image, runs as one call per image.
+        # One prompt per call (text encoder sizes per prompt); batches run one call per image.
         if len(prompts) > 1 or generators is not None:
             count = max(len(prompts), len(generators or ()))
             if len(prompts) == 1:
@@ -504,8 +580,9 @@ class _Flux3KleinPipelineMixin:
                 # The base model's text and reference streams run once per call, not once per step and branch.
                 transformer = getattr(self, "transformer", None)
                 if not self.is_distilled:
-                    cond_blocks.begin_render(transformer)
+                    cond_blocks.begin_render(transformer, guided = lambda: _guider_runs_both(mp))
                 try:
+                    _reset_guider_step(mp)
                     with self._step_hooks(
                         mp,
                         callback_on_step_end,
@@ -599,8 +676,7 @@ def half_storage_disabled() -> bool:
 
 
 def flux3_storage_dtype(target: Any, dtype: Any) -> Any:
-    """bf16 for a CUDA float32/float16 load: keep stored bf16 mmapped and cast per op (exact); a host conversion
-    costs ~20-40 GB for klein. None otherwise."""
+    """bf16 for a CUDA fp32/fp16 load: mmap stored bf16 and cast per op (exact); else None."""
     from .diffusion_manual_cast import manual_cast_disabled
 
     if manual_cast_disabled() or getattr(target, "device", None) != "cuda":
@@ -661,7 +737,10 @@ def _stored_float_mib(files: list) -> int:
 
 
 def widened_transformer_exceeds_host(
-    repo_id: str, hf_token: Optional[str], local_files_only: bool
+    repo_id: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Optional[str]:
     """Reason a widened transformer load would not fit host RAM, else None (unreadable sizes keep widening)."""
     if dense_storage_disabled():
@@ -673,7 +752,7 @@ def widened_transformer_exceeds_host(
     total, available = host_ram_mib()
     if total is None or available is None:
         return None
-    files = _component_files(repo_id, "transformer", hf_token, local_files_only)
+    files = _component_files(repo_id, "transformer", hf_token, local_files_only, revision = revision)
     stored = _stored_float_mib(files) if files else 0
     if stored <= 0:
         return None
@@ -690,12 +769,13 @@ def transformer_load_storage(
     repo_id: str,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Any:
     """``transformer_storage_dtype``, but by default a same-width transformer reads as stored when widening won't fit."""
     picked = transformer_storage_dtype(storage_dtype, dtype, transformer_storage)
     if picked is not None or transformer_storage is not None or storage_dtype is None:
         return picked
-    why = widened_transformer_exceeds_host(repo_id, hf_token, local_files_only)
+    why = widened_transformer_exceeds_host(repo_id, hf_token, local_files_only, revision = revision)
     if why is None:
         return None
     logger.info("diffusion.flux3: transformer reads as stored: %s", why)
@@ -703,7 +783,11 @@ def transformer_load_storage(
 
 
 def _component_files(
-    repo_id: str, subfolder: str, hf_token: Optional[str], local_files_only: bool
+    repo_id: str,
+    subfolder: str,
+    hf_token: Optional[str],
+    local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> list[Path]:
     """Safetensors files from_pretrained reads for ``subfolder``; empty when unresolvable."""
     from .diffusion_small_host import _weight_files
@@ -719,6 +803,8 @@ def _component_files(
         "local_files_only": local_files_only,
         "cache_dir": _live_cache_dir(),
     }
+    if revision:
+        kwargs["revision"] = revision
     stem = "model" if subfolder.startswith("text_encoder") else "diffusion_pytorch_model"
     try:
         index = Path(
@@ -742,12 +828,13 @@ def _stored_as(
     storage_dtype: Any,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> bool:
     """True when every float tensor of ``subfolder`` is stored as ``storage_dtype`` (lossless load)."""
     from .diffusion_small_host import _safetensors_bytes_by_dtype
 
     want = str(storage_dtype).replace("torch.", "")
-    files = _component_files(repo_id, subfolder, hf_token, local_files_only)
+    files = _component_files(repo_id, subfolder, hf_token, local_files_only, revision = revision)
     if not files:
         return False
     seen = False
@@ -773,10 +860,11 @@ def _manual_cast_load(
     storage_dtype: Any,
     hf_token: Optional[str],
     local_files_only: bool,
+    revision: Optional[str] = None,
 ) -> Any:
     """Load at ``storage_dtype`` with per-op upcast to ``dtype`` if stored exactly so; else the widened load."""
     if storage_dtype is None or not _stored_as(
-        repo_id, name, storage_dtype, hf_token, local_files_only
+        repo_id, name, storage_dtype, hf_token, local_files_only, revision = revision
     ):
         if storage_dtype is not None:
             logger.info(
@@ -868,44 +956,121 @@ def load_flux3_pipeline(
     common: dict[str, Any] = {"local_files_only": local_files_only, "cache_dir": _live_cache_dir()}
     if token:
         common["token"] = token
-    index = _read_index(repo_id, token, local_files_only)
+    from . import diffusion_hub_snapshot as snap
+
+    # One Hub call: an unchanged, already validated snapshot reads every component from the cache.
+    components = {
+        "loader": "flux3",
+        "text_encoder": text_encoder is None,
+        "transformer": transformer is None and with_transformer,
+        "dtype": str(dtype),
+        "storage_dtype": str(storage_dtype),
+        "transformer_storage": transformer_storage,
+    }
+    # The validated commit: every read below pins it, so a concurrent download that moves the cache's refs/main
+    # mid-load, or a Hub repair of one missing component after main moved, cannot mix in another commit's files.
+    commit = (
+        None
+        if local_files_only
+        else snap.current_snapshot(
+            repo_id, components, token = token, cache_dir = common["cache_dir"], logger = logger
+        )
+    )
+    cached = commit is not None
+
+    def cache_first(load: Callable[[bool], Any], *, name: str) -> Any:
+        return snap.cache_first(
+            load,
+            cached = cached,
+            name = name,
+            logger = logger,
+            on_fallback = lambda: snap.forget(repo_id, components, cache_dir = common["cache_dir"]),
+        )
+
+    def _kw(local: bool) -> dict[str, Any]:
+        kw = dict(common, local_files_only = local_files_only or local)
+        if commit:
+            kw["revision"] = commit
+        return kw
+
+    index = cache_first(
+        lambda local: _read_index(repo_id, token, local_files_only or local, revision = commit),
+        name = FLUX3_INDEX,
+    )
     check_cancelled()
-    tokenizer = AutoProcessor.from_pretrained(repo_id, subfolder = "text_encoder", **common)
+    tokenizer = cache_first(
+        lambda local: AutoProcessor.from_pretrained(
+            repo_id, subfolder = "text_encoder", **_kw(local)
+        ),
+        name = "the processor",
+    )
     check_cancelled()
+    from .diffusion_te_vision import drop_enabled, drop_vision_tower, vision_tower_skipped
+
+    # No FLUX.3 mode hands the encoder pixels (references go through the VAE): its vision tower is never read.
+    drop_vision = drop_enabled()
+
+    def _te_load(load_dtype: Any, local: bool) -> Any:
+        with vision_tower_skipped(drop_vision):
+            return Qwen3VLForConditionalGeneration.from_pretrained(
+                repo_id, subfolder = "text_encoder", dtype = load_dtype, **_kw(local)
+            )
+
     if text_encoder is None:
-        text_encoder = _manual_cast_load(
-            lambda load_dtype: Qwen3VLForConditionalGeneration.from_pretrained(
-                repo_id, subfolder = "text_encoder", dtype = load_dtype, **common
+        text_encoder = cache_first(
+            lambda local: _manual_cast_load(
+                lambda load_dtype: _te_load(load_dtype, local),
+                name = "text_encoder",
+                repo_id = repo_id,
+                dtype = dtype,
+                storage_dtype = storage_dtype,
+                hf_token = token,
+                local_files_only = local_files_only or local,
+                revision = commit,
             ),
-            name = "text_encoder",
-            repo_id = repo_id,
-            dtype = dtype,
-            storage_dtype = storage_dtype,
-            hf_token = token,
-            local_files_only = local_files_only,
+            name = "the text encoder",
         )
         text_encoder.eval()
         check_cancelled()
+    if drop_vision and drop_vision_tower(text_encoder):
+        logger.info("diffusion.flux3: the text encoder's unused vision tower is not loaded")
     if transformer is None and with_transformer:
-        transformer_storage_at = transformer_load_storage(
-            storage_dtype, dtype, transformer_storage, repo_id, token, local_files_only
-        )
-        transformer = _manual_cast_load(
-            lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
-                repo_id, subfolder = "transformer", torch_dtype = load_dtype, **common
-            ),
-            name = "transformer",
-            repo_id = repo_id,
-            dtype = dtype,
-            storage_dtype = transformer_storage_at,
-            hf_token = token,
-            local_files_only = local_files_only,
-        )
+
+        def _transformer(local: bool) -> Any:
+            transformer_storage_at = transformer_load_storage(
+                storage_dtype,
+                dtype,
+                transformer_storage,
+                repo_id,
+                token,
+                local_files_only or local,
+                revision = commit,
+            )
+            return _manual_cast_load(
+                lambda load_dtype: diffusers.Flux3Transformer2DModel.from_pretrained(
+                    repo_id, subfolder = "transformer", torch_dtype = load_dtype, **_kw(local)
+                ),
+                name = "transformer",
+                repo_id = repo_id,
+                dtype = dtype,
+                storage_dtype = transformer_storage_at,
+                hf_token = token,
+                local_files_only = local_files_only or local,
+                revision = commit,
+            )
+
+        transformer = cache_first(_transformer, name = "the transformer")
         check_cancelled()
-    vae = diffusers.AutoencoderKLFlux2.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = dtype, **common
+    vae = cache_first(
+        lambda local: diffusers.AutoencoderKLFlux2.from_pretrained(
+            repo_id, subfolder = "vae", torch_dtype = dtype, **_kw(local)
+        ),
+        name = "the VAE",
     )
     check_cancelled()
+    if not cached and not local_files_only:
+        # This load revalidated every file it read: the next one may read them from the cache.
+        snap.note_validated(repo_id, components, token = token, cache_dir = common["cache_dir"])
     _pin_compute_dtype(transformer, dtype)
     blocks = flux3_blocks_class(index, transformer)
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
@@ -914,8 +1079,8 @@ def load_flux3_pipeline(
     # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
     if transformer is not None:
         cond_blocks.prepare(transformer)
-    # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
-    scheduler = flux3_blocks(blocks).init_pipeline().scheduler
+    # The repos ship no scheduler; use the block graph's at BFL's reference shift.
+    scheduler = flux3_reference_scheduler(flux3_blocks(blocks).init_pipeline().scheduler)
     return flux3_pipeline_class()(
         transformer = transformer,
         vae = vae,

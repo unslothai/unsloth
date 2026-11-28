@@ -29,6 +29,8 @@ export interface EngineStatus {
     message: string;
     activity?: string;
     log?: string[];
+    /** Epoch seconds the last attempt ended; null while one runs, absent from older backends. */
+    finished_at?: number | null;
   };
 }
 

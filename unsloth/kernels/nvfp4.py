@@ -9,6 +9,8 @@ import torch
 import triton
 import triton.language as tl
 
+from ..rocm_build import is_rocm_torch as _is_rocm_torch
+
 from .fp8 import _fp8_triton_device_context, _is_transposed_view, _opaque_under_compile
 
 __all__ = [
@@ -229,7 +231,7 @@ def _nvfp4_weight_tile(
     return w.to(OUT_DTYPE)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["M"])
 def _nvfp4_matmul_fwd_kernel(
     x_ptr,
     packed_ptr,
@@ -317,7 +319,7 @@ def _nvfp4_matmul_fwd_kernel(
     )
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["M"])
 def _nvfp4_matmul_dx_kernel(
     g_ptr,
     packed_ptr,
@@ -433,7 +435,7 @@ def _device_capability(index):
 
 _FUSED_OFF = ("0", "false", "off", "no")
 _FUSED_FORCE = ("1", "true", "on", "yes", "force")
-_IS_HIP = torch.version.hip is not None
+_IS_HIP = _is_rocm_torch(torch)
 
 
 def _fused_max_rows(

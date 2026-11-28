@@ -225,6 +225,8 @@ def test_a_clone_run_hands_the_worker_an_account_path_and_saves_the_clip(stub, t
         {"inputs": {"reference": {"input_id": "../../etc/passwd"}}},
         {"inputs": {"reference": {"input_id": "a" * 32}, "emotion": {"url": "http://x"}}},
         {"options": {"voice_ref": "/etc/passwd"}},
+        {"options": {"voice_samples": "/etc/passwd,/x.wav"}},
+        {"options": {"multi_reference_cond": '[{"audio": "/x.wav", "text": "hi"}]'}},
         {"options": {"source_audio": "/etc/passwd"}},
         {"options": {"codec_model_path": "/etc/passwd"}},
         {"options": {"video": "/etc/passwd"}},
@@ -1179,6 +1181,61 @@ def test_options_only_for_a_family_that_takes_them(sep, stub):
     assert sep.separations == []
 
 
+def test_a_speech_filter_takes_the_options_its_status_lists(stub):
+    info = {
+        **_sep_info("apollo"),
+        "audio_server_task": "s2s",
+        "audio_options": [{"name": "audio_chunk_duration_sec", "type": "float"}],
+        "audio_separation": {"goal": "restore", "output": "restored", "rate": 48000},
+    }
+    apollo = _SepBackend("audio-cpp/audio.cpp-gguf/Apollo-GGUF", info, ["restored"])
+    stub["backend"] = apollo
+    source = {"input_id": _input(ALICE)}
+    with _client(ALICE) as client:
+        unknown = _separate(client, source, options = {"num_overlap": 1})
+        assert (unknown.status_code, unknown.json()["detail"]) == (
+            400,
+            "Unknown option 'num_overlap'.",
+        )
+        ok = _separate(client, source, options = {"audio_chunk_duration_sec": 5.0})
+    assert ok.status_code == 200, ok.text
+    (call,) = apollo.separations
+    assert call["audio_options"] == {"audio_chunk_duration_sec": 5.0}
+    # A 48 kHz filter gets its track at 48 kHz, not the stem models' 44.1 kHz.
+    assert ".48000." in Path(call["source_path"]).name
+    assert [clip["role"] for clip in ok.json()["clips"]] == ["restored"]
+
+
+def test_an_upscaler_is_told_the_bandwidth_of_the_source(stub):
+    rates = [8000, 12000, 16000, 24000]
+    info = {
+        **_sep_info("universr"),
+        "audio_server_task": "s2s",
+        "audio_options": [{"name": "input_sample_rate", "type": "int"}],
+        "audio_separation": {
+            "goal": "restore",
+            "output": "restored",
+            "rate": 48000,
+            "input_rates": rates,
+        },
+    }
+    universr = _SepBackend("audio-cpp/audio.cpp-gguf/UniverSR-GGUF", info, ["restored"])
+    stub["backend"] = universr
+    with _client(ALICE) as client:
+        for rate in (16000, 44100, 6000):
+            ok = _separate(client, {"input_id": _wav_input(ALICE, 1.0, rate = rate)})
+            assert ok.status_code == 200, ok.text
+        chosen = _separate(
+            client,
+            {"input_id": _wav_input(ALICE, 1.0, rate = 16000)},
+            options = {"input_sample_rate": 8000},
+        )
+        assert chosen.status_code == 200, chosen.text
+    sent = [call["audio_options"]["input_sample_rate"] for call in universr.separations]
+    assert sent == [16000, 24000, 8000, 8000]
+    assert all(".48000." in Path(call["source_path"]).name for call in universr.separations)
+
+
 def test_a_track_over_ten_minutes_is_refused(sep):
     input_id = _wav_input(ALICE, 601.0)
     with _client(ALICE) as client:
@@ -1897,8 +1954,8 @@ def test_a_float_wav_separation_source_is_probed_through_ffmpeg(tmp_path):
         + struct.pack("<I", len(frames))
         + frames
     )
-    channels, seconds = _probe_audio_with_av(path)
-    assert channels == 2 and abs(seconds - 0.5) < 0.01
+    channels, seconds, rate = _probe_audio_with_av(path)
+    assert channels == 2 and abs(seconds - 0.5) < 0.01 and rate == 44100
     (tmp_path / "junk.wav").write_bytes(b"not audio")
     assert _probe_audio_with_av(tmp_path / "junk.wav") is None
 

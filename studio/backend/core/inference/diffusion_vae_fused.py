@@ -1425,6 +1425,9 @@ def uninstall(vae: Any) -> None:
 
 
 _WAN_VAES = frozenset({"AutoencoderKLWan", "AutoencoderKLQwenImage", "AutoencoderKLQwenImage21"})
+# Encoder stays stock: edits / I2V follow their input latents, and fusing it moved Qwen-Image-Edit (0.195 LPIPS)
+# and Wan 2.2 TI2V I2V (0.016 mean) renders against a bit-identical rerun.
+_STOCK_ENCODER_VAES = frozenset({"AutoencoderKLQwenImage", "AutoencoderKLWan"})
 
 
 def _is_rms(norm: Any) -> bool:
@@ -1574,10 +1577,41 @@ def up_nearest2x(
     return out.permute(0, 3, 1, 2), t_o
 
 
+def _wan_folded_upsample(conv: Any, x: Any) -> Any:
+    """Per-frame ``conv(nearest_2x(x))`` via diffusion_vae_strips' folded ConvTranspose2d. None = use the 2x path; also
+    under torch.compile (the mutable fold cache would add guards) and when autograd needs the detached folded weight."""
+    torch = _torch()
+    if torch.compiler.is_compiling():
+        return None
+    if torch.is_grad_enabled() and (conv.weight.requires_grad or x.requires_grad):
+        return None
+    from . import diffusion_vae_strips as strips
+
+    b, c, t, h, w = x.shape
+    frames = x.permute(0, 2, 1, 3, 4).reshape(b * t, c, h, w)
+    if not (
+        strips._fold_allowed()
+        and strips._fold_on(frames)
+        and strips._fold_ok(conv, frames)
+        and strips.fold_finite(conv)
+    ):
+        return None
+    elems = conv.out_channels * 4 * h * w
+    full_max = strips._fold_full_max(frames)
+    full_max = strips.FOLD_FULL_MAX_ELEMS if full_max is None else full_max
+    if b * t != 1 and b * t * elems > full_max:
+        return None  # the strip fold writes one frame
+    _count("upsample_fold")
+    return strips._fold_upsample(conv, frames, conv.bias, full_max = full_max)
+
+
 def _fast_wan_resample(mod: Any) -> Any:
     import torch.nn.functional as F
 
     conv = mod.resample[1]
+    # Qwen-Image-2.1's Conv2d time_conv: only the first chunk (which never runs it) is fast; later chunks stay stock.
+    time_2d = mod.mode == "upsample3d" and _conv_kind(getattr(mod, "time_conv", None)) == "2d"
+    stock = _stock_forward(mod)
 
     def fast(
         x: Any,
@@ -1586,6 +1620,8 @@ def _fast_wan_resample(mod: Any) -> Any:
     ) -> Any:
         if feat_idx is None:
             feat_idx = [0]
+        if time_2d and feat_cache is not None and feat_cache[feat_idx[0]] is not None:
+            return stock(x, feat_cache = feat_cache, feat_idx = feat_idx)
         b = x.shape[0]
         interleave = False
         t_bias = None
@@ -1604,6 +1640,13 @@ def _fast_wan_resample(mod: Any) -> Any:
                 feat_cache[idx] = new
                 interleave = True
             feat_idx[0] += 1
+        if not interleave:
+            out = _wan_folded_upsample(conv, y)
+            if out is not None:
+                t_o = y.shape[2]
+                return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(
+                    0, 2, 1, 3, 4
+                )
         up, t_o = up_nearest2x(y, interleave, t_bias)
         out = F.conv2d(up, conv.weight, conv.bias, conv.stride, conv.padding)
         return out.view(b, t_o, out.shape[1], out.shape[2], out.shape[3]).permute(0, 2, 1, 3, 4)
@@ -1622,7 +1665,9 @@ def _wan_resample_ok(mod: Any) -> bool:
         and seq[0].mode in ("nearest", "nearest-exact")
         and tuple(float(f) for f in (seq[0].scale_factor or ())) == (2.0, 2.0)
         and isinstance(seq[1], torch.nn.Conv2d)
-        and (mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) == "3d")
+        and (
+            mod.mode == "upsample2d" or _conv_kind(getattr(mod, "time_conv", None)) in ("3d", "2d")
+        )
     )
 
 
@@ -1684,8 +1729,8 @@ def install_wan_vae(
             act._unsloth_vae_fused = True
             n += 1
         for module in part.modules():
-            if "forward" in module.__dict__:
-                continue  # already patched (by us or another speed path)
+            if "forward" in module.__dict__ and not getattr(module, "_unsloth_vae_noclone", False):
+                continue  # already patched (by us or another speed path); the clone-free block is replaced
             name = type(module).__name__
             if name.endswith("ResidualBlock") and _wan_resblock_fusable(module):
                 _guard(
@@ -1825,6 +1870,135 @@ def _accepts_first_chunk(decoder: Any) -> bool:
         return False
 
 
+def _cat_format(t: Any) -> Any:
+    """The memory format ``torch.cat`` gives a result built from tensors laid out like ``t``."""
+    torch = _torch()
+    if (
+        t.dim() == 5
+        and not t.is_contiguous()
+        and t.is_contiguous(memory_format = torch.channels_last_3d)
+    ):
+        return torch.channels_last_3d
+    return torch.contiguous_format
+
+
+class _FrameSink:
+    """``torch.cat(frames, dim = 2)`` without every frame and the result alive at once: from the second chunk on, the
+    output is one buffer sized as the first chunk's frames plus the second's for every later chunk (Wan: 1 + 4 per
+    latent frame), and each chunk is copied in as it arrives. A chunk of another size falls back to the cat."""
+
+    def __init__(self, chunks: int) -> None:
+        self.chunks = chunks
+        self.parts: list = []
+        self.buf = None
+        self.filled = 0
+        self.step = 0
+
+    def add(self, frame: Any) -> None:
+        torch = _torch()
+        if self.buf is None and len(self.parts) == 1 and self.chunks > 2:
+            first = self.parts[0]
+            shape = list(first.shape)
+            if (
+                frame.dim() == first.dim() == 5
+                and frame.dtype == first.dtype
+                and frame.device == first.device
+                and list(frame.shape[:2]) == shape[:2]
+                and list(frame.shape[3:]) == shape[3:]
+            ):
+                self.step = frame.shape[2]
+                shape[2] = first.shape[2] + self.step * (self.chunks - 1)
+                self.buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                self.buf[:, :, : first.shape[2]].copy_(first)
+                self.filled = first.shape[2]
+                self.parts = []
+        if self.buf is not None and not self.parts:
+            end = self.filled + frame.shape[2]
+            if (
+                frame.shape[2] == self.step
+                and end <= self.buf.shape[2]
+                and frame.dtype == self.buf.dtype
+                and frame.shape[:2] == self.buf.shape[:2]
+                and frame.shape[3:] == self.buf.shape[3:]
+            ):
+                self.buf[:, :, self.filled : end].copy_(frame)
+                self.filled = end
+                return
+            # an unexpected chunk size: the written prefix and the rest are concatenated as before
+            self.parts = [self.buf[:, :, : self.filled]]
+        self.parts.append(frame)
+
+    def result(self) -> Any:
+        torch = _torch()
+        if self.buf is not None and not self.parts:
+            return self.buf if self.filled == self.buf.shape[2] else self.buf[:, :, : self.filled]
+        out = torch.cat(self.parts, dim = 2)
+        self.parts = []
+        self.buf = None
+        return out
+
+
+def _assemble_tiles(
+    rows: list,
+    blend_h: int,
+    blend_w: int,
+    out_sh: int,
+    out_sw: int,
+    sample_height: int,
+    sample_width: int,
+    patch: Optional[int],
+) -> Any:
+    """Stock ``tiled_decode``'s blend + crop + ``torch.cat`` of rows and columns + ``[:sample_height, :sample_width]``
+    (+ ``unpatchify``), written into one preallocated output: each tile is blended exactly as stock (the tile above
+    and the tile to the left, both already blended), its crop is copied to its place (unpatchified on the way), and a
+    row's tiles are dropped once the next row has blended against them. Bit-identical; peak is the output plus the
+    tiles still needed instead of the tiles plus the row cat plus the full cat (plus the unpatchify copy)."""
+    torch = _torch()
+    p = int(patch) if patch is not None else 1
+    first = rows[0][0]
+    # crop extents, as stock's tile[:, :, :, :out_sh, :out_sw]
+    hs = [min(r[0].shape[-2], out_sh) for r in rows]
+    ws = [min(t.shape[-1], out_sw) for t in rows[0]]
+    full_h, full_w = min(sum(hs), sample_height), min(sum(ws), sample_width)
+    b, c, f = first.shape[0], first.shape[1], first.shape[2]
+    if p > 1:
+        shape = (b, c // (p * p), f, full_h * p, full_w * p)
+    else:
+        shape = (b, c, f, full_h, full_w)
+    # stock's unpatchify ends in .contiguous(); without a patch the layout is the cat's
+    fmt = torch.contiguous_format if p > 1 else _cat_format(first)
+    out = torch.empty(shape, dtype = first.dtype, device = first.device, memory_format = fmt)
+    y = 0
+    for ri, row in enumerate(rows):
+        x = 0
+        for ci, tile in enumerate(row):
+            if ri > 0:
+                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
+            if ci > 0:
+                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
+            row[ci] = tile
+            th = min(hs[ri], full_h - y)
+            tw = min(min(tile.shape[-1], out_sw), full_w - x)
+            if th > 0 and tw > 0:
+                crop = tile[:, :, :, :th, :tw]
+                if p > 1:
+                    from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
+                    out[:, :, :, y * p : (y + th) * p, x * p : (x + tw) * p].copy_(
+                        unpatchify(crop, patch_size = p)
+                    )
+                else:
+                    out[:, :, :, y : y + th, x : x + tw].copy_(crop)
+            x += min(tile.shape[-1], out_sw)
+        if ri > 0:
+            rows[ri - 1] = (
+                None  # its bottom band is no longer read: free it (and its batch, once all views go)
+            )
+        y += hs[ri]
+    return out
+
+
 def _wan_batched_tiled_decode(
     self: Any,
     z: Any,
@@ -1863,15 +2037,14 @@ def _wan_batched_tiled_decode(
     def decode_tiles(chunk: list) -> Any:
         zt = torch.cat([z[:, :, :, i : i + tmh, j : j + tmw] for i, j in chunk], 0)
         self.clear_cache()
-        frames = []
+        frames = _FrameSink(num_frames)
         for k in range(num_frames):
             self._conv_idx = [0]
             tile = self.post_quant_conv(zt[:, :, k : k + 1])
             kw = {"first_chunk": k == 0} if first_chunk else {}
-            frames.append(
-                self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw)
-            )
-        return torch.cat(frames, dim = 2)
+            frames.add(self.decoder(tile, feat_cache = self._feat_map, feat_idx = self._conv_idx, **kw))
+            del tile
+        return frames.result()
 
     for members in groups.values():
         s = 0
@@ -1888,25 +2061,111 @@ def _wan_batched_tiled_decode(
                 continue
             for n, key in enumerate(chunk):
                 tiles[key] = out[n : n + 1]
+            del out
             s += len(chunk)
     self.clear_cache()
-    rows = [[tiles[(i, j)] for j in cols_j] for i in rows_i]
-    result_rows = []
-    for ri, row in enumerate(rows):
-        result_row = []
-        for ci, tile in enumerate(row):
-            if ri > 0:
-                tile = blend_seam(rows[ri - 1][ci], tile, blend_h, -2)
-            if ci > 0:
-                tile = blend_seam(row[ci - 1], tile, blend_w, -1)
-            result_row.append(tile[:, :, :, :out_sh, :out_sw])
-        result_rows.append(torch.cat(result_row, dim = -1))
-    dec = torch.cat(result_rows, dim = 3)[:, :, :, :sample_height, :sample_width]
+    rows = [[tiles.pop((i, j)) for j in cols_j] for i in rows_i]
+    dec = _assemble_tiles(
+        rows, blend_h, blend_w, out_sh, out_sw, sample_height, sample_width, patch
+    )
+    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
+        dec.clamp_(min = -1.0, max = 1.0)  # dec is this decode's own buffer: in place, one copy less
+    if not return_dict:
+        return (dec,)
+    return DecoderOutput(sample = dec)
+
+
+def wan_pair_decode_ok(vae: Any) -> bool:
+    """Whether ``vae`` decodes with diffusers' own ``AutoencoderKLWan._decode`` loop (one latent frame per decoder
+    call), which :func:`wan_paired_decode` reproduces two latent frames at a time."""
+    try:
+        from diffusers.models.autoencoders.autoencoder_kl_wan import AutoencoderKLWan
+    except Exception:  # noqa: BLE001
+        return False
+    return (
+        isinstance(vae, AutoencoderKLWan)
+        and getattr(type(vae), "_decode", None) is AutoencoderKLWan._decode
+        and callable(getattr(vae, "clear_cache", None))
+        and getattr(vae, "decoder", None) is not None
+        and _accepts_first_chunk(vae.decoder)
+    )
+
+
+def wan_paired_decode(
+    vae: Any,
+    z: Any,
+    return_dict: bool = True,
+    frames_per_call: int = 2,
+) -> Any:
+    """Stock ``AutoencoderKLWan._decode`` (untiled) with ``frames_per_call`` latent frames per decoder call after the
+    first. The first call stays one frame (the temporal upsamplers mark their first call and skip its time conv); each
+    causal conv's cache is the last two frames of its padded input, which is the same tensor whether those frames
+    arrived in one call or two, so every output frame matches the one-frame loop (same math; only the conv shapes
+    differ). Output frames are copied into one buffer as they arrive; unpatchify and clamp as stock."""
+    torch = _torch()
+    from diffusers.models.autoencoders.vae import DecoderOutput
+
+    num_frame = int(z.shape[2])
+    step = max(1, int(frames_per_call))
+    vae.clear_cache()
+    x = vae.post_quant_conv(z)
+    buf = None
+    parts: list = []
+    filled = 0
+    rate = 0
+    start = 0
+    while start < num_frame:
+        end = 1 if start == 0 else min(num_frame, start + step)
+        vae._conv_idx = [0]
+        kw = {"first_chunk": True} if start == 0 else {}
+        out = vae.decoder(
+            x[:, :, start:end], feat_cache = vae._feat_map, feat_idx = vae._conv_idx, **kw
+        )
+        n = end - start
+        if buf is None and parts and start == 1 and out.shape[2] % n == 0:
+            first = parts[0]
+            rate = out.shape[2] // n
+            shape = list(first.shape)
+            shape[2] = first.shape[2] + rate * (num_frame - 1)
+            if (
+                out.dim() == first.dim() == 5
+                and out.dtype == first.dtype
+                and list(out.shape[:2]) == shape[:2]
+                and list(out.shape[3:]) == shape[3:]
+            ):
+                buf = torch.empty(
+                    shape, dtype = first.dtype, device = first.device, memory_format = _cat_format(first)
+                )
+                buf[:, :, : first.shape[2]].copy_(first)
+                filled = first.shape[2]
+                parts = []
+        if (
+            buf is not None
+            and not parts
+            and out.shape[2] == rate * n
+            and filled + out.shape[2] <= buf.shape[2]
+        ):
+            buf[:, :, filled : filled + out.shape[2]].copy_(out)
+            filled += out.shape[2]
+        else:
+            if buf is not None and not parts:
+                parts = [
+                    buf[:, :, :filled]
+                ]  # an unexpected chunk: concatenate as stock from here on
+            parts.append(out)
+        del out
+        start = end
+    if parts:
+        dec = torch.cat(parts, dim = 2)
+    else:
+        dec = buf if filled == buf.shape[2] else buf[:, :, :filled]
+    del parts, buf, x
+    patch = getattr(vae.config, "patch_size", None)
     if patch is not None:
         from diffusers.models.autoencoders.autoencoder_kl_wan import unpatchify
         dec = unpatchify(dec, patch_size = patch)
-    if clamp:  # as stock tiled_decode: Wan and Qwen-Image-2.1 clamp, Qwen-Image does not
-        dec = torch.clamp(dec, min = -1.0, max = 1.0)
+    dec.clamp_(min = -1.0, max = 1.0)
+    vae.clear_cache()
     if not return_dict:
         return (dec,)
     return DecoderOutput(sample = dec)
@@ -2466,7 +2725,7 @@ def _install(
             n += int(diffusion_vae_strips.install(vae, logger))
         return n + (install_vectorised_blend(vae) if n else 0)
     if name in _WAN_VAES:
-        n = install_wan_vae(vae, logger, encoder)
+        n = install_wan_vae(vae, logger, encoder and name not in _STOCK_ENCODER_VAES)
         return n + (install_vectorised_blend(vae) if n else 0)
     if name == "AutoencoderKLHunyuanVideo15":
         n = install_hv15_vae(vae, logger, encoder)

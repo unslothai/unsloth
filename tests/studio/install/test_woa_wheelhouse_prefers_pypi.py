@@ -41,8 +41,7 @@ def _staging_loop(source: str) -> str:
 
 
 def test_the_pypi_probe_is_pypi_only(source):
-    """Test-WoaWheelAvailable falls back to the wheelhouse, where the wheel being staged
-    always is, so the guard would never fire. This probe has to ask PyPI and nothing else."""
+    """The wheelhouse always holds the staged wheel, so the probe must ask PyPI alone."""
     body = _function_body(source, "Test-WoaPyPIWheel")
     assert "pypi.org/simple" in body
     for other in ("WoaWheelhouse", "index.txt", "Get-ChildItem"):
@@ -50,8 +49,7 @@ def test_the_pypi_probe_is_pypi_only(source):
 
 
 def test_both_staging_branches_skip_what_pypi_publishes(source):
-    """Both the local-directory branch and the URL branch mirror the wheelhouse, so a guard
-    on one of them leaves the other shipping our copy."""
+    """Both staging branches mirror the wheelhouse, so the redundancy guard must cover both."""
     loop = _staging_loop(source)
     calls = re.findall(r"Test-WoaWheelhouseWheelIsRedundant", loop)
     assert (
@@ -117,8 +115,7 @@ def test_the_default_is_a_release_download_url_on_this_repo(source):
 
 
 def test_the_release_tag_is_the_one_the_workflow_publishes(source):
-    """The workflow that uploads the assets and the installer that downloads them name the tag
-    separately; a rename is a 404 the installer reads as no wheelhouse."""
+    """Workflow and installer each name the tag; a rename 404s and reads as no wheelhouse."""
     workflow = (REPO_ROOT / ".github" / "workflows" / "woa-wheelhouse.yml").read_text(
         encoding = "utf-8"
     )

@@ -55,6 +55,7 @@ class _Session:
         self.rows, self.ending, self.refusals = [], [], []
         self.settled, self.script, self.stats_at_retire = {}, {}, {}
         self.will_not_take, self.closed, self.admitted = set(), False, []
+        self.watched = {}
 
     @property
     def rows_in_flight(self):
@@ -66,6 +67,10 @@ class _Session:
 
     def take_stats(self, handle):
         return self.settled.pop(handle, None)
+
+    def watch_progress(self, handle, sink):
+        assert handle not in self.rows  # a row may prefill while it is admitted
+        self.watched[handle] = sink
 
     def admit(self, request, handle):
         if handle[0] in self.will_not_take or handle in self.will_not_take:
@@ -207,6 +212,20 @@ def test_a_failed_reply_whose_siblings_cannot_be_withdrawn_is_still_answered():
     batch.step()
     errors = {m["request_id"]: m["error"] for m in resp.sent if m["type"] == "gen_error"}
     assert errors == {"r1": "schema", "r2": "schema"} and batch.session is None
+
+
+def test_only_a_single_reply_that_asked_has_its_progress_sent():
+    batch, resp = _batch()
+    batch.admit(_cmd("r1", generation_progress = True), None)
+    batch.admit(_cmd("r2"), None)
+    batch.admit(_cmd("r3", generation_progress = True, rows = [{"seed": 1}, {"seed": 2}]), None)
+    assert list(batch.session.watched) == [("r1", None)]
+    asked = [h for h, request in batch.session.admitted if request.get("generation_progress")]
+    assert asked == [("r1", None)]
+    batch.session.watched[("r1", None)]({"predicted_n": 2})
+    sent = resp.sent[-1]
+    assert (sent["type"], sent["request_id"]) == ("generation_progress", "r1")
+    assert sent["sample"] == {"predicted_n": 2}
 
 
 def test_raw_completion_rows_join_the_batch_and_decode_alone_through_the_completion_path():
@@ -501,3 +520,75 @@ def test_a_count_is_refused_while_the_batch_decodes(monkeypatch):
         None,
     ], f"the count was served mid-decode, or never ran once the batch drained: {counts}"
     assert counts[1]["input_tokens"] == 7
+
+    backend = _Backend(script = {("r1", None): ["a", None]})
+    monkeypatch.setattr(worker, "_backend_declares", lambda *_a: True)
+    backend.image_tokens = lambda width, height: width + height
+    shot = {"type": "image_tokens", "request_id": "i1", "width": 30, "height": 20}
+    sent = _run_loop(
+        monkeypatch, backend, [_cmd("r1", parallel_slots = 2), shot, IDLE, IDLE, IDLE, shot, IDLE]
+    ).sent
+    replies = [
+        (m.get("error"), m.get("tokens")) for m in sent if m["type"] == "image_tokens_response"
+    ]
+    assert replies == [("A generation is in progress.", None), (None, 50)], replies
+
+
+def test_only_a_screenshot_request_its_context_affords_reaches_the_model_as_taken():
+    import base64
+    from io import BytesIO
+
+    from PIL import Image
+
+    class _Shots:
+        def __init__(self, context):
+            self.models, self.active_model_name = {"m": {"context_length": context}}, "m"
+
+        def generate_chat_response(
+            self,
+            messages,
+            images = None,
+            computer_use = False,
+        ):
+            pass
+
+        def count_chat_tokens(
+            self,
+            messages,
+            system_prompt,
+            images = None,
+            computer_use = False,
+            **_k,
+        ):
+            return images[0].size[0] + computer_use
+
+    class _Undeclared(_Shots):
+        def generate_chat_response(
+            self,
+            messages,
+            images = None,
+        ):
+            pass
+
+    buffer = BytesIO()
+    Image.new("RGB", (2000, 1000)).save(buffer, format = "PNG")
+    shot = base64.b64encode(buffer.getvalue()).decode()
+    computer = {"type": "function", "function": {"name": "computer"}}
+    pointer = {"type": "function", "function": {"name": "pointer"}}
+    for tools, context, taken in (
+        ([pointer, computer], 16384, True),
+        ([pointer], 16384, False),
+        ([computer], 4096, False),
+    ):
+        cmd = {"messages": [], "images_base64": [shot], "tools": tools}
+        kwargs = worker._generation_kwargs(_Shots(context), cmd, None)
+        assert kwargs.get("computer_use", False) is taken, (tools, context)
+        assert kwargs["images"][0].size == ((2000, 1000) if taken else (800, 400)), (tools, context)
+        replies = _queue.Queue()
+        worker._handle_count_tokens(_Shots(context), cmd, replies)
+        assert replies.get()["input_tokens"] == (2001 if taken else 800), (tools, context)
+    cmd = {"messages": [], "images_base64": [shot], "tools": [computer]}
+    assert "computer_use" not in worker._generation_kwargs(_Undeclared(16384), cmd, None)
+    replies = _queue.Queue()
+    worker._handle_image_tokens(_Undeclared(16384), {"width": 8, "height": 8}, replies)
+    assert {"tokens", "error"}.isdisjoint(replies.get()), "an engine without the budget must say so"

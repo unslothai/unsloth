@@ -47,8 +47,7 @@ def card(monkeypatch):
 
     monkeypatch.setattr(torch.cuda, "current_device", lambda: state["device"])
     monkeypatch.setattr(torch.cuda, "device", device)
-    # A fake tensor's first use of a device makes a real tensor there (torch.zeros on ROCm builds), which fails for
-    # the fake cuda:1 on a one-GPU host; the launchers here are recorded, so no real device is needed.
+    # Stub init_gpu_context: a fake tensor's first use allocates a real one (fails on cuda:1).
     monkeypatch.setattr(fake_tensor, "init_gpu_context", lambda device: None, raising = False)
     names = ("stats", "quant_rows", "quant_v", "transpose_v", "prep", "kv", "attn")
     kk = types.SimpleNamespace(**{n: _Launcher(log, n, state) for n in names})
@@ -68,8 +67,7 @@ def _qkv(index, D = 128):
 def test_int8_attention_launches_on_the_operands_card(card, monkeypatch, pv, fused):
     state, log = card
     if pv == "half" and (not torch.backends.cuda.is_built() or 0 < torch.cuda.device_count() < 2):
-        # The fake copy into the half V buffer reaches the CUDA runtime: it needs a CUDA build, and with real GPUs
-        # present, a real second card behind cuda:1.
+        # Half-V fake reaches CUDA: needs a CUDA build, and cuda:1 when any GPU is present.
         pytest.skip("the fake half V copy needs a CUDA build and, with GPUs present, a second card")
     if not fused:
         monkeypatch.setattr(T, "GRID_LIMIT", 0)

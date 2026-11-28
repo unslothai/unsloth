@@ -102,6 +102,12 @@ def _kernel() -> Any:
         return _STATE["kernel"]
 
 
+def _block_ptr() -> bool:
+    """Whether the phase loop may use block pointers: Triton 3.9 removed them (triton-lang/triton#10833)."""
+    from . import diffusion_grouped_int8_gemm_kernels as kernels
+    return bool(kernels.BLOCK_PTR)
+
+
 def covered(
     xq: Any, packed: Any, s_rel: Any, codebook: Any, bits: int, group: int, tile: tuple
 ) -> bool:
@@ -217,6 +223,7 @@ def launch(
             BLOCK_K = bk,
             GROUP_M = gm,
             SPLIT_K = split,
+            BLOCK_PTR = _block_ptr(),
             **kw,
         )
         if split > 1:
@@ -298,8 +305,7 @@ def reference(xq: Any, q8: Any, xs: Any, ws: Any, bias: Any) -> Any:
 
 
 def probe_cases(device: Any) -> list:
-    """Packed operands covering both bit depths, the 4-bit codebook, both group sizes, ragged rows, bias / none,
-    exact .5 ties, subnormal and zero steps."""
+    """Probe cases: both bit depths, 4-bit codebook, group sizes, ragged rows, exact .5 ties."""
     import torch
 
     from .diffusion_grouped_int8 import pack_codes
@@ -431,6 +437,12 @@ def tile_for(
     return None
 
 
+def _is_oom(exc: BaseException) -> bool:
+    import torch
+    oom = getattr(torch, "OutOfMemoryError", None) or getattr(torch.cuda, "OutOfMemoryError", None)
+    return oom is not None and isinstance(exc, oom)
+
+
 def grouped_mm_dequant(
     xq: Any,
     packed: Any,
@@ -464,7 +476,8 @@ def grouped_mm_dequant(
         out, _ = launch(xq, packed, s_rel, codebook, xs, ws, bias, bits, group, tile)
     except Exception as exc:  # noqa: BLE001 -- a failed launch turns the fused path off on this card
         with _LOCK:
-            _DEVICE[index] = None
+            if not _is_oom(exc):  # a transient OOM falls back for this call only
+                _DEVICE[index] = None
             _STATE["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         return None
     _CALLS[0] += 1

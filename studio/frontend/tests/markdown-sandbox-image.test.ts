@@ -71,7 +71,7 @@ test("a scheme-less sandbox src is rewritten before it reaches the DOM, and rend
     "PRECONDITION: the chat renderer still passes the url transform",
   );
   assert.ok(
-    /img: MarkdownImage,/.test(MARKDOWN_TEXT),
+    /img: MarkdownMedia,/.test(MARKDOWN_TEXT) && /: <MarkdownImage \{\.\.\.props\} \/>/.test(MARKDOWN_TEXT),
     "registering `img` replaces Streamdown's own renderer wholesale, so the swap has to live in the " +
       "component it replaces -- an unregistered <img src> is the bug this file exists for",
   );

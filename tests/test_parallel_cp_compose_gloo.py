@@ -20,6 +20,7 @@ if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
 import dataclasses  # noqa: E402
+import importlib.metadata  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -41,6 +42,7 @@ _ENV_KEYS = (
     "UNSLOTH_PP_SIZE",
     "UNSLOTH_CP_SIZE",
     "UNSLOTH_CP_BACKEND",
+    "UNSLOTH_EP_SIZE",
     "UNSLOTH_PP_MICROBATCHES",
     "UNSLOTH_PP_SCHEDULE",
     "UNSLOTH_FSDP2",
@@ -50,6 +52,61 @@ _ENV_KEYS = (
 _ADAM_EPS = 1e-4  # as test_tp_env_gloo
 SEQ = 16
 N_LAYERS = 4
+
+
+_LINEAR_HYBRID = dict(
+    layer_types = ["linear_attention", "full_attention"],
+    linear_num_key_heads = 2,
+    linear_num_value_heads = 4,
+    linear_key_head_dim = 8,
+    linear_value_head_dim = 8,
+    linear_conv_kernel_dim = 4,
+)
+# arch -> (transformers config / model class prefix, config kwargs beside the shared tiny shape in _checkpoint)
+_MOE_CONFIGS = {
+    "mixtral": ("Mixtral", dict(intermediate_size = 32, num_local_experts = 4)),
+    "qwen2_moe": (
+        "Qwen2Moe",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+        ),
+    ),
+    "olmoe": ("Olmoe", dict(intermediate_size = 16, num_experts = 4)),
+    "qwen3_5_moe": (
+        "Qwen3_5MoeText:Qwen3_5Moe",
+        dict(
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "qwen3_next": (
+        "Qwen3Next",
+        dict(
+            intermediate_size = 32,
+            moe_intermediate_size = 16,
+            shared_expert_intermediate_size = 16,
+            num_experts = 4,
+            decoder_sparse_step = 1,
+            **_LINEAR_HYBRID,
+        ),
+    ),
+    "phimoe": ("Phimoe", dict(intermediate_size = 16, num_local_experts = 4)),
+    "gpt_oss": (
+        "GptOss",
+        dict(
+            intermediate_size = 16,
+            num_local_experts = 4,
+            layer_types = ["sliding_attention", "full_attention"],
+            sliding_window = 8,
+        ),
+    ),
+}
 
 
 def _checkpoint(tmp, arch = "llama"):
@@ -82,6 +139,41 @@ def _checkpoint(tmp, arch = "llama"):
         )
         torch.manual_seed(0)
         model = transformers.Qwen3_5ForCausalLM(config)
+        model.generation_config.pad_token_id = None
+        path = os.path.join(tmp, "ckpt")
+        model.save_pretrained(path, safe_serialization = True)
+        tok.save_pretrained(path)
+        return path
+    if arch in _MOE_CONFIGS:
+        # Router aux families beside qwen3_moe: 4 heads / 2 kv heads, 4 experts (2 per token), 2 layers (the
+        # hybrids: one linear attention layer, one full), random init. No hub weights.
+        import transformers
+
+        tok = AutoTokenizer.from_pretrained(QWEN3)
+        name, kwargs = _MOE_CONFIGS[arch]
+        config_name, _, model_name = name.partition(":")
+        if not hasattr(transformers, config_name + "Config"):
+            pytest.skip(f"transformers {transformers.__version__} has no {config_name}Config")
+        config = getattr(transformers, config_name + "Config")(
+            vocab_size = len(tok),
+            hidden_size = 32,
+            num_hidden_layers = 2,
+            num_attention_heads = 4,
+            num_key_value_heads = 2,
+            head_dim = 8,
+            num_experts_per_tok = 2,
+            attention_dropout = 0.0,
+            tie_word_embeddings = False,
+            router_aux_loss_coef = 0.001,
+            **kwargs,
+        )
+        config._attn_implementation = "eager"
+        torch.manual_seed(0)
+        model = getattr(transformers, (model_name or config_name) + "ForCausalLM")(config)
+        with torch.no_grad():
+            for pname, p in model.named_parameters():
+                if pname.endswith("bias"):
+                    p.normal_(0, 0.1)
         model.generation_config.pad_token_id = None
         path = os.path.join(tmp, "ckpt")
         model.save_pretrained(path, safe_serialization = True)
@@ -132,6 +224,22 @@ def _packed_row(batch, kind, row):
     }
 
 
+# "right": padded rows; "short": one cp shard without a valid token; "odd": cp appends a token to reach the cp multiple.
+_PAD_LENGTHS = {"right": (16, 11, 7, 13, 9, 16, 12, 5), "short": (6, 8, 5, 3, 7, 2, 8, 4)}
+
+
+def _padded_rows(batch, kind, rows):
+    if kind == "odd":
+        # No attention_mask (eval adds one): only the cp-appended token is padding.
+        return {k: v[:, : SEQ - 1].contiguous() for k, v in batch.items() if k != "attention_mask"}
+    lengths = torch.tensor([_PAD_LENGTHS[kind][r % len(_PAD_LENGTHS[kind])] for r in rows])
+    keep = torch.arange(SEQ)[None] < lengths[:, None]
+    batch["input_ids"] = batch["input_ids"].masked_fill(~keep, 0)
+    batch["labels"] = batch["labels"].masked_fill(~keep, -100)
+    batch["attention_mask"] = keep.long()
+    return batch
+
+
 def _packed_oracle(model, batch):
     """The one-process reference itself keeps documents apart: each document's logits in the packed row equal
     the same document alone (eager, so no compiled graph is added to the reference's counters)."""
@@ -161,10 +269,21 @@ def _full(t):
     return (t.full_tensor() if isinstance(t, DTensor) else t).detach().float().cpu().clone()
 
 
+def _disable_use_cache(model):
+    try:
+        from unsloth_zoo.training_utils import disable_use_cache
+    except ImportError:
+        for module in model.modules():
+            config = getattr(module, "config", None)
+            if getattr(config, "use_cache", None):
+                config.use_cache = False
+        return
+    disable_use_cache(model)
+
+
 def _block_compile_on_cpu(model):
-    """Unsloth's block compile (one torch.compile region per decoder layer) on CPU ranks: its CUDA gate opened
-    and the aot_eager backend instead of inductor. Graph breaks and recompiles are Dynamo's, so they count the
-    same; the generated kernels are not under test here."""
+    """Block compile on CPU ranks: CUDA gate opens, so aot_eager stands in for inductor; kernels
+    untested."""
     from unsloth.models import _block_compile as bc
 
     real_compile = torch.compile
@@ -375,6 +494,9 @@ def _case_train(
     gc = "none",
     packed = None,
     eval_only = False,
+    eval_no_grad = False,
+    padding = None,
+    hf_loss = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -468,12 +590,15 @@ def _case_train(
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    # As for_training / get_peft_model: transformers 4.x builds a KV cache from the config's use_cache = True,
+    # and block compile runs a layer handed a cache eager (the one-process reference compiled nothing).
+    _disable_use_cache(model)
     cpu_chunked_ce = False
     if eval_only:
         from unsloth_zoo.cpu.ops import patch_chunked_causal_lm_loss
         cpu_chunked_ce = patch_chunked_causal_lm_loss(model)
     gdn_calls = []
-    if arch == "qwen3_5":
+    if arch in ("qwen3_5", "qwen3_5_moe", "qwen3_next"):
         # The torch Gated DeltaNet kernels (fla / Triton need CUDA), and a counter on Unsloth's GDN exchange.
         from test_ulysses_hybrid import _force_torch_kernels
 
@@ -529,11 +654,17 @@ def _case_train(
             batch["attention_mask"] = torch.ones_like(input_ids)
         if packed:
             batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
+        if padding:
+            batch = _padded_rows(batch, padding, [int(r["row"]) for r in rows])
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
+
+    if hf_loss:
+        # GPU route: the model forward adds the router aux loss.
+        SequentialSFT.compute_loss = transformers.Trainer.compute_loss
 
     grads, query = {}, None
 
@@ -549,9 +680,18 @@ def _case_train(
             if grads:
                 return
             target = trainer.model
+            from unsloth.models import ep_native
+
+            ep_mesh = ep_native._mesh(target)
             for name, p in target.named_parameters():
                 if p.requires_grad and p.grad is not None:
-                    grads[name] = _full(p.grad)
+                    if ep_mesh is not None and getattr(p, ep_native._EP, None) is not None:
+                        # Expert parallel: this rank's experts only; the 1-GPU tensor is gathered (collective).
+                        grads[name] = _full(
+                            ep_native._gather_expert(p, ep_mesh.get_group(), p.grad)
+                        )
+                    else:
+                        grads[name] = _full(p.grad)
 
     args = trl.SFTConfig(
         output_dir = os.path.join(tmp, "out"),
@@ -659,10 +799,23 @@ def _case_train(
     )
     if eval_only:
         trainer.args.per_device_eval_batch_size = bs
-        metrics = trainer.evaluate(eval_dataset = data)
+        eval_aux_calls = []
+        original_eval_stats = pp_native._router_statistics
+
+        def counted_eval_stats(*a, **k):
+            eval_aux_calls.append(1)
+            return original_eval_stats(*a, **k)
+
+        pp_native._router_statistics = counted_eval_stats
+        # A caller may run evaluate() under no_grad (a callback, a manual eval loop): the cp pads stay excluded.
+        with torch.no_grad() if eval_no_grad else torch.enable_grad():
+            metrics = trainer.evaluate(eval_dataset = data)
         stage = pp_native.pipeline_stage_of(trainer.model)
+        manager = getattr(trainer, "_context_parallel_manager", None)
         return {
             "eval_loss": metrics["eval_loss"],
+            "cp_aux_calls": len(eval_aux_calls),
+            "router_aux_scale": getattr(manager, "router_aux_scale", None),
             "rows_read": rows_read,
             "stage": None if stage is None else int(stage.stage_index),
             "cpu_compute_loss": bool(getattr(type(trainer).compute_loss, "_unsloth_cpu", False)),
@@ -709,6 +862,15 @@ def _case_train(
         if world == 1:
             oracle = _packed_oracle(trainer.model, collate([data[0]]))
             rows_read.clear()  # the oracle's row is not a training micro-batch
+    aux_calls = []
+    if cp > 1:
+        original_stats = pp_native._router_statistics
+
+        def counted_stats(*a, **k):
+            aux_calls.append(1)
+            return original_stats(*a, **k)
+
+        pp_native._router_statistics = counted_stats
     torch._dynamo.reset()
     before = compile_counters.snapshot()
     if packed:
@@ -729,8 +891,13 @@ def _case_train(
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
     is_tp = tp_native.is_tensor_parallel(trainer.model)
+    from unsloth.models import ep_native
+
+    is_ep = ep_native.is_expert_parallel(trainer.model)
     if is_tp:
         state = tp_native.tp_full_state_dict(trainer.model, adapters_only = True)
+    elif is_ep:
+        state = ep_native.ep_full_adapter_state_dict(trainer.model, adapter = mode != "full")
     else:
         state = {
             k: _full(v)
@@ -752,7 +919,11 @@ def _case_train(
         if manager is None
         else sorted(int(r) for r in manager.mesh.mesh.flatten().tolist()),
         "is_tp": is_tp,
+        "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
+        "carried_aux_steps": None
+        if stage is None
+        else int(getattr(stage, "carried_router_aux_steps", 0)),
         "seen_lengths": sorted(seen_lengths),
         "autocast_seen": sorted(autocast_seen),
         "ulysses_calls": None if compile else len(ulysses_calls),
@@ -762,6 +933,10 @@ def _case_train(
         "dataset_rows": len(data),
         "ga": ga,
         "compiled_classes": [getattr(c, "__name__", c) for c in compiled],
+        # Layers whose compiled region ran (a layer handed a KV cache stays eager).
+        "blocks_compiled": sum(
+            1 for m in trainer.model.modules() if m.__dict__.get("_unsloth_block_checked")
+        ),
         "native_fsdp2": __import__("unsloth.models.fsdp2_native", fromlist = ["x"]).is_native_fsdp2(
             trainer.model
         ),
@@ -782,6 +957,16 @@ def _case_train(
         "exchanges": exchanges,
         "n_layers": int(trainer.model.config.num_hidden_layers),
         "gdn_calls": len(gdn_calls),
+        "cp_aux_calls": len(aux_calls),
+        "aux_scaler": any(
+            "unsloth_ga_scale_aux_loss" in fn.__code__.co_names
+            for m in trainer.model.modules()
+            if "router_aux_loss_coef" in vars(m)
+            for fn in cpm._forward_functions(m)
+        )
+        if hasattr(cpm, "_forward_functions")
+        else None,
+        "router_aux_scale": getattr(manager, "router_aux_scale", None),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -879,27 +1064,6 @@ def _rows_per_step(res):
         sorted(r for mb in read[i : i + ga] for r in mb)
         for i in range(0, len(read) - len(read) % ga, ga)
     ]
-
-
-# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule (PipelineScheduleSingle);
-# 2.13 keeps the check in Schedule1F1B only.
-_ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
-
-
-def _skip_if_one_microbatch_refused(results):
-    from unsloth.models import pp_env
-
-    errors = [res.get("error") or "" for res in results]
-    # Where GPipe pads a single micro-batch up to the stage count, a batch of one splits too and is refused.
-    padded = pp_env._gpipe_needs_stage_count() and all(
-        "splits each Trainer batch into 2" in e for e in errors
-    )
-    if errors and (padded or all(_ONE_MICROBATCH_REFUSED in e for e in errors)):
-        import torch as _torch
-        pytest.skip(
-            f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
-            "the pipeline takes the router aux loss over one micro-batch only: " + errors[0][:200]
-        )
 
 
 def _same_rows(
@@ -1079,15 +1243,18 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
     assert (
         single["compiled_classes"] == ["LlamaDecoderLayer"]
         and single["compile"]["unique_graphs"] > 0
-    )
+        and single["blocks_compiled"] == N_LAYERS
+    ), single["blocks_compiled"]
     _close(single, eager, what = "one process compiled")
     for rank, res in enumerate(
         _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True)
     ):
         assert "error" not in res, (rank, res.get("trace"))
         assert (
-            res["compiled_classes"] == ["LlamaDecoderLayer"] and res["compile"]["unique_graphs"] > 0
-        )
+            res["compiled_classes"] == ["LlamaDecoderLayer"]
+            and res["compile"]["unique_graphs"] > 0
+            and res["blocks_compiled"] == N_LAYERS
+        ), (rank, res["blocks_compiled"])
         assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], res[
             "seen_lengths"
         ]
@@ -1237,15 +1404,25 @@ def test_dense_qwen3_under_cp_matches_one_process():
         _close(res, ref, what = ("qwen3", rank))
 
 
+# transformers 4.x builds Qwen3-MoE experts as per-expert modules: the cp model check refuses them (only routed
+# experts run, so unused ones would stall the gradient reduction). test_moe_with_router_aux_loss_under_cp_is_refused
+# checks that refusal; the MoE x cp parity / compile cells need the fused expert stacks of transformers >= 5.
+_TRANSFORMERS_MAJOR = int(importlib.metadata.version("transformers").split(".")[0])
+_cp_moe_needs_fused_experts = pytest.mark.skipif(
+    _TRANSFORMERS_MAJOR < 5,
+    reason = "Ulysses cp refuses per-expert MoE modules (transformers 4.x); fused experts need transformers >= 5",
+)
+
+
 @pytest.mark.parametrize(
     "mode, world, env, cp",
     [
         ("lora", 2, {}, 1),
         ("lora", 2, {"UNSLOTH_FSDP2": "1"}, 1),
-        ("lora", 2, {}, 2),
-        ("lora", 4, {"UNSLOTH_FSDP2": "1"}, 2),
+        pytest.param("lora", 2, {}, 2, marks = _cp_moe_needs_fused_experts),
+        pytest.param("lora", 4, {"UNSLOTH_FSDP2": "1"}, 2, marks = _cp_moe_needs_fused_experts),
         ("full", 2, {"UNSLOTH_FSDP2": "1"}, 1),
-        ("full", 2, {}, 2),
+        pytest.param("full", 2, {}, 2, marks = _cp_moe_needs_fused_experts),
     ],
     ids = ["lora-ddp", "lora-fsdp2", "lora-cp2", "lora-fsdp2_cp2", "full-fsdp2", "full-cp2"],
 )
@@ -1289,123 +1466,11 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         _close(res, ref, what = (env, rank))
 
 
-@pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
-@pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
-@pytest.mark.parametrize("ga", [1, 2, 4])
-def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
-    ga, aux, zoo_compile, tmp_path
-):
-    """PP=2 Qwen3-MoE GA 1/2/4 matches one process: the aux term is token-share weighted (full = ~ga x larger)."""
-    kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
-    base = {}
-    if zoo_compile:
-        kw["zoo_compile"] = True
-        base = {
-            "UNSLOTH_FUSED_FORWARD": "0",
-            "UNSLOTH_COMPILE_DISABLE": "1",
-            "UNSLOTH_COMPILE_LOCATION": str(tmp_path / "unsloth_compiled_cache"),
-        }
-    (ref,) = _spawn("train", 1, base, **kw)
-    assert ref["output_router_logits"] is aux, ref
-    env = {
-        "UNSLOTH_PP_SIZE": "2",
-        "UNSLOTH_PP_MICROBATCHES": "1",
-        "UNSLOTH_PP_SCHEDULE": "gpipe",
-        **base,
-    }
-    results = _spawn("train", 2, env, **kw)
-    _skip_if_one_microbatch_refused(results)
-    _same_rows(results, ref, what = (ga, aux))
-    assert sorted(res.get("stage") for res in results) == [0, 1], results
-    for rank, res in enumerate(results):
-        # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
-        _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
-
-
-@pytest.mark.parametrize(
-    "arch,aux",
-    [("llama", False), ("qwen3_moe", False), ("qwen3_moe", True)],
-    ids = ["dense", "moe_aux_off", "moe_aux_on"],
-)
-def test_cpu_pipeline_eval_matches_one_process(monkeypatch, arch, aux):
-    monkeypatch.setenv("UNSLOTH_FORCE_CPU", "1")
-    kw = dict(
-        bs = 2,
-        ga = 1,
-        steps = 3,
-        arch = arch,
-        eval_only = True,
-        router_aux = aux,
-        aux_coef = 0.5 if aux else None,
-    )
-    (ref,) = _spawn("train", 1, **kw)
-    assert "error" not in ref, ref
-    results = _spawn(
-        "train",
-        2,
-        {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
-        **kw,
-    )
-    _skip_if_one_microbatch_refused(results)
-    assert sorted(res.get("stage", -1) for res in results) == [0, 1], results
-    for res in [ref, *results]:
-        assert "error" not in res, res
-        assert res["cpu_compute_loss"]
-        assert res["cpu_chunked_ce"] is (arch == "llama")
-        assert res["rows_read"] == ref["rows_read"]
-        assert res["eval_loss"] == pytest.approx(ref["eval_loss"], rel = 1e-5)
-
-
-_PP_AUX_SPLIT = "load-balancing loss per micro-batch"
-
-
-@pytest.mark.parametrize(
-    "how",
-    [
-        dict(router_aux = True, aux_coef = 0.5),
-        dict(trl_aux = True, aux_coef = 0.5),
-    ],
-    ids = ["config_flag", "trl_coef"],
-)
-@pytest.mark.parametrize("env", [{}, {"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["default", "1f1b"])
-def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_init(how, env):
-    env = {"UNSLOTH_PP_SIZE": "2", **env}
-    for rank, res in enumerate(
-        _spawn("train", 2, env, bs = 2, ga = 1, steps = 1, arch = "qwen3_moe", probe_refusal = True, **how)
-    ):
-        assert _PP_AUX_SPLIT in (res.get("error") or ""), (rank, res)
-        assert res["phase"] == "init", (rank, res)
-        assert not res["split"] and res["untouched"], (rank, res)
-
-
-@pytest.mark.parametrize(
-    "how, env",
-    [
-        (dict(), {}),
-        (dict(router_aux = True, args_coef = 0.0), {}),
-        (
-            dict(router_aux = True, aux_coef = 0.5, ga = 2),
-            {"UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
-        ),
-        (dict(router_aux = True, aux_coef = 0.5, bs = 1), {"UNSLOTH_PP_SCHEDULE": "gpipe"}),
-    ],
-    ids = ["aux_off", "config_flag_coef0", "aux_on_one_microbatch", "aux_on_batch_of_one"],
-)
-def test_pp_moe_router_aux_loss_allowed_layouts_still_train(how, env):
-    kw = dict(bs = 2, ga = 1, steps = 2, arch = "qwen3_moe", probe_refusal = True)
-    kw.update(how)
-    results = _spawn("train", 2, {"UNSLOTH_PP_SIZE": "2", **env}, **kw)
-    _skip_if_one_microbatch_refused(results)
-    assert sorted(res.get("stage") for res in results) == [0, 1], results
-    for rank, res in enumerate(results):
-        assert res["phase"] is None and "error" not in res, (rank, res)
-        assert len(res["losses"]) == 2 and all(l == l for l in res["losses"]), (rank, res)
-
-
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
 # ParametrizedQwen3MoeTopKRouter type guards recompile more than one process once the router capture hooks are
 # installed before the first block compiles.
 @needs_block_compile_torch
+@_cp_moe_needs_fused_experts
 @pytest.mark.parametrize("mode", ["full"])
 def test_moe_block_compile_under_cp_is_compile_clean(mode):
     from unsloth.utils.compile_counters import not_above
@@ -1428,11 +1493,24 @@ def test_moe_block_compile_under_cp_is_compile_clean(mode):
     "config_flag", [True, False], ids = ["output_router_logits", "trl_default_coef"]
 )
 def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
-    """Refused before the split, also when only TRL's default router_aux_loss_coef would turn the loss on."""
+    """UNSLOTH_CP_ROUTER_AUX=0: refused before the split, also via TRL's default router_aux_loss_coef. On
+    transformers 4.x the per-expert modules are refused first when the config itself keeps the aux loss off."""
     for res in _spawn(
-        "train", 2, bs = 2, cp = 2, arch = "qwen3_moe", router_aux = config_flag, trl_aux = True
+        "train",
+        2,
+        {"UNSLOTH_CP_ROUTER_AUX": "0"},
+        bs = 2,
+        cp = 2,
+        arch = "qwen3_moe",
+        router_aux = config_flag,
+        trl_aux = True,
     ):
         error = res.get("error") or ""
+        if _TRANSFORMERS_MAJOR < 5 and not config_flag:
+            assert "does not support sparse MoE layers with per-expert modules" in error, (
+                error or res["losses"]
+            )
+            continue
         assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (
             error or res["losses"]
         )
@@ -1489,7 +1567,9 @@ def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
     # The baseline runs under 1-rank DDP, which refuses reentrant checkpointing ("marked ready twice"), so
     # path A is compared to the compiled run without checkpointing.
     single = _ref(ref_bs, compile = True, gc = "none" if gc == "unsloth" else gc)
-    assert single["compile"]["unique_graphs"] > 0
+    assert single["compile"]["unique_graphs"] > 0 and single["blocks_compiled"] == N_LAYERS, single[
+        "blocks_compiled"
+    ]
     if gc != "unsloth":
         _checkpoint_engaged(single, gc)
     _close(single, eager, what = ("one process compiled", gc))
@@ -1501,6 +1581,7 @@ def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
         assert res["compiled_classes"] == ["LlamaDecoderLayer"] and res["seen_lengths"] == [
             SEQ // 2
         ]
+        assert res["blocks_compiled"] == N_LAYERS, (rank, res["blocks_compiled"])
         _checkpoint_engaged(res, gc)
         assert not not_above(res["compile"], single["compile"]), (
             rank,
@@ -1529,6 +1610,7 @@ def test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process(env,
         _close(res, ref, what = (env, gc, rank))
 
 
+@_cp_moe_needs_fused_experts
 @_UNSLOTH_GC
 @pytest.mark.parametrize(
     "mode, world, env",
@@ -1552,6 +1634,7 @@ def test_moe_under_cp_with_unsloth_checkpointing_matches_one_process(mode, world
 
 
 @needs_block_compile_torch
+@_cp_moe_needs_fused_experts
 @_UNSLOTH_GC
 def test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean(gc):
     from unsloth.utils.compile_counters import not_above

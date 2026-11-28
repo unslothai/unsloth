@@ -3,9 +3,11 @@
 
 """Load-Model memory estimate tests (POST /api/inference/estimate-memory) on synthetic GGUF headers."""
 
+import gzip
 import inspect
 import json
 import os
+import struct
 import sys
 import types as _types
 from pathlib import Path
@@ -703,6 +705,247 @@ def _request_with_slots(slots: int):
     )
 
 
+class TestManualLayerEstimate:
+    @pytest.fixture
+    def model(self, monkeypatch, tmp_path, request):
+        import numpy as np
+        from gguf import GGUFWriter
+
+        variant = getattr(request, "param", None)
+        nextn = 1 if variant == "nextn" else 0
+        arch = "qwen35moe" if nextn else "qwen3"
+        path = tmp_path / "layers.gguf"
+        writer = GGUFWriter(str(path), arch)
+        for key, value in {
+            **_GQA_FIELDS,
+            "block_count": 4 + nextn,
+            "nextn_predict_layers": nextn,
+        }.items():
+            writer.add_uint32(f"{arch}.{key}", value)
+        for i in range(4 + nextn):
+            writer.add_tensor(f"blk.{i}.attn_q.weight", np.zeros(i + 1, dtype = np.float32))
+        writer.add_tensor("token_embd.weight", np.zeros(32, dtype = np.float32))
+        if variant != "tied":
+            writer.add_tensor("output.weight", np.zeros(16, dtype = np.float32))
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_tensors_to_file()
+        writer.close()
+        config = _local_config(str(path))
+        monkeypatch.setattr(ri, "_cached_estimate_config", lambda *a: config)
+        return str(path)
+
+    @pytest.fixture
+    def inventory(self, monkeypatch):
+        import time
+
+        # Picker is in PCI order. The inherited CUDA mask is in reverse order.
+        devices = [
+            dict(index = i, visible_ordinal = o, vram_free_bytes = free, vram_free_gb = 1)
+            for i, o, free in [(2, 1, 300), (5, 0, 100)]
+        ]
+        inventory = dict(
+            available = True,
+            gguf_gpu_ids_supported = True,
+            index_kind = "physical",
+            backend = "cuda",
+            devices = devices,
+        )
+        main = SimpleNamespace(_system_gpu_cache = (time.monotonic(), (inventory, inventory)))
+        monkeypatch.setitem(sys.modules, "main", main)
+        monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5,2")
+        return inventory
+
+    def test_rocm_ratio_needs_a_pin_to_establish_the_launch_devices(self, model, inventory):
+        inventory["backend"] = "rocm"
+        settings = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            llama_extra_args = ["-ts", "1,1"],
+        )
+        unpinned = _estimate(**settings)
+        assert unpinned.available and unpinned.per_gpu is None
+        pinned = _estimate(**settings, selected_gpu_ids = [5, 2])
+        assert pinned.per_gpu_basis == "tensor_split"
+        assert [row.gpu_id for row in pinned.per_gpu] == [5, 2]
+
+    def test_manual_split_tracks_actual_offloaded_suffix_and_output(self, model, inventory):
+        # Extras win over the fields. The pin strips --device; --no-kv-offload keeps cache on CPU.
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            selected_gpu_ids = [5, 2],
+            tensor_split = [0, 1],
+            gpu_memory_mode = "manual",
+            gpu_layers = 1,
+            llama_extra_args = ["-ts", "1,1", "-ngl", "3", "-dev", "none", "-nkvo"],
+        )
+        assert response.available
+        assert response.per_gpu_basis == "tensor_split"
+        assert [r.model_dump() for r in response.per_gpu] == [
+            dict(gpu_id = 5, layer_count = 2, output_layer = False, weights_bytes = 28, cache_bytes = 0),
+            dict(gpu_id = 2, layer_count = 0, output_layer = True, weights_bytes = 64, cache_bytes = 0),
+        ]
+
+    def test_default_split_uses_raw_bytes_in_child_order(self, model, inventory):
+        # A mismatched first-class ratio is dropped at launch. Four offloaded slots
+        # at 1:3 give GPU 5 block 1 and GPU 2 blocks 2, 3 and the output matrix.
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            tensor_split = [1, 1, 1],
+        )
+        assert response.available
+        assert response.per_gpu_basis == "free_memory"
+        per_block = response.kv_bytes // 4
+        assert per_block > 0
+        assert [
+            (r.gpu_id, r.layer_count, r.weights_bytes, r.cache_bytes) for r in response.per_gpu
+        ] == [
+            (5, 1, 8, per_block),
+            (2, 2, 12 + 16 + 64, per_block * 2),
+        ]
+
+    @pytest.mark.parametrize("model", ["tied"], indirect = True)
+    @pytest.mark.parametrize("extra_args", [[], ["-nkvo"]], ids = ["device-kv", "host-kv"])
+    def test_partial_tied_output_aggregate_matches_rows(self, model, inventory, extra_args):
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 2,
+            tensor_split = [1, 1],
+            selected_gpu_ids = [2, 5],
+            llama_extra_args = extra_args,
+        )
+        response = _estimate(**request)
+        block, output = response.per_gpu
+        assert block.weights_bytes == 16 and block.layer_count == 1
+        assert output.weights_bytes == 128 and output.output_layer
+        assert block.cache_bytes == (0 if extra_args else response.kv_bytes // 4)
+        assert output.cache_bytes == 0
+        assert response.gpu_bytes == 16 + 128 + block.cache_bytes + response.compute_bytes
+        assert (
+            response.total_bytes
+            == response.weights_bytes + response.kv_bytes + response.compute_bytes
+        )
+
+    def test_unknown_cache_keeps_the_aggregate_fallback(self, model, inventory):
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 2,
+            selected_gpu_ids = [2, 5],
+            llama_extra_args = ["-ctk", "f32", "-ctv", "f16"],
+        )
+        estimated = _estimate(**request)
+        assert estimated.per_gpu[0].cache_bytes is None
+        inventory["devices"][0].pop("vram_free_bytes")
+        fallback = _estimate(**request)
+        assert fallback.per_gpu is None and estimated.gpu_bytes == fallback.gpu_bytes
+
+    def test_unpinned_explicit_ratio_sets_child_order_to_picker_order(self, model, inventory):
+        response = _estimate(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 4,
+            tensor_split = [1, 3],
+        )
+        assert [(r.gpu_id, r.layer_count) for r in response.per_gpu] == [(2, 1), (5, 2)]
+
+    @pytest.mark.parametrize(
+        "settings",
+        [
+            {"gpu_memory_mode": "auto"},
+            {"gpu_layers": None},
+            {"gpu_layers": 0},
+            {"tensor_parallel": True},
+            {"llama_extra_args": ["-sm", "row"]},
+            {"llama_extra_args": ["-ot", "blk.0.*=CPU"]},
+            {"llama_extra_args": ["--override-kv", "qwen3.block_count=int:2"]},
+            {"llama_extra_args": ["-ncffn", "1"]},
+            {"llama_extra_args": ["-dev", "CUDA1,CUDA0"]},
+            {"n_cpu_moe": 1},
+            {"selected_gpu_ids": [2, 9]},
+            {"selected_gpu_ids": [2]},
+        ],
+    )
+    def test_unmodelled_placements_keep_the_aggregate(self, model, inventory, settings):
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        response = _estimate(**{**request, **settings})
+        assert response.available and response.per_gpu is None and response.per_gpu_basis is None
+
+    @pytest.mark.parametrize("model", ["nextn"], indirect = True)
+    def test_auto_embedded_mtp_hides_rows_until_speculation_is_off(
+        self, model, inventory, monkeypatch
+    ):
+        monkeypatch.setattr(
+            ri.LlamaCppBackend,
+            "probe_server_capabilities",
+            staticmethod(lambda: {"found": True, "mtp_token": "draft-mtp"}),
+        )
+        request = dict(
+            model_path = model,
+            n_ctx = 2048,
+            gpu_memory_mode = "manual",
+            gpu_layers = 5,
+            tensor_split = [1, 1],
+            selected_gpu_ids = [5, 2],
+        )
+        auto = _estimate(**request, speculative_type = "auto")
+        assert auto.available and auto.drafter_runtime_bytes > 0
+        assert auto.per_gpu is None
+        off = _estimate(**request, speculative_type = "off")
+        assert off.drafter_runtime_bytes == 0 and off.per_gpu is not None
+
+    def test_expired_free_snapshot_is_not_used_for_default_split(self, model, inventory):
+        import time
+
+        sys.modules["main"]._system_gpu_cache = (time.monotonic() - 60, (inventory, inventory))
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        assert _estimate(**request).per_gpu is None
+        assert _estimate(**request, tensor_split = [1, 1]).per_gpu_basis == "tensor_split"
+
+    def test_slider_uses_the_cached_layout_and_never_probes_devices(
+        self, model, inventory, monkeypatch
+    ):
+        import core.inference.offload_layout as layouts
+
+        calls = []
+        read = layouts.layout_from_gguf
+
+        def capture(*args, **kwargs):
+            calls.append(args)
+            return read(*args, **kwargs)
+
+        def forbidden(*args, **kwargs):
+            pytest.fail("estimating a fixed split probed live device memory")
+
+        monkeypatch.setattr(layouts, "layout_from_gguf", capture)
+        monkeypatch.setattr(ri.LlamaCppBackend, "_get_gpu_memory", staticmethod(forbidden))
+        monkeypatch.setattr(ri.LlamaCppBackend, "vulkan_device_inventory", staticmethod(forbidden))
+        request = dict(
+            model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", selected_gpu_ids = [2, 5]
+        )
+        assert _estimate(**request, gpu_layers = 4).per_gpu is not None
+        assert _estimate(**request, gpu_layers = 2).per_gpu is not None
+        assert len(calls) == 1
+
+    def test_unknown_free_is_not_derived_from_display_telemetry(self, model, inventory):
+        inventory["devices"][0].pop("vram_free_bytes")
+        request = dict(model_path = model, n_ctx = 2048, gpu_memory_mode = "manual", gpu_layers = 4)
+        assert _estimate(**request).per_gpu is None
+        # An explicit validated split has no dependency on free VRAM.
+        assert _estimate(**request, tensor_split = [1, 1]).per_gpu is not None
+
+
 class TestEstimateMemoryRoute:
     """The three "cannot size this" answers, and what they must not do first."""
 
@@ -1018,6 +1261,22 @@ class TestEstimateMemoryRoute:
         assert resp.reason == "unsizable"
         assert resp.total_bytes == 0
 
+    def test_an_mlx_estimate_is_priced_with_the_vision_switch_and_prompt_cache(self, monkeypatch):
+        import core.inference.mlx_memory as mlx_memory
+
+        drops = []
+        stub = lambda *a, **kw: drops.append(
+            (mlx_memory._DROPS_VISION.get(), mlx_memory._PROMPT_CACHE_MIB.get())
+        )
+        monkeypatch.setattr(mlx_memory, "mlx_memory_breakdown", stub)
+        for vision, audio, off in ((1, None, 1), (1, None, 0), (1, "audio_vlm", 1), (0, None, 1)):
+            self._mlx_target(monkeypatch, "/models/thing", is_vision = vision, audio_type = audio)
+            mib = 256 if off else None  # the prompt cache it is priced with, too
+            _estimate(
+                model_path = "org/model", max_seq_length = 4096, disable_vision = off, cache_ram = mib
+            )
+            assert drops.pop() == (bool(vision and off and not audio), mib)
+
     def test_mlx_model_is_priced_and_itemized(self, monkeypatch, tmp_path):
         self._mlx_target(monkeypatch, "/models/thing")
         seen = self._record_breakdown(
@@ -1069,6 +1328,9 @@ class TestEstimateMemoryRoute:
             "latest_tier_active_for",
             lambda name, token = None: asked.append((name, token)) or True,
         )
+        # The precision check reads the adapter and config next; keep both off the Hub.
+        monkeypatch.setattr(tv, "_remote_lora_base", lambda *a, **kw: None)
+        monkeypatch.setattr(tv, "_load_config_json", lambda *a, **kw: None)
         monkeypatch.setattr(
             ri,
             "_offline_guarded",
@@ -1076,7 +1338,7 @@ class TestEstimateMemoryRoute:
         )
         _estimate(model_path = "org/model", max_seq_length = 16384, load_in_4bit = True, hf_token = "tok")
         assert seen["load_in_4bit"] is False
-        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_active_for]
+        assert asked == [("org/model", "tok")] and guarded == [tv.latest_tier_forces_16bit]
         monkeypatch.setattr(tv, "latest_tier_active_for", lambda *a, **kw: False)
 
         monkeypatch.setattr(
@@ -4299,6 +4561,24 @@ def _caption(
     return mm._cache_width_name(plan, bits, converted, "bf16", n_ctx, mm.MLX_PREFILL_CHUNK)
 
 
+def _snapshot_or_headers(repo, tmp_path):
+    """The repo rebuilt from its committed config and shard headers over sparse bytes, else its local snapshot."""
+    fixture = (
+        Path(__file__).parent / "data" / "mlx_headers" / (repo.replace("/", "--") + ".json.gz")
+    )
+    if not fixture.exists():
+        return _local_snapshot(repo)
+    data = json.loads(gzip.decompress(fixture.read_bytes()))
+    for name, text in data["files"].items():
+        (tmp_path / name).write_text(text)
+    for name, shard in data["shards"].items():
+        header = shard["header"].encode()
+        with open(tmp_path / name, "wb") as f:
+            f.write(struct.pack("<Q", len(header)) + header)
+            f.truncate(shard["size"])
+    return str(tmp_path)
+
+
 def _local_snapshot(repo):
     """This repo's snapshot directory, skipping the test when it is not here."""
     hub = os.path.expanduser("~/.cache/huggingface/hub")
@@ -4664,8 +4944,8 @@ def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch)
 def _longest_unfused_d256_tail():
     from unsloth_zoo.mlx.nax import nax_available
 
-    # NAX fuses head_dim 256 from 1024 queries.
-    return 1023 if nax_available() else 2047
+    # NAX fuses half-precision head_dim 256 from 512 queries once batch x heads reaches 8.
+    return 511 if nax_available() else 2047
 
 
 @_NEEDS_MLX
@@ -4949,8 +5229,8 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
         "widths, scored_cells",
         [
             ((3584, 18944, 16, 4, 256, 256), 2047 * (3 * 2048 + 2047)),
-            # mlx's own kernel for this width starts above 8 queries.
-            ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
+            # Off NAX, one KV head leaves mlx's split kernel out: its own kernel for this width starts above 8 queries.
+            ((3584, 18944, 32, 1, 64, 64), 8 * (16 * 2048 + 8)),
         ],
     )
     def test_a_prefill_is_charged_its_dequantized_cache_and_any_scores(self, widths, scored_cells):
@@ -5393,7 +5673,13 @@ class TestPricingALoad:
             "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
         )
         assert (wide, quantized) == (2_886_144, 813_568 if embeddings_quantized else 1_001_984)
-        assert quantized < wide < mm._shard_bytes(str(tmp_path), config) == 2_888_265
+        # The shard is the header mlx writes plus the tensor bytes; mlx's header length varies by release.
+        assert (
+            quantized
+            < wide
+            < mm._shard_bytes(str(tmp_path), config)
+            == (tmp_path / "model.safetensors").stat().st_size
+        )
 
     def test_engram_mlx_vlm_reads_from_disk_is_not_priced(self, tmp_path, monkeypatch):
         import mlx.core as mx
@@ -5425,6 +5711,31 @@ class TestPricingALoad:
             os.path.getsize(path) - 64 * 128 * 4,
             os.path.getsize(path),
         )
+
+    def test_a_vision_dropping_load_prices_no_vision_weights(self, tmp_path, monkeypatch):
+        import mlx.core as mx
+        import mlx.nn as nn
+        from mlx.utils import tree_flatten
+
+        if not hasattr(pytest.importorskip("unsloth_zoo.mlx.loader"), "_detach_vision_modules"):
+            pytest.skip("this unsloth_zoo reads the vision weights")
+
+        def vlm(*_):
+            model = nn.Module()
+            model.language_model, model.vision_tower = nn.Linear(64, 64), nn.Linear(64, 32)
+            return model
+
+        monkeypatch.setattr(mm, "_whole_model", vlm)
+        monkeypatch.setattr(mm, "_builds_on_mlx_vlm", lambda config: True)
+        path = tmp_path / "model.safetensors"
+        mx.save_safetensors(str(path), dict(tree_flatten(vlm().parameters())))
+
+        def price(off, **config):
+            with mm.mlx_dropping_vision(SimpleNamespace(is_vision = True), off):
+                return mm.mlx_weight_bytes(str(tmp_path), dict(config, model_type = "toy"))
+
+        assert [price(off) // mm._runtime_dtype().size for off in (False, True)] == [6240, 4160]
+        assert price(True, quantization = {"bits": 4}) == os.path.getsize(path) - 2080 * 4
 
     def test_shards_that_name_nothing_the_architecture_has_are_not_priced_from_it(self, tmp_path):
         config = self._checkpoint(tmp_path, prefix = "draft.")
@@ -5614,9 +5925,9 @@ class TestShardsTheLoaderReads:
             mm.mlx_shard_files(str(tmp_path), self._VISION)
 
 
-# mlx 0.32.4 leaves head_dim 256 prefill unfused below NAX, and tails under 1024 queries on NAX.
+# mlx leaves head_dim 256 prefill unfused below NAX, and short tails on NAX.
 _UNFUSED_HEAD_DIM_256_SCORES = {
-    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_298_923_560, False: 2_682_961_960}
+    "unsloth/Qwen3.6-35B-A3B-UD-MLX-4bit": {True: 1_916_689_812, False: 2_400_014_208}
 }
 
 
@@ -5728,11 +6039,11 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
     ],
 )
 def test_a_real_checkpoint_is_priced_to_the_byte(
-    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption
+    repo, n_ctx, kv_bits, weights, kv, compute, layers, caption, tmp_path
 ):
     _on_bfloat16_chip()
     breakdown = mm.mlx_memory_breakdown(
-        _local_snapshot(repo), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
+        _snapshot_or_headers(repo, tmp_path), n_ctx = n_ctx, load_in_4bit = True, kv_bits = kv_bits
     )
     assert breakdown is not None
     assert (breakdown.weights_bytes, breakdown.kv_bytes) == (weights, kv)
@@ -5888,3 +6199,15 @@ def test_the_drafter_picker_lists_cached_drafters_of_a_cached_target(tmp_path, m
     assert ri._mlx_cached_drafters("o/absent") == []
     monkeypatch.setattr(ri.account_access, "filter_model_rows", lambda rows: rows[1:])
     assert [row["repo_id"] for row in ri._mlx_cached_drafters("o/T")] == ["o/T-MTP"]
+
+
+def test_a_vision_off_text_route_prices_no_auto_drafter(monkeypatch):
+    from core.inference import mlx_inference, mlx_memory, mlx_speculative
+
+    monkeypatch.setattr(mlx_memory, "_loads_as_vision", lambda _config: True)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_: None)
+    monkeypatch.setattr(mlx_inference, "_text_load_drops_the_tower", lambda _model: True)
+    request = SimpleNamespace(speculative_type = "auto", spec_draft_model = None)
+    assert ri._mlx_estimate_speculates(request, "/m")
+    with mlx_memory.mlx_dropping_vision(SimpleNamespace(is_vision = True), True):
+        assert not ri._mlx_estimate_speculates(request, "/m")

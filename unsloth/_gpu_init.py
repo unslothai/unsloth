@@ -16,7 +16,6 @@ import numpy as np
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
-# Modules that need patching but may already be imported
 critical_modules = ["trl", "transformers", "peft"]
 already_imported = [mod for mod in critical_modules if mod in sys.modules]
 
@@ -197,8 +196,7 @@ def _nvidia_smi_gpu_name():
 
 def _reraise_device_type_error_with_gpu_hint(exception):
     mask = os.environ.get("CUDA_VISIBLE_DEVICES")
-    # Zoo's generic error lists AMD, so only "ROCm" identifies its ROCm advice.
-    # An empty or "-1" mask hides every GPU on purpose.
+    # Zoo's error lists AMD, so match "ROCm" only; empty or "-1" mask hides GPUs on purpose.
     if "ROCm" in str(exception) or (mask is not None and "".join(mask.split()) in ("", "-1")):
         raise exception
     gpu_name = _nvidia_smi_gpu_name()
@@ -218,7 +216,6 @@ def _reraise_device_type_error_with_gpu_hint(exception):
     ) from exception
 
 
-# Try importing PyTorch and check version
 try:
     unsloth_zoo_version = importlib_version("unsloth_zoo")
     if Version(unsloth_zoo_version) < Version("2026.8.15"):
@@ -239,8 +236,7 @@ try:
     )
 
     _allocator_env_before = {k: os.environ.get(k) for k in _ALLOCATOR_ENV}
-    # Zoo exports its allocator settings before its own import starts CUDA, so only a process whose CUDA was
-    # already running (a torchrun rank > 0 binds its device at import) missed them.
+    # Zoo sets allocator env before CUDA starts; torchrun ranks > 0 bind early and miss them.
     _cuda_started_before = cuda_started()
     import unsloth_zoo
 
@@ -309,8 +305,7 @@ if os.environ.get("UNSLOTH_FORCE_SINGLE_COMPILE_WORKER", "0") == "1":
             "determine_compile_threads",
             lambda: 1,
         )
-        # Zoo's options dicts were snapshotted at import and outrank the env var in Inductor; rewrite them
-        # in place, since they are shared by identity across modules and the torch_compile partial.
+        # Zoo's options dicts outrank the env var; rewrite in place (shared by identity).
         for module in list(sys.modules.values()):
             name = getattr(module, "__name__", "")
             if name != "unsloth_zoo" and not name.startswith("unsloth_zoo."):
@@ -368,6 +363,7 @@ from .import_fixes import (
     fix_transformers_untrusted_config_fields,
     fix_transformers_chat_template_path_traversal,
     fix_transformers_tokenizer_config_vocab_file_override,
+    fix_transformers_mistral_regex_hub_error,
     fix_transformers_chunked_mask_block_sequence_ids,
     fix_transformers_flex_mask_graph_breaks,
     fix_transformers_longcat_lsa_config,
@@ -385,6 +381,7 @@ from .import_fixes import (
     fix_flash_attn_4_namespace_shadow,
     fix_vllm_aimv2_issue,
     fix_vllm_lora_tokenizer_module,
+    fix_vllm_weight_transfer_module,
     fix_torchao_nf4tensor_move,
     fix_compressed_tensors_activation_quant_gradient,
     fix_torchao_safe_int_mm_repr_probe,
@@ -399,6 +396,7 @@ from .import_fixes import (
     fix_triton_compiled_kernel_missing_attrs,
     fix_dynamo_config_thread_visibility,
     fix_inductor_reduction_readback_race,
+    fix_inductor_triton_wrapper_eager_vals,
     fix_flex_attention_eager_saved_tensor_hooks,
     patch_trunc_normal_precision_issue,
     ignore_logger_messages,
@@ -408,6 +406,7 @@ from .import_fixes import (
     patch_psutil_cpu_freq,
     patch_enable_input_require_grads,
     patch_unsafe_trainer_rng_load,
+    patch_peft_bin_load_old_torch,
     patch_torch_export_pt2_unsafe_load,
     fix_openenv_no_vllm,
     patch_openspiel_env_async,
@@ -444,6 +443,7 @@ fix_transformers_flex_mask_graph_breaks()
 fix_transformers_untrusted_config_fields()
 fix_transformers_chat_template_path_traversal()
 fix_transformers_tokenizer_config_vocab_file_override()
+fix_transformers_mistral_regex_hub_error()
 # Probe-gated: no-ops unless this transformers merges a submodule's own prefix renaming into a
 # composite model's conversion mapping. Ordered here, before anything loads a checkpoint, so a
 # plain transformers.from_pretrained in the same process keeps its bitsandbytes quant_state too.
@@ -479,6 +479,7 @@ fix_xformers_performance_issue()
 fix_flash_attn_4_namespace_shadow()
 fix_vllm_aimv2_issue()
 fix_vllm_lora_tokenizer_module()
+fix_vllm_weight_transfer_module()
 # torchao 0.18.0 moved nf4tensor; torchtune (via xcodec2) imports the old path. Lazy alias.
 fix_torchao_nf4tensor_move()
 fix_compressed_tensors_activation_quant_gradient()
@@ -501,6 +502,8 @@ fix_triton_compiled_kernel_missing_attrs()
 # recompile limits, so those settings reach the autograd worker threads on torch >= 2.12.
 fix_dynamo_config_thread_visibility()
 fix_inductor_reduction_readback_race()
+# torch < 2.13: dynamic-shape Triton kernel decomposition assertion (Gemma2 GEGLU under block compile).
+fix_inductor_triton_wrapper_eager_vals()
 # Eager flex_attention inside a non-reentrant checkpoint (DDP) restarted the layer's recompute mid forward.
 fix_flex_attention_eager_saved_tensor_hooks()
 patch_trunc_normal_precision_issue()
@@ -535,6 +538,8 @@ patch_peft_shared_active_adapter()
 fix_peft_stale_torchao_import_error()
 # peft.tuners.lora.model imported dispatch_torchao by value, so both copies must be replaced.
 fix_peft_torchao_missing_tensor_subclass()
+# After the PEFT import shims above: on an import failure the guard would silently not install.
+patch_peft_bin_load_old_torch()
 patch_accelerate_recursively_apply()
 
 del fix_transformers5_bare_annotation_configs
@@ -543,6 +548,7 @@ del fix_transformers_config_commit_hash
 del fix_transformers_untrusted_config_fields
 del fix_transformers_chat_template_path_traversal
 del fix_transformers_tokenizer_config_vocab_file_override
+del fix_transformers_mistral_regex_hub_error
 del fix_transformers_rope_scaling_drops_theta
 del fix_transformers_bnb_prequantized_save
 del fix_transformers_fp8_modulelist_experts
@@ -557,6 +563,7 @@ del fix_xformers_performance_issue
 del fix_flash_attn_4_namespace_shadow
 del fix_vllm_aimv2_issue
 del fix_vllm_lora_tokenizer_module
+del fix_vllm_weight_transfer_module
 del fix_torchao_nf4tensor_move
 del fix_compressed_tensors_activation_quant_gradient
 del fix_torchao_safe_int_mm_repr_probe
@@ -572,6 +579,7 @@ del fix_rocm_windows_wide_head_sdpa
 del fix_triton_compiled_kernel_missing_attrs
 del fix_dynamo_config_thread_visibility
 del fix_inductor_reduction_readback_race
+del fix_inductor_triton_wrapper_eager_vals
 del patch_trunc_normal_precision_issue
 del ignore_logger_messages
 del patch_ipykernel_hf_xet
@@ -746,7 +754,6 @@ if DEVICE_TYPE == "cuda":
                 possible_cudas = [find_cuda.search(x) for x in possible_cudas]
                 possible_cudas = [x.group(1) for x in possible_cudas if x is not None]
 
-                # Try linking cuda folder, or everything in local
                 if len(possible_cudas) == 0:
                     os.system("ldconfig /usr/local/")
                 else:
@@ -796,7 +803,6 @@ if DEVICE_TYPE == "cuda":
             )
     del libcuda_dirs
 elif DEVICE_TYPE == "hip":
-    # NO-OP for rocm device
     pass
 elif DEVICE_TYPE == "xpu":
     # Same degradation as the cuda branch above: no bnb means no 4bit, not a failed `import unsloth`.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import { withModelLoadNotice } from "@/lib/model-lifecycle-events";
 import {
   type AudioCppRuntimeStatus,
@@ -119,12 +120,15 @@ function dictationFilename(contentType: string): string {
 }
 
 async function sttErrorDetail(response: Response): Promise<string> {
-  const body = (await response.json().catch(() => null)) as {
-    detail?: string;
-    error?: { message?: string };
-  } | null;
-  return body?.detail ?? body?.error?.message ?? `HTTP ${response.status}`;
+  const body = await response.json().catch(() => null);
+  if (body?.detail?.error === "download_busy") {
+    const seconds = Number(body.detail.retry_after) || 1;
+    return `Another speech-to-text download is running. Try again in ${seconds} ${seconds === 1 ? "second" : "seconds"}.`;
+  }
+  return formatApiErrorBody(body) ?? `HTTP ${response.status}`;
 }
+
+export type TranscriptSegment = { start: number; end: number; text: string };
 
 export async function transcribeAudioBlob(
   blob: Blob,
@@ -138,6 +142,8 @@ export async function transcribeAudioBlob(
     ggufVariant?: string | null;
     providerId?: string;
     signal?: AbortSignal;
+    /** Asks for segment timings; called only when the engine reports them. */
+    onSegments?: (segments: TranscriptSegment[]) => void;
   } = {},
 ): Promise<string> {
   const settings = useVoiceSettingsStore.getState();
@@ -222,6 +228,7 @@ export async function transcribeAudioBlob(
   if (context.context_length !== undefined) {
     params.set("context_length", String(context.context_length));
   }
+  if (options.onSegments) params.set("timestamps", "true");
   const response = await authFetch(
     `/api/inference/audio/transcribe/raw?${params.toString()}`,
     {
@@ -240,7 +247,24 @@ export async function transcribeAudioBlob(
     }
     throw sttRequestError(response.status, detail);
   }
-  const data = (await response.json()) as { text?: string };
+  const data = (await response.json()) as {
+    text?: string;
+    segments?: unknown;
+  };
+  if (options.onSegments && Array.isArray(data.segments)) {
+    const segments = (data.segments as Array<Record<string, unknown>>).flatMap(
+      ({ start, end, text }) =>
+        typeof start === "number" &&
+        typeof end === "number" &&
+        Number.isFinite(start) &&
+        Number.isFinite(end) &&
+        typeof text === "string" &&
+        text.trim()
+          ? [{ start, end, text: text.trim() }]
+          : [],
+    );
+    if (segments.length > 0) options.onSegments(segments);
+  }
   return (data.text ?? "").trim();
 }
 
@@ -347,10 +371,7 @@ export async function validateSttModel(
     body: JSON.stringify({ model }),
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    throw new Error(await sttErrorDetail(response));
   }
 }
 
@@ -410,11 +431,7 @@ export function loadSttModel(
       signal,
     });
     if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as {
-        detail?: string;
-      } | null;
-      const detail = body?.detail ?? `HTTP ${response.status}`;
-      throw sttRequestError(response.status, detail);
+      throw sttRequestError(response.status, await sttErrorDetail(response));
     }
     }),
   );
@@ -440,10 +457,7 @@ export async function startSttDownload(
     }),
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as {
-      detail?: string;
-    } | null;
-    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    throw new Error(await sttErrorDetail(response));
   }
   return (await response.json()) as SttDownloadStatus;
 }
@@ -467,10 +481,10 @@ export async function cancelSttDownload(
     }),
   });
   const body = (await response.json().catch(() => null)) as
-    | (Partial<SttDownloadStatus> & { detail?: string })
+    | Partial<SttDownloadStatus>
     | null;
   if (!response.ok) {
-    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+    throw new Error(formatApiErrorBody(body) ?? `HTTP ${response.status}`);
   }
   if (body?.downloading && body.cancelled === false) {
     throw new Error("The download changed before cancellation completed.");
@@ -496,10 +510,7 @@ export function unloadSttModel(
       { method: "POST" },
     );
     if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as {
-        detail?: string;
-      } | null;
-      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      throw new Error(await sttErrorDetail(response));
     }
     // `released` is false when the backend kept a model it was not asked to unload.
     const body = (await response.json().catch(() => null)) as {

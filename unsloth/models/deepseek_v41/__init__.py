@@ -11,10 +11,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Native DeepSeek-V4.1 (``deepseek_v41`` / ``deepseek_v41_text``) for transformers releases that do not ship it.
-
-On transformers 5 the checkpoint renaming table is registered too; a transformers that ships deepseek_v41 wins.
-"""
+"""Native DeepSeek-V4.1 for transformers without it; on v5 the checkpoint renames are registered too."""
 
 import importlib.util
 
@@ -36,8 +33,7 @@ def transformers_has_deepseek_v41():
 
 
 def _conversion_rules():
-    """Released checkpoint names -> this module tree. No ``$`` anchors: the table also runs in reverse on save,
-    and a reversed ``$`` would be written into the key."""
+    """Released checkpoint key rules; no $ anchors: the table also runs in reverse when saving."""
     from transformers.core_model_loading import (
         Concatenate,
         MergeModulelist,
@@ -124,8 +120,7 @@ def _conversion_rules_head():
 
 
 def register_deepseek_v41():
-    """Register the native classes with the Auto factories; returns (config_class, model_class) or None when
-    transformers ships its own deepseek_v41."""
+    """Register with Auto factories; returns (config, model) or None if transformers has it."""
     global _REGISTERED
     if transformers_has_deepseek_v41():
         return None
