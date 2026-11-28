@@ -462,3 +462,29 @@ def test_structural_blocker_reasons(ga):
         assert "num_kv_shared_layers = 2" in mod._structural_blocker(
             shared, _decoder_layers(shared)
         )
+
+
+def test_unsloth_compiled_patches_inside_layers_stay_eligible(ga, monkeypatch):
+    """A forward compiled onto a class by Unsloth's own temporary patches (Gemma 4's TextMLP fp16 clamp) does not
+    refuse windows; a user's torch.compile on a layer's submodule still does."""
+    import types
+
+    mod, engine = ga
+    stub = types.SimpleNamespace(args = types.SimpleNamespace(optim = "adamw_torch", n_gpu = 1))
+    model = _build("llama")
+    layers = _decoder_layers(model)
+    mlp_cls = type(layers[0].mlp)
+
+    def forward(self, x):
+        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+    forward.__module__ = "unsloth_zoo.temporary_patches.llama_test"
+    monkeypatch.setattr(mlp_cls, "forward", torch.compile(forward, backend = "eager"))
+    assert mod._window_blocker(stub, model, layers) is None
+    attn = layers[1].self_attn
+    attn.forward = torch.compile(attn.forward, backend = "eager")
+    assert "decoder layer" in mod._window_blocker(stub, model, layers)
+    del attn.forward
+    user = torch.compile(lambda self, x: forward(self, x), backend = "eager")
+    monkeypatch.setattr(mlp_cls, "forward", user)
+    assert "decoder layer" in mod._window_blocker(stub, model, layers)
