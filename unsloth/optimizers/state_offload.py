@@ -4,7 +4,16 @@
 """UNSLOTH_OFFLOAD_OPTIMIZER_STATE=1: state on host, chunked to GPU in step; parameter-local only.
 
 On CUDA the chunk copies overlap the step through a fixed staging ring no larger than one serial
-chunk (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP=0 keeps them serial)."""
+chunk (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_OVERLAP=0 keeps them serial).
+
+UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT = auto keeps the largest weights' state on the GPU, as much as fits in
+the memory the first steps left unused (a margin of max(1 GiB, 5%) kept free), or = <GiB> that budget; only the
+rest is copied each step. Sized once from the first steps: batches that later grow past them can run out of
+memory, so a fixed budget is safer when batch shapes vary. Same updates, bitwise.
+
+bfloat16 stochastic rounding steps one weight per call; a weight whose state is over 64 MB is staged and stepped
+in element ranges (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_SEGMENT_MB, 0 = whole weights), drawing the same random bits,
+so the largest weights' copies overlap the step like every other weight's. Same updates, bitwise."""
 
 import contextlib
 import copy
@@ -40,6 +49,37 @@ def optimizer_state_offload_enabled():
 
 def _overlap_enabled():
     return os.environ.get(_ENV + "_OVERLAP", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _resident_setting():
+    """UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT: None (off), "auto" (the GPU memory the first steps left
+    unused) or a byte budget (a number of GiB)."""
+    value = os.environ.get(_ENV + "_RESIDENT", "0").strip().lower()
+    if value in ("", "0", "false", "no", "off"):
+        return None
+    if value in ("1", "auto", "true", "yes", "on"):
+        return "auto"
+    try:
+        gib = float(value)
+    except ValueError:
+        return None
+    return int(gib * 2**30) if gib > 0 else None
+
+
+def _segment_bytes():
+    """UNSLOTH_OFFLOAD_OPTIMIZER_STATE_SEGMENT_MB (default 64): in per-weight sequences, stage a weight whose state is
+    larger in element ranges of about this size (0 = whole weights), so its copies overlap like any other weight's."""
+    try:
+        mb = float(os.environ.get(_ENV + "_SEGMENT_MB", "64"))
+    except ValueError:
+        return 0
+    return int(mb * 2**20) if mb > 0 else 0
+
+
+_HINTED = False  # the unused-GPU-memory hint prints once per process
+
+# Element ranges are whole multiples of this (the one-pass kernel's block).
+_SEGMENT_ALIGN = 1024
 
 
 _RING_ALIGN = 512
@@ -167,7 +207,7 @@ class _Ring:
 
     def place(self, tensors):
         """Copy [(param, key, host, padded bytes)] in: (views, ready event, range), or None if full."""
-        nbytes = sum(n for *_, n in tensors)
+        nbytes = sum(t[3] for t in tensors)
         start = 0 if self.head + nbytes > self.capacity else self.head
         end = start + nbytes
         if any(s < end and start < e for s, e in self.live):
@@ -182,11 +222,12 @@ class _Ring:
             self.done = self.done[last + 1 :]
         views, offset = [], start
         with torch.cuda.stream(self.h2d):
-            for p, key, host, n in tensors:
+            for p, key, host, n, *whole in tensors:
                 raw = self.buffer[offset : offset + host.numel() * host.element_size()]
                 view = raw.view(host.dtype).view(host.shape)
                 view.copy_(host, non_blocking = True)
-                views.append((p, key, host, view, offset, n))
+                # host may be an element range of the state's buffer (whole): the state gets whole back.
+                views.append((p, key, host, view, offset, n, whole[0] if whole else host))
                 offset += n
         ready = torch.cuda.Event()
         ready.record(self.h2d)
@@ -197,7 +238,7 @@ class _Ring:
     def use(self, placed, state):
         views, ready, _ = placed
         self.compute.wait_event(ready)
-        for p, key, _, view, _, _ in views:
+        for p, key, _, view, *_ in views:
             state[p][key] = _with_local(state[p][key], view)
 
     def copy_out(self, placed, state):
@@ -207,7 +248,7 @@ class _Ring:
         self.d2h.wait_event(stepped)
         segment, copied = start, 0
         with torch.cuda.stream(self.d2h):
-            for p, key, host, view, offset, n in views:
+            for p, key, host, view, offset, n, whole in views:
                 current = state[p].get(key)
                 local = _local(current)
                 if local is view:
@@ -218,7 +259,7 @@ class _Ring:
                     local.record_stream(self.d2h)
                 else:
                     continue
-                state[p][key] = _with_local(current, host)
+                state[p][key] = _with_local(current, whole)
                 copied += n
                 if copied >= _RING_SEGMENT_BYTES:
                     event = torch.cuda.Event()
@@ -238,14 +279,20 @@ class _Ring:
 
 
 class _Sequence:
-    __slots__ = ("ring", "parts", "placed", "next", "current", "stopped")
+    __slots__ = ("ring", "parts", "placed", "next", "current", "stopped", "segments")
 
-    def __init__(self, ring, parts):
+    def __init__(
+        self,
+        ring,
+        parts,
+        segments = None,
+    ):
         self.ring, self.parts = ring, parts
         self.placed = []
         self.next = 0
         self.current = None
         self.stopped = False
+        self.segments = segments or {}  # param -> [(start, end)] element ranges, one step call each
 
 
 class _StateOffloader:
@@ -269,6 +316,126 @@ class _StateOffloader:
         self.streams = None
         self.sequence = None
         self.ring_oom_fallbacks = 0
+        # Weights whose state stays on the GPU (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT).
+        self.resident = set()
+        self.params = [p for group in optimizer.param_groups for p in group["params"]]
+        self.resident_bytes = 0
+        self.resident_decided = False
+        self.stepped = False
+        self.last_params = None
+
+    def _resident_candidates(self):
+        """(device, [(bytes, param)]) for weights whose whole state is plain offloaded tensors on one CUDA device."""
+        by_param = {}
+        for (param, key), device in self.offloaded.items():
+            by_param.setdefault(param, []).append((key, device))
+        device, out = None, []
+        for param, entries in by_param.items():
+            if param in self.resident or any(isinstance(key, tuple) for key, _ in entries):
+                continue
+            devices = {d for _, d in entries}
+            if len(devices) != 1:
+                continue
+            (here,) = devices
+            if here.type != "cuda":
+                continue
+            if device is None:
+                device = here
+            elif here != device:
+                return None, []
+            nbytes = sum(
+                self.buffers[(param, key)].numel() * self.buffers[(param, key)].element_size()
+                for key, _ in entries
+                if (param, key) in self.buffers
+            )
+            out.append((nbytes, param))
+        return device, out
+
+    def _decide_resident(self):
+        """Once, after the first step: keep the largest weights' state on the GPU while it fits in the memory
+        the steps so far never used (or the given budget). Their copies leave the step; the staging ring then
+        only has to hold the largest streamed weight."""
+        if self.resident_decided or not self.stepped or self.sequence is not None:
+            return
+        # Per-weight steps (bfloat16 stochastic rounding) finish one weight at a time: wait until every weight
+        # with a gradient has its state, so the whole step's state is known.
+        state = self.optimizer.state
+        if any(p.grad is not None and not state.get(p) for p in self.params):
+            return
+        setting = _resident_setting()
+        self.resident_decided = True
+        if not torch.cuda.is_available():
+            return
+        device, candidates = self._resident_candidates()
+        if device is None or not candidates:
+            return
+        budget = setting if setting not in (None, "auto") else self._unused_gpu_bytes(device)
+        if budget is None:
+            return
+        if setting is None:
+            global _HINTED
+            if budget >= 1 << 30 and not _HINTED:
+                _HINTED = True
+                print(
+                    f"Unsloth: {budget / 2**30:.1f} GB of GPU memory stayed unused while optimizer state is offloaded; "
+                    "UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT=auto keeps that much state on the GPU (faster steps)."
+                )
+            return
+        chosen, used = [], 0
+        for nbytes, param in sorted(candidates, key = lambda c: -c[0]):
+            if used + nbytes <= budget:
+                chosen.append(param)
+                used += nbytes
+        if not chosen:
+            return
+        self._pin_resident(chosen)
+        streamed = sum(n for n, _ in candidates) - used
+        print(
+            f"Unsloth: keeping {used / 2**30:.2f} GB of optimizer state on the GPU ({len(chosen)} weights), "
+            f"{streamed / 2**30:.2f} GB stays on the host (UNSLOTH_OFFLOAD_OPTIMIZER_STATE_RESIDENT)."
+        )
+
+    def _unused_gpu_bytes(self, device):
+        """What the steps so far left unused on device, minus a margin of max(1 GiB, 5%); None if unknown."""
+        try:
+            free, total = torch.cuda.mem_get_info(device)
+        except Exception:
+            return None
+        reserved = torch.cuda.memory_reserved(device)
+        peak = torch.cuda.max_memory_reserved(device)
+        try:
+            # torch.cuda.set_per_process_memory_fraction caps this process below the card.
+            total = min(total, int(torch.cuda.get_per_process_memory_fraction(device) * total))
+        except Exception:
+            pass
+        # Never touch what other processes hold or what this one's peak needed.
+        return min(free + reserved, total) - peak - max(1 << 30, int(0.05 * total))
+
+    def _pin_resident(self, params):
+        """Move these weights' state to their device for good and free its host buffers."""
+        params = [p for p in params if p in self.optimizer.state]
+        self.resident.update(params)
+        self.restore(params)
+        mine = set(params)
+        for entry in [k for k in self.offloaded if k[0] in mine]:
+            self.offloaded.pop(entry, None)
+            # A pinned buffer a non_blocking copy still reads is recycled only after that copy.
+            self.buffers.pop(entry, None)
+        self.resident_bytes = sum(
+            _local_nbytes(t)
+            for p in self.resident
+            for v in self.optimizer.state.get(p, {}).values()
+            for t in _held_tensors(v)
+            if _local(t).device.type != "cpu"
+        )
+        self.offloaded_bytes = sum(b.numel() * b.element_size() for b in self.buffers.values())
+        empty = getattr(torch._C, "_host_emptyCache", None)
+        if callable(empty) and params:
+            # Hand the freed pinned buffers back to the OS (the host allocator caches them), once the copies
+            # reading them are done.
+            for device in {p.device for p in params if p.device.type == "cuda"}:
+                _synchronize(device)
+            empty()
 
     def _host_buffer(self, param, key, src):
         buffer = self.buffers.get((param, key))
@@ -299,6 +466,8 @@ class _StateOffloader:
         # device_of returns the device for host-resident state, or None to leave it host-only.
         devices = set()
         for param, state in self._states(params):
+            if param in self.resident:
+                continue
             for key, value in list(state.items()):
                 if isinstance(value, (list, tuple)):
                     items = list(value)
@@ -391,7 +560,9 @@ class _StateOffloader:
         groups = {p: g for g in self.optimizer.param_groups for p in g["params"]}
         for p in params:
             held = [t for v in state.get(p, {}).values() for t in _held_tensors(v)]
-            if held:
+            if p in self.resident:
+                nbytes = 0  # already on the device
+            elif held:
                 nbytes = sum(_local_nbytes(v) for v in held)
             else:
                 # Not stepped yet: two moments, a third with amsgrad or centered RMSprop with
@@ -417,6 +588,8 @@ class _StateOffloader:
     def _pre_step(self, optimizer, args, kwargs):
         if self.inside:
             return
+        self.last_params = None
+        self._decide_resident()
         # torch passes the step's own args to hooks, self included.
         has_self = bool(args) and args[0] is optimizer
         rest = args[1:] if has_self else args
@@ -472,6 +645,9 @@ class _StateOffloader:
         device = None
         sizes = {}
         for p in params:
+            if p in self.resident:
+                sizes[p] = []  # its state is on the device: nothing to stage
+                continue
             entries = state.get(p)
             if not entries:
                 return None
@@ -520,7 +696,7 @@ class _StateOffloader:
         if found is None:
             return None
         device, sizes = found
-        nbytes = {p: sum(n for *_, n in sizes[p]) for p in params}
+        nbytes = {p: sum(t[3] for t in sizes[p]) for p in params}
         # As large as the biggest serial chunk, so device staging never grows.
         capacity = max(sum(nbytes[p] for p in chunk) for chunk in chunks)
         target = max(capacity // _RING_PARTS, 1)
@@ -569,11 +745,67 @@ class _StateOffloader:
                 p.grad = g
         self.overlapped_steps += 1
 
+    def _staged_bytes(self, param, sizes):
+        if param not in self.resident:
+            return sum(t[3] for t in sizes[param])
+        held = [t for v in self.optimizer.state.get(param, {}).values() for t in _held_tensors(v)]
+        return sum(-(-_local_nbytes(t) // _RING_ALIGN) * _RING_ALIGN for t in held)
+
+    def segments_of(self, param):
+        """Inside pipelined(): the element ranges param's state is staged in (one step call each), else None."""
+        sequence = self.sequence
+        return sequence.segments.get(param) if sequence is not None else None
+
+    def _segment(self, batches, sizes, segmentable):
+        """[(members, tensors)] for the sequence, a large weight split in element ranges, and {param: ranges}."""
+        limit = _segment_bytes() if callable(segmentable) else 0
+        parts, segments = [], {}
+        for batch in batches:
+            tensors = [t for p in batch for t in sizes[p]]
+            p = batch[0]
+            full = [t for t in tensors if t[2].shape == p.shape]
+            scalar = [t for t in tensors if t[2].numel() == 1 and t[2].shape != p.shape]
+            per_element = sum(t[2].element_size() for t in full)
+            if (
+                not limit
+                or len(batch) != 1
+                or sum(t[3] for t in tensors) <= limit
+                or not full
+                or len(full) + len(scalar) != len(tensors)
+                or any(not t[2].is_contiguous() for t in full)
+                or not segmentable(p)
+            ):
+                parts.append((list(batch), tensors))
+                continue
+            numel = p.numel()
+            step = max(_SEGMENT_ALIGN, (limit // per_element) // _SEGMENT_ALIGN * _SEGMENT_ALIGN)
+            ranges = [(a, min(a + step, numel)) for a in range(0, numel, step)]
+            for i, (a, b) in enumerate(ranges):
+                part = [
+                    (
+                        q,
+                        key,
+                        host.view(-1)[a:b],
+                        -(-(b - a) * host.element_size() // _RING_ALIGN) * _RING_ALIGN,
+                        host,
+                    )
+                    for q, key, host, _ in full
+                ]
+                parts.append(([p], part + (scalar if i == 0 else [])))
+            segments[p] = ranges
+        return parts, segments
+
     @contextlib.contextmanager
-    def pipelined(self, batches):
+    def pipelined(
+        self,
+        batches,
+        segmentable = None,
+    ):
         """Step calls for these batches follow in order (bf16 stochastic rounding: one weight per call):
-        prefetch the next batches' state while each steps, one sync at the end instead of per call."""
+        prefetch the next batches' state while each steps, one sync at the end instead of per call.
+        segmentable(param) says the caller can step param one element range per call (segments_of)."""
         found = None
+        self._decide_resident()
         flat = [p for batch in batches for p in batch]
         if self.sequence is None and len(batches) > 1 and len({id(p) for p in flat}) == len(flat):
             found = self._ring_tensors(flat)
@@ -581,9 +813,13 @@ class _StateOffloader:
             yield
             return
         device, sizes = found
-        parts = [(list(batch), [t for p in batch for t in sizes[p]]) for batch in batches]
-        # One batch's staging at most, as each serial call held.
-        capacity = max(sum(n for *_, n in tensors) for _, tensors in parts)
+        parts, segments = self._segment(batches, sizes, segmentable)
+        largest = max(sum(t[3] for t in tensors) for _, tensors in parts)
+        # Never more than the largest whole batch (what each serial call held, resident weights counted), and
+        # room for _RING_PARTS of the largest staged part once residency or ranges make the parts smaller, so
+        # copies in and out keep overlapping.
+        whole = max(sum(self._staged_bytes(p, sizes) for p in batch) for batch in batches)
+        capacity = min(max(whole, largest), _RING_PARTS * largest)
         if capacity <= 0:
             yield
             return
@@ -591,7 +827,7 @@ class _StateOffloader:
         if ring is None:
             yield
             return
-        sequence = _Sequence(ring, parts)
+        sequence = _Sequence(ring, parts, segments)
         self.sequence = sequence
         try:
             yield
@@ -609,6 +845,12 @@ class _StateOffloader:
         sequence.stopped = True
         if self.sequence is sequence:
             self.sequence = None
+        current = sequence.current
+        if current is not None and sequence.placed[current] is not None:
+            # A call that raised: put its staged state back first (an element range has no buffer of its own).
+            sequence.ring.copy_out(sequence.placed[current], self.optimizer.state)
+            sequence.placed[current] = None
+            sequence.current = None
         sequence.ring.close()
         # Anything an error or an unexpected call left on the device.
         self.finish({sequence.ring.device} | self.offload())
@@ -647,6 +889,8 @@ class _StateOffloader:
         if len(chunks) <= 1:
             if self.sequence is None or not self._sequence_take(params):
                 self.restore(params)
+                # A chunk-safe step touches only these: the post hook offloads just them.
+                self.last_params = params
             return
         # Step each chunk through the unhooked class step, so registered step hooks run once for
         # the logical step, then hide every gradient so the caller's own step finds nothing left.
@@ -693,6 +937,7 @@ class _StateOffloader:
                 p.grad = g
             self.hidden = None
         self.steps += 1
+        self.stepped = True
         sequence = self.sequence
         if sequence is not None and sequence.current is not None:
             members = sequence.parts[sequence.current][0]
@@ -703,7 +948,8 @@ class _StateOffloader:
             self.offload(members)
             return
         devices, self.pending = self.pending, set()
-        self.finish(devices | self.offload())
+        params, self.last_params = self.last_params, None
+        self.finish(devices | self.offload(params))
 
 
 def offload_optimizer_state(
@@ -795,7 +1041,11 @@ def offload_optimizer_state(
             )
         else:
             device_of = None
+        # Everything loaded goes through the host first; weights kept on the GPU go back there.
+        resident, offloader.resident = offloader.resident, set()
         offloader.finish(offloader.offload(device_of = device_of))
+        if resident:
+            offloader._pin_resident(resident)
         return result
 
     optimizer.load_state_dict = _load_state_dict_and_offload

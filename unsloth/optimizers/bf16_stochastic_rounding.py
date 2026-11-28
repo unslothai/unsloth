@@ -75,7 +75,7 @@ if triton is not None:
         r0, _, _, _ = tl.randint4x(SEED, i)
         tl.store(DST + i, _round_bf16(x, r0), valid)
 
-    @triton.jit(do_not_specialize = ["N", "SEED"])
+    @triton.jit(do_not_specialize = ["N", "SEED", "OFFSET"])
     def _adamw_kernel(
         P,
         G,
@@ -83,6 +83,7 @@ if triton is not None:
         V,
         N,
         SEED,
+        OFFSET,  # element index of P[0] in its weight: a segment draws what the whole weight would
         DECAY,  # 1 - lr * weight_decay
         W1,  # 1 - beta1
         B2,
@@ -106,7 +107,7 @@ if triton is not None:
         v = v + W2 * g * g
         denom = tl.div_rn(tl.sqrt_rn(v), BC2_SQRT) + EPS
         p = p + NEG_STEP * tl.div_rn(m, denom)
-        r0, r1, r2, _ = tl.randint4x(SEED, i)
+        r0, r1, r2, _ = tl.randint4x(SEED, i + OFFSET)
         tl.store(P + i, _round_bf16(p, r0), valid)
         tl.store(M + i, _round_bf16(m, r1), valid)
         tl.store(V + i, _round_bf16(v, r2), valid)
@@ -249,7 +250,7 @@ def _triton_ok(device):
                 p, g, m, v = (torch.zeros(2, dtype = torch.bfloat16, device = device) for _ in range(4))
                 seed = 1 << 40  # the int64 specialisation real seeds use
                 _adamw_kernel[(1,)](
-                    p, g, m, v, 2, seed, 1.0, 0.1, 0.999, 0.001, -1e-3, 1.0, 1e-8,
+                    p, g, m, v, 2, seed, 0, 1.0, 0.1, 0.999, 0.001, -1e-3, 1.0, 1e-8,
                     BLOCK = _BLOCK, enable_fp_fusion = False,
                 )  # fmt: skip
                 _round_kernel[(1,)](
@@ -773,6 +774,15 @@ def _wrap_torch(optimizer, tracked, seed):
             with torch.enable_grad():
                 closure()
         (group,) = self.param_groups
+        segment = self.__dict__.get("_unsloth_sr_segment")
+        if segment is not None:
+            # State offload staged one element range of this weight (see _fused_adamw_segment).
+            (p,) = group["params"]
+            if (
+                p.grad is not None
+            ):  # a pre hook may drop it (idle experts): skipped, as the whole-weight path does
+                _fused_adamw_segment(self, group, p, seed, segment)
+            return
         params = [p for p in group["params"] if p.grad is not None]  # pre hooks may drop gradients
         if params and _fused_group(self, group):
             fused = [p for p in params if _fused_param(self, p)]
@@ -824,13 +834,40 @@ def _wrap_torch(optimizer, tracked, seed):
                 # DP sync), as torch's per-weight steps did before; else once for the group.
                 batches = [[p] for p in mine] if _step_hooks(self) else ([mine] if mine else [])
                 # State offload copies the next weights' state in while each one steps.
-                pipelined = getattr(
-                    getattr(self, "_unsloth_state_offloader", None), "pipelined", None
+                offloader = getattr(self, "_unsloth_state_offloader", None)
+                pipelined = getattr(offloader, "pipelined", None)
+                segments_of = getattr(offloader, "segments_of", None)
+                context = (
+                    pipelined(
+                        batches,
+                        segmentable = functools.partial(_segmentable, self, group),
+                    )
+                    if callable(pipelined)
+                    else contextlib.nullcontext()
                 )
-                with pipelined(batches) if callable(pipelined) else contextlib.nullcontext():
+                with context:
                     for batch in batches:
                         self.param_groups = [dict(group, params = batch)]
-                        hooked(self, None)
+                        segments = (
+                            segments_of(batch[0])
+                            if callable(segments_of) and len(batch) == 1
+                            else None
+                        )
+                        if not segments:
+                            hooked(self, None)
+                            continue
+                        # A large weight staged in element ranges: one step call per range.
+                        try:
+                            for i, (a, b) in enumerate(segments):
+                                self.__dict__["_unsloth_sr_segment"] = (
+                                    a,
+                                    b,
+                                    i == 0,
+                                    i == len(segments) - 1,
+                                )
+                                hooked(self, None)
+                        finally:
+                            self.__dict__.pop("_unsloth_sr_segment", None)
         finally:
             self.param_groups = groups
         return loss
@@ -920,6 +957,91 @@ def _fused_param(optimizer, p):
     return torch.is_tensor(state.get("step")) and state["step"].numel() == 1
 
 
+def _segmentable(optimizer, group, p):
+    """Whether state offload may stage p's state in element ranges and step each range on its own: the one-pass
+    kernel applies (already compiled on this device) and the state is the two bfloat16 moments plus a step."""
+    if (
+        not _fused_group(optimizer, group)
+        or _is_dtensor(p)
+        or _TRITON_OK.get(str(p.device)) is not True
+    ):
+        return False
+    g = p.grad
+    if (
+        p.device.type != "cuda"
+        or g is None
+        or g.is_sparse
+        or g.layout != torch.strided
+        or g.dtype not in (torch.bfloat16, torch.float16, torch.float32)
+        or g.device != p.device
+        or g.shape != p.shape
+        or not g.is_contiguous()
+        or not p.is_contiguous()
+    ):
+        return False
+    state = optimizer.state.get(p)
+    if not state or set(state) != {"step", "exp_avg", "exp_avg_sq"}:
+        return False
+    for key in ("exp_avg", "exp_avg_sq"):
+        value = state[key]
+        if value.dtype != torch.bfloat16 or value.shape != p.shape or not value.is_contiguous():
+            return False
+    return torch.is_tensor(state["step"]) and state["step"].numel() == 1
+
+
+def _fused_adamw_segment(optimizer, group, p, seed, segment):
+    """Elements [a, b) of weight p with the one-pass kernel: the same arithmetic and random draws as the whole-weight
+    launch (the kernel offsets its Philox index by a). state['exp_avg'] / ['exp_avg_sq'] hold just that range. The
+    step counter moves on the first range; the last bumps the weight's version counter."""
+    a, b, first, last = segment
+    lr, eps, weight_decay = (_float(group[k]) for k in ("lr", "eps", "weight_decay"))
+    beta1, beta2 = (_float(x) for x in group["betas"])
+    state = optimizer.state[p]
+    if first:
+        step = state["step"]
+        step.add_(1)
+        # The value the whole-weight path reads (it stacks the counters as float32 first).
+        t = step.item() if step.device.type == "cpu" else step.float().item()
+        optimizer.__dict__["_unsloth_sr_segment_t"] = t
+    else:
+        t = optimizer.__dict__["_unsloth_sr_segment_t"]
+    bc1 = 1 - beta1**t
+    bc2 = 1 - beta2**t
+    n = b - a
+    m, v = state["exp_avg"], state["exp_avg_sq"]
+    if m.numel() != n:
+        # The offload sequence ended early and restored the whole moments: step their range.
+        m, v = m.view(-1)[a:b], v.view(-1)[a:b]
+    with torch.cuda.device(p.device):
+        _adamw_kernel[_grid(n)](
+            p.data.view(-1)[a:b],
+            p.grad.view(-1)[a:b],
+            m,
+            v,
+            n,
+            _seed_for(optimizer, p, seed, int(t)),
+            a,
+            1 - lr * weight_decay,
+            1 - beta1,
+            beta2,
+            1 - beta2,
+            (lr / bc1) * -1,
+            bc2**0.5,
+            eps,
+            BLOCK = _BLOCK,
+            enable_fp_fusion = False,
+        )
+    if last:
+        increment = getattr(torch.autograd.graph, "increment_version", None)
+        if increment is not None:
+            try:
+                increment(p)
+            except Exception:
+                pass
+        _count(optimizer, "_unsloth_sr_fused_steps", 1)
+        _count(optimizer, "_unsloth_sr_segmented_steps", 1)
+
+
 def _scalar_dtype():
     try:
         from torch.optim.optimizer import _get_scalar_dtype
@@ -976,6 +1098,7 @@ def _fused_adamw_step(optimizer, group, params, seed):
                         _local(state["exp_avg_sq"]),
                         n,
                         _seed_for(optimizer, p, seed, int(t)),
+                        0,
                         decay,
                         1 - beta1,
                         beta2,
