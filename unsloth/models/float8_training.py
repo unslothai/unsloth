@@ -1080,6 +1080,30 @@ def restore_fp8_lora_for_inference(model):
     owner.__dict__["_unsloth_fp8_lora_bases"] = ()
 
 
+def _int8_tower_skips(model):
+    """Module name components the int8 base leaves in 16 bit: what NF4 keeps 16 bit (vision / audio towers,
+    projectors, mamba mixers, per-architecture extras). The int8 base was only measured on text decoder layers.
+    UNSLOTH_INT8_LORA_TOWERS=1 converts them too."""
+    import os
+
+    if os.environ.get("UNSLOTH_INT8_LORA_TOWERS", "0") == "1":
+        return ()
+    try:
+        from .onthefly_quant import _architecture_skips, _skip_names
+
+        config = getattr(model, "config", None)
+        inner = getattr(getattr(model, "base_model", None), "model", None)
+        config = getattr(inner, "config", None) or config
+        return tuple(_skip_names()) + tuple(_architecture_skips(config))
+    except Exception:
+        return ("vision_tower", "visual", "audio_tower", "multi_modal_projector", "merger", "mamba")
+
+
+def _name_in(name, keys):
+    dotted = "." + name + "."
+    return any(("." + key + ".") in dotted for key in keys)
+
+
 def _model_hidden_size(model):
     seen = set()
     stack = [model]
@@ -1129,6 +1153,7 @@ def enable_fp8_lora(
             _record_engagement(model, recipe, 0, detail = {"skipped": "hidden size"})
             _require_engagement(recipe, 0, f"hidden size {hidden} below {kernels.MIN_HIDDEN}")
             return []
+    tower_skips = _int8_tower_skips(model) if int8 else ()
     uses = {}
     for _, p in model.named_parameters(remove_duplicate = False):
         uses[id(p)] = uses.get(id(p), 0) + 1
@@ -1141,6 +1166,9 @@ def enable_fp8_lora(
             continue
         if is_hp(base, name + ".base_layer") or is_hp(module, name):
             skipped[name] = "high precision layer"
+            continue
+        if tower_skips and _name_in(name, tower_skips):
+            skipped[name] = "vision / audio tower, projector or a layer NF4 keeps in 16 bit"
             continue
         why = kernels.eligible_base(base)
         if why is None and not allow_cpu:

@@ -649,7 +649,7 @@ _add(
         hp_layers = _HP_FP8,
         input_dtypes = ("bf16", "fp16"),
         compile = "opaque",
-        backend = "unsloth.kernels.int8_lora (UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
+        backend = "unsloth.kernels.int8_lora (load_in_8bit = 'int8', UNSLOTH_LORA_BASE_INT8=1, or float8_training = 'int8_lora')",
         gates = {
             "sm75": Gate("refused", "the Triton int8 GEMM needs compute capability 8.0+"),
             "sm80": Gate(

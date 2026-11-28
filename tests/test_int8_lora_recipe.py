@@ -146,8 +146,12 @@ def test_refuses_without_triton(monkeypatch):
 def test_eligibility_needs_rotation_block():
     import unsloth.kernels.int8_lora as IL
 
-    ok = torch.nn.Linear(256, 64, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    ok = torch.nn.Linear(256, 128, bias = False, dtype = torch.bfloat16).requires_grad_(False)
     assert IL.eligible_base(ok) is None
+    narrow = torch.nn.Linear(256, 16, bias = False, dtype = torch.bfloat16).requires_grad_(False)
+    assert "below 128" in IL.eligible_base(
+        narrow
+    )  # Gated DeltaNet in_proj_a / in_proj_b stay 16 bit
     odd = torch.nn.Linear(272, 64, bias = False, dtype = torch.bfloat16).requires_grad_(False)
     assert "multiple of 128" in IL.eligible_base(odd)
     trainable = torch.nn.Linear(256, 64, bias = False, dtype = torch.bfloat16)

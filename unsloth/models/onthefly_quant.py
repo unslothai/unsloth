@@ -10,8 +10,14 @@
   output heads, embeddings, routers).
 - `load_in_4bit = "nf4"`: the same as `load_in_4bit = True` (bitsandbytes NF4).
 - `load_in_8bit = "fp8"` / `"fp8_block"`: aliases of `load_in_fp8 = True` / `"block"`.
+- `load_in_8bit = "int8"`: the rotated int8 frozen LoRA base (`float8_training = "int8_lora"`): a 16-bit load
+  whose LoRA base GEMMs run as block-Hadamard rotated int8 (unsloth.kernels.int8_lora).
+- `load_in_8bit = "bnb"` / `"bitsandbytes"` / `"llm.int8"`: bitsandbytes LLM.int8, always.
+- `load_in_8bit = True`: bitsandbytes LLM.int8, except for LoRA on a 16-bit checkpoint on a GPU where the
+  rotated int8 base is measured faster with the same eval loss (RTX 50 / RTX PRO 6000, compute capability
+  12.0), which runs `"int8"` instead and says so once. `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes.
 
-`load_in_4bit = True` and `load_in_8bit = True` are untouched.
+`load_in_4bit = True` is untouched.
 """
 
 import contextlib
@@ -39,6 +45,14 @@ _FP8_NAMES = {
     "fp8_block": "block",
     "fp8_blockwise": "block",
 }
+_INT8_NAMES = ("int8", "int8_rotated", "rotated_int8", "int8_lora")
+_BNB8_NAMES = ("bnb", "bnb_int8", "bnb_8bit", "bitsandbytes", "llm.int8", "llm_int8")
+# load_in_8bit = True picks the rotated int8 base only on these compute capabilities: where it was timed faster
+# than bf16 and bitsandbytes 8-bit LoRA with the same eval loss (RTX 5090, RTX PRO 6000). sm80 / sm89 run its
+# Triton int8 GEMM slower than bf16; sm90 / sm100 / sm121 are untimed.
+_INT8_AUTO_CAPABILITIES = ((12, 0),)
+AUTO_8BIT_ENV = "UNSLOTH_LOAD_IN_8BIT_AUTO"
+_AUTO_NOTICE = []
 _GROUP = {"nvfp4": 16, "mxfp4": 32}
 # Kill switch: 0 loads 16 bit and keeps it (no FP4 layers), to bisect a model against the 16-bit run.
 ONTHEFLY_ENV = "UNSLOTH_ONTHEFLY_FP4"
@@ -94,10 +108,16 @@ def normalize_lowbit_flags(
             )
     if isinstance(load_in_8bit, str):
         name = _norm(load_in_8bit)
+        if name in _BNB8_NAMES:
+            return load_in_4bit, True, load_in_fp8, fmt
+        if name in _INT8_NAMES:
+            # A 16-bit load; from_pretrained's wrapper adds float8_training = "int8_lora" (resolve_int8_8bit).
+            return load_in_4bit, False, load_in_fp8, fmt
         if name not in _FP8_NAMES:
             raise ValueError(
-                f"Unsloth: load_in_8bit = {load_in_8bit!r} is not supported. Use True (bitsandbytes 8-bit), "
-                "'fp8' (= load_in_fp8 = True) or 'fp8_block' (= load_in_fp8 = 'block')."
+                f"Unsloth: load_in_8bit = {load_in_8bit!r} is not supported. Use True, 'bnb' (bitsandbytes "
+                "8-bit), 'int8' (rotated int8 LoRA base), 'fp8' (= load_in_fp8 = True) or 'fp8_block' "
+                "(= load_in_fp8 = 'block')."
             )
         mode = _FP8_NAMES[name]
         if load_in_fp8 not in (False, None) and load_in_fp8 != mode:
@@ -109,6 +129,158 @@ def normalize_lowbit_flags(
     return load_in_4bit, load_in_8bit, load_in_fp8, fmt
 
 
+def _truthy_env(name, default = True):
+    raw = os.environ.get(name, None)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() not in ("0", "false", "off", "no", "none")
+
+
+def _int8_auto_device_reason():
+    """None when this process's GPU is one load_in_8bit = True runs the rotated int8 base on, else why not."""
+    if not torch.cuda.is_available() or torch.version.hip is not None:
+        return "not an NVIDIA GPU"
+    try:
+        capability = tuple(torch.cuda.get_device_capability())
+    except Exception:
+        return "no CUDA device"
+    if capability not in _INT8_AUTO_CAPABILITIES:
+        return f"compute capability {capability[0]}.{capability[1]} is not one it was measured faster on"
+    try:
+        from ..kernels import int8_lora
+    except Exception as exc:
+        return f"the int8 kernels do not import ({type(exc).__name__})"
+    return int8_lora.int8_lora_supported(torch.device("cuda"))
+
+
+def _text_hidden_size(config):
+    for cfg in (getattr(config, "text_config", None), config):
+        hidden = getattr(cfg, "hidden_size", None)
+        if isinstance(hidden, int):
+            return hidden
+    return None
+
+
+def _int8_auto_config_reason(arguments, extra):
+    """Read the checkpoint's config (as from_pretrained will): pre-quantized or narrow models keep bitsandbytes."""
+    name = arguments.get("model_name", None)
+    if (
+        not isinstance(name, str)
+        or extra.get("gguf_file")
+        or extra.get("quantization_config") is not None
+    ):
+        return "not a plain 16-bit checkpoint"
+    try:
+        from transformers import AutoConfig
+        config = AutoConfig.from_pretrained(
+            name,
+            token = arguments.get("token", None),
+            revision = arguments.get("revision", None),
+            trust_remote_code = bool(arguments.get("trust_remote_code", False)),
+        )
+    except Exception:
+        return "its config could not be read"
+    if getattr(config, "quantization_config", None) is not None:
+        return "the checkpoint is pre-quantized"
+    hidden = _text_hidden_size(config)
+    try:
+        from ..kernels.int8_lora import MIN_HIDDEN
+    except Exception:
+        MIN_HIDDEN = 2048
+    if hidden is None or hidden < MIN_HIDDEN:
+        return f"hidden size {hidden} is below {MIN_HIDDEN}"
+    return None
+
+
+def _int8_auto_reason(arguments, extra):
+    """None when load_in_8bit = True should run the rotated int8 base, else why bitsandbytes stays."""
+    if not _truthy_env(AUTO_8BIT_ENV):
+        return f"{AUTO_8BIT_ENV}=0"
+    if arguments.get("full_finetuning", False):
+        return "full finetuning"
+    if arguments.get("fast_inference", False):
+        return "fast_inference"
+    if arguments.get("qat_scheme", None) is not None:
+        return "qat_scheme"
+    if arguments.get("load_in_fp8", False) not in (False, None):
+        return "load_in_fp8"
+    if arguments.get("load_in_4bit", False) is True and "load_in_4bit" in arguments:
+        return "load_in_4bit = True"
+    if arguments.get("load_in_16bit", False):
+        return "load_in_16bit"
+    if extra.get("float8_training", None) not in (None, False):
+        return "float8_training"
+    try:
+        from ..precision.hardware import dtype_tag
+    except Exception:
+        dtype_tag = None
+    dtype = arguments.get("dtype", None)
+    if dtype is not None and (dtype_tag is None or dtype_tag(dtype) not in ("bf16", "fp16")):
+        return f"dtype {dtype}"
+    try:
+        from .float8_training import _parallel_layout_requested
+        if _parallel_layout_requested():
+            return "tensor / pipeline / expert parallel"
+    except Exception:
+        pass
+    return _int8_auto_device_reason() or _int8_auto_config_reason(arguments, extra)
+
+
+def resolve_int8_8bit(arguments, var_keyword = "kwargs"):
+    """load_in_8bit = 'int8' (and True where the rotated int8 base is the measured pick) -> a 16-bit load with
+    float8_training = 'int8_lora'. Edits `arguments` (BoundArguments.arguments) in place; returns 'int8' when it
+    did, 'bnb' when load_in_8bit = True stays bitsandbytes, else None."""
+    l8 = arguments.get("load_in_8bit", None)
+    if isinstance(l8, str) and _norm(l8) in _INT8_NAMES:
+        explicit = True
+    elif l8 is True:
+        explicit = False
+    else:
+        return None
+    extra = arguments.get(var_keyword, None)
+    extra = extra if isinstance(extra, dict) else {}
+    if explicit:
+        if arguments.get("full_finetuning", False):
+            raise ValueError(
+                "Unsloth: load_in_8bit = 'int8' is a frozen rotated int8 base for LoRA; it cannot be full "
+                "finetuned. Use full_finetuning = False, or load_in_16bit = True to full finetune."
+            )
+        if arguments.get("fast_inference", False):
+            raise NotImplementedError(
+                "Unsloth: load_in_8bit = 'int8' does not support fast_inference = True (vLLM) yet."
+            )
+        if arguments.get("load_in_4bit", False) is True and "load_in_4bit" in arguments:
+            raise ValueError("Unsloth: load_in_8bit = 'int8' conflicts with load_in_4bit = True.")
+        if arguments.get("load_in_fp8", False) not in (False, None):
+            raise ValueError(
+                f"Unsloth: load_in_8bit = 'int8' conflicts with load_in_fp8 = {arguments['load_in_fp8']!r}."
+            )
+        f8 = extra.get("float8_training", None)
+        if f8 not in (None, False) and not (
+            isinstance(f8, str) and _norm(f8) in ("int8_lora", "int8_lora_rotated")
+        ):
+            raise ValueError(
+                f"Unsloth: load_in_8bit = 'int8' conflicts with float8_training = {f8!r}."
+            )
+    else:
+        why = _int8_auto_reason(arguments, extra)
+        if why is not None:
+            return "bnb"
+    arguments["load_in_8bit"] = False
+    arguments["load_in_4bit"] = False
+    extra = dict(extra)
+    extra["float8_training"] = "int8_lora"
+    arguments[var_keyword] = extra
+    if not explicit and not _AUTO_NOTICE:
+        _AUTO_NOTICE.append(True)
+        print(
+            "Unsloth: load_in_8bit = True runs the rotated int8 LoRA base on this GPU (faster than bitsandbytes "
+            "8-bit, same eval loss; the 16-bit master stays in host RAM). Pass load_in_8bit = 'bnb' for "
+            f"bitsandbytes LLM.int8, or set {AUTO_8BIT_ENV}=0."
+        )
+    return "int8"
+
+
 def onthefly_lowbit_load(fn):
     """Decorator for the from_pretrained entry points: resolve string flags, then run the load under
     `onthefly_fp4_loading` when an FP4 format was asked for. Boolean flags call `fn` unchanged."""
@@ -117,6 +289,11 @@ def onthefly_lowbit_load(fn):
     except (TypeError, ValueError):
         return fn
 
+    var_keyword = next(
+        (p.name for p in signature.parameters.values() if p.kind is inspect.Parameter.VAR_KEYWORD),
+        None,
+    )
+
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         try:
@@ -124,6 +301,8 @@ def onthefly_lowbit_load(fn):
         except TypeError:
             return fn(*args, **kwargs)
         arguments = bound.arguments
+        if var_keyword is not None and resolve_int8_8bit(arguments, var_keyword) == "int8":
+            args, kwargs = bound.args, bound.kwargs
         l4 = arguments.get("load_in_4bit", None)
         l8 = arguments.get("load_in_8bit", None)
         if not isinstance(l4, str) and not isinstance(l8, str):
