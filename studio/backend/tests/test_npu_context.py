@@ -270,10 +270,13 @@ def test_unreadable_ram_keeps_8192(tmp_path, free_ram, monkeypatch):
 def test_the_qwen38_engine_cap_holds(tmp_path, free_ram, free_gib, entry):
     free_ram["mib"] = int(free_gib * _GIB)
     model = _model(*entry, 262144)
-    assert model.max_context_length == 8192
+    assert model.max_context_length == 16377
     files = _files(tmp_path, _QWEN38_27B)
-    assert nc.plan_context(model, files, None).context_length == 8192
-    assert nc.plan_context(model, files, 16384).context_length == 8192
+    auto = nc.plan_context(model, files, None).context_length
+    # With room, Auto is the exact engine limit; at 23.9 GiB free RAM caps it lower.
+    assert auto == 16377 if free_gib == 200.0 else 8192 <= auto <= 16377
+    # 16384 is above the FastFlowLM 1.0.13 engine limit; still clamps (not passthrough).
+    assert nc.plan_context(model, files, 16384).context_length == 16377
 
 
 def test_a_pin_wins_and_a_pin_that_will_not_fit_is_logged(tmp_path, free_ram, caplog):
