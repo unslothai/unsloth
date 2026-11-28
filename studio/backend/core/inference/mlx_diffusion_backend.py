@@ -1251,6 +1251,7 @@ class MlxDiffusionBackend:
         allow_oversized_load: bool = False,
         # Accepted and ignored: MLX has no Studio INT8 attention kernel.
         int8_attention: Optional[str] = None,
+        on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None,
         **_ignored: Any,
     ) -> dict[str, Any]:
         if isinstance(hf_token, str):
@@ -1306,6 +1307,7 @@ class MlxDiffusionBackend:
                     _load_token = token,
                     _cancel_event = cancel_event,
                     explicit_base = bool((base_repo or "").strip()),
+                    on_load_ready = on_load_ready,
                 ),
                 daemon = True,
             )
@@ -1339,6 +1341,7 @@ class MlxDiffusionBackend:
         _load_token: int,
         _cancel_event: threading.Event,
         explicit_base: bool = True,
+        on_load_ready: Optional[Callable[[DiffusionFamily], None]] = None,
     ) -> None:
         timings: dict[str, Any] = {}
         model = state = displaced = None
@@ -1482,6 +1485,8 @@ class MlxDiffusionBackend:
                     superseded = False
                     self._state = state
                     self._loading = None
+                    if on_load_ready is not None:
+                        on_load_ready(fam)
             published = True
             if superseded:
                 del state, model

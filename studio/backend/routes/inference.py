@@ -52807,8 +52807,6 @@ async def load_diffusion_model(
     try:
         with preparing_load("image", request.load_token):
             loaded = await load_diffusion_model_gated(request, current_subject, user_initiated = True)
-        from core.inference.chat_media_swap import remember_image_model
-        remember_image_model(request.display_repo_id or request.model_path)
     except HTTPException as exc:
         # A raising load skips both wrappers, and the inner loader doesn't know inventory handles.
         exc.detail = raised_inventory_detail(exc.detail, via_api_key = via_api_key)
@@ -53268,6 +53266,15 @@ async def load_diffusion_model_gated(
         ):
             needs_gpu = False
 
+        owner = current_account_id()
+        generator_pick = request.display_repo_id or request.model_path
+
+        def _remember_loaded_generator(family):
+            from core.inference.chat_media_swap import remember_image_model
+            from core.inference.diffusion import _family_workflows
+            if "txt2img" in _family_workflows(family):
+                remember_image_model(generator_pick, account_id = owner)
+
         def _start_engine_load():
             # Recorded here: past the busy guard, arbiter and retirement check, before the worker gets the token.
             for _ref in _media_repos_to_record:
@@ -53315,6 +53322,7 @@ async def load_diffusion_model_gated(
                     _mlx_fallback_load_gate(request, gpu_ordinal, multi_model_mode),
                 ),
                 **_nvfp4_route_kwarg(engine.begin_load, nvfp4_route),
+                **({"on_load_ready": _remember_loaded_generator} if user_initiated else {}),
             )
             media_load_ids.admitted("diffusion", engine, request.load_token, prior_load)
             # A warm start that took the generation slot between the stop above and begin_load publishing the load would

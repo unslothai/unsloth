@@ -155,6 +155,27 @@ def test_the_images_page_can_load_on_the_native_engine(monkeypatch, user_initiat
     assert engine.begin_load.call_args.kwargs["local_files_only"] is (not user_initiated)
 
 
+def test_remember_generator_only_after_its_own_load_publishes(monkeypatch):
+    from core.inference import chat_media_swap
+    from utils.account_context import current_account_id
+
+    monkeypatch.setattr(chat_media_swap, "_last_image_model", {})
+    owner = current_account_id()
+    engine = _drive_the_images_load(monkeypatch, user_initiated = True)
+    publish = engine.begin_load.call_args.kwargs["on_load_ready"]
+    assert owner not in chat_media_swap._last_image_model
+
+    # Failed loads never invoke their callback. A later edit-only completion cannot record a generator.
+    publish(types.SimpleNamespace(edit = True))
+    assert owner not in chat_media_swap._last_image_model
+
+    publish(types.SimpleNamespace(edit = False))
+    # This requires neither a progress poll nor a live resident engine.
+    other = _drive_the_images_load(monkeypatch, user_initiated = False)
+    assert "on_load_ready" not in other.begin_load.call_args.kwargs
+    assert chat_media_swap._last_image_model == {owner: "unsloth/FLUX.1-dev-GGUF"}
+
+
 def test_the_engine_pick_is_recorded_only_once_the_engine_accepted_the_load(monkeypatch):
     # Recorded after begin_load, not at selection: a refusal past selection keeps the resident model's provenance.
     notes = []
