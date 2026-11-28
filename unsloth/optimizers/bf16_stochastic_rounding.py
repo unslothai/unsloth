@@ -1129,9 +1129,10 @@ def cast_lora_adapters_(model, dtype = torch.bfloat16):
 
 def _unsloth_model(model):
     """True for a model Unsloth loaded, full finetuning or LoRA (every load stamps _unsloth_full_finetuning). Under
-    LoRA the adapters are float32, but trained bfloat16 weights beside them (modules_to_save embed_tokens / lm_head,
-    trained norms) step in bfloat16 and need the rounding as much as full finetuning does; a LoRA run with none
-    covers nothing and its optimizer is left untouched."""
+    LoRA the adapters are float32 by default, but bfloat16 adapters (get_peft_model(lora_dtype = torch.bfloat16), or
+    a cast after it) and trained bfloat16 weights beside them (modules_to_save embed_tokens / lm_head, trained norms)
+    step in bfloat16 and need the rounding as much as full finetuning does; a LoRA run with none covers nothing and
+    its optimizer is left untouched."""
     seen = set()
     while model is not None and id(model) not in seen:
         seen.add(id(model))
