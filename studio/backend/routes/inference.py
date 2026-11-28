@@ -29448,28 +29448,6 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
 _PREPARED_AUDIO_CACHE: dict = {}
 _PREPARED_AUDIO_CACHE_LOCK = threading.Lock()
 _PREPARED_AUDIO_CACHE_MAX_CHARS = 4 * math.ceil(STT_AUDIO_RAW_MAX_BYTES / 3) + 4096
-# Every module global the transcode reads, so a changed limit or patched helper misses.
-_PREPARED_AUDIO_KEY_GLOBALS = (
-    "_MAX_AUDIO_RAW_BYTES",
-    "_MAX_AUDIO_SECONDS",
-    "_MAX_DECODED_SAMPLES",
-    "_MAX_DECODE_BLOCK_SAMPLES",
-    "_RESAMPLE_SLICE_SAMPLES",
-    "_MIN_TRANSCODE_AUDIO_SAMPLE_RATE",
-    "_MIN_AUDIO_SECONDS",
-    "_strip_audio_data_uri",
-    "_llama_passthrough_audio",
-    "_sniff_audio_container",
-    "_passthrough_audio_seconds",
-    "_decode_within",
-    "_decode_audio_mono",
-    "_decode_audio_mono_with_soundfile",
-    "_decode_audio_mono_with_av",
-    "_shared_wav_rate",
-    "_fit_transcoded_audio_to_wav_cap",
-    "_resample_mono_linear",
-    "_mono_f32_to_wav_bytes",
-)
 
 
 def _clear_prepared_audio_cache() -> None:
@@ -29483,12 +29461,17 @@ def _prepared_audio_key(clips: list[str]) -> tuple:
         data = clip.encode("utf-8", "surrogatepass")
         digest.update(len(data).to_bytes(8, "little"))
         digest.update(data)
-    module = globals()
-    return (
-        digest.digest(),
-        _AUDIO_BUDGET_LEFT.get(),
-        tuple(module[name] for name in _PREPARED_AUDIO_KEY_GLOBALS),
+    # Every limit the transcode reads, so a changed limit misses.
+    limits = (
+        _MAX_AUDIO_RAW_BYTES,
+        _MAX_AUDIO_SECONDS,
+        _MAX_DECODED_SAMPLES,
+        _MAX_DECODE_BLOCK_SAMPLES,
+        _RESAMPLE_SLICE_SAMPLES,
+        _MIN_TRANSCODE_AUDIO_SAMPLE_RATE,
+        _MIN_AUDIO_SECONDS,
     )
+    return (digest.digest(), _AUDIO_BUDGET_LEFT.get(), limits)
 
 
 def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
