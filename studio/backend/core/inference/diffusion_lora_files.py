@@ -946,6 +946,9 @@ def _restore_requires_grad(pipe: Any) -> None:
 
 def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None:
     """One file under ``name``: plain LoRA via ``pipe.load_lora_weights``, LoKR modules as ``KronLinear`` slots."""
+    from .diffusion_lora_addmm import install as _install_lora_addmm
+
+    _install_lora_addmm()  # unfolded adapters add their delta in the B GEMM's epilogue
     _remember_requires_grad(pipe)
     if family == IDEOGRAM4_FAMILY:
         _load_ideogram4(pipe, path, name)
