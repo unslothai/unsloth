@@ -54,6 +54,7 @@ from .mistral_format import (
 from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_pissa
 from ..tokenizers_v1 import tokenizers_v1_on_return
 from .mapper import bf16_repo_loads_16bit
+from .gguf_packed import gguf_packed_config_scope
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     deepspeed_zero3_device_map,
@@ -1380,6 +1381,7 @@ class FastLanguageModel(FastLlamaModel):
     @mistral_format_redirect
     @track_explicit_4bit_request
     @_load_probe_memo_scope
+    @gguf_packed_config_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
         max_seq_length = 2048,
@@ -1417,12 +1419,20 @@ class FastLanguageModel(FastLlamaModel):
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
+        from .gguf_packed import check_gguf_packed_request
 
         _unsloth_load_begins()
         require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        _gguf_packed = check_gguf_packed_request(
+            kwargs,
+            full_finetuning = full_finetuning,
+            fast_inference = fast_inference,
+            load_in_fp8 = load_in_fp8,
+            qat_scheme = qat_scheme,
+        )
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
-            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit, gguf_packed = _gguf_packed
         )
         quantization_config = kwargs.get("quantization_config", None)
         if quantization_config is not None:
@@ -2398,6 +2408,7 @@ class FastModel(FastBaseModel):
     @mistral_format_redirect
     @track_explicit_4bit_request
     @_load_probe_memo_scope
+    @gguf_packed_config_scope
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-11B-Vision-Instruct-bnb-4bit",
         max_seq_length = 2048,
@@ -2442,12 +2453,20 @@ class FastModel(FastBaseModel):
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
         from .._gguf_load import require_gguf_package
+        from .gguf_packed import check_gguf_packed_request
 
         _unsloth_load_begins()
         require_gguf_package(kwargs.get("gguf_file"))
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
+        _gguf_packed = check_gguf_packed_request(
+            kwargs,
+            full_finetuning = full_finetuning,
+            fast_inference = fast_inference,
+            load_in_fp8 = load_in_fp8,
+            qat_scheme = qat_scheme,
+        )
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
-            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit
+            kwargs.get("gguf_file"), load_in_4bit, load_in_8bit, gguf_packed = _gguf_packed
         )
         user_config = kwargs.pop("config", None)
         fp8_lora = None

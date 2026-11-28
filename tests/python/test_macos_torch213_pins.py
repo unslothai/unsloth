@@ -46,9 +46,9 @@ def test_macos_route_is_one_minor_with_its_torchvision():
     assert _assignment("_TORCHAUDIO_CEILING") == "2.12.0"
 
 
-def test_macos_move_floor_is_not_the_pin():
-    # Homes already on 2.13 keep it; only a release below the fused-attention gate moves.
-    assert _assignment("_MACOS_TORCH_MOVE_FLOOR") == "2.13.0"
+def test_macos_route_admits_what_it_installs_and_never_moves_a_home_unasked():
+    # Torch moves only on a fresh home or a repair (UNSLOTH_TORCH_UPGRADE=1): no below-floor move on a plain re-run.
+    assert "_MACOS_TORCH_MOVE_FLOOR" not in INSTALL_SH
     # The PyPI admission check asks about the release the route installs.
     route = INSTALL_SH.split('elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform', 1)[
         1

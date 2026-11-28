@@ -98,6 +98,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   handlers,
   header,
   downloadedHeader,
+  scrollHeader,
   suppressEmptyState = false,
   resetScrollKey,
   discoverView,
@@ -108,6 +109,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   handlers: ModelsCatalogHandlers;
   header?: ReactNode;
   downloadedHeader?: ReactNode;
+  scrollHeader?: ReactNode;
   suppressEmptyState?: boolean;
   resetScrollKey?: string;
   discoverView: AllModelsView;
@@ -375,6 +377,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   const columnClassName = splitView
     ? "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8 lg:pr-2"
     : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
+  const controls = scrollHeader && (
+    <div className="-mx-5 sm:-mx-8">{scrollHeader}</div>
+  );
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(
@@ -417,7 +422,10 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         >
           {discoverActive ? (
             <div className={columnClassName}>
-              {header ? <div ref={headerRef}>{header}</div> : null}
+              <div ref={headerRef}>
+                {controls}
+                {header}
+              </div>
               <DiscoverList
                 discoverRows={discoverRows}
                 onSelect={onSelect}
@@ -465,6 +473,7 @@ export const ModelsCatalog = memo(function ModelsCatalog({
         >
           {downloadedActive ? (
             <div className={columnClassName}>
+              {controls}
               {downloadedHeader ? (
                 <div className="flex flex-col gap-3 pt-6">
                   {downloadedHeader}
