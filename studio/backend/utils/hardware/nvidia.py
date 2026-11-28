@@ -836,6 +836,63 @@ for ordinal in range(count.value):
 """
 
 
+# cuMemGetInfo per ordinal in a child, so this process never holds a CUDA context.
+_CUDA_FREE_MIB_SCRIPT = r"""
+import ctypes, sys
+try:
+    lib = ctypes.WinDLL("nvcuda.dll") if sys.platform == "win32" else ctypes.CDLL("libcuda.so.1")
+except OSError:
+    sys.exit(2)
+if lib.cuInit(0) != 0:
+    sys.exit(3)
+count = ctypes.c_int(0)
+if lib.cuDeviceGetCount(ctypes.byref(count)) != 0:
+    sys.exit(4)
+mem_info = lib.cuMemGetInfo_v2
+mem_info.argtypes = [ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+for ordinal in range(count.value):
+    dev, ctx = ctypes.c_int(0), ctypes.c_void_p()
+    free, total = ctypes.c_size_t(0), ctypes.c_size_t(0)
+    if (
+        lib.cuDeviceGet(ctypes.byref(dev), ordinal) != 0
+        or lib.cuDevicePrimaryCtxRetain(ctypes.byref(ctx), dev) != 0
+    ):
+        print("ERR")
+        continue
+    ok = lib.cuCtxSetCurrent(ctx) == 0 and mem_info(ctypes.byref(free), ctypes.byref(total)) == 0
+    lib.cuDevicePrimaryCtxRelease(dev)
+    print(free.value // (1024 * 1024) if ok else "ERR")
+"""
+
+
+def get_cuda_free_mib() -> Optional[list[Optional[int]]]:
+    """CUDA's own free MiB per ordinal (None: no answer), read now in a driver-API child; None if unread.
+    Uncached: free memory moves, so only call it where one launch needs the live figure."""
+    import sys
+
+    from utils.child_stdio import utf8_child_env
+
+    try:
+        child = subprocess.run(
+            [sys.executable, "-c", _CUDA_FREE_MIB_SCRIPT],
+            capture_output = True,
+            text = True,
+            encoding = "utf-8",
+            errors = "replace",
+            timeout = 15,
+            env = utf8_child_env(child_env_without_native_path_secret()),
+            **_windows_hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if child.returncode != 0:
+        return None
+    lines = [line.strip() for line in child.stdout.strip().splitlines()]
+    if not all(line == "ERR" or line.isdigit() for line in lines):
+        return None
+    return [None if line == "ERR" else int(line) for line in lines]
+
+
 _CUDA_DEVICE_INFO_RETRY_S = 60.0
 _CUDA_DEVICE_INFO_CACHE: dict[tuple, tuple[Optional[float], Any]] = {}
 

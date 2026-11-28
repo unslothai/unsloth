@@ -444,6 +444,10 @@ def test_the_predicate_is_the_whole_rule():
 
 
 def _llama_common(monkeypatch, avail_mib):
+    # These pin the shared-pool sizing; a Windows runner's live commit must not cap them.
+    monkeypatch.setattr(
+        "core.inference.llama_cpp._windows_integrated_cuda_commit_mib", lambda *_a: None
+    )
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_POOL_MIB", {})
     monkeypatch.setattr(LlamaCppBackend, "_find_llama_server_binary", staticmethod(lambda: None))
