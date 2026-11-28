@@ -5602,6 +5602,7 @@ def _remember_start(base: str, entry: dict) -> None:
             or (agent == "codex" and subagent and (_codex_source_home() / "sessions").is_dir())
         ),
         "server": base,
+        "cwd": os.getcwd(),
     }
     try:
         _write_private_json(_last_start_path(), last)
@@ -5643,8 +5644,22 @@ def _start_group(
     command = ctx.command.get_command(ctx, agent)
     model = ["--model", last["model"]] if last.get("model") else []
     argv = [*model, *args, *_CONTINUE_ARGS[agent]]
-    with command.make_context(agent, argv, parent = ctx) as sub:
-        command.invoke(sub)
+    workspace = last.get("cwd")
+    caller = None
+    if workspace is not None:
+        if not isinstance(workspace, str) or not os.path.isabs(workspace):
+            _fail("The last agent workspace is invalid. Start the agent in its project again.")
+        caller = os.getcwd()
+        try:
+            os.chdir(workspace)
+        except OSError as exc:
+            _fail(f"Could not reopen the last agent workspace {workspace!r}: {exc.strerror}.")
+    try:
+        with command.make_context(agent, argv, parent = ctx) as sub:
+            command.invoke(sub)
+    finally:
+        if caller is not None:
+            os.chdir(caller)
 
 
 @contextlib.contextmanager

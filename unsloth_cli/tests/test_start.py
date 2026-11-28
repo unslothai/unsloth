@@ -10364,6 +10364,53 @@ def test_bare_continue_reopens_the_last_agent_and_model(fake_studio, tmp_path, m
     assert resumed["env"]["CODEX_HOME"] == str(tmp_path / "agents" / "codex")
 
 
+@pytest.mark.parametrize("agent", ["codex", "claude"])
+def test_bare_continue_uses_the_original_workspace(agent, fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: f"/usr/local/bin/{agent}")
+    monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
+    original = tmp_path / "original"
+    caller = tmp_path / "caller"
+    original.mkdir()
+    caller.mkdir()
+    monkeypatch.chdir(original)
+    first = _capture_launch(monkeypatch, [agent, "--persist"])
+    monkeypatch.chdir(caller)
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+
+    assert Path(first["env"]["PWD"]).resolve() == original.resolve()
+    assert Path(resumed["env"]["PWD"]).resolve() == original.resolve()
+    assert Path.cwd() == caller.resolve()
+
+
+def test_bare_continue_keeps_the_caller_directory_for_legacy_records(
+    fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    _capture_launch(monkeypatch, ["codex", "--persist"])
+    saved = start._last_start_path()
+    record = json.loads(saved.read_text())
+    record.pop("cwd", None)
+    start._write_private_json(saved, record)
+    monkeypatch.chdir(tmp_path)
+
+    resumed = _capture_launch(monkeypatch, ["--continue"])
+    assert Path(resumed["env"]["PWD"]).resolve() == tmp_path.resolve()
+
+
+def test_bare_continue_reports_a_removed_workspace(fake_studio, tmp_path, monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    original = tmp_path / "original"
+    original.mkdir()
+    monkeypatch.chdir(original)
+    _capture_launch(monkeypatch, ["codex", "--persist"])
+    monkeypatch.chdir(tmp_path)
+    original.rmdir()
+
+    result = CliRunner().invoke(start.start_app, ["--continue"])
+    assert result.exit_code != 0
+    assert "Could not reopen the last agent workspace" in result.output
+
+
 def test_short_continue_reopens_claude_with_its_own_continue(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/claude")
     monkeypatch.setattr(start, "_claude_flags", lambda *a, **k: [])
