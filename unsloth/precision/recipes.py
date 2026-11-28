@@ -663,8 +663,9 @@ _add(
                 "explicit",
                 evidence = "A100 40GB, Unsloth LoRA r=16 on all linears, bs x 2048 tokens, 25 steps, fresh process "
                 "per run, interleaved: 1.055x / 1.106x / 1.155x bf16 step time at Qwen3-1.7B (bs 4) / 4B (bs 3) "
-                "/ 8B (bs 2), bf16 A/A 0.1-0.2% over 3 runs; peak memory 8-21% lower. GEMMs alone: 1.5x bf16 "
-                "forward, 1.1-1.4x input gradient once Triton 3.8's prefetch split is skipped (0.2x before). Eval "
+                "/ 8B (bs 2), bf16 A/A 0.1-0.2% over 3 runs; peak memory 8-21% lower. GEMMs alone (geomean): 1.5x "
+                "bf16 forward, 1.09x input gradient once Triton 3.8's prefetch split is skipped (forward 0.2x "
+                "before). Eval "
                 "loss after 100 steps at Qwen3-1.7B vs bf16 (A/A 0.03%): +0.12% with the int8 forward, +0.05% "
                 "on the exact base. sm86 / sm87 (A10, RTX 30, Orin) share this gate untimed",
             ),
@@ -672,8 +673,8 @@ _add(
                 "explicit",
                 evidence = "L4, same setup: 1.25x bf16 step time at Qwen3-1.7B (bs 4, bf16 A/A 9.0%: the card "
                 "slows as it warms) and 1.22x at Qwen3-4B (bs 1, A/A 2.5%); Qwen3-8B does not fit 16-bit LoRA on "
-                "24 GB. GEMMs alone: 1.7x bf16 forward, 1.5x input gradient once Triton 3.8's prefetch split "
-                "is skipped (0.5x before). Numerics are bit-identical to the A100 / sm120 kernels",
+                "24 GB. GEMMs alone (geomean): 1.7x bf16 forward, 1.5x input gradient once Triton 3.8's "
+                "prefetch split is skipped (forward 0.3x before). Numerics are bit-identical to the A100 / sm120 kernels",
             ),
             "sm90": Gate("unprobed", "H100 is not available to test on"),
             "sm100": Gate("unprobed", "B200: correctness only, never timed"),

@@ -81,12 +81,12 @@ _TILE = (128, 128, 64, 8, 4, 4)
 # Input gradient (BLOCK_M, BLOCK_R reduction step, GROUP_M, warps, stages), output block = GROUP: fastest of 8 on an
 # RTX PRO 6000 and on an L4 (8 warps for the un-rotation dots in the epilogue).
 _DGRAD_TILE = (128, 128, 8, 8, 3)
-# A100 without the prefetch pass: fastest of 8, 1.1-1.4x the tile above at Qwen3 4B / 8B shapes.
+# A100 without the prefetch pass: fastest of 8, 1.10x the tile above (geomean, 0.98-1.23x) at Qwen3 1.7B-8B shapes.
 _DGRAD_TILE_SM80 = (64, 128, 8, 4, 3)
 _ROTQ_ROWS = 16
 # One read of the input per row (rotated activations: L4; dY: sm_8x) for rows up to this many elements, instead
-# of an amax pass and a quantization pass. L4: 1.2-1.7x the two-pass rotated quantization, sm_8x: 2.2x (A100) the
-# two-pass dY quantization; A100 keeps the two-pass rotated one (the one-pass kernel measured 1.0-1.5x slower).
+# of an amax pass and a quantization pass. L4: 1.1-1.7x the two-pass rotated quantization, sm_8x: 2.2x (A100) the
+# two-pass dY quantization; A100 keeps the two-pass rotated one (the one-pass kernel measured up to 1.7x slower).
 _ONE_PASS_MAX = 16384
 _ROTQ1_BUDGET = 128  # rows x 128-blocks held per program by the one-pass rotated quantization
 # Triton 3.8 started splitting 8-bit dots in its sm_8x prefetch pass: the pass moves the first K slice of the next
