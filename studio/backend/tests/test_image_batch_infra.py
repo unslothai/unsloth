@@ -1371,3 +1371,11 @@ def test_the_race_labels_its_batched_calls_and_verdicts_with_its_canvas(monkeypa
     assert report["sizes"]["2"]["graph_canvas"] == want
     assert want in seen and None in seen  # solo renders carry no canvas label
     assert cg._BATCH_CANVAS.get() is None
+
+
+def test_hidream_requests_batch_across_users():
+    # G2a on L4 (int8, streamed, compiled): a target row is bit-identical whatever its neighbour is; the batched-vs-solo
+    # move equals a one-rounding nudge of a solo run, so it is batch-size numerics, not cross-row coupling.
+    from core.inference import diffusion_families as families
+    for name in ("hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"):
+        assert adapters.batched_forward(families.detect_family("", name)) is True

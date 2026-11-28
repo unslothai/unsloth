@@ -244,7 +244,7 @@ def _spawn(
         native_path_secret_removed_for_child_start,
         run_without_native_path_secret,
     )
-    from utils.process_lifetime import adopt_pid, is_process_shutting_down
+    from utils.process_lifetime import adopt_pid, is_process_shutting_down, spawn_on_lifetime_thread
 
     # A quit during the load: the sweep may already have run, so a child started now would outlive the server.
     if is_process_shutting_down():
@@ -256,7 +256,9 @@ def _spawn(
             args = (target[0], target[1], {}, job),
             daemon = True,
         )
-        proc.start()
+        # PR_SET_PDEATHSIG follows the spawning thread: started from the load thread, the child was SIGTERMed as soon
+        # as the load returned, so the kernels were never built.
+        spawn_on_lifetime_thread(proc.start)
     with _LIVE_LOCK:
         _LIVE[proc] = (job.get("owner", "image"), int(job["device"]))
     try:

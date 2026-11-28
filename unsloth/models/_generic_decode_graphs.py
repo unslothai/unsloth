@@ -12,8 +12,9 @@ and strides, ambient autocast + cache flag, compiled regions as eager runs them)
 these and another compiled variant rounds differently. Plain generate() runs inside generate_scope(), so
 graphs are on by default there (plan() decides per call: short calls, low free memory and unsupported
 calls decode eagerly; an out-of-memory graphed call is redone once eagerly). After an inference-mode call
-the graph and its StaticCache are kept for the next call of the same batch (keep()); training, a returned
-or caller-owned cache, and parameter / adapter / quant changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
+the graph and its StaticCache are kept for the next call of the same batch (keep()); training (unless
+UNSLOTH_DECODE_GRAPHS_KEEP_FOR_TRAINING=1), a returned or caller-owned cache, and parameter / adapter / quant
+changes drop them. UNSLOTH_DECODE_GENERIC_GRAPHS=0
 disables; _VALIDATE_ALL=1 checks every replay (debug); batches over UNSLOTH_DECODE_GENERIC_GRAPH_MAX_BSZ
 (64) decode eagerly; UNSLOTH_DECODE_GENERIC_GRAPHS_KEEP=0 drops graphs at the end of every call."""
 

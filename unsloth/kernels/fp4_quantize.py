@@ -32,6 +32,8 @@ MXFP4_GROUP = 32
 # e4m3 holds 2^-9 (subnormal) .. 2^8 exactly: 17 octaves of power-of-two MX scales under one global scale.
 _E4M3_POW2_SPAN = 17
 _ROW_CHUNK = 4096  # rows quantized per step: bounds the fp32 temporaries to a few times one chunk
+# Largest finite power of two in fp32: a global scale above it is inf, and 0 * inf decodes all-zero blocks to NaN.
+_FP32_POW2_MAX = 2.0**127
 
 NVFP4_WEIGHT_QUANT_ENV = (
     "UNSLOTH_NVFP4_WEIGHT_QUANT"  # same name and values as unsloth_zoo / Studio
@@ -112,6 +114,8 @@ def nvfp4_quantize_weight(weight, method = None):
     N, K = weight.shape
     amax = weight.abs().amax().to(torch.float32)
     g = torch.where(amax > 0, (top * _E2M1_MAX) / amax, torch.ones_like(amax))
+    # amax below ~1e-35 would need a global scale past fp32: cap it (the block scales come out smaller).
+    g = g.clamp(max = _FP32_POW2_MAX)
     packed = torch.empty((N, K // 2), dtype = torch.uint8, device = weight.device)
     scales = torch.empty((N, K // NVFP4_GROUP), dtype = torch.float8_e4m3fn, device = weight.device)
     for r0 in range(0, N, _ROW_CHUNK):
@@ -161,8 +165,9 @@ def mxfp4_quantize_weight(weight):
     e_min = int(live.min()) if live.numel() else 0
     # All-zero blocks decode to 0 under any scale: give them the top one so they never widen the span.
     exps = torch.where(nonzero, exps, torch.full_like(exps, e_max))
-    if e_max - e_min <= _E4M3_POW2_SPAN:
-        shift = 8 - e_max  # the largest block scale lands on 2^8
+    shift = 8 - e_max  # the largest block scale lands on 2^8
+    # 2^shift must be a finite fp32 global scale (e_max >= -119); tinier tensors take the bfloat16 scales.
+    if e_max - e_min <= _E4M3_POW2_SPAN and shift <= 127:
         scale = torch.exp2((exps + shift).to(torch.float32)).to(torch.float8_e4m3fn)
         global_scale = torch.tensor([2.0**shift], dtype = torch.float32, device = weight.device)
     else:

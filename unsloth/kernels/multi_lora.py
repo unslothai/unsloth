@@ -979,6 +979,16 @@ def _zoo_moe_utils():
     return moe_utils if all(hasattr(moe_utils, n) for n in _ZOO_GROUPED) else None
 
 
+def _triton_routes_lora(moe_utils, device: torch.device) -> bool:
+    """Zoo's policy sends LoRA-sized grouped GEMMs to Triton on this device. A passing Triton self-check alone is not
+    enough: on ROCm the self-check passes on every arch while only some route there (the rest loop per group)."""
+    max_rows = getattr(moe_utils, "_triton_grouped_mm_max_rows", None)
+    if max_rows is None:
+        return True
+    index = device.index if device.index is not None else torch.cuda.current_device()
+    return max_rows(index, "lora") != 0
+
+
 def _grouped_supported(device: torch.device, dtype: torch.dtype) -> bool:
     """Zoo's grouped GEMM runs as a kernel here: its Triton grouped GEMM (CUDA, half) or torch's grouped GEMM.
     Elsewhere it loops over groups, which at E * (U + 1) groups is slower than one adapter at a time."""
@@ -988,7 +998,7 @@ def _grouped_supported(device: torch.device, dtype: torch.dtype) -> bool:
     if device.type != "cuda":
         return True
     try:
-        if dtype in _HALF:
+        if dtype in _HALF and _triton_routes_lora(moe_utils, device):
             from unsloth_zoo.temporary_patches import moe_grouped_fp16
             if moe_grouped_fp16.triton_grouped_available(device):
                 return True

@@ -8469,6 +8469,14 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     return max(1, desired)
 
 
+def _in_multi_gpu_rank() -> bool:
+    """This process is a rank of a Studio multi-GPU run (core.training.parallel_launch sets the world size)."""
+    try:
+        return int(os.environ.get("UNSLOTH_STUDIO_PARALLEL_WORLD", "1") or 1) > 1
+    except ValueError:
+        return False
+
+
 def dataset_map_num_proc(
     desired: Optional[int] = None, *, serial_as_none: bool = True
 ) -> Optional[int]:
@@ -8479,6 +8487,11 @@ def dataset_map_num_proc(
             return _bounded_by_the_shared_policy(desired, serial_as_none)
         # None is safe at either layer here: workers are unusable on a spawn platform, so every auto-sizer that reads a config None vetoes too. A 1 would be worse -- only the SFT map site is rewritten, so DPO/KTO/CPO/ORPO/Reward/PRM would hand it to Dataset.map and get a Pool(1) whose child re-imports the user's __main__ (#3211 / #3397).
         return None
+
+    if _in_multi_gpu_rank() and not _num_proc_override_is_set():
+        # A rank of a Studio multi-GPU run already holds CUDA and NCCL threads; a worker forked from it can deadlock
+        # on a lock one of those threads held, and the other ranks then wait at the next collective until it times out.
+        return None if serial_as_none else 1
 
     if get_device() == DeviceType.XPU:
         try:

@@ -14,8 +14,9 @@ from unsloth.models import float8_training as f8t
 def test_registry_entry():
     r = P.get_recipe("int8_lora_rotated")
     assert r.kind == "frozen_base" and r.modes == ("lora",) and r.compile == "opaque"
-    assert r.gate("sm120").status == "explicit" and r.gate("sm120").evidence
-    for gpu in ("sm75", "sm80", "sm89", "rocm"):
+    for gpu in ("sm80", "sm89", "sm120"):  # measured faster than bf16 end to end
+        assert r.gate(gpu).status == "explicit" and r.gate(gpu).evidence
+    for gpu in ("sm75", "rocm"):
         assert r.gate(gpu).status == "refused" and r.gate(gpu).reason
     # opt-in only: never picked by name
     assert r.gate("sm120").status != "named"
@@ -77,7 +78,7 @@ def test_env_opt_in_under_tp_or_ep_is_ignored(env_on, monkeypatch, capsys):
     assert "parallel" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("gpu", ["sm80", "sm89", "sm75", None])
+@pytest.mark.parametrize("gpu", ["sm75", "rocm", None])
 def test_env_opt_in_on_unsupported_gpu_stays_16bit(monkeypatch, capsys, gpu):
     monkeypatch.setenv("UNSLOTH_LORA_BASE_INT8", "1")
     monkeypatch.setattr(f8t, "_parallel_layout_requested", lambda: False)
@@ -117,7 +118,7 @@ def test_refuses_quantized_or_qat_bases(kw):
         f8t.resolve_fp8_lora("int8_lora", **args)
 
 
-@pytest.mark.parametrize("gpu", ["sm80", "sm89", "sm75"])
+@pytest.mark.parametrize("gpu", ["sm75", "rocm"])
 def test_refuses_where_measured_slower(monkeypatch, gpu):
     import unsloth.kernels.int8_lora as IL
     monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
@@ -125,13 +126,12 @@ def test_refuses_where_measured_slower(monkeypatch, gpu):
         f8t.resolve_fp8_lora("int8_lora", dtype = torch.bfloat16, gpu = gpu)
 
 
-def test_resolves_on_sm120(monkeypatch):
+@pytest.mark.parametrize("gpu", ["sm80", "sm89", "sm120"])
+def test_resolves_where_measured_faster(monkeypatch, gpu):
     import unsloth.kernels.int8_lora as IL
 
     monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
-    assert (
-        f8t.resolve_fp8_lora("int8_lora", dtype = torch.bfloat16, gpu = "sm120") == "int8_lora_rotated"
-    )
+    assert f8t.resolve_fp8_lora("int8_lora", dtype = torch.bfloat16, gpu = gpu) == "int8_lora_rotated"
     assert f8t.is_int8_lora_recipe("int8_lora_rotated")
     assert not f8t.is_int8_lora_recipe("fp8_lora_rowwise")
 
@@ -196,3 +196,8 @@ def test_hidden_size_gate(monkeypatch, hidden, converts):
         if "_unsloth_fp8_lora" in m.__dict__
     ]
     assert all(type(s).__name__ == "Int8LoRABaseState" for s in states) and bool(states) is converts
+
+
+def test_fp16_activations_need_loss_scaling():
+    assert P.grad_scaler_kind("int8_lora_rotated", torch.float16) == "GradScaler"
+    assert P.grad_scaler_kind("int8_lora_rotated", torch.bfloat16) == "none"

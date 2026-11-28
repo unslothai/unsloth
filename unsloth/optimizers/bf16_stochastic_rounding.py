@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bfloat16 full finetuning: step bfloat16 weights in float32, round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
+"""Trained bfloat16 weights (full finetuning, or LoRA's modules_to_save / trained norms): step them in float32,
+round back stochastically (UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 disables).
 
 bfloat16 keeps 8 mantissa bits, so round-to-nearest drops updates far smaller than a weight's spacing.
 
@@ -13,8 +14,10 @@ UNSLOTH_BF16_SR_FUSED_BNB=0 keeps bitsandbytes on the float32-copy route; UNSLOT
 """
 
 import contextlib
+import functools
 import os
 import types
+import weakref
 
 import torch
 
@@ -369,9 +372,18 @@ def _bnb_triton_ok(device):
     return _BNB_OK[key]
 
 
-def _bnb_fused_step(optimizer, group, p, gindex, pindex, seed):
-    """bitsandbytes Adam / AdamW on a bfloat16 weight in one kernel.
-    Returns False (nothing changed) when the weight or optimizer is not one it reproduces."""
+def _bnb_fused_step(
+    optimizer,
+    group,
+    p,
+    gindex,
+    pindex,
+    seed,
+    owner = None,
+):
+    """bitsandbytes Adam / AdamW on a bfloat16 weight in one kernel. `owner`: the DTensor whose local shard `p`
+    is (it seeds the draws). Returns False (nothing changed) when the weight or optimizer is not one it reproduces."""
+    owner = p if owner is None else owner
     if not _bnb_fused_enabled() or p.device.type != "cuda" or not p.is_contiguous():
         return False
     if getattr(optimizer, "optimizer_name", None) != "adam":
@@ -429,7 +441,7 @@ def _bnb_fused_step(optimizer, group, p, gindex, pindex, seed):
     step = state["step"]
     try:
         _bnb_launch(
-            p.detach(), g, state, int(step), config, _seed_for(optimizer, p, seed, int(step))
+            p.detach(), g, state, int(step), config, _seed_for(optimizer, owner, seed, int(step))
         )
     except torch.cuda.OutOfMemoryError:
         state["step"] -= 1
@@ -447,6 +459,8 @@ def _bnb_fused_step(optimizer, group, p, gindex, pindex, seed):
     increment = getattr(torch.autograd.graph, "increment_version", None)
     if increment is not None:
         increment(p)
+        if owner is not p:
+            increment(owner)
     _count(optimizer, "_unsloth_sr_bnb_fused_steps")
     return True
 
@@ -484,8 +498,8 @@ def _local(t):
 
 
 def _tracked(p, dtensor = False):
-    """bfloat16 weights this optimizer can round. DTensors (FSDP2 / TP) only on the torch AdamW / Adam route:
-    the update and the rounding are elementwise, so they run on the local shard."""
+    """bfloat16 weights this optimizer can round. DTensors (FSDP2 / TP) round their local shard: torch AdamW /
+    Adam's update and the rounding are elementwise, and bitsandbytes steps each shard on its own."""
     if _is_dtensor(p) and not dtensor:
         return False
     local = _local(p)
@@ -569,9 +583,14 @@ def _step_of(optimizer, p):
     return int(step.item()) if torch.is_tensor(step) else int(step)
 
 
-def _reseed(optimizer, p, seed):
+def _reseed(
+    optimizer,
+    p,
+    seed,
+    owner = None,
+):
     g = _generator(optimizer, p.device, seed)
-    g.manual_seed(_seed_for(optimizer, p, seed, _step_of(optimizer, p)))
+    g.manual_seed(_seed_for(optimizer, p if owner is None else owner, seed, _step_of(optimizer, p)))
     return g
 
 
@@ -589,8 +608,11 @@ class _Float32Step:
         p,
         seed,
         triton_round = False,
+        owner = None,
     ):
+        # owner: the DTensor whose local shard p is (bitsandbytes steps shards): it seeds the draws.
         self.optimizer, self.p, self.seed = optimizer, p, seed
+        self.owner = p if owner is None else owner
         self.triton_round = (
             triton_round and p.device.type == "cuda" and _fused_enabled() and _triton_ok(p.device)
         )
@@ -615,7 +637,9 @@ class _Float32Step:
             stepped = copy.detach()
             if self.triton_round:
                 try:
-                    seed = _seed_for(self.optimizer, p, self.seed, _step_of(self.optimizer, p))
+                    seed = _seed_for(
+                        self.optimizer, self.owner, self.seed, _step_of(self.optimizer, p)
+                    )
                     _round_cuda_(_local(p.detach()), _local(stepped), seed)
                     _count(self.optimizer, "_unsloth_sr_triton_rounds")
                 except torch.cuda.OutOfMemoryError:
@@ -629,14 +653,14 @@ class _Float32Step:
                     self.triton_round = False
             if not self.triton_round:
                 stochastic_round_to_bf16_(
-                    p.detach(), stepped, _reseed(self.optimizer, p, self.seed)
+                    p.detach(), stepped, _reseed(self.optimizer, p, self.seed, self.owner)
                 )
-            if _is_dtensor(p):
+            if _is_dtensor(self.owner):
                 # The rounding wrote the local shard: bump the DTensor's own version counter too, so a graph
                 # saved before the step refuses to backpropagate, as for a plain weight.
                 increment = getattr(torch.autograd.graph, "increment_version", None)
                 if increment is not None:
-                    increment(p)
+                    increment(self.owner)
                 _count(self.optimizer, "_unsloth_sr_dtensor_rounds")
         return False
 
@@ -668,17 +692,58 @@ def _store_state(optimizer, state, p, seed):
         state[key] = stored
 
 
+def _bnb_rounded_step(optimizer, seed, owner, plain, group, p, gindex, pindex):
+    """One bitsandbytes update of bfloat16 weight p (owner: the DTensor p is the local shard of), rounded
+    stochastically; `plain` is bitsandbytes' own update_step."""
+    if _bnb_fused_step(optimizer, group, p, gindex, pindex, seed, owner):
+        if owner is not p:
+            _count(optimizer, "_unsloth_sr_dtensor_rounds")
+        return None
+    # bitsandbytes needs p and grad in one dtype: step a float32 copy, round back in one pass.
+    with _Float32Step(optimizer, p, seed, triton_round = True, owner = owner) as copy:
+        return plain(group, copy, gindex, pindex)
+
+
+def _local_shard_bnb(optimizer):
+    """bitsandbytes Adam / AdamW stepping DTensor weights on their local shards (models/fsdp2_bnb_optim.py)."""
+    return getattr(type(optimizer), "_unsloth_fsdp2_local_shards", False) is True and callable(
+        getattr(optimizer, "_shard_call", None)
+    )
+
+
 def _wrap_bitsandbytes(optimizer, tracked, seed):
-    original = optimizer.update_step
+    # Read at call time: FSDP2 / TP may swap the class to its local-shard form after this wraps.
+    previous = vars(optimizer).get("update_step")
+    # DTensors tracked by identity: accelerate's FSDP2 prepare frees the plain weights this saw, and a shard
+    # built then can reuse a freed weight's id.
+    shards = {
+        id(p): weakref.ref(p)
+        for group in optimizer.param_groups
+        for p in group["params"]
+        if id(p) in tracked and _is_dtensor(p)
+    }
 
     def update_step(self, group, p, gindex, pindex):
+        original = (
+            previous if previous is not None else types.MethodType(type(self).update_step, self)
+        )
         if id(p) not in tracked or p.grad is None or p.dtype != torch.bfloat16:
             return original(group, p, gindex, pindex)
-        if _bnb_fused_step(self, group, p, gindex, pindex, seed):
-            return None
-        # bitsandbytes needs p and grad in one dtype: step a float32 copy, round back in one pass.
-        with _Float32Step(self, p, seed, triton_round = True) as copy:
-            return original(group, copy, gindex, pindex)
+        if _is_dtensor(p):
+            ref = shards.get(id(p))
+            if ref is None or ref() is not p or not _local_shard_bnb(self):
+                return original(group, p, gindex, pindex)
+            # The local-shard class hands bitsandbytes a plain alias of this rank's shard: round that one.
+            return self._shard_call(
+                "update_step",
+                group,
+                p,
+                gindex,
+                pindex,
+                True,
+                step = functools.partial(_bnb_rounded_step, self, seed, p),
+            )
+        return _bnb_rounded_step(self, seed, p, original, group, p, gindex, pindex)
 
     optimizer.update_step = types.MethodType(update_step, optimizer)
 
@@ -988,10 +1053,7 @@ def enable_bf16_stochastic_rounding(
     if kind is None:
         return 0
     params = [
-        p
-        for group in optimizer.param_groups
-        for p in group["params"]
-        if _tracked(p, dtensor = kind == "torch")
+        p for group in optimizer.param_groups for p in group["params"] if _tracked(p, dtensor = True)
     ]
     if not params:
         return 0
@@ -1005,20 +1067,23 @@ def enable_bf16_stochastic_rounding(
     setattr(optimizer, _MARK, len(params))
     if verbose:
         print(
-            f"Unsloth: bfloat16 full finetuning steps {len(params)} bfloat16 weights in float32 and "
+            f"Unsloth: steps {len(params)} trained bfloat16 weights in float32 and "
             "rounds them back stochastically, so updates smaller than bfloat16's spacing are not lost. "
             "Set UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 to turn this off."
         )
     return len(params)
 
 
-def _full_finetuning(model):
+def _unsloth_model(model):
+    """True for a model Unsloth loaded, full finetuning or LoRA (every load stamps _unsloth_full_finetuning). Under
+    LoRA the adapters are float32, but trained bfloat16 weights beside them (modules_to_save embed_tokens / lm_head,
+    trained norms) step in bfloat16 and need the rounding as much as full finetuning does; a LoRA run with none
+    covers nothing and its optimizer is left untouched."""
     seen = set()
     while model is not None and id(model) not in seen:
         seen.add(id(model))
-        flag = getattr(model, "_unsloth_full_finetuning", None)
-        if flag is not None:
-            return bool(flag)
+        if getattr(model, "_unsloth_full_finetuning", None) is not None:
+            return True
         model = getattr(model, "module", None)
     return False
 
@@ -1037,7 +1102,7 @@ def patch_trainer_bf16_stochastic_rounding(Trainer):
         **kwargs,
     ):
         target = optimizer if optimizer is not None else getattr(self, "optimizer", None)
-        if getattr(self, "lr_scheduler", None) is None and _full_finetuning(
+        if getattr(self, "lr_scheduler", None) is None and _unsloth_model(
             getattr(self, "model", None)
         ):
             try:

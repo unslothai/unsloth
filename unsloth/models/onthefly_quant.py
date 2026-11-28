@@ -19,6 +19,7 @@ import contextvars
 import functools
 import inspect
 import os
+import types
 
 import torch
 
@@ -49,6 +50,9 @@ _ASYNC_ENV = "HF_DEACTIVATE_ASYNC_LOAD"  # transformers 5: load parameters on th
 _QUANT_DEVICES = ("cuda", "xpu")
 
 _ACTIVE = contextvars.ContextVar("unsloth_onthefly_fp4", default = None)
+# Set while transformers 5 finalizes a load: it materializes missing / mismatched weights through setattr as
+# uninitialized storage and initializes them afterwards, so those stay dense until _finalize quantizes them.
+_DEFER = contextvars.ContextVar("unsloth_onthefly_fp4_defer", default = False)
 _STATS = {"linear": 0, "experts": 0, "skipped": 0, "late": 0}
 
 
@@ -116,6 +120,10 @@ def onthefly_lowbit_load(fn):
         signature = inspect.signature(fn)
     except (TypeError, ValueError):
         return fn
+    var_kw = next(
+        (p.name for p in signature.parameters.values() if p.kind is inspect.Parameter.VAR_KEYWORD),
+        None,
+    )
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
@@ -139,6 +147,28 @@ def onthefly_lowbit_load(fn):
             raise NotImplementedError(
                 f"Unsloth: load_in_4bit = '{fmt}' does not support fast_inference = True (vLLM) yet."
             )
+        if fmt is not None:
+            # load_in_4bit is False from here on, so the loader's own conflict checks no longer see the FP4 request.
+            extra = arguments.get(var_kw) or {} if var_kw else {}
+
+            def given(name, default):
+                return arguments[name] if name in arguments else extra.get(name, default)
+
+            others = [
+                name
+                for name, on in (
+                    ("load_in_8bit", l8),
+                    ("load_in_16bit", given("load_in_16bit", False)),
+                    ("load_in_fp8", fp8 not in (False, None)),
+                    ("float8_training", given("float8_training", None) not in (None, False)),
+                )
+                if on
+            ]
+            if others:
+                raise ValueError(
+                    f"Unsloth: load_in_4bit = '{fmt}' cannot be combined with {', '.join(others)}: pick one "
+                    "precision for the base weights."
+                )
         arguments["load_in_4bit"] = l4
         arguments["load_in_8bit"] = l8
         if fp8 is not False:
@@ -240,6 +270,7 @@ class _PendingFP4Linear(torch.nn.Linear):
             and value.is_floating_point()
             and tuple(value.shape) == (self.out_features, self.in_features)
             and "weight_packed" not in self._parameters
+            and not _DEFER.get()
         ):
             _quantize_linear_(self, value)
             return
@@ -279,7 +310,7 @@ def _experts_pending_class(cls):
 
     def __setattr__(self, name, value):
         object.__getattribute__(self, "_unsloth_fp4_base_setattr")(name, value)
-        if name in ("gate_up_proj", "down_proj"):
+        if name in ("gate_up_proj", "down_proj") and not _DEFER.get():
             _maybe_quantize_experts(self)
 
     pending = type(
@@ -526,10 +557,15 @@ def _dense_state_dict(model, state_dict):
         if module.__dict__.get("_unsloth_onthefly_fp4") and "weight_packed" in module._parameters:
             if prefix + "weight_packed" not in out:
                 continue
+            # Decode the caller's tensors, not the live module's: the dict may be a snapshot or a gathered copy.
+            given = types.SimpleNamespace(
+                _unsloth_nvfp4_dtype = getattr(module, "_unsloth_nvfp4_dtype", torch.bfloat16)
+            )
             for key in _PACKED_KEYS:
-                out.pop(prefix + key, None)
+                value = out.pop(prefix + key, None)
+                setattr(given, key, getattr(module, key) if value is None else value)
             with torch.no_grad():
-                out[prefix + "weight"] = _dense_weight(module).to("cpu")
+                out[prefix + "weight"] = _dense_weight(given).to("cpu")
         elif module.__dict__.get("_unsloth_onthefly_fp4_experts"):
             for stack, _ in _EXPERT_STACKS:
                 value = out.get(prefix + stack)
@@ -652,7 +688,14 @@ def _install_hooks():
             else finalize_raw
         )
 
-        def _after(model, result):
+        def _after(model, call):
+            if "_unsloth_fp4_finalize_pending" not in model.__dict__:
+                return call()
+            token = _DEFER.set(True)
+            try:
+                result = call()
+            finally:
+                _DEFER.reset(token)
             fmt = model.__dict__.pop("_unsloth_fp4_finalize_pending", None)
             if fmt is not None:
                 _finalize(model, fmt)
@@ -662,13 +705,13 @@ def _install_hooks():
 
             @functools.wraps(finalize_fn)
             def _finalize_model_loading(cls, model, *args, **kwargs):
-                return _after(model, finalize_fn(cls, model, *args, **kwargs))
+                return _after(model, lambda: finalize_fn(cls, model, *args, **kwargs))
 
         else:
 
             @functools.wraps(finalize_fn)
             def _finalize_model_loading(model, *args, **kwargs):
-                return _after(model, finalize_fn(model, *args, **kwargs))
+                return _after(model, lambda: finalize_fn(model, *args, **kwargs))
 
         _finalize_model_loading.__wrapped__ = finalize_fn
         PreTrainedModel._finalize_model_loading = (
