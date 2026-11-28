@@ -17,7 +17,9 @@ import torch
 
 __all__ = [
     "NVFP4_WEIGHT_QUANT_ENV",
+    "MXFP4_WEIGHT_QUANT_ENV",
     "nvfp4_weight_quant_method",
+    "mxfp4_weight_quant_method",
     "nvfp4_quantize_weight",
     "mxfp4_quantize_weight",
     "fp4_quantize_weight",
@@ -52,6 +54,18 @@ _NVFP4_METHODS = {
     "on": "4over6",
     "1": "4over6",
 }
+MXFP4_WEIGHT_QUANT_ENV = "UNSLOTH_MXFP4_WEIGHT_QUANT"  # same name and values as unsloth_zoo
+_MXFP4_METHODS = {
+    "rtn": "rtn",
+    "ocp": "rtn",
+    "off": "rtn",
+    "0": "rtn",
+    "mse": "mse",
+    "search": "mse",
+    "on": "mse",
+    "1": "mse",
+}
+_MXFP4_DEFAULT_METHOD = "mse"
 
 
 def nvfp4_weight_quant_method(method = None):
@@ -64,6 +78,19 @@ def nvfp4_weight_quant_method(method = None):
     if value not in _NVFP4_METHODS:
         raise ValueError(f"Unsloth: {NVFP4_WEIGHT_QUANT_ENV}={raw!r} is not one of max6, 4over6")
     return _NVFP4_METHODS[value]
+
+
+def mxfp4_weight_quant_method(method = None):
+    """`mse` (the default: per 32-value block the lower squared error of the OCP shared exponent and the next
+    one up, which never clips the block max; ties keep OCP's) or `rtn` (the OCP exponent floor(log2(amax)) - 2
+    only, the block max may clip at 6). Both are valid OCP MXFP4."""
+    raw = method if method is not None else os.environ.get(MXFP4_WEIGHT_QUANT_ENV, "")
+    value = str(raw).strip().lower().replace("-", "_").replace(" ", "")
+    if value == "":
+        return _MXFP4_DEFAULT_METHOD
+    if value not in _MXFP4_METHODS:
+        raise ValueError(f"Unsloth: {MXFP4_WEIGHT_QUANT_ENV}={raw!r} is not one of rtn, mse")
+    return _MXFP4_METHODS[value]
 
 
 def _round_e2m1(y):
@@ -105,6 +132,56 @@ def _nvfp4_candidate(blocks, bmax, g, top):
     return _round_e2m1(y), s, decode
 
 
+def _e2m1_magnitude(a):
+    """Nearest E2M1 magnitude of a >= 0 as a value, equal to `_e2m1_to_float(_round_e2m1(a))`: the grid steps
+    are 0.5 below 2, 1 below 4 and 2 up to the saturation at 6, and round-half-even of a / step lands on the
+    even code at every midpoint."""
+    a = a.clamp(max = _E2M1_MAX)
+    step = torch.where(a < 2.0, 0.5, torch.where(a < 4.0, 1.0, 2.0)).to(a.dtype)
+    return torch.round(a / step) * step
+
+
+def _block_error(ax, decode):
+    """Squared error per block of |x| (`ax`) under `decode`; the sign drops out, so this is bit-equal to the
+    error of the signed codes."""
+    d = decode[..., None]
+    y = torch.where(d > 0, ax / d, torch.zeros_like(ax))
+    return ((_e2m1_magnitude(y) * d - ax) ** 2).sum(dim = -1)
+
+
+def _codes_at(blocks, decode):
+    d = decode[..., None]
+    return _round_e2m1(torch.where(d > 0, blocks / d, torch.zeros_like(blocks)))
+
+
+def _nvfp4_pick_scales(blocks, bmax, g, method):
+    """Per-block E2M1 codes and e4m3 scales. `max6`: max -> 6. `4over6`: the lower squared error of max -> 6 and
+    max -> 4 (ties keep /6); the errors come from the magnitudes, so only the winning scale is rounded to codes."""
+    if method == "max6":
+        q, s, _ = _nvfp4_candidate(blocks, bmax, g, _E2M1_MAX)
+        return q, s
+    codes6 = (bmax / _E2M1_MAX * g).clamp(max = _E4M3_MAX).to(torch.float8_e4m3fn).view(torch.uint8)
+    codes4 = (bmax / 4.0 * g).clamp(max = _E4M3_MAX).to(torch.float8_e4m3fn).view(torch.uint8)
+    ax = blocks.abs()
+    err6 = _block_error(ax, codes6.view(torch.float8_e4m3fn).to(torch.float32) / g)
+    err4 = _block_error(ax, codes4.view(torch.float8_e4m3fn).to(torch.float32) / g)
+    s = torch.where(err4 < err6, codes4, codes6).view(torch.float8_e4m3fn)
+    del ax, err6, err4
+    return _codes_at(blocks, s.to(torch.float32) / g), s
+
+
+def _raise_clipping_exponents_(w, bmax, e):
+    """MXFP4 `mse`, in place on the fp32 exponents `e` of the (..., 32) blocks `w`: e + 1 where its squared
+    error is strictly lower. Only blocks whose max clips at e (bmax > 6 * 2^e) are tried: below that the e + 1
+    grid inside [0, 6 * 2^e] is a subset of the e grid, so no element can get closer."""
+    idx = ((bmax > _E2M1_MAX * torch.exp2(e)) & (e < 127)).nonzero(as_tuple = True)
+    if idx[0].numel() == 0:
+        return
+    ax, ec = w[idx].abs(), e[idx]
+    better = _block_error(ax, torch.exp2(ec + 1)) < _block_error(ax, torch.exp2(ec))
+    e[idx] = torch.where(better, ec + 1, ec)
+
+
 @torch.no_grad()
 def nvfp4_quantize_weight(weight, method = None):
     """NVFP4 of an (N, K) weight: one fp32 global scale (`top * 6 / amax`), e4m3 scale per 16, E2M1 codes."""
@@ -122,28 +199,20 @@ def nvfp4_quantize_weight(weight, method = None):
         r1 = min(N, r0 + _ROW_CHUNK)
         blocks = weight[r0:r1].to(torch.float32).view(r1 - r0, K // NVFP4_GROUP, NVFP4_GROUP)
         bmax = blocks.abs().amax(dim = -1)
-        q, s, decode = _nvfp4_candidate(blocks, bmax, g, _E2M1_MAX)
-        if method == "4over6":
-            q4, s4, decode4 = _nvfp4_candidate(blocks, bmax, g, 4.0)
-            err6 = ((_e2m1_to_float(q) * decode[..., None] - blocks) ** 2).sum(dim = -1)
-            err4 = ((_e2m1_to_float(q4) * decode4[..., None] - blocks) ** 2).sum(dim = -1)
-            take4 = err4 < err6
-            q = torch.where(take4[..., None], q4, q)
-            s = torch.where(take4, s4.view(torch.uint8), s.view(torch.uint8)).view(
-                torch.float8_e4m3fn
-            )
-            del q4, s4, decode4, err6, err4, take4
+        q, s = _nvfp4_pick_scales(blocks, bmax, g, method)
         packed[r0:r1] = _pack_nibbles(q.reshape(r1 - r0, K))
         scales[r0:r1] = s
-        del blocks, bmax, q, s, decode
+        del blocks, bmax, q, s
     return packed, scales, g.reshape(1)
 
 
 @torch.no_grad()
-def mxfp4_quantize_weight(weight):
-    """OCP MXFP4 of an (N, K) weight (shared exponent floor(log2(block amax)) - 2, E2M1 RTN), written in the
-    NVFP4 kernel layout (see the module docstring)."""
+def mxfp4_quantize_weight(weight, method = None):
+    """OCP MXFP4 of an (N, K) weight (shared exponent floor(log2(block amax)) - 2, raised by one per block
+    under `mse` where that lowers the squared error; E2M1 RTN), written in the NVFP4 kernel layout (see the
+    module docstring)."""
     _check_weight(weight, MXFP4_GROUP)
+    method = mxfp4_weight_quant_method(method)
     N, K = weight.shape
     G = K // MXFP4_GROUP
     packed = torch.empty((N, K // 2), dtype = torch.uint8, device = weight.device)
@@ -155,6 +224,8 @@ def mxfp4_quantize_weight(weight):
         bmax = w.abs().amax(dim = -1)
         e = torch.floor(torch.log2(bmax.clamp(min = 2.0**-126))) - 2
         e = torch.where(bmax > 0, e, torch.full_like(e, -127.0)).clamp(-127, 127)
+        if method == "mse":
+            _raise_clipping_exponents_(w, bmax, e)
         q = _round_e2m1(w / torch.exp2(e)[..., None])
         packed[r0:r1] = _pack_nibbles(q.reshape(r1 - r0, K))
         exps[r0:r1] = e.to(torch.int16)
@@ -184,5 +255,6 @@ def fp4_quantize_weight(
     if fmt == "nvfp4":
         return nvfp4_quantize_weight(weight, method)
     if fmt == "mxfp4":
+        # `method` names an NVFP4 rule; MXFP4 takes UNSLOTH_MXFP4_WEIGHT_QUANT (mxfp4_quantize_weight's own `method`).
         return mxfp4_quantize_weight(weight)
     raise ValueError(f"Unsloth: unknown FP4 format {fmt!r}; use 'nvfp4' or 'mxfp4'")
