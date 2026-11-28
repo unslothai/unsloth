@@ -27,6 +27,7 @@ def test_kill_switches(monkeypatch):
     for env, probe in (
         (fl.PREFETCH_ENV, fl.prefetch_enabled),
         (fl.FAST_UPLOAD_ENV, fl.fast_upload_enabled),
+        (fl.FAST_UPLOAD_GGUF_ENV, lambda: fl._switch_on(fl.FAST_UPLOAD_GGUF_ENV)),
     ):
         monkeypatch.delenv(env, raising = False)
         assert probe()
@@ -522,3 +523,154 @@ def test_the_read_buffers_count_against_the_ram_check(tmp_path, monkeypatch):
     _join_prefetch(handle)
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 34)  # 17 MiB: not even one buffer
     assert fl.start_prefetch([str(path)], min_bytes = 0, threads = 8) is None
+
+
+def _gguf_module(torch):
+    gguf_utils = pytest.importorskip("diffusers.quantizers.gguf.utils")
+    gguf = pytest.importorskip("gguf")
+    torch.manual_seed(0)
+    q8 = gguf.GGMLQuantizationType.Q8_0
+    module = torch.nn.Module()
+    # Q8_0 rows: 34 bytes per 32 weights; a 1 MiB+ packed weight like a real linear's
+    module.weight = gguf_utils.GGUFParameter(
+        torch.randint(0, 256, (1024, 34 * 32), dtype = torch.uint8), quant_type = q8
+    )
+    module.bias = torch.nn.Parameter(torch.randn(1024).to(torch.bfloat16), requires_grad = False)
+    return module, gguf_utils.GGUFParameter, q8
+
+
+def test_gguf_weights_are_ring_sources_unless_switched_off(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(fl, "_UPLOAD_MIN_TENSOR_BYTES", 1)
+    module, cls, _q8 = _gguf_module(torch)
+    monkeypatch.delenv(fl.FAST_UPLOAD_GGUF_ENV, raising = False)
+    got = fl._upload_candidates([module], "cuda")
+    assert any(t is module.weight for t in got) and any(t is module.bias for t in got)
+    # not a wrapper subclass: never staged twice
+    assert fl._subclass_candidates([module], {id(t) for t in got}) == []
+    monkeypatch.setenv(fl.FAST_UPLOAD_GGUF_ENV, "0")
+    got = fl._upload_candidates([module], "cuda")
+    assert not any(type(t) is cls for t in got) and any(t is module.bias for t in got)
+
+
+def test_a_staged_gguf_hit_is_what_ggufparameter_to_returns():
+    torch = pytest.importorskip("torch")
+    module, cls, q8 = _gguf_module(torch)
+    src = module.weight
+    stock = src.to("cpu", dtype = torch.uint8)  # diffusers' own .to: re-wrapped GGUFParameter
+    dst = torch.Tensor._make_subclass(torch.Tensor, src, False).clone()  # what the ring hands back
+    shape, quant_shape = tuple(src.shape), tuple(src.quant_shape)
+    mode = fl._StagedTo({id(src): (src, dst)}, torch.device("cpu"))
+    with mode:
+        out = src.to("cpu")
+        module.to("cpu")
+    assert type(out) is cls is type(stock)
+    assert out.quant_type == q8 == stock.quant_type and not out.requires_grad
+    assert tuple(out.quant_shape) == quant_shape == tuple(stock.quant_shape)
+    assert out.data_ptr() == dst.data_ptr() and tuple(out.shape) == shape
+    assert torch.equal(out.as_tensor(), src.as_tensor())
+    # Module.to re-points .data: the parameter object, its class and quant type survive
+    assert module.weight is src and type(module.weight) is cls and module.weight.quant_type == q8
+    assert module.weight.data_ptr() == dst.data_ptr()
+
+
+def test_fast_upload_stages_gguf_and_both_switches_keep_the_stock_path(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.host_pinning as hp
+
+    _gguf_module(torch)  # imports diffusers before torch.cuda is faked
+    # the whole fast_upload flow on CPU: a fake ring (byte copies) stands in for the pinned CUDA upload
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(hp, "host_pinning_allowed", lambda device = None: True)
+    monkeypatch.setattr(fl, "_UPLOAD_MIN_TOTAL_BYTES", 0)
+    monkeypatch.setattr(fl, "_UPLOAD_MIN_TENSOR_BYTES", 1)
+    rings = []
+
+    def _fake_ring(sources, device):
+        rings.append([type(t).__name__ for t in sources])
+        return [
+            torch.Tensor._make_subclass(torch.Tensor, t.detach(), False).clone() for t in sources
+        ]
+
+    monkeypatch.setattr(fl, "_ring_copy", _fake_ring)
+
+    def _staged(**env):
+        for k in (fl.FAST_UPLOAD_ENV, fl.FAST_UPLOAD_GGUF_ENV):
+            monkeypatch.delenv(k, raising = False)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        module, cls, q8 = _gguf_module(torch)
+        before = module.weight
+        with fl.fast_upload([module], "cuda") as staged:
+            # only a staged GGUF weight may be moved here: the stock .to needs a real card
+            hit = staged == 2
+            out = module.weight.to("cuda") if hit else None
+        if hit:
+            assert type(out) is cls and out.quant_type == q8
+            assert torch.equal(out.as_tensor(), before.as_tensor())
+        return staged
+
+    assert _staged() == 2 and rings.pop() == ["GGUFParameter", "Parameter"]
+    assert _staged(**{fl.FAST_UPLOAD_GGUF_ENV: "0"}) == 1 and rings.pop() == ["Parameter"]
+    assert _staged(**{fl.FAST_UPLOAD_ENV: "0"}) == 0 and not rings
+
+
+def test_load_prefetch_reads_a_gguf_denoiser_last_instead_of_the_dense_one(tmp_path, monkeypatch):
+    snap = _fake_snapshot(tmp_path)
+    denoiser = tmp_path / "flux-2-klein-4b-Q8_0.gguf"
+    denoiser.write_bytes(b"g")
+    seen = {}
+    monkeypatch.setattr(
+        fl, "start_prefetch", lambda paths, logger = None: seen.setdefault("paths", list(paths))
+    )
+    fl.start_load_prefetch(
+        object(),
+        str(snap),
+        denoiser_path = str(denoiser),
+        text_encoders_replaced = {"text_encoder_2"},
+    )
+    assert [p.split("/snap/")[-1] for p in seen.pop("paths")] == [
+        "text_encoder/model.safetensors",
+        "vae/diffusion_pytorch_model.safetensors",
+        str(denoiser),
+    ]
+    # a denoiser path that is not a file still skips the dense shards it replaces
+    fl.start_load_prefetch(object(), str(snap), denoiser_path = str(tmp_path / "missing.gguf"))
+    assert not any("transformer/" in p or p.endswith(".gguf") for p in seen["paths"])
+
+
+def test_the_gguf_branch_starts_the_prefetch_and_stops_it_after_the_assembly():
+    import ast
+    from pathlib import Path
+
+    src = (Path(fl.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    tree = ast.parse(src)
+    calls = lambda node, name: [  # noqa: E731
+        n for n in ast.walk(node) if isinstance(n, ast.Call) and ast.unparse(n.func) == name
+    ]
+    gguf_branch = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test).replace("'", '"') == 'kind == "gguf"'
+        and calls(node, "install_gguf_mmap")
+    )
+    (start,) = calls(gguf_branch, "start_load_prefetch")
+    kw = {k.arg: ast.unparse(k.value) for k in start.keywords}
+    assert kw["denoiser_path"] == "single_file_path"
+    assert "te_precast_components" in kw["text_encoders_replaced"]
+    # started before diffusers parses the GGUF
+    first = [ast.unparse(s) for s in gguf_branch.body]
+    assert any(
+        "start_load_prefetch" in s for s in first[: first.index("install_gguf_mmap(logger)")]
+    )
+    stops = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "_gguf_prefetched"
+        and calls(node, "self._stop_load_prefetch")
+    ]
+    assert len(stops) == 1
+    assert src.index("_gguf_prefetched = True") < src.index("if _gguf_prefetched:")

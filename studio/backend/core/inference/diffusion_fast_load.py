@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import re
+import sys
 import threading
 from typing import Any, Iterable, Iterator, Optional, Sequence
 
@@ -16,6 +17,8 @@ PREFETCH_ENV = "UNSLOTH_DIFFUSION_PREFETCH"
 # "0": every slice is read whole, its page-cache-resident chunks included.
 PREFETCH_SKIP_CACHED_ENV = "UNSLOTH_DIFFUSION_PREFETCH_SKIP_CACHED"
 FAST_UPLOAD_ENV = "UNSLOTH_DIFFUSION_FAST_UPLOAD"
+# "0": GGUF weights keep diffusers' own pageable .to (the ring still carries the plain tensors).
+FAST_UPLOAD_GGUF_ENV = "UNSLOTH_DIFFUSION_FAST_UPLOAD_GGUF"
 _SWITCH_OFF = ("0", "off", "false", "no")
 
 _PREFETCH_THREADS = 8
@@ -371,8 +374,10 @@ def start_load_prefetch(
     cache_dir: Optional[str] = None,
     logger: Any = None,
     variant: Optional[str] = None,
+    denoiser_path: Optional[str] = None,
 ) -> Optional[LoadPrefetch]:
-    """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises."""
+    """Prefetch what a diffusers pipeline load of ``base`` will read. Never raises.
+    ``denoiser_path``: a single-file / GGUF denoiser, read last (at placement); the base's denoiser is skipped."""
     if not prefetch_enabled():
         return None
     try:
@@ -399,12 +404,17 @@ def start_load_prefetch(
                 if location and os.path.isfile(str(location)):
                     paths.append(str(location))
                     seeded = True
+        denoiser = (
+            str(denoiser_path) if denoiser_path and os.path.isfile(str(denoiser_path)) else None
+        )
         paths += pipeline_component_files(
             _snapshot_dir(base, base_local_dir, cache_dir),
-            skip_denoiser = seeded,
+            skip_denoiser = seeded or denoiser_path is not None,
             skip_components = text_encoders_replaced,
             variant = variant,
         )
+        if denoiser is not None:
+            paths.append(denoiser)
         return start_prefetch(paths, logger = logger)
     except Exception as exc:  # noqa: BLE001 - a prefetch is only a hint
         if logger is not None:
@@ -412,10 +422,19 @@ def start_load_prefetch(
         return None
 
 
+def _gguf_parameter_class() -> Optional[type]:
+    """diffusers' GGUFParameter when GGUF is loaded (and not switched off); a plain .data holder of packed bytes."""
+    if not _switch_on(FAST_UPLOAD_GGUF_ENV):
+        return None
+    module = sys.modules.get("diffusers.quantizers.gguf.utils")
+    return getattr(module, "GGUFParameter", None) if module is not None else None
+
+
 def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
     """Plain, dense, contiguous CPU parameters and buffers worth a ring slot, each tensor once."""
     import torch
 
+    gguf = _gguf_parameter_class()
     out: list[Any] = []
     seen: set[int] = set()
     for module in modules:
@@ -426,8 +445,10 @@ def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
             if id(tensor) in seen:
                 continue
             seen.add(id(tensor))
-            if type(tensor) not in (torch.Tensor, torch.nn.Parameter):
-                continue  # subclasses (torchao) keep their own .to
+            if type(tensor) not in (torch.Tensor, torch.nn.Parameter) and (
+                gguf is None or type(tensor) is not gguf
+            ):
+                continue  # subclasses (torchao) keep their own .to; GGUFParameter is re-wrapped on the hit
             if tensor.device.type != "cpu" or tensor.is_sparse or tensor.is_quantized:
                 continue
             if not tensor.is_contiguous() or tensor.storage_offset() < 0:
@@ -501,6 +522,13 @@ def _ring_copy(sources: list[Any], device: Any) -> list[Any]:
 
     import torch
 
+    # GGUFParameter's __torch_function__ re-wraps every view: the ring reads and writes plain aliases.
+    sources = [
+        src
+        if type(src) in (torch.Tensor, torch.nn.Parameter)
+        else torch.Tensor._make_subclass(torch.Tensor, src, False)
+        for src in sources
+    ]
     targets = [torch.empty_like(src, device = device) for src in sources]
     jobs = []
     for src, dst in zip(sources, targets):
@@ -701,7 +729,12 @@ def _staged_to_class():
                         and not kwargs.get("copy", False)
                     ):
                         out = hit[1]
-                        if args[0].requires_grad and torch.is_grad_enabled():
+                        if type(args[0]) not in (torch.Tensor, torch.nn.Parameter):
+                            # what GGUFParameter.to returns: same class and quant type, quant_shape from the bytes
+                            out = type(args[0])(
+                                out, requires_grad = False, quant_type = args[0].quant_type
+                            )
+                        elif args[0].requires_grad and torch.is_grad_enabled():
                             out = out.requires_grad_(True)
                         return out
                 elif self.wrapped and id(args[0]) in self.wrapped:
