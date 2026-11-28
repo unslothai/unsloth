@@ -176,6 +176,7 @@ EXPERT_STACKS_ENV = (
 _STACK_NAMES = (("gate_up_proj", "gate_up"), ("down_proj", "down"))
 _FLOAT_DTYPES = (torch.bfloat16, torch.float16, torch.float32)
 _HOOKS = "_unsloth_qat_expert_hooks"
+_ROUNDED = "_unsloth_qat_expert_rounded"
 _STATS = {"fake_quantized": 0, "rounded": 0, "skipped": {}}
 
 
@@ -265,6 +266,43 @@ def _quantize_stack(param, quantizer, transposed):
     return q.contiguous()
 
 
+def _fingerprint(t):
+    """Cheap identity of a stack's values: float64 sum and sum of squares plus a strided sample."""
+    flat = t.detach().reshape(-1)
+    step = max(1, flat.numel() // 4096)
+    return (float(flat.double().sum()), float(flat.double().pow(2).sum()), flat[::step].clone())
+
+
+def _same(a, b):
+    return a[0] == b[0] and a[1] == b[1] and torch.equal(a[2], b[2])
+
+
+def _round_stack(owner, attr, quantizer, transposed):
+    """Write fake_quant(stack) into the frozen stack once, and keep it rounded across load_state_dict: a load that
+    brings other values (an unrounded checkpoint) is rounded again; one that brings back the rounded values (this
+    model's own state_dict) is kept as is, so nothing is quantized twice."""
+    p = owner._parameters[attr]
+    with torch.no_grad():
+        p.data.copy_(_quantize_stack(p.detach(), quantizer, transposed))
+    plan = owner.__dict__.setdefault(_ROUNDED, {})
+    first = not plan
+    plan[attr] = (quantizer, transposed, _fingerprint(p))
+    if not first:
+        return
+
+    def after_load(module, incompatible_keys):
+        rounded = module.__dict__.get(_ROUNDED, {})
+        for name, (q, t, mark) in list(rounded.items()):
+            w = module._parameters.get(name)
+            if w is None or w.dim() != 3 or w.requires_grad or _same(_fingerprint(w), mark):
+                continue
+            with torch.no_grad():
+                w.data.copy_(_quantize_stack(w.detach(), q, t))
+            rounded[name] = (q, t, _fingerprint(w))
+
+    owner.register_load_state_dict_post_hook(after_load)
+
+
 def _install_hooks(owner, attr, quantizer, transposed):
     """Per forward: reads of `owner.<attr>` inside the forward return the fake-quantized stack (straight-through
     gradient to the parameter). The parameter itself stays in `_parameters`, so state dicts, optimizers and
@@ -333,8 +371,7 @@ def prepare_expert_stacks_for_qat(model, torchao_config):
             _skip("unsupported_shape", fqn, skipped)
             continue
         if not p.requires_grad:
-            with torch.no_grad():
-                p.data.copy_(_quantize_stack(p.detach(), quantizer, transposed))
+            _round_stack(owner, attr, quantizer, transposed)
             _STATS["rounded"] += 1
         else:
             _install_hooks(owner, attr, quantizer, transposed)

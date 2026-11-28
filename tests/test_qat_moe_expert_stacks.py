@@ -223,3 +223,22 @@ def test_name_filters_are_checked_for_every_stack():
         else:
             want = torch.stack([q8(e.t().contiguous()).t() for e in originals[name]]).detach()
         assert torch.equal(p.detach(), want), name
+
+
+def test_frozen_stacks_stay_rounded_across_load_state_dict():
+    model = _tiny_moe("gpt_oss")
+    originals = {k: v.detach().clone() for k, v in _stacks(model).items()}
+    unrounded = {k: v.clone() for k, v in model.state_dict().items()}
+    for p in _stacks(model).values():
+        p.requires_grad_(False)
+    model = _prepare(model)
+    rounded = {k: v.clone() for k, v in model.state_dict().items()}
+    model.load_state_dict(unrounded)  # an unrounded checkpoint: rounded again
+    for name, p in _stacks(model).items():
+        assert torch.equal(p.detach(), _reference_int4(originals[name], True)), name
+    model.load_state_dict(rounded)  # its own rounded values: kept, not quantized a second time
+    for k, v in model.state_dict().items():
+        assert torch.equal(v, rounded[k]), k
+    model.load_state_dict(unrounded, assign = True)  # new Parameter objects
+    for name, p in _stacks(model).items():
+        assert torch.equal(p.detach(), _reference_int4(originals[name], True)), name
