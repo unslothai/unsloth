@@ -423,12 +423,56 @@ def test_resource_link_keeps_its_uri():
 
 def test_resource_link_does_not_displace_structured_content():
     flat = _flatten_result(_result(_resource_link(), structured = {"path": "/out/gen.png"}))
-    assert flat == "{'path': '/out/gen.png'}\n[resource: <file:///out/gen.png>]"
+    assert flat == "[resource: <file:///out/gen.png>]\n{'path': '/out/gen.png'}"
 
 
-def test_server_text_still_wins_over_structured_content():
-    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"path": "/x"}))
-    assert flat == "[resource: <file:///out/gen.png>]\ndone"
+def test_independent_structured_content_is_kept_beside_status_text():
+    flat = _flatten_result(_result(_resource_link(), _text("done"), structured = {"total": 42}))
+    assert flat == "[resource: <file:///out/gen.png>]\ndone\n{'total': 42}"
+
+
+def test_structured_content_keeps_the_tool_error_prefix():
+    flat = _flatten_result(_result(_text("Error: request failed"), structured = {"code": "E_FAIL"}))
+    assert flat == "Error: request failed\n{'code': 'E_FAIL'}"
+    assert is_tool_error(flat)
+
+
+def test_json_text_mirror_is_not_duplicated():
+    flat = _flatten_result(
+        _result(_text('{ "total": 42 }'), _text("done"), structured = {"total": 42})
+    )
+    assert flat == '{ "total": 42 }\ndone'
+
+
+def test_json_wrapped_result_text_is_not_duplicated():
+    for text, value in (
+        ("[1, 2]", [1, 2]),
+        ('{"count": 2}', {"count": 2}),
+        ("8", 8),
+        ("null", None),
+    ):
+        assert _flatten_result(_result(_text(text), structured = {"result": value})) == text
+
+
+def test_json_boolean_and_number_are_distinct_results():
+    text = '{"ok": true}'
+    assert _flatten_result(_result(_text(text), structured = {"ok": 1})) == f"{text}\n{{'ok': 1}}"
+
+
+def test_wrapped_list_mirrored_as_separate_blocks_is_not_duplicated():
+    rows = '{"id": 1}\n{"id": 2}'
+    structured = {"result": [{"id": 1}, {"id": 2}]}
+    flat = _flatten_result(_result(*map(_text, rows.splitlines()), structured = structured))
+    assert flat == rows
+
+
+def test_a_partial_text_list_keeps_its_structured_result():
+    first_row = '{"id": 1}'
+    structured = {"result": [{"id": 1}, {"id": 2}]}
+    assert (
+        _flatten_result(_result(_text(first_row), structured = structured))
+        == f"{first_row}\n{structured}"
+    )
 
 
 def test_fastmcp_file_format_png_is_rendered():
@@ -607,6 +651,17 @@ def test_image_inside_json_text_is_lifted_out_of_the_text():
     assert lifted["labels"] == ["Cube"]
     assert json.loads(payload) == [{"data": BIG_PNG_B64, "mimeType": "image/png"}]
     assert BIG_PNG_B64 not in strip_result_for_model(flat)
+
+
+def test_image_inside_structured_content_preserves_status_and_link():
+    flat = _flatten_result(
+        _result(_text("Captured."), _resource_link(), structured = json.loads(_unreal_capture()))
+    )
+    body, payload = flat.split("\n" + MCP_IMAGES_SENTINEL, 1)
+    assert body.startswith("Captured.\n[resource: <file:///out/gen.png>]\n")
+    assert "Cube" in body
+    assert BIG_PNG_B64 not in body
+    assert json.loads(payload) == [{"data": BIG_PNG_B64, "mimeType": "image/png"}]
 
 
 def test_inline_image_over_the_budget_still_leaves_the_text(monkeypatch):
