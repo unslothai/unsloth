@@ -216,12 +216,60 @@ class TestTheSplitKeepsTheSelectionItInherited:
         ):
             assert name in distributed, f"distributed-cpu-ci.yml lost the {name!r} step"
             for field in ("run", "env"):
-                assert backend[name].get(field) == distributed[name].get(
-                    field
-                ), f"{name!r} differs between the two workflows in {field!r}"
+                ours, theirs = backend[name].get(field), distributed[name].get(field)
+                if field == "run" and name.startswith("Install deps"):
+                    ours = _without_sentence_transformers(ours)
+                assert ours == theirs, f"{name!r} differs between the two workflows in {field!r}"
         jobs = [_workflow(path)["jobs"][job] for path, job in _SHARD_JOBS]
         for field in ("runs-on", "timeout-minutes", "name"):
             assert jobs[0][field] == jobs[1][field], f"the two jobs differ in {field!r}"
+
+
+def _without_sentence_transformers(run: str) -> str:
+    """Backend CI's install as the distributed shards run it: the same, minus sentence-transformers.
+
+    It pulls in scikit-learn and scipy, which transformers then imports in every process (about 2.7 of
+    13.5 CPU s per `import unsloth`, paid by every rank), and only Backend CI's
+    tests/test_st_modules_json_trust_gate.py uses it."""
+    lines = run.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        line = lines[i]
+        if line.strip().startswith("# sentence-transformers rides the transformers pin"):
+            i += 2  # the comment's second line
+            continue
+        out.append(line.replace(" sentence-transformers", ""))
+        i += 1
+    return "\n".join(out)
+
+
+class TestTheDistributedInstallLeavesOutSentenceTransformers:
+    def test_no_shard_test_imports_what_it_brought(self):
+        """Dropping sentence-transformers also drops scikit-learn and scipy; a multi-rank test importing
+        one of them would skip or fail here instead of running."""
+        import ast
+
+        selected = TestTheDistributedWorkflowSeesWhatItsTestsRead()._shard_files()
+        assert selected
+        banned = {"sentence_transformers", "sklearn", "scipy"}
+        for path in selected:
+            tree = ast.parse((REPO_ROOT / path).read_text(encoding = "utf-8"))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    names = [alias.name for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    names = [node.module]
+                else:
+                    continue
+                hit = {name.split(".", 1)[0] for name in names} & banned
+                assert (
+                    not hit
+                ), f"{path} imports {sorted(hit)}, which distributed-cpu-ci.yml no longer installs"
+
+    def test_the_install_has_no_sentence_transformers(self):
+        steps = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["steps"]
+        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        assert "sentence-transformers" not in runs and "sentence_transformers" not in runs
 
 
 class TestTheDistributedShardsForkTheirRanks:
