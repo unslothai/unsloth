@@ -5252,6 +5252,40 @@ def _auto_offline_keeps_cached_seed(
         return False
 
 
+def _auto_dense_load_exceeds_host_ram(fam: Any, scheme: Optional[str]) -> bool:
+    """An AUTO load whose dense bf16 pipeline would not fit host RAM keeps the hosted int8 ``scheme`` checkpoint.
+
+    Only families whose hosted int8 file replaces the dense shards (``native_offload_from_hosted_int8``: Wan2.2-T2V-A14B
+    reads 29 GB instead of two fp32 14B experts). The dense price is the family's bf16 component sizes plus the
+    small-host reserve, against available host RAM (``video_native_stream.decide``). Unreadable keeps the bf16 rule."""
+    try:
+        if scheme != TQ_INT8 or not getattr(fam, "native_offload_from_hosted_int8", False):
+            return False
+        from . import diffusion_small_host as small_host
+        from .video_native_stream import decide
+
+        if small_host.host_ram_check_disabled():
+            return False
+        sizes = tuple(getattr(fam, "bf16_components_gb", None) or ())
+        if not sizes:
+            return False
+        dense_mib = int(sum(float(x) for x in sizes) * 1000.0**3 / 2**20)
+        total, available = small_host.host_ram_mib()
+        engaged, why = decide(
+            dense_mib, available_mib = available, reserve_mib = small_host.host_reserve_mib(total)
+        )
+        if engaged:
+            logger.info(
+                "video.denoiser_prequant: auto keeps the hosted %s checkpoint for %s: %s",
+                scheme,
+                getattr(fam, "name", None),
+                why,
+            )
+        return engaged
+    except Exception:  # noqa: BLE001 -- unanswerable keeps the bf16 rule
+        return False
+
+
 def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
     """The bf16 plan keeps the DiT resident on a measured budget, so auto runs bf16 (int8 fails the LPIPS bar there)."""
     if plan is None or not plan_keeps_transformer_resident(plan):
@@ -9349,6 +9383,7 @@ class VideoBackend:
                     and not _auto_offline_keeps_cached_seed(
                         fam, scheme, base, hf_token = hf_token, local_files_only = local_files_only
                     )
+                    and not _auto_dense_load_exceeds_host_ram(fam, scheme)
                 ) and _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -11843,6 +11878,7 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 fetch_repos = (fetch_base,),
             )
+            and not _auto_dense_load_exceeds_host_ram(fam, denoiser_seed_scheme)
         ):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(
