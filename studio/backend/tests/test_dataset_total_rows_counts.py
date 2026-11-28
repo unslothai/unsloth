@@ -138,7 +138,6 @@ def test_hub_rows_cache_hit_skips_request(hub):
     assert row_counts.start_hub_split_rows("org/ds", None, "train", None)() == 1000
     assert row_counts.start_hub_split_rows("org/ds", None, "train", "other")() == 1000
     assert len(hub["calls"]) == 1
-    # A different split or config is its own entry.
     assert row_counts.start_hub_split_rows("org/ds", "default", "train", None)() == 1000
     assert len(hub["calls"]) == 2
 
@@ -289,7 +288,6 @@ def test_local_json_over_the_cap_is_never_read_whole(tmp_path, monkeypatch):
     assert row_counts.count_local_file_rows(big) is None
     assert reads and all(0 < limit <= 65 for limit in reads)
 
-    # Past every cap: rejected from the size alone.
     monkeypatch.setattr(row_counts, "LINE_SCAN_MAX_BYTES", 1000)
     reads.clear()
     assert row_counts.count_local_file_rows(big) is None
@@ -343,7 +341,6 @@ def test_local_count_memo_recounts_an_edited_file(tmp_path, parse_calls):
     assert row_counts.count_local_file_rows(path) == 4
     _write(path, '{"t":1}\n' * 6)
     assert row_counts.count_local_file_rows(path) == 6
-    # Same size, new mtime: still recounted.
     stat = path.stat()
     _write(path, '{"t":1}\n' * 5 + " " * 7 + "\n")
     os.utime(path, ns = (stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))

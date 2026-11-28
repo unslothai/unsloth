@@ -197,7 +197,7 @@ def _first_non_blank_line(path: Path) -> Optional[bytes]:
             if not line:
                 return None
             if len(line) > FIRST_LINE_MAX_BYTES and not line.endswith(b"\n"):
-                return line.lstrip()[:1] or None  # just enough to tell an array from a row
+                return line.lstrip()[:1] or None
             if line.strip():
                 return line.strip()
 
@@ -206,8 +206,7 @@ def _count_json_rows(path: Path) -> Optional[int]:
     import json
 
     size = path.stat().st_size
-    # Both readings are bounded: the array parse by JSON_ARRAY_MAX_BYTES, the line count by
-    # LINE_SCAN_MAX_BYTES. Reject anything past both before reading a byte.
+    # Past both caps: reject before reading a byte.
     if size > max(JSON_ARRAY_MAX_BYTES, LINE_SCAN_MAX_BYTES):
         return None
     first = _first_non_blank_line(path)
@@ -221,8 +220,7 @@ def _count_json_rows(path: Path) -> Optional[int]:
         if isinstance(payload, list) and all(isinstance(row, dict) for row in payload):
             return len(payload)
         return None
-    # JSON Lines saved as .json: count lines only when the first line is a whole object on its own
-    # (a pretty-printed object spans lines and would be miscounted).
+    # JSONL saved as .json: only if the first line is a whole object (pretty-printed would miscount).
     try:
         if not isinstance(json.loads(first), dict):
             return None
