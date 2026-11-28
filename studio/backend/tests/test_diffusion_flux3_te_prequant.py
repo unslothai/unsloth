@@ -246,8 +246,7 @@ def test_one_encoder_serves_both_variants():
     assert tpq.te_base_equivalent(DISTILLED, BASE)
     assert tpq.te_base_equivalent("unsloth/flux-3-image-klein-FP8", BASE)
     assert not tpq.te_base_equivalent(DISTILLED, "Qwen/Qwen-Image-2.1")
-    # The retired full copies (unsloth/flux-3-image-klein[-base]) stand for their bases: the hosted file of either
-    # variant records the distilled base, so a load named by the base's copy must accept it too.
+    # Retired full copies stand for their bases; both variants' hosted file records the distilled base.
     assert tpq.te_base_equivalent(DISTILLED, "unsloth/flux-3-image-klein-base")
     assert tpq.te_base_equivalent("unsloth/flux-3-image-klein", "unsloth/flux-3-image-klein-base")
     assert tpq.te_base_equivalent("unsloth/flux-3-image-klein-base", DISTILLED)

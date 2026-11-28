@@ -789,9 +789,7 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     equivalence group above."""
     if _same_base_model(ckpt_base, base):
         return True
-    # Groups hold UPSTREAM ids: normalise as ``_same_base_model`` does, a mirror and a retired full copy
-    # (unsloth/flux-3-image-klein-base) to the base they copy, or a load named by one is refused here after the
-    # download plan, which compares through ``_same_base_model``, already sized it for the hosted file.
+    # Groups hold upstream ids: normalise mirrors and retired full copies as ``_same_base_model`` does.
     from .diffusion_families import canonical_base, retired_full_copy_base
 
     def _upstream(repo_id: str) -> str:
