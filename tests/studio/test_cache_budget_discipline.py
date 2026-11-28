@@ -26,8 +26,6 @@ PIP_CACHE_JOBS = {
     ("notebooks-ci.yml", "smoke-install"),
     ("studio-backend-ci.yml", "pytest"),
     ("studio-backend-ci.yml", "repo-cpu-tests"),
-    # repo-cpu-tests' multi-rank shards, split out; restores that entry read-only and never saves.
-    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
     ("studio-export-capability-ci.yml", "capability"),
     ("version-compat-ci.yml", "zoo-imports-under-spoof"),
     ("version-compat-ci.yml", "grpo-fake-run"),
@@ -39,7 +37,6 @@ PARTIAL_SAVE_JOBS = {("prebuilt-cuda-wheels.yml", "warm")}
 # Restores another job's pip cache and never saves; mirrors READ_ONLY_BORROWERS (owner side).
 PIP_CACHE_READ_ONLY_JOBS = {
     ("consolidated-tests-ci.yml", "consolidated-zoo"),
-    ("distributed-cpu-ci.yml", "distributed-cpu-tests"),
 }
 
 HEAVY = re.compile(

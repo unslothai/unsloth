@@ -4,6 +4,7 @@
 """Each tests/ directory is claimed by exactly one Repo tests (CPU) shard, the third a catch-all."""
 
 import fnmatch
+import re
 from pathlib import Path
 
 import pytest
@@ -212,7 +213,6 @@ class TestTheSplitKeepsTheSelectionItInherited:
         for name in (
             "Repo tests (CPU, auto-discovered)",
             "Install deps (shared shape with backend pytest job)",
-            "Install the pinned ruff-unsloth (formatter fixed-point guard)",
         ):
             assert name in distributed, f"distributed-cpu-ci.yml lost the {name!r} step"
             for field in ("run", "env"):
@@ -222,6 +222,21 @@ class TestTheSplitKeepsTheSelectionItInherited:
         jobs = [_workflow(path)["jobs"][job] for path, job in _SHARD_JOBS]
         for field in ("runs-on", "timeout-minutes", "name"):
             assert jobs[0][field] == jobs[1][field], f"the two jobs differ in {field!r}"
+
+    def test_the_split_out_shards_skip_what_only_backend_tests_use(self):
+        """Every distributed job paid for a pip cache restore (uv installs without it), node and the
+        pinned ruff-unsloth, which only Backend CI's suites use. Bringing one back must come with a
+        multi-rank test that needs it."""
+        steps = _workflow(_DISTRIBUTED_CI)["jobs"]["distributed-cpu-tests"]["steps"]
+        uses = [str(step.get("uses", "")) for step in steps]
+        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        assert not any(u.endswith("pip-cache-restore") or "setup-node" in u for u in uses), uses
+        assert "ruff-unsloth" not in runs and "run_ruff_format" not in runs
+        selected = TestTheDistributedWorkflowSeesWhatItsTestsRead()._shard_files()
+        assert selected and "tests/test_formatter_fixed_point.py" not in selected
+        for path in selected:
+            text = (REPO_ROOT / path).read_text(encoding = "utf-8")
+            assert not re.search(r"shutil\.which\(\s*[\'\"](?:node|npm|ruff)", text), path
 
 
 class TestTheDistributedShardsForkTheirRanks:
