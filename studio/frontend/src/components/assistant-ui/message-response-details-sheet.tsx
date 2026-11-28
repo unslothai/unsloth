@@ -18,11 +18,14 @@ import {
   useChatPreferencesStore,
   useChatRuntimeStore,
   useExternalProvidersStore,
+  useModelCustomization,
   formatMcpToolName,
   mcpServerFromProvenance,
   mcpToolFromProvenance,
 } from "@/features/chat";
+import { ModelMark } from "@/components/assistant-ui/composer-model-picker/composer-model-picker";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
+import { modelDisplayName } from "@/features/model-picker";
 import { cn } from "@/lib/utils";
 import { useMessage, useMessageTiming } from "@assistant-ui/react";
 import { InformationCircleIcon } from "@hugeicons/core-free-icons";
@@ -59,6 +62,7 @@ type MessageCustomMetadata = {
   contextUsage?: ContextUsageMetadata;
   serverTimings?: Record<string, unknown>;
   reasoningDuration?: number;
+  runModelId?: string;
 };
 
 function asNumber(value: unknown): number | undefined {
@@ -312,6 +316,14 @@ function useResponseModelDisplay() {
     serverTimings,
     modelLabel,
     providerLabel,
+    recordedModelId,
+    // The picker's id (external::... for connections), which customizations are keyed on.
+    selectedModelId:
+      responseDetails?.modelId ??
+      usage?.modelId ??
+      recordedModelId ??
+      custom?.runModelId,
+    providerType: responseDetails?.providerType ?? provider?.providerType,
   };
 }
 
@@ -321,9 +333,14 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
   const showResponseModel = useChatPreferencesStore(
     (state) => state.showResponseModel,
   );
-  const { modelLabel, providerLabel } = useResponseModelDisplay();
+  const showHeader = useChatPreferencesStore(
+    (state) => state.showResponseModelHeader,
+  );
+  const { modelLabel, providerLabel, selectedModelId } =
+    useResponseModelDisplay();
+  const customName = useModelCustomization(selectedModelId)?.name;
 
-  if (!showResponseModel || modelLabel === "Not recorded") {
+  if (!showResponseModel || showHeader || modelLabel === "Not recorded") {
     return null;
   }
 
@@ -337,8 +354,55 @@ export const MessageResponseModelBadge: FC<{ className?: string }> = ({
       )}
       title={providerLabel ? `${modelLabel} - ${providerLabel}` : modelLabel}
     >
-      <span className="min-w-0 truncate align-middle">{modelLabel}</span>
+      <span className="min-w-0 truncate align-middle">
+        {customName ?? modelLabel}
+      </span>
     </span>
+  );
+};
+
+export const MessageResponseModelHeader: FC = () => {
+  const show = useChatPreferencesStore(
+    (state) => state.showResponseModelHeader,
+  );
+  return show ? <ResponseModelHeader /> : null;
+};
+
+const ResponseModelHeader: FC = () => {
+  const models = useChatRuntimeStore((s) => s.models);
+  const providers = useExternalProvidersStore((s) => s.providers);
+  const {
+    modelLabel,
+    recordedModelId,
+    selectedModelId: modelId,
+    providerType,
+  } = useResponseModelDisplay();
+  const provider = providers.find(
+    (candidate) => candidate.id === parseExternalModelId(modelId)?.providerId,
+  );
+  const customName = useModelCustomization(modelId)?.name;
+  if (!modelId) return null;
+  const label =
+    customName ??
+    (recordedModelId
+      ? modelLabel
+      : (models.find((model) => model.id === modelId)?.name ??
+        parseExternalModelId(modelId)?.modelId ??
+        modelDisplayName(modelId)));
+
+  return (
+    <div
+      {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
+      className="aui-response-model-header mb-1.5 flex min-w-0 items-center gap-2 font-medium text-foreground text-sm"
+    >
+      <ModelMark
+        modelId={modelId}
+        label={label}
+        providerType={providerType ?? provider?.providerType}
+        providerName={provider?.name}
+      />
+      <span className="min-w-0 truncate">{label}</span>
+    </div>
   );
 };
 

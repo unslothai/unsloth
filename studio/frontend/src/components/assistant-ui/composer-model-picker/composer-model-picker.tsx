@@ -45,6 +45,11 @@ import { DROP_CUE_CLASS } from "@/features/chat/hooks/use-sidebar-drag";
 import {} from "@/features/chat/model-catalog";
 import { providerLogoPath } from "@/features/chat/provider-logo-path";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import {
+  modelCustomizationKey,
+  useModelCustomization,
+  useModelCustomizationsStore,
+} from "@/features/chat/model-customizations";
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import {
   type Capability,
@@ -136,6 +141,7 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "@/features/model-picker/components/model-selector/reconcile-gguf-pins";
+import { ModelCustomizeDialog } from "@/features/model-picker/components/model-customize-dialog";
 import { repinExportedGgufAfterDelete } from "@/features/model-picker/components/model-selector/repin-exported-gguf";
 import { isCapableCheckpointQuant } from "@/features/model-picker/components/model-selector/recommended-fit";
 import {
@@ -170,6 +176,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { classifyVariantFitOnCard } from "@/lib/gguf-fit";
+import { PaintbrushIcon } from "@/lib/paintbrush-icon";
 import { extractParamLabel } from "@/lib/model-size";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
@@ -779,15 +786,34 @@ function rowMarkName(row?: RowMarkRow): string | undefined {
 }
 
 function hasRowMark(row?: RowMarkRow): boolean {
+  if (customIconFor(row?.id)) return true;
   if (npuMarkOwner(row)) return true;
   return row?.kind === "external"
     ? Boolean(row.providerType)
     : rowMaker(row) !== null || rowMarkName(row) !== undefined;
 }
 
+function customIconFor(id: string | undefined): string | undefined {
+  const key = modelCustomizationKey(id);
+  return key
+    ? useModelCustomizationsStore.getState().byId[key]?.icon
+    : undefined;
+}
+
 function RowMark({ row }: { row?: RowMarkRow }) {
   const size = "size-[calc(14px*var(--ui-space-scale,1))] shrink-0";
+  const customIcon = useModelCustomization(row?.id)?.icon;
   const provider = rowMaker(row);
+  if (customIcon) {
+    return (
+      <img
+        src={customIcon}
+        alt=""
+        aria-hidden={true}
+        className={cn(size, "rounded-[3px] object-cover")}
+      />
+    );
+  }
   if (provider) {
     return <MakerMark provider={provider} className={size} />;
   }
@@ -815,6 +841,28 @@ function RowMark({ row }: { row?: RowMarkRow }) {
       className="-m-[calc(1px*var(--ui-space-scale,1))] size-[calc(16px*var(--ui-space-scale,1))] shrink-0"
     />
   ) : null;
+}
+
+export function ModelMark({
+  modelId,
+  label,
+  providerType,
+  providerName,
+}: {
+  modelId: string;
+  label?: string;
+  providerType?: string | null;
+  providerName?: string;
+}) {
+  const row: RowMarkRow = isExternalModelId(modelId)
+    ? {
+        kind: "external",
+        id: modelId,
+        providerType: providerType ?? undefined,
+        providerName,
+      }
+    : { kind: "loaded", id: modelId, label };
+  return <RowMark row={row} />;
 }
 
 interface SourceTab {
@@ -1661,12 +1709,19 @@ export function ComposerModelPicker({
     row: Row;
     view: "settings" | "info";
   } | null>(null);
+  const [customizing, setCustomizing] = useState<Row | null>(null);
+  const customizations = useModelCustomizationsStore((s) => s.byId);
+  const customName = (id: string | null | undefined) =>
+    customizations[modelCustomizationKey(id)]?.name;
   // Portaled outside the panel, so they close with Chat as the picker does.
   const pageActive = useChatActive();
   useEffect(() => {
     if (!pageActive) {
       setConnectedSettings(null);
     }
+  }, [pageActive]);
+  useEffect(() => {
+    if (!pageActive) setCustomizing(null);
   }, [pageActive]);
   const providers = useExternalProvidersStore((s) => s.providers);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
@@ -2729,7 +2784,8 @@ export function ComposerModelPicker({
   const shown = pending ?? chosen;
   const chosenName = browseOnly
     ? undefined
-    : (shown?.label ??
+    : (customName(shown?.id ?? checkpoint) ??
+      shown?.label ??
       (checkpoint
         ? (missingExternalModel(
             checkpoint,
@@ -2740,7 +2796,7 @@ export function ComposerModelPicker({
   const chosenMark: Parameters<typeof RowMark>[0]["row"] =
     shown ??
     (isExternalModelId(checkpoint)
-      ? { kind: "external" }
+      ? { kind: "external", id: checkpoint }
       : checkpoint
         ? { kind: "loaded", id: checkpoint }
         : undefined);
@@ -2878,12 +2934,15 @@ export function ComposerModelPicker({
       hubQuery !== "" &&
       hubQuery === query.trim() &&
       hubResults.length > 0;
-    const found = filterRows(
-      rows,
-      viewed,
-      query,
-      isFavorite,
-      hubAnswered ? (row) => row.kind === "hub" : undefined,
+    const q = query.trim().toLowerCase();
+    const found = filterRows(rows, viewed, query, isFavorite, (row) =>
+      (hubAnswered && row.kind === "hub") ||
+      Boolean(
+        q &&
+          customizations[modelCustomizationKey(row.id)]?.name
+            ?.toLowerCase()
+            .includes(q),
+      ),
     );
     if (viewed === RECOMMENDED_TAB) {
       return found.filter((row) => {
@@ -2945,6 +3004,7 @@ export function ComposerModelPicker({
     hubCheckpointFit,
     noGpu,
     chosenId,
+    customizations,
   ]);
   const [collapsedSections, setCollapsedSections] = useState<
     ReadonlySet<string>
@@ -4238,6 +4298,22 @@ export function ComposerModelPicker({
     setOpen(false);
     setConnectedSettings({ row, view });
   };
+  const openCustomize = (row: Row) => {
+    setOpen(false);
+    setCustomizing(row);
+  };
+  const customizeItem = (row: Row) => ({
+    key: "customize",
+    label: "Customize",
+    icon: (
+      <HugeiconsIcon
+        icon={PaintbrushIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
+    ),
+    onSelect: () => openCustomize(row),
+  });
   // Not navigator.clipboard: undefined in the desktop shell and over plain HTTP.
   const copyModelId = async (row: Row) => {
     const modelId = parseExternalModelId(row.id)?.modelId ?? row.label;
@@ -4461,6 +4537,7 @@ export function ComposerModelPicker({
           row.npu ? npuCatalog : null,
           paramLabel,
           sizeLabel,
+          customizations[modelCustomizationKey(row.id)],
         ]}
         render={() => (
           <div
@@ -4521,7 +4598,7 @@ export function ComposerModelPicker({
             ) : null}
             <span className="flex min-w-0 flex-1 items-center gap-1.5">
               <span className={cn("truncate", dimmed && DIM_CLASS)}>
-                {row.label}
+                {customName(row.id) ?? row.label}
               </span>
               {manyQuants ? (
                 <HugeiconsIcon
@@ -4689,6 +4766,7 @@ export function ComposerModelPicker({
                         ),
                         onSelect: () => openSettings(row),
                       },
+                      customizeItem(row),
                       ...(hubParts(row.id)
                         ? [
                             {
@@ -4761,6 +4839,7 @@ export function ComposerModelPicker({
                         ),
                         onSelect: () => openConnectedSettings(row, "info"),
                       },
+                      customizeItem(row),
                       {
                         key: "copy-id",
                         label: "Copy model ID",
@@ -6226,6 +6305,13 @@ export function ComposerModelPicker({
       {connectedSettings && pageActive
         ? renderConnectedSettings(connectedSettings.row, connectedSettings.view)
         : null}
+      {customizing && pageActive ? (
+        <ModelCustomizeDialog
+          modelId={customizing.id}
+          defaultName={customizing.label}
+          onClose={() => setCustomizing(null)}
+        />
+      ) : null}
       <TransportConflictDialog
         conflict={updateConflict}
         onCancel={() => {

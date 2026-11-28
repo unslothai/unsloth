@@ -3520,6 +3520,9 @@ export const fa = {
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",
+      showResponseModelHeader: "نام و نماد مدل",
+      showResponseModelHeaderDescription:
+        "نماد و نام مدل را بالای هر پاسخ نشان بده.",
       showReplyTimes: "زمان پاسخ‌ها",
       showReplyTimesDescription:
         "زمان پایان هر پاسخ، زیر همان پاسخ نمایش داده شود.",

@@ -3299,6 +3299,9 @@ export const ru = {
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",
+      showResponseModelHeader: "Название и значок модели",
+      showResponseModelHeaderDescription:
+        "Показывать значок и название модели над каждым ответом.",
       showReplyTimes: "Время ответов",
       showReplyTimesDescription: "Показывать под каждым ответом, когда он завершился.",
       showReplyTimesKeywords:

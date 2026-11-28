@@ -3533,6 +3533,9 @@ export const id = {
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",
+      showResponseModelHeader: "Nama dan ikon model",
+      showResponseModelHeaderDescription:
+        "Tampilkan ikon dan nama model di atas setiap balasan.",
       showReplyTimes: "Waktu balasan",
       showReplyTimesDescription:
         "Tampilkan kapan setiap balasan selesai, di bawah balasan.",

@@ -5545,6 +5545,7 @@ class ChatPrefsPayload(BaseModel):
     confirmDeleteChats: Optional[bool] = None
     alwaysDeleteChatFiles: Optional[bool] = None
     showResponseModel: Optional[bool] = None
+    showResponseModelHeader: Optional[bool] = None
     showLinkPreviews: Optional[bool] = None
     showReplyTimes: Optional[bool] = None
     showGenerationDetails: Optional[bool] = None
