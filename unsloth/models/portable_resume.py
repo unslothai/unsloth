@@ -698,6 +698,29 @@ def _bnb_import(inner, state_dict):
     return None
 
 
+def _host_dtensor(value, p, local):
+    """`value` (a host tensor of `local`'s shape) as the local shard of a DTensor laid out like `p`, under a
+    wrapper on p's device: the form UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps an offloaded DTensor state in. Built
+    on a one-element device stub, since DTensor.from_local would copy the whole moment to the mesh's device
+    first (8 bytes per parameter on the device at once over a resume). Cast to the parameter's dtype here, as
+    the optimizer load would: a cast there would rewrap it on the host's device."""
+    from .tp_native import _dtensor_api
+
+    if local.is_floating_point() and value.is_floating_point():
+        value = value.to(dtype = local.dtype)
+    stub = torch.empty((), dtype = value.dtype, device = local.device).expand(value.shape)
+    out = _dtensor_api()[0].from_local(
+        stub,
+        p.device_mesh,
+        p.placements,
+        run_check = False,
+        shape = p.shape,
+        stride = p.stride(),
+    )
+    out._local_tensor = value.contiguous()
+    return out
+
+
 def _load_named(
     model,
     inner,
@@ -765,10 +788,12 @@ def _load_named(
                     if torch.is_tensor(value) and value.ndim > 0:
                         value = _to_local(f"{n} ({key})", value, smap, local)
                         wrap = _is_dtensor(p) and not bnb
-                        # DTensor.from_local moves its local tensor to the mesh's device anyway.
-                        if not host or wrap:
+                        if wrap and host:
+                            # An offloaded optimizer: the moment stays on the host as the DTensor's local shard.
+                            value = _host_dtensor(value, p, local)
+                        elif not host:
                             value = value.to(local.device)
-                        if wrap:
+                        if wrap and not host:
                             value = _dtensor_api()[0].from_local(
                                 value,
                                 p.device_mesh,
