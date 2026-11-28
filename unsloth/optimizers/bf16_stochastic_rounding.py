@@ -778,7 +778,10 @@ def _wrap_torch(optimizer, tracked, seed):
         if segment is not None:
             # State offload staged one element range of this weight (see _fused_adamw_segment).
             (p,) = group["params"]
-            _fused_adamw_segment(self, group, p, seed, segment)
+            if (
+                p.grad is not None
+            ):  # a pre hook may drop it (idle experts): skipped, as the whole-weight path does
+                _fused_adamw_segment(self, group, p, seed, segment)
             return
         params = [p for p in group["params"] if p.grad is not None]  # pre hooks may drop gradients
         if params and _fused_group(self, group):
