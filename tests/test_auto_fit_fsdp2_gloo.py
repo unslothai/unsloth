@@ -38,6 +38,7 @@ CASES = {
     "per_tensor": (1, "per_tensor", "no_sync", False, "in_backward"),
     "ga2_no_sync": (2, "estimate", "no_sync", False, "in_backward"),
     "ga2_sync_gate": (2, "estimate", "every", False, "in_backward"),
+    "ga2_exact": (2, "exact", "no_sync", False, "in_backward"),
     "accelerate_order": (1, "estimate", "no_sync", False, "in_backward_swap"),
     "bf16_reduce_fp32": (1, None, "no_sync", True, "in_backward"),
     "bf16_reduce_fp32_exact": (1, "exact", "no_sync", True, "in_backward"),
@@ -99,8 +100,12 @@ def test_weights_match_standard_fsdp2_and_single_process(results, case):
             r["norm_diff"] < 1e-5
         ), r  # total_norm() = the full model's gradient norm on every rank
         assert r["loss_diff"] < 1e-5, r
+        # Measuring passes: every step for exact, the first for estimate / lagged; none under gradient accumulation
+        # (those steps are kept for optimizer.step() instead).
         want = (
-            STEPS if clip == "exact" else (1 if clip in ("estimate", "lagged") and ga == 1 else 0)
+            0
+            if ga > 1
+            else (STEPS if clip == "exact" else (1 if clip in ("estimate", "lagged") else 0))
         )
         assert r["inb_stats"]["measured_steps"] == want, r
 
@@ -120,11 +125,20 @@ def test_steps_in_backward_and_frees_each_group(results, case):
         r = _case(results, rank, case)
         inb, std = r["inb_stats"], r["std_stats"]
         assert len(inb["groups"]) >= 3, inb["groups"]  # decoder layer groups + the root group
-        assert inb["late_steps"] == 0, inb  # every weight stepped from a hook, none left for step()
-        assert all(
-            n == 0 for n in inb["live_after_backward"]
-        ), inb  # every gradient freed by the end of backward
+        ga, clip = CASES[case][0], CASES[case][1]
+        deferred_steps = (
+            (STEPS if clip == "exact" else 1) if ga > 1 and clip not in (None, "per_tensor") else 0
+        )
+        # every weight stepped from a hook, except the steps gradient accumulation keeps for optimizer.step()
+        assert inb["late_steps"] == deferred_steps * inb["total_params"], inb
+        kept = deferred_steps if clip == "exact" else min(deferred_steps, 1)
+        # every gradient freed by the end of backward, except on the steps kept for optimizer.step()
+        assert inb["live_after_backward"] == [inb["total_params"]] * kept + [0] * (
+            STEPS - kept
+        ), inb
         assert all(n == std["total_params"] for n in std["live_after_backward"]), std
+        if kept:
+            continue  # a kept step holds every gradient until optimizer.step(), as gradient accumulation does
         if CASES[case][2] == "every" and CASES[case][0] > 1:
             # Reduced every micro-batch: the sharded gradients of the earlier micro-batches stay until the last one,
             # so all of them are alive at once (no saving over the standard step).

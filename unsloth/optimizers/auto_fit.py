@@ -352,6 +352,10 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self.clip = clip if clip in _CLIP_MODES else clip_mode()
         # Measure the first step's norm with a gradient-only pass (the trainer path runs it).
         self.calibrate = True
+        # Gradient accumulation under FSDP2, where a step cannot be measured twice: keep the gradients until
+        # optimizer.step() (exact clipping) on the first step ("first") or every step ("all"). The earlier
+        # micro-batches' gradients are held anyway, so this costs no peak memory.
+        self.defer = None
         self._measuring = False
         self._known_sq = None  # this step's exact squared norm, from a measuring pass
         self._prev_sq = {}  # id(param) -> its squared norm in the previous step
@@ -695,7 +699,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
 
     def wants_measure(self):
         """True when the next training step should run a measuring pass first."""
-        if self.max_grad_norm <= 0 or self.clip == "per_tensor":
+        if self.max_grad_norm <= 0 or self.clip == "per_tensor" or self.defer is not None:
             return False
         return self.clip == "exact" or (self.calibrate and self._prev_total is None)
 
@@ -728,6 +732,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
             return  # a micro-batch that does not step: the gradient accumulates until the synchronized one
         if id(p) in self._replicated:
             return  # averaged over ranks after its backward: stepped by flush()
+        if self.defer == "all" or (self.defer == "first" and self._prev_total is None):
+            return  # stepped by flush() with the exact norm
         if self._reused(p):
             return  # more gradients may still arrive: stepped by flush()
         if id(p) in self._done and not self._measuring:
@@ -1879,20 +1885,20 @@ def _arm_training_step(trainer, wrapper):
     accumulates = (
         int(getattr(getattr(trainer, "args", None), "gradient_accumulation_steps", 1) or 1) > 1
     )
-    if not repeatable or accumulates:
+    if accumulates and wrapper.max_grad_norm > 0 and wrapper.clip != "per_tensor":
+        # FSDP2 with gradient accumulation: the first step (or every step for exact) is stepped at
+        # optimizer.step() with the exact norm; the gradients of the earlier micro-batches are held anyway.
         wrapper.calibrate = False
-        if wrapper.max_grad_norm > 0 and wrapper.clip == "exact":
-            wrapper.clip = "estimate"
-            why = (
-                "gradient accumulation (FSDP2) spreads the step over several micro-batches"
-                if accumulates
-                else "this trainer generates its inputs inside the step"
-            )
-            print(
-                f"Unsloth: {_CLIP_ENV}=exact needs to run each training step twice, but {why}, so max_grad_norm "
-                "uses the estimated global norm instead."
-            )
+        wrapper.defer = "all" if wrapper.clip == "exact" else "first"
         repeatable = False
+    if not repeatable:
+        wrapper.calibrate = False
+        if wrapper.max_grad_norm > 0 and wrapper.clip == "exact" and not accumulates:
+            wrapper.clip = "estimate"
+            print(
+                f"Unsloth: {_CLIP_ENV}=exact needs to run each training step twice, but this trainer generates "
+                "its inputs inside the step, so max_grad_norm uses the estimated global norm instead."
+            )
 
     def training_step(*args, **kwargs):
         opt = wrapper_ref()

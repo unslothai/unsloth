@@ -185,10 +185,11 @@ def fsdp_arm(
             clip = clip or "estimate",
             **kwargs,
         )
-        if ga > 1:
-            opt.calibrate = (
-                False  # as the trainer path: a multi-micro-batch step cannot be measured twice
-            )
+        if ga > 1 and clip and clip != "per_tensor":
+            # As the trainer path: a multi-micro-batch step cannot be measured twice, so the first step (every
+            # step for exact) is stepped at optimizer.step() with the exact norm.
+            opt.calibrate = False
+            opt.defer = "all" if clip == "exact" else "first"
         if mode == "in_backward_swap":
             names = {id(p): n for n, p in model.named_parameters()}
             groups = [[names[id(p)] for p in g["params"]] for g in base.param_groups]
@@ -308,7 +309,9 @@ def run_rank(rank, port, queue, cases):
     for name, (ga, clip, sync, mp, arm) in cases.items():
         try:
             data = batches(2, ga)
-            calibrate = ga == 1
+            calibrate = (
+                True  # measured (GA = 1) or stepped at optimizer.step() (GA > 1): exact first step
+            )
             std, std_stats = fsdp_arm(
                 af, data, rank, "standard", ga, clip if clip == "exact" else None, sync, mp
             )
