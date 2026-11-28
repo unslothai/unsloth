@@ -16,7 +16,9 @@
 - `load_in_8bit = True` (with `load_in_4bit = False`): bitsandbytes LLM.int8, except for LoRA on a 16-bit
   checkpoint on a GPU class whose int8_lora_rotated gate is measured (precision/recipes.py: sm80, sm89, sm120
   today), which runs `"int8"` instead and says so once.
-  `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes.
+  `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes. Without a usable bitsandbytes (the same probe as
+  unsloth/bnb_shim) it loads fp8 instead (load_in_fp8 = True) where this GPU can, else the loader's LLM.int8
+  refusal stands.
 
 `load_in_4bit = True` is untouched.
 """
@@ -176,7 +178,11 @@ def _text_hidden_size(config):
     return None
 
 
-def _int8_auto_config_reason(arguments, extra):
+def _int8_auto_config_reason(
+    arguments,
+    extra,
+    check_hidden = True,
+):
     """Read the checkpoint's config (as from_pretrained will): pre-quantized or narrow models keep bitsandbytes."""
     name = arguments.get("model_name", None)
     if (
@@ -227,6 +233,8 @@ def _int8_auto_config_reason(arguments, extra):
             return "a text-diffusion model"
     except Exception:
         return "its model family could not be checked"
+    if not check_hidden:
+        return None
     hidden = _text_hidden_size(config)
     try:
         from ..kernels.int8_lora import MIN_HIDDEN
@@ -248,6 +256,84 @@ def _explicit_4bit(arguments):
 
 def _int8_auto_reason(arguments, extra):
     """None when load_in_8bit = True should run the rotated int8 base, else why bitsandbytes stays."""
+    return (
+        _auto_8bit_common_reason(arguments, extra)
+        or _int8_auto_device_reason()
+        or _int8_auto_config_reason(arguments, extra)
+        or _int8_auto_memory_reason(arguments, extra)
+    )
+
+
+def _fp8_fallback_reason(arguments, extra):
+    """None when load_in_8bit = True can load fp8 (load_in_fp8 = True, row-wise) in place of a missing bitsandbytes."""
+    return (
+        _auto_8bit_common_reason(arguments, extra)
+        or _fp8_fallback_device_reason()
+        or _int8_auto_config_reason(arguments, extra, check_hidden = False)
+        or _int8_auto_memory_reason(arguments, extra)
+    )
+
+
+def _fp8_fallback_device_reason():
+    """The frozen_fp8_rowwise recipe gate plus what the on-the-fly load_in_fp8 loader itself requires
+    (loader_utils._get_fp8_mode_and_check_settings) and a working row-wise fp8 _scaled_mm."""
+    if not torch.cuda.is_available() or torch.version.hip is not None or not torch.version.cuda:
+        return "not an NVIDIA CUDA GPU"
+    try:
+        capability = tuple(torch.cuda.get_device_capability())
+        from ..precision import get_recipe
+        from ..precision.hardware import gpu_class
+
+        gpu = gpu_class(capability)
+        status = get_recipe("frozen_fp8_rowwise").gate(gpu).status
+    except Exception as exc:
+        return f"the fp8 recipe gate could not be read ({type(exc).__name__})"
+    if status in ("refused", "planned"):
+        return f"fp8 is {status} on {gpu}"
+    if capability < (9, 0):
+        return "on-the-fly load_in_fp8 needs compute capability 9.0+"
+    try:
+        import importlib.util
+        from unsloth_zoo.utils import Version
+
+        if Version(torch.__version__) < Version("2.9.0"):
+            return "on-the-fly load_in_fp8 needs torch 2.9.0+"
+        if importlib.util.find_spec("torchao") is None:
+            return "on-the-fly load_in_fp8 needs torchao"
+        import torchao
+
+        if Version(torchao.__version__) < Version("0.15.0"):
+            return "on-the-fly load_in_fp8 needs torchao 0.15.0+"
+        from ..kernels.fp8_lora import rowwise_supported
+
+        if not rowwise_supported(torch.device("cuda", torch.cuda.current_device())):
+            return "this torch build has no row-wise fp8 _scaled_mm"
+    except Exception as exc:
+        return f"fp8 support could not be checked ({type(exc).__name__})"
+    return None
+
+
+def _bnb8_unavailable_reason():
+    """Why bitsandbytes LLM.int8 cannot run here, with the same probe the bitsandbytes stand-in uses
+    (unsloth/bnb_shim): the stand-in is active, the package is not installed, or its native library does not load."""
+    try:
+        from .. import bnb_shim
+    except Exception:
+        return None
+    try:
+        if bnb_shim.is_shim():
+            return bnb_shim._STATE.get("reason") or "Unsloth's bitsandbytes stand-in is active"
+        if not bnb_shim._real_installed():
+            return "it is not installed"
+        if bnb_shim._real_unusable():
+            return "its native library cannot load on this GPU"
+    except Exception:
+        return None
+    return None
+
+
+def _auto_8bit_common_reason(arguments, extra):
+    """Why load_in_8bit = True must stay bitsandbytes whatever the GPU: not LoRA on a 16-bit load."""
     if not _truthy_env(AUTO_8BIT_ENV):
         return f"{AUTO_8BIT_ENV}=0"
     if arguments.get("full_finetuning", False):
@@ -280,11 +366,7 @@ def _int8_auto_reason(arguments, extra):
             return "tensor / pipeline / expert parallel"
     except Exception:
         pass
-    return (
-        _int8_auto_device_reason()
-        or _int8_auto_config_reason(arguments, extra)
-        or _int8_auto_memory_reason(arguments, extra)
-    )
+    return None
 
 
 # The int8 base quantizes at get_peft_model, so the load itself stages the whole model in 16 bit on the GPU.
@@ -399,21 +481,54 @@ def resolve_int8_8bit(
                 f"Unsloth: load_in_8bit = 'int8' conflicts with float8_training = {f8!r}."
             )
     else:
-        if not auto or _int8_auto_reason(arguments, extra) is not None:
+        if not auto:
             return "bnb"
+        why = _int8_auto_reason(arguments, extra)
+        if why is not None:
+            missing = _bnb8_unavailable_reason()
+            if missing is None or _auto_8bit_common_reason(arguments, extra) is not None:
+                return "bnb"
+            return _bnb8_missing_fallback(arguments, extra, missing, why)
     arguments["load_in_8bit"] = False
     arguments["load_in_4bit"] = False
     extra = dict(extra)
     extra["float8_training"] = "int8_lora"
     arguments[var_keyword] = extra
-    if not explicit and not _AUTO_NOTICE:
-        _AUTO_NOTICE.append(True)
+    if not explicit and "int8" not in _AUTO_NOTICE:
+        _AUTO_NOTICE.append("int8")
         print(
             "Unsloth: load_in_8bit = True runs the rotated int8 LoRA base on this GPU (faster than bitsandbytes "
             "8-bit, same eval loss; the 16-bit master stays in host RAM). Pass load_in_8bit = 'bnb' for "
             f"bitsandbytes LLM.int8, or set {AUTO_8BIT_ENV}=0."
         )
     return "int8"
+
+
+def _bnb8_missing_fallback(arguments, extra, missing, int8_why):
+    """load_in_8bit = True without a usable bitsandbytes, LoRA on a 16-bit checkpoint, where the rotated int8 base
+    was not picked: load fp8 (load_in_fp8 = True) when this GPU and torch can, else leave the request to the
+    loader's LLM.int8 refusal. Says once which path it took and why."""
+    fp8_why = _fp8_fallback_reason(arguments, extra)
+    if fp8_why is None:
+        arguments["load_in_8bit"] = False
+        arguments["load_in_4bit"] = False
+        arguments["load_in_fp8"] = True
+        message = (
+            f"Unsloth: bitsandbytes is unavailable ({missing}), so load_in_8bit = True loads an fp8 base instead "
+            f"(load_in_fp8 = True, row-wise; the rotated int8 base is not used here: {int8_why}). Install "
+            "bitsandbytes for LLM.int8."
+        )
+        decision = "fp8"
+    else:
+        message = (
+            f"Unsloth: bitsandbytes is unavailable ({missing}), and load_in_8bit = True has no 8-bit fallback "
+            f"here: fp8 ({fp8_why}), the rotated int8 base ({int8_why})."
+        )
+        decision = "bnb"
+    if message not in _AUTO_NOTICE:
+        _AUTO_NOTICE.append(message)
+        print(message)
+    return decision
 
 
 def onthefly_lowbit_load(fn):
@@ -446,7 +561,7 @@ def onthefly_lowbit_load(fn):
         if var_keyword is not None:
             # A nested load (FastLanguageModel delegating to FastModel) keeps the outer call's bitsandbytes pick.
             decision = resolve_int8_8bit(arguments, var_keyword, auto = not _BNB8_KEPT.get())
-            if decision == "int8":
+            if decision in ("int8", "fp8"):
                 args, kwargs = bound.args, bound.kwargs
         if not (keep_bnb or decision == "bnb"):
             return _load(args, kwargs, bound, arguments, keep_bnb)

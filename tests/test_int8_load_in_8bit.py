@@ -371,3 +371,146 @@ def test_size_probe_stays_off_the_network_when_offline(monkeypatch):
         oq._checkpoint_16bit_bytes({"model_name": "org/never-cached"}, {"local_files_only": True})
         is None
     )
+
+
+def _gpu(
+    monkeypatch,
+    capability,
+    rowwise = True,
+    torch_version = "2.14.1",
+    torchao = True,
+):
+    import unsloth.kernels.int8_lora as IL
+    import unsloth.kernels.fp8_lora as FPL
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device = None: capability)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.version, "cuda", "13.0")
+    monkeypatch.setattr(torch, "__version__", torch_version)
+    monkeypatch.setattr(IL, "int8_lora_supported", lambda device: None)
+    monkeypatch.setattr(FPL, "rowwise_supported", lambda device: rowwise)
+    if not torchao:
+        import importlib.util
+        real = importlib.util.find_spec
+        monkeypatch.setattr(
+            importlib.util,
+            "find_spec",
+            lambda name, *a: None if name == "torchao" else real(name, *a),
+        )
+
+
+@pytest.fixture
+def bnb_missing(monkeypatch):
+    """bitsandbytes absent as the stand-in probe reports it; checkpoint plain 16-bit, wide, fits in memory."""
+    monkeypatch.setattr(oq, "_bnb8_unavailable_reason", lambda: "it is not installed")
+    monkeypatch.setattr(
+        oq, "_int8_auto_config_reason", lambda arguments, extra, check_hidden = True: None
+    )
+    monkeypatch.setattr(oq, "_int8_auto_memory_reason", lambda arguments, extra: None)
+    monkeypatch.delenv(oq.AUTO_8BIT_ENV, raising = False)
+    monkeypatch.setattr(oq, "_AUTO_NOTICE", [])
+
+
+FP8 = (False, False, True, None)
+INT8 = (False, False, False, "int8_lora")
+REFUSE = (False, True, False, None)  # load_in_8bit = True reaches the loader's LLM.int8 refusal
+
+
+@pytest.mark.parametrize(
+    "capability, want",
+    [
+        ((7, 5), REFUSE),  # no fp8, int8 refused
+        ((8, 0), INT8),  # int8 gate explicit (#20112), no fp8 hardware
+        ((8, 9), INT8),  # on-the-fly load_in_fp8 needs 9.0+; the int8 gate is explicit
+        ((9, 0), FP8),  # int8 unprobed
+        ((10, 0), FP8),  # int8 unprobed
+        ((12, 0), INT8),  # the measured int8 pick runs before any fallback
+    ],
+)
+# sm120 below the int8 hidden-size gate: the int8 pick declines and fp8 takes over.
+def test_true_without_bitsandbytes_falls_back(
+    wrapped, bnb_missing, monkeypatch, capsys, capability, want
+):
+    if want == FP8:
+        pytest.importorskip("torchao")
+    _gpu(monkeypatch, capability)
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == want
+    out = capsys.readouterr().out
+    if want == FP8:
+        assert "bitsandbytes is unavailable (it is not installed)" in out and "fp8" in out
+    if want == REFUSE:
+        assert "no 8-bit fallback" in out
+
+
+def test_fp8_fallback_needs_rowwise_torch_and_torchao(wrapped, bnb_missing, monkeypatch, capsys):
+    pytest.importorskip("torchao")
+    for kwargs in ({"rowwise": False}, {"torch_version": "2.8.0"}, {"torchao": False}):
+        monkeypatch.setattr(oq, "_AUTO_NOTICE", [])
+        _gpu(monkeypatch, (9, 0), **kwargs)
+        assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == REFUSE
+        assert "no 8-bit fallback" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"full_finetuning": True},
+        {"fast_inference": True},
+        {"qat_scheme": "int4"},
+        {"dtype": torch.float32},
+    ],
+)
+def test_without_bitsandbytes_other_routes_are_unchanged(
+    wrapped, bnb_missing, monkeypatch, capsys, kwargs
+):
+    _gpu(monkeypatch, (9, 0))
+    l4, l8, fp8, f8 = wrapped("m", load_in_8bit = True, load_in_4bit = False, **kwargs)
+    assert l8 is True and fp8 is False and f8 is None
+    assert capsys.readouterr().out == ""
+
+
+def test_pre_quantized_checkpoint_keeps_its_route(wrapped, bnb_missing, monkeypatch):
+    _gpu(monkeypatch, (9, 0))
+    monkeypatch.setattr(
+        oq,
+        "_int8_auto_config_reason",
+        lambda arguments, extra, check_hidden = True: "the checkpoint is pre-quantized",
+    )
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == REFUSE
+
+
+def test_bitsandbytes_present_keeps_bitsandbytes(wrapped, monkeypatch):
+    _gpu(monkeypatch, (9, 0))
+    monkeypatch.setattr(oq, "_bnb8_unavailable_reason", lambda: None)
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == REFUSE  # = bitsandbytes LLM.int8
+
+
+def test_bnb_probe_reads_the_stand_in(monkeypatch):
+    from unsloth import bnb_shim
+
+    monkeypatch.setattr(bnb_shim, "is_shim", lambda module = None: True)
+    monkeypatch.setitem(bnb_shim._STATE, "reason", "it is not installed")
+    assert oq._bnb8_unavailable_reason() == "it is not installed"
+    monkeypatch.setattr(bnb_shim, "is_shim", lambda module = None: False)
+    monkeypatch.setattr(bnb_shim, "_real_installed", lambda: False)
+    assert oq._bnb8_unavailable_reason() == "it is not installed"
+    monkeypatch.setattr(bnb_shim, "_real_installed", lambda: True)
+    monkeypatch.setattr(bnb_shim, "_real_unusable", lambda: True)
+    assert "native library" in oq._bnb8_unavailable_reason()
+    monkeypatch.setattr(bnb_shim, "_real_unusable", lambda: False)
+    assert oq._bnb8_unavailable_reason() is None
+
+
+def test_sm120_below_the_int8_gate_falls_back_to_fp8(wrapped, bnb_missing, monkeypatch):
+    pytest.importorskip("torchao")
+    _gpu(monkeypatch, (12, 0))
+    monkeypatch.setattr(
+        oq,
+        "_int8_auto_config_reason",
+        lambda arguments, extra, check_hidden = True: "hidden size 1024 is below 2048"
+        if check_hidden
+        else None,
+    )
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == FP8
