@@ -11,10 +11,11 @@ optimizers keep their math, state, LR schedule, bfloat16 stochastic rounding and
 
 max_grad_norm clips by the global norm, which is only known once every gradient has arrived, after most weights
 were stepped. So it is estimated while gradients arrive: this step's sum of squares so far, scaled by how much of
-the previous step's total the same tensors held. The estimate is never below the norm seen so far and is exact
-for the weights stepped at the end (tied, reused and the last ones). The first step (no previous step yet)
-measures the norm with a gradient-only pass first. UNSLOTH_AUTO_FIT_CLIP = exact measures every step that way
-(about 2x the step time), = lagged uses the previous step's norm, = per_tensor clips each tensor by its own norm.
+the previous step's total the same tensors held. The estimate is never below the norm seen so far, converges to
+the exact norm as the last gradients arrive, and is exact for the weights stepped at optimizer.step() (tied and
+reused ones). The first step (no previous step yet) measures the norm with a gradient-only pass first.
+UNSLOTH_AUTO_FIT_CLIP = exact measures every step that way (a second forward and backward per step), = lagged uses
+the previous step's norm, = per_tensor clips each tensor by its own norm.
 While the global norm stays under max_grad_norm the result is bitwise the standard step.
 
 When even that does not fit, LOMO's update is used instead: plain SGD stepped the same way, with no optimizer
@@ -243,7 +244,7 @@ class InBackwardOptimizer(torch.optim.Optimizer):
     arrived uses an estimate: S, this step's sum of squared norms so far, times T / P, where T is the previous
     step's total and P the previous step's sum over the same tensors. It is never below sqrt(S) (so never clips
     less than the norm already seen implies), is exact when the gradients keep their relative sizes, and is the
-    exact norm for everything stepped at the end. Under `measuring()` the hooks only measure (no step, gradients
+    exact norm for everything stepped by flush() at optimizer.step(). Under `measuring()` the hooks only measure (no step, gradients
     freed), so the next pass can clip with the exact norm; the first step does that when `calibrate` is set."""
 
     def __init__(
@@ -261,9 +262,8 @@ class InBackwardOptimizer(torch.optim.Optimizer):
         self._kind = kind
         self.max_grad_norm = float(max_grad_norm or 0.0)
         self.clip = clip if clip in _CLIP_MODES else clip_mode()
-        self.calibrate = (
-            True  # measure the first step's norm with a gradient-only pass (trainer path)
-        )
+        # Measure the first step's norm with a gradient-only pass (the trainer path runs it).
+        self.calibrate = True
         self._measuring = False
         self._known_sq = None  # this step's exact squared norm, from a measuring pass
         self._prev_sq = {}  # id(param) -> its squared norm in the previous step
@@ -1169,7 +1169,7 @@ def _decide(trainer, model, mode):
     )
     clip = (
         f" max_grad_norm = {args.max_grad_norm} clips by the global norm, estimated while gradients arrive"
-        f" (the first step measures it; {_CLIP_ENV}=exact measures every step, at about twice the step time)."
+        f" (the first step measures it; {_CLIP_ENV}=exact measures every step with a second forward and backward)."
         if (getattr(args, "max_grad_norm", 0) or 0) > 0
         else ""
     )
