@@ -316,7 +316,8 @@ def _tensor_args(t, GROUPS, STEPS, LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, 
     )
 
 
-# Multi-tensor launches: one program per 256-element block of any weight in the launch, driven by
+# Multi-tensor launches: one program per chunk of a weight (ROWS blocks of 256 for 8-bit state, as the
+# per-tensor kernel, which keeps large weights as fast; 1024 elements for 32-bit), driven by
 # device tables of data pointers / sizes / (tensor, block) per program. Same op sequence per element
 # as the per-tensor kernels above, so the bits are bitsandbytes' too.
 @triton.jit(do_not_specialize = ["T"])
@@ -325,8 +326,8 @@ def _adam8bit_multi_kernel(
     NUMELS,  # int64 [T]
     GROUPS,  # int32 [T]: param group of each weight (0..3)
     STEPS,  # int32 [T]: step count, already advanced for this step
-    BLOCK_T,  # int32 [blocks]: weight of each program
-    BLOCK_J,  # int32 [blocks]: block of that weight
+    BLOCK_T,  # int32 [programs]: weight of each program
+    BLOCK_J,  # int32 [programs]: chunk (ROWS blocks of 256) of that weight
     T,
     Q1,
     Q2,
@@ -336,6 +337,7 @@ def _adam8bit_multi_kernel(
     DTYPE: tl.constexpr,  # weight / gradient dtype of the whole launch
     S2_PRODUCT_FMA: tl.constexpr,
     ALIGNED: tl.constexpr,  # every pointer 16 byte aligned
+    ROWS: tl.constexpr,  # 256-element blocks per program, as the per-tensor kernel
     BLOCK: tl.constexpr,  # 256
     EXACT: tl.constexpr,
 ):  # fmt: skip
@@ -358,45 +360,48 @@ def _adam8bit_multi_kernel(
         G = tl.multiple_of(G, 16)
         S1 = tl.multiple_of(S1, 16)
         S2 = tl.multiple_of(S2, 16)
-    offs = j * BLOCK + tl.arange(0, BLOCK)
+    n_blocks = (n + BLOCK - 1) // BLOCK
+    rows = j * ROWS + tl.arange(0, ROWS)
+    offs = rows[:, None] * BLOCK + tl.arange(0, BLOCK)[None, :]
     valid = offs < n
+    row_valid = rows < n_blocks
     beta1, beta2, correction2, step_size, decay = _scalars(
-        step, lr, beta1, beta2, wd, (1,), False, EXACT
+        step, lr, beta1, beta2, wd, (ROWS, 1), False, EXACT
     )
-    one = tl.full((1,), 1.0, tl.float32)
+    one = tl.full((ROWS, 1), 1.0, tl.float32)
     g = tl.load(G + offs, valid, 0.0).to(tl.float32)
     c1 = tl.load(S1 + offs, valid, 128).to(tl.int32)
     c2 = tl.load(S2 + offs, valid, 0).to(tl.int32)
     finite = (g == g) & (tl.abs(g) != float("inf"))
     g = _mul(g, GNORM_SCALE + tl.zeros(g.shape, tl.float32), EXACT)
-    a1 = tl.load(A1 + j)
-    a2 = tl.load(A2 + j)
-    s2 = _mul(tl.load(Q2 + c2), a2 + tl.zeros(g.shape, tl.float32), EXACT)
+    a1 = tl.load(A1 + rows, row_valid, 0.0)[:, None]
+    a2 = tl.load(A2 + rows, row_valid, 0.0)[:, None]
+    s2 = _mul(tl.load(Q2 + c2), a2, EXACT)
     w2g = _mul(_add(one, -beta2, EXACT), g, EXACT)
     if S2_PRODUCT_FMA:
         s2 = _fma(w2g, g, _mul(s2, beta2, EXACT), EXACT)
     else:
         s2 = _fma(s2, beta2, _mul(g, w2g, EXACT), EXACT)
-    s1 = _mul(tl.load(Q1 + c1), a1 + tl.zeros(g.shape, tl.float32), EXACT)
+    s1 = _mul(tl.load(Q1 + c1), a1, EXACT)
     s1 = _fma(_add(one, -beta1, EXACT), g, _mul(s1, beta1, EXACT), EXACT)
     s1 = tl.where(finite, s1, 0.0)
     s2 = tl.where(finite, s2, 0.0)
-    new1 = tl.max(tl.abs(s1), axis = 0)
-    new2 = tl.max(tl.abs(s2), axis = 0)
-    tl.store(A1 + j, new1)
-    tl.store(A2 + j, new2)
+    new1 = tl.max(tl.abs(s1), axis = 1)
+    new2 = tl.max(tl.abs(s2), axis = 1)
+    tl.store(A1 + rows, new1, row_valid)
+    tl.store(A2 + rows, new2, row_valid)
     p_in = tl.load(P + offs, valid, 0.0)
     p = p_in.to(tl.float32)
-    denom = _fma(correction2, eps + tl.zeros((1,), tl.float32), _sqrt(s2, EXACT), EXACT)
+    denom = _fma(correction2, eps + tl.zeros((ROWS, 1), tl.float32), _sqrt(s2, EXACT), EXACT)
     p = _fma(step_size, _div(s1, denom, EXACT), p, EXACT).to(DTYPE)
     if wd > 0.0:
         p = _mul(decay, p.to(tl.float32), EXACT).to(DTYPE)
     tl.store(P + offs, tl.where(finite, p, p_in), valid)
-    q1 = _quantize(Q1, _div(s1, new1 + tl.zeros(g.shape, tl.float32), EXACT), True, EXACT)
+    q1 = _quantize(Q1, _div(s1, new1[:, None], EXACT), True, EXACT)
     code_neg = tl.load(Q1 + q1).to(tl.int32, bitcast = True) < 0
     s1_neg = s1.to(tl.int32, bitcast = True) < 0
     q1 = tl.where(code_neg != s1_neg, tl.where(s1 > 0.0, q1 + 1, q1 - 1), q1)
-    q2 = _quantize(Q2, _div(s2, new2 + tl.zeros(g.shape, tl.float32), EXACT), False, EXACT)
+    q2 = _quantize(Q2, _div(s2, new2[:, None], EXACT), False, EXACT)
     tl.store(S1 + offs, (q1 & 255).to(tl.uint8), valid)
     tl.store(S2 + offs, q2.to(tl.uint8), valid)
 
@@ -639,7 +644,7 @@ class MultiTensorPlan:
         device = params[0].device
         self.eight, self.dtype, self.device = eight, params[0].dtype, device
         self.T = len(params)
-        block = BLOCKSIZE if eight else _MULTI_BLOCK_32
+        block = BLOCKSIZE * _ROWS if eight else _MULTI_BLOCK_32  # elements per program
         self.block = block
         keys = ("state1", "state2", "absmax1", "absmax2") if eight else ("state1", "state2")
         rows = [[p.data_ptr() for p in params], [0] * self.T]
@@ -701,6 +706,7 @@ class MultiTensorPlan:
                     DTYPE = _TL_DTYPE[self.dtype],
                     S2_PRODUCT_FMA = _S2_PRODUCT_FMA[self.dtype],
                     ALIGNED = aligned,
+                    ROWS = _ROWS,
                     BLOCK = BLOCKSIZE,
                     EXACT = _EXACT,
                 )  # fmt: skip
