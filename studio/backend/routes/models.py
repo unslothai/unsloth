@@ -37,7 +37,7 @@ from hub.services.models.catalog_classification import (
     _repo_has_pipeline_index,
     _repo_is_diffusers,
 )
-from hub.services.models.common import _diffusers_pipeline_artifact_kind
+from hub.services.models.common import _diffusers_pipeline_artifact_kind, _is_decision_folder
 
 # Compat aliases for moved names; assigned via the module to satisfy verify_import_hoist.py.
 _AMBIGUOUS_DIFFUSION_GGUF_ARCHS = _catalog_classification._AMBIGUOUS_DIFFUSION_GGUF_ARCHS
@@ -144,6 +144,19 @@ from utils.hidden_models import (
 )
 
 
+def _cached_decision_repo_ids() -> set[str]:
+    """Cached Clef / Laya repos; empty for managed accounts, as the cache is shared."""
+    if account_access.managed_account():
+        return set()
+    return {
+        repo.repo_id.lower()
+        for cache in _all_hf_cache_scans()
+        for repo in cache.repos
+        if str(repo.repo_type) == "model"
+        and any(_is_decision_folder(revision.snapshot_path) for revision in repo.revisions)
+    }
+
+
 def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
     """Substring needles, exact repo ids, and exact resolved paths identifying infra models (the RAG embedder,
     the llama.cpp install validation probe, and Decision API models) that pickers hide. A configured HF-repo embedder is
@@ -156,7 +169,7 @@ def hidden_model_matchers() -> tuple[list[str], list[str], list[str]]:
         "ggml-org/models",
         "stories260k.gguf",
     ]
-    exact_ids = sorted(decision_api_repo_ids())
+    exact_ids = sorted(decision_api_repo_ids() | _cached_decision_repo_ids())
     exact_paths: list[str] = []
     for model in (
         rag_config.effective_embedding_model(),
@@ -3238,6 +3251,7 @@ def _scan_loras_sync(
                 size_bytes = _disk_bytes(model_path, model_type),
                 audio_type = _audio_type_of_checkpoint(model_path, base_model, hf_token),
                 adapter_features = parse_adapter_features(model_path),
+                is_decision = _is_decision_folder(model_path),
             )
         )
 

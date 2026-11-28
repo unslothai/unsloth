@@ -52,6 +52,7 @@ import re
 import httpx
 from hub.services.models import account_access
 from hub.services.models.account_access import media_link_account, media_link_target
+from hub.services.models.common import _is_decision_folder
 from utils.account_context import (
     OWNER_ACCOUNT_ID,
     account_thread,
@@ -19580,6 +19581,12 @@ def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
         pass
 
 
+_NOT_A_CHAT_MODEL = (
+    "This is a Decision API model, not a chat model. "
+    "Use it from Settings > API > Decision API (POST /v1/systemone)."
+)
+
+
 async def load_model_gated(
     request: LoadRequest,
     fastapi_request: Request,
@@ -19600,13 +19607,7 @@ async def load_model_gated(
     holds the model load, lifecycle and media admission gates.
     """
     if is_decision_api_model(request.model_path):
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "This is a Decision API model, not a chat model. "
-                "Use it from Settings > API > Decision API (POST /v1/systemone)."
-            ),
-        )
+        raise HTTPException(status_code = 400, detail = _NOT_A_CHAT_MODEL)
     # A sidecar install that has reserved the swap must not lose to a load that
     # then gets unloaded by the pre-swap teardown. Rechecked under the gate: an
     # install can reserve while this request queues on the gate, so the pre-gate
@@ -20714,6 +20715,12 @@ async def _load_model_impl(
         request = request.model_copy(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
+    # After the access check: share paths are refused before any disk call. `or None`: the anonymous False sentinel
+    # would skip the cache read. A native lease's model_path is a label.
+    if not request.native_path_lease and await asyncio.to_thread(
+        _is_decision_folder, request.model_path, request.hf_token or None
+    ):
+        raise HTTPException(status_code = 400, detail = _NOT_A_CHAT_MODEL)
     # A one-off X-Unsloth-HF-Token keeps no record, so record provenance in the finally; header presence alone is not the test (an existing repo can gain blobs).
     _cached_before_this_load = _repo_is_in_the_hub_cache(request.model_path)
     _cache_footprint_before = _hub_cache_footprint(request.model_path)
