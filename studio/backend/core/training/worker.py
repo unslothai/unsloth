@@ -4049,6 +4049,8 @@ def _run_mlx_training(
         mlx_config_kwargs["dataset_order"] = "sequential" if dataset_streaming else "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "save_total_limit" in _supported_fields:
+        mlx_config_kwargs["save_total_limit"] = int(config.get("save_total_limit", 2) or 0)
     if "report_grad_norm" in _supported_fields:
         # Grad norm is free under global-norm clipping; switching clip modes would change loss.
         mlx_config_kwargs["report_grad_norm"] = True
@@ -5793,6 +5795,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             warmup_ratio = config.get("warmup_ratio"),
             max_steps = max_steps if max_steps and max_steps > 0 else 0,
             save_steps = save_steps if save_steps and save_steps > 0 else 0,
+            save_total_limit = config.get("save_total_limit", 2),
             weight_decay = config.get("weight_decay", 0.001),
             random_seed = config.get("random_seed", 3407),
             packing = config.get("packing", False),
@@ -6631,7 +6634,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     elif warmup_steps_val is not None and warmup_steps_val > 0:
         training_args_kwargs["warmup_steps"] = warmup_steps_val
 
-    apply_save_strategy(training_args_kwargs, save_steps_val)
+    apply_save_strategy(training_args_kwargs, save_steps_val, config.get("save_total_limit", 2))
 
     if eval_dataset is not None:
         training_args_kwargs["eval_strategy"] = "steps"

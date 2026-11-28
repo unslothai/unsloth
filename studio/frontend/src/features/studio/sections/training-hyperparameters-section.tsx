@@ -15,6 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -93,6 +94,7 @@ export function TrainingHyperparametersSection({
       weightDecay: state.weightDecay,
       warmupSteps: state.warmupSteps,
       saveSteps: state.saveSteps,
+      saveTotalLimit: state.saveTotalLimit,
       evalSteps: state.evalSteps,
       earlyStoppingPatience: state.earlyStoppingPatience,
       randomSeed: state.randomSeed,
@@ -104,6 +106,7 @@ export function TrainingHyperparametersSection({
       setWarmupSteps: state.setWarmupSteps,
       setEpochs: state.setEpochs,
       setSaveSteps: state.setSaveSteps,
+      setSaveTotalLimit: state.setSaveTotalLimit,
       setEvalSteps: state.setEvalSteps,
       setEarlyStoppingPatience: state.setEarlyStoppingPatience,
       setRandomSeed: state.setRandomSeed,
@@ -362,6 +365,21 @@ export function TrainingHyperparametersSection({
                     store.setSaveSteps(Number(event.target.value))
                   }
                   className="w-28 font-mono"
+                />
+              </ParamsRow>
+            )}
+            {!store.isDecision && (
+              <ParamsRow
+                label={t("studio.params.keepLatestCheckpoints")}
+                tooltip={t("studio.params.keepLatestCheckpointsTooltip")}
+              >
+                <Switch
+                  aria-label={t("studio.params.keepLatestCheckpoints")}
+                  checked={store.saveTotalLimit > 0}
+                  disabled={store.saveSteps <= 0}
+                  onCheckedChange={(checked) =>
+                    store.setSaveTotalLimit(checked ? 2 : 0)
+                  }
                 />
               </ParamsRow>
             )}

@@ -27,6 +27,7 @@ interface BackendTrainingDefaults {
   warmup_ratio?: number;
   max_steps?: number;
   save_steps?: number;
+  save_total_limit?: number;
   eval_steps?: number;
   early_stopping_patience?: number;
   /** Drafter training block (same shape as the start request's `drafter`). */

@@ -196,11 +196,17 @@ def _coerce_optional_bool(value, default: bool) -> bool:
     return bool(value)
 
 
-def apply_save_strategy(config, save_steps_val):
+def apply_save_strategy(
+    config,
+    save_steps_val,
+    save_total_limit = 2,
+):
     # Save Steps 0 means "no checkpoints"; without an explicit strategy HF defaults to every 500 steps.
     if save_steps_val and save_steps_val > 0:
         config["save_steps"] = save_steps_val
         config["save_strategy"] = "steps"
+        if save_total_limit and save_total_limit > 0:
+            config["save_total_limit"] = int(save_total_limit)
     else:
         config["save_strategy"] = "no"
     return config
@@ -308,6 +314,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "warmup_ratio": values.get("warmup_ratio"),
         "max_steps": values.get("max_steps", 0),
         "save_steps": values.get("save_steps", 0),
+        "save_total_limit": values.get("save_total_limit", 2),
         "weight_decay": values.get("weight_decay", 0.001),
         "max_grad_norm": _coerce_optional_nonneg_float(
             "max_grad_norm", values.get("max_grad_norm")

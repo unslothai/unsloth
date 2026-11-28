@@ -141,8 +141,31 @@ def test_apply_save_strategy(save_steps, strategy, steps):
     assert kwargs.get("save_steps") == steps
 
 
+@pytest.mark.parametrize("limit, expected", [(None, 2), (2, 2), (5, 5), (0, None)])
+def test_step_checkpoint_limit(limit, expected):
+    transformers = pytest.importorskip("transformers")
+    from core.training.training import apply_save_strategy
+
+    base = {"output_dir": "out", "use_cpu": True, "report_to": []}
+    kwargs = (
+        apply_save_strategy(base, 30) if limit is None else apply_save_strategy(base, 30, limit)
+    )
+    args = transformers.TrainingArguments(**kwargs)
+    assert args.save_strategy == "steps"
+    assert args.save_total_limit == expected
+
+
+def test_start_request_save_total_limit():
+    from models.training import TrainingStartRequest
+
+    fields = TrainingStartRequest.model_fields
+    assert fields["save_total_limit"].default == 2
+    text = (_BACKEND / "routes/training.py").read_text(encoding = "utf-8")
+    assert '"save_total_limit": request.save_total_limit' in text
+
+
 def test_embedding_training_uses_shared_save_strategy():
     text = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
     body = text[text.index("def _run_embedding_training") :]
     body = body[: body.index("SentenceTransformerTrainingArguments(")]
-    assert "apply_save_strategy(training_args_kwargs, save_steps_val)" in body
+    assert "apply_save_strategy(training_args_kwargs, save_steps_val," in body

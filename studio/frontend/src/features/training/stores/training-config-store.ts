@@ -1659,6 +1659,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setSaveSteps: (saveSteps) => setUserEdit({ saveSteps }),
+        setSaveTotalLimit: (saveTotalLimit) => setUserEdit({ saveTotalLimit }),
         setEvalSteps: (evalSteps) => {
           const state = get();
           const streamingPatch = streamingCompatiblePatch({

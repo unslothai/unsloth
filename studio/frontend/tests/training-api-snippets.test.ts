@@ -143,6 +143,7 @@ test("every extra setting the form changes reaches the example, and nothing host
     warmup_steps: null,
     warmup_ratio: 0.1,
     save_steps: 25,
+    save_total_limit: 0,
     weight_decay: 0.1,
     max_grad_norm: 0.5,
     max_grad_value: 2,

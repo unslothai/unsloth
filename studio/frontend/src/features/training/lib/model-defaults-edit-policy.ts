@@ -20,6 +20,7 @@ export const MODEL_DEFAULT_STATE_KEYS = [
   "warmupSteps",
   "maxSteps",
   "saveSteps",
+  "saveTotalLimit",
   "evalSteps",
   "packing",
   "trainOnCompletions",
