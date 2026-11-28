@@ -273,6 +273,17 @@ def test_shared_recipe_keeps_quantizer_state_per_model(monkeypatch):
         torch.testing.assert_close(expected, _oracle_forward(second, x), rtol = 1e-5, atol = 1e-5)
 
 
+def test_registry_quantizer_keeps_no_tensors(monkeypatch):
+    """torchao's Intx quantizer stores its last scale / zero point; the shared registry copy must not keep them
+    (they would pin one layer's tensors, and break CUDA graph pools that expect every allocation returned)."""
+    model = _model("int8", monkeypatch)
+    with torch.no_grad():
+        model(_x())
+    for quantizer in qlm._QUANTIZERS.values():
+        assert not isinstance(quantizer.__dict__.get("scale"), torch.Tensor)
+        assert not isinstance(quantizer.__dict__.get("zero_point"), torch.Tensor)
+
+
 def test_default_stays_base_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_QAT_LORA_MERGED", raising = False)
     model = _model("int4", monkeypatch, merged = None)

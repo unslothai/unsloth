@@ -134,6 +134,7 @@ def _quantizer_key(quantizer):
         if "enabled" in vars(canonical):
             canonical.enabled = True
         canonical.requires_grad_(False)
+        _drop_qparams(canonical)
         key = _QUANTIZER_KEYS[signature] = len(_QUANTIZERS)
         _QUANTIZERS[key] = canonical
     return key
@@ -164,6 +165,15 @@ def _compiled_tail(key, quantizer):
     return fn or None
 
 
+def _drop_qparams(quantizer):
+    """torchao's Intx quantizer keeps its last scale / zero point as attributes. These are dynamic recipes, so drop
+    them: the shared registry entry must not hold one layer's tensors (nor a CUDA graph pool's) after the op."""
+    for name in ("scale", "zero_point"):
+        value = quantizer.__dict__.get(name)
+        if isinstance(value, torch.Tensor) and not isinstance(value, torch.nn.Parameter):
+            quantizer.__dict__[name] = None
+
+
 def _residual_eager(
     W,
     A,
@@ -188,8 +198,12 @@ def _residual_eager(
 def _residual_op(
     W: torch.Tensor, A: torch.Tensor, B: torch.Tensor, scale: float, key: int
 ) -> torch.Tensor:
-    with torch.no_grad():
-        return _residual_eager(W, A, B, scale, _QUANTIZERS[key], key)
+    quantizer = _QUANTIZERS[key]
+    try:
+        with torch.no_grad():
+            return _residual_eager(W, A, B, scale, quantizer, key)
+    finally:
+        _drop_qparams(quantizer)
 
 
 @_residual_op.register_fake
