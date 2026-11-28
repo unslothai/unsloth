@@ -233,6 +233,15 @@ test("a finished reply keeps its lone markers as written", () => {
   }
 });
 
+test("a finished reply keeps a `<` inside maths", () => {
+  for (const reply of [
+    String.raw`$$p_\theta(x) = \prod_i p_\theta(x_i \mid x_{<i})$$`,
+    String.raw`Tokens $x_{<i}$ come before $x_i$.`,
+  ]) {
+    assert.equal(remend(reply, FINISHED_TEXT_REMEND), reply);
+  }
+});
+
 test("a cut reply still hides a dangling image", () => {
   for (const cut of [
     "see ![alt](https://example.com/very/long/partial",
