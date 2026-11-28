@@ -24,7 +24,7 @@ import re
 import types
 import subprocess as _sp
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, Callable, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.training.training import TrainingProgress
@@ -110,13 +110,40 @@ def _studio_main_rank() -> bool:
     return is_main_rank()
 
 
-def _data_parallel_world_size() -> int:
+def _optimizer_for_run(config: dict, event_queue: Any = None) -> str:
+    """torch AdamW for a full finetune whose weights are FSDP2 / tensor parallel shards. bfloat16 stochastic
+    rounding steps DTensor weights only on the torch AdamW route, so bitsandbytes there rounds every update to
+    nearest and most of them vanish (Qwen3-0.6B, 60 steps: 6% of weights changed vs 49% under DDP)."""
+    optim = config.get("optim", "adamw_8bit")
+    from core.training import parallel_launch
+    from core.training.parallel_plan import bitsandbytes_optimizer
+
+    if not (
+        config.get("training_type") == "Full Finetuning"
+        and bitsandbytes_optimizer(optim)
+        and parallel_launch.shards_weights()
+    ):
+        return optim
+    message = (
+        f"Full finetuning with sharded weights (FSDP2 / tensor parallel) uses adamw_torch instead of {optim}: "
+        "8-bit AdamW loses most bfloat16 updates on sharded weights."
+    )
+    logger.warning(message)
+    if event_queue is not None and parallel_launch.is_main_rank():
+        event_queue.put({"type": "warning", "message": message, "ts": time.time()})
+    return "adamw_torch"
+
+
+def _data_parallel_world_size(config: Optional[dict] = None) -> int:
     """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1.
-    A Studio multi-process run counts dp replicas only: tp / pp / cp ranks read the same rows."""
+    A Studio multi-process run counts dp replicas only: tp / pp / cp ranks read the same rows, and a layer split
+    is one process training one copy over every visible GPU."""
     from core.training import parallel_launch
 
     if parallel_launch.is_multi_process():
         return parallel_launch.data_parallel_size()
+    if ((config or {}).get("parallel") or {}).get("mode") == "layer_split":
+        return 1
     sizes = [world_size_from_env()]
     torch_module = sys.modules.get("torch")
     if torch_module is not None:
@@ -3691,7 +3718,7 @@ def _run_mlx_training(
     mlx_max_train_rows = max_train_rows_for_config(
         config,
         branch_never_packs = is_vlm and not mlx_raw_text_mode,
-        world_size = _data_parallel_world_size(),
+        world_size = _data_parallel_world_size(config),
     )
     # Resume replays a batch cursor, so the bound must match the checkpoint's marker.
     mlx_max_train_rows, mlx_max_train_rows_seed = row_bound_for_resume(
@@ -5144,10 +5171,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             _flash_linear_attention_importable(),
         )
     except Exception as exc:
+        # Unsloth validates UNSLOTH_PARALLEL on import: that refusal is the layout's, not a broken install.
+        layout_refusal = isinstance(
+            exc, (ValueError, NotImplementedError)
+        ) and "UNSLOTH_PARALLEL" in str(exc)
         event_queue.put(
             {
                 "type": "error",
-                "error": f"Failed to import ML libraries: {exc}",
+                "error": str(exc) if layout_refusal else f"Failed to import ML libraries: {exc}",
                 "stack": traceback.format_exc(limit = 20),
                 "ts": time.time(),
             }
@@ -5379,7 +5410,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         max_train_rows = max_train_rows_for_config(
             config,
             branch_never_packs = branch_never_packs,
-            world_size = _data_parallel_world_size(),
+            world_size = _data_parallel_world_size(config),
         )
         # Resume uses the recorded subset; with no marker it trained unbounded, so bounding now would continue on unrelated rows.
         resumed_rows, max_train_rows_seed = row_bound_for_resume(
@@ -5807,7 +5838,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
-            optim = config.get("optim", "adamw_8bit"),
+            optim = _optimizer_for_run(config, event_queue),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
             is_cpt = is_cpt,
             resume_from_checkpoint = resume_from_checkpoint,

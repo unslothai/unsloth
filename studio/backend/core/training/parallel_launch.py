@@ -30,6 +30,7 @@ __all__ = [
     "data_parallel_size",
     "is_main_rank",
     "is_multi_process",
+    "shards_weights",
     "sync_stop",
     "wait_for_ranks",
 ]
@@ -82,19 +83,39 @@ def is_main_rank() -> bool:
     return rank() == 0
 
 
+def _layout() -> dict:
+    """UNSLOTH_PARALLEL of this run as lowercase key -> value strings."""
+    parts = {}
+    for part in str(os.environ.get("UNSLOTH_PARALLEL", "")).replace(";", ",").split(","):
+        key, _, value = (x.strip().lower() for x in part.partition("="))
+        if key:
+            parts[key.removesuffix("_size")] = value
+    return parts
+
+
+def _axis(parts: dict, key: str) -> int:
+    try:
+        return max(1, int(parts.get(key) or 1))
+    except ValueError:
+        return 1
+
+
 def data_parallel_size() -> int:
     world = world_size()
     if world <= 1:
         return 1
-    model_ranks = 1
-    for part in str(os.environ.get("UNSLOTH_PARALLEL", "")).replace(";", ",").split(","):
-        key, _, value = (x.strip().lower() for x in part.partition("="))
-        if key in ("tp", "pp", "cp", "tp_size", "pp_size", "cp_size"):
-            try:
-                model_ranks *= max(1, int(value))
-            except ValueError:
-                pass
+    parts = _layout()
+    model_ranks = _axis(parts, "tp") * _axis(parts, "pp") * _axis(parts, "cp")
     return max(1, world // model_ranks)
+
+
+def shards_weights() -> bool:
+    """Every rank holds only a shard of each weight (FSDP2 or tensor parallel): the weights are DTensors."""
+    if not is_multi_process():
+        return False
+    parts = _layout()
+    fsdp = parts.get("fsdp", "") in ("1", "true", "yes", "on") or _axis(parts, "dp_shard") > 1
+    return fsdp or _axis(parts, "tp") > 1
 
 
 def _timeout() -> timedelta:

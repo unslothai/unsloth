@@ -538,3 +538,69 @@ def test_gpt_oss_qlora_plans_ep_like_16bit():
     assert sharded["mode"] == "fsdp2" and sharded["spec"] == "dp=2,fsdp=1", sharded
     rows = {r["mode"]: r for r in sharded["modes"]}
     assert rows["ep"]["available"], rows["ep"]
+
+
+def test_bare_flag_in_a_custom_layout_reads_as_one():
+    plan = pp.plan({"parallel_mode": "custom", "parallel_spec": "fsdp, cp=2"}, _host(2), _model())
+    assert plan["spec"] == "fsdp=1,cp=2"
+
+
+def test_custom_expert_parallel_needs_a_moe_model():
+    # Core loads the model before it finds no expert block to shard.
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": "ep=2"}, _host(2, ep = True), _model())
+    assert err.value.payload["code"] == "parallel_unsupported"
+    assert "mixture-of-experts" in err.value.payload["message"]
+
+
+@pytest.mark.parametrize(
+    "heads, cp, tp, backend",
+    [
+        ((16, 8), 2, 1, "ulysses"),
+        ((16, 2), 4, 1, "ulysses"),
+        ((14, 2), 4, 1, "ring"),
+        ((16, 8), 2, 2, "ulysses"),
+        (None, 2, 1, None),
+    ],
+)
+def test_auto_cp_backend_follows_core(heads, cp, tp, backend):
+    assert pp._auto_cp_backend(heads, cp, tp) == backend
+
+
+def test_context_parallel_checks_the_cell_of_the_backend_auto_picks():
+    # OLMoE x Ulysses cp has no parity evidence: Unsloth refused it at load, after the weights were read.
+    olmoe = {**_model(moe = True, family = "olmoe"), "attention_heads": (16, 16)}
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "cp"}, _host(2), olmoe)
+    message = err.value.payload["message"]
+    assert message.startswith("Unsloth has not verified this multi-GPU layout for olmoe models")
+    assert "CELLS" not in message and "parity" not in message
+    rows = {r["mode"]: r for r in pp.plan({"parallel_mode": "auto"}, _host(2), olmoe)["modes"]}
+    assert not rows["cp"]["available"]
+    dense = {**_model(), "attention_heads": (16, 8)}
+    assert pp.plan({"parallel_mode": "cp"}, _host(2), dense)["spec"] == "cp=2"
+
+
+def test_plain_training_error_rewrites_only_the_cell_gate():
+    raw = (
+        "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: cell "
+        "'MoE gpt_oss x qlora x aux off x cp' lacks parity, engagement, compile evidence. Instead: a "
+        "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis."
+    )
+    assert pp.plain_training_error(raw) == (
+        "Unsloth has not verified this multi-GPU layout for gpt_oss models yet, so it refuses to train it. "
+        "Use DDP or FSDP2."
+    )
+    assert pp.plain_training_error("CUDA out of memory") == "CUDA out of memory"
+
+
+def test_sharded_full_finetune_notes_the_optimizer_and_moe_fsdp2_warns():
+    def notes(mode, model):
+        return pp.plan({"parallel_mode": mode, "optim": "adamw_8bit"}, _host(2), model)["notes"]
+
+    assert any("adamw_torch" in n for n in notes("fsdp2", _model(mode = "full")))
+    assert any("adamw_torch" in n for n in notes("tp", _model(mode = "full")))
+    assert not any("adamw_torch" in n for n in notes("ddp", _model(mode = "full")))
+    assert not any("adamw_torch" in n for n in notes("fsdp2", _model()))
+    moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
+    assert any("mixture-of-experts" in w for w in moe["warnings"])

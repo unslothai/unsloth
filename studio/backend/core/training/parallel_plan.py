@@ -320,6 +320,27 @@ def model_facts(
     for key, value in (meta.get("vram_breakdown") or {}).items():
         if key.startswith("min_per_gpu_") and value is not None:
             facts["per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
+    if training_type == "Full Finetuning" and bitsandbytes_optimizer(optimizer):
+        # Sharded full finetunes step with torch AdamW (worker._optimizer_for_run): size the shards for it.
+        try:
+            _, sharded = hw.estimate_required_model_memory_gb(
+                model_name,
+                hf_token = hf_token,
+                training_type = training_type,
+                load_in_4bit = load_in_4bit,
+                batch_size = batch_size,
+                max_seq_length = max_seq_length,
+                lora_rank = lora_rank,
+                target_modules = target_modules,
+                gradient_checkpointing = gradient_checkpointing,
+                optimizer = "adamw_torch",
+            )
+        except Exception:  # noqa: BLE001 -- keep the first estimate's shards
+            sharded = {}
+        for key, value in (sharded.get("vram_breakdown") or {}).items():
+            n = int(key.rsplit("_", 1)[1]) if key.startswith("min_per_gpu_") else 0
+            if n > 1 and value is not None:
+                facts["per_gpu_gb"][n] = float(value)
     try:
         estimate_model = hw._resolve_model_identifier_for_gpu_estimate(
             model_name, hf_token = hf_token
@@ -340,7 +361,17 @@ def model_facts(
         experts = getattr(text, "num_local_experts", None) or getattr(text, "num_experts", None)
         if isinstance(experts, int):
             facts["num_experts"] = experts
+        heads = getattr(text, "num_attention_heads", None)
+        if isinstance(heads, int) and heads > 0:
+            kv = getattr(text, "num_key_value_heads", None)
+            facts["attention_heads"] = (heads, kv if isinstance(kv, int) and kv > 0 else heads)
     return facts
+
+
+def bitsandbytes_optimizer(name: Optional[str]) -> bool:
+    """A bitsandbytes optimizer (adamw_8bit, paged_adamw_32bit, ...): its step skips DTensor weights' rounding."""
+    name = str(name or "").lower()
+    return "8bit" in name or "bnb" in name or name.startswith("paged_")
 
 
 def _config_traits(config) -> dict:
@@ -382,6 +413,12 @@ def _single_process_feature(request: dict) -> Optional[str]:
     return None
 
 
+def _normalize_spec(raw: Optional[str]) -> str:
+    """A bare flag ("fsdp,cp=2") reads as flag=1: Core takes only key=value parts."""
+    parts = [p.strip() for p in str(raw or "").replace(";", ",").split(",")]
+    return ",".join(p if "=" in p else f"{p}=1" for p in parts if p)
+
+
 def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
     if mode == DDP:
         return f"dp={world}"
@@ -389,7 +426,7 @@ def _spec_for(mode: str, world: int, custom: Optional[str]) -> str:
         return f"dp={world},fsdp=1"
     if mode in (TP, PP, CP, EP):
         return f"{_AXIS_OF_MODE[mode]}={world}"
-    return str(custom or "").strip()
+    return _normalize_spec(custom)
 
 
 def _spec_example(world: int) -> str:
@@ -413,6 +450,7 @@ def _parse_spec(raw: str, world: int) -> dict:
         part.split("=", 1)[0].strip().lower() in ("ep", "ep_size")
         for part in raw.replace(";", ",").split(",")
     )
+    raw = _normalize_spec(raw)
     try:
         spec = env.parse_parallel_spec(raw, source = "parallel_spec")
     except ValueError as exc:
@@ -464,9 +502,18 @@ def _core_check(
     if caps is None or not hasattr(caps, "Query"):
         return
     fields = getattr(caps.Query, "__dataclass_fields__", {})
+    if int(sizes.get("ep") or 1) > 1 and model and not model.get("is_moe", True):
+        raise ParallelPlanError(
+            "parallel_unsupported",
+            request.get("parallel_mode"),
+            "Expert parallel needs a mixture-of-experts model.",
+            'parallel_mode "ddp" or "fsdp2"',
+        )
     cp_backend = sizes.get("cp_backend")
     if cp_backend == "auto":
         cp_backend = None
+    if sizes["cp"] > 1 and cp_backend is None:
+        cp_backend = _auto_cp_backend(model.get("attention_heads"), sizes["cp"], sizes["tp"])
     sm = _sm(gpus or []) if any(g.get("sm") is not None for g in gpus or []) else host.get("sm")
     ep = int(sizes.get("ep") or 1)
     ep_blocker = model.get("ep_blocker")
@@ -511,10 +558,16 @@ def _core_check(
     }
     query = caps.Query(**{k: v for k, v in values.items() if k in fields and v is not None})
     try:
-        # cp_backend "auto" resolves only at load, so the cell check is left to Unsloth then.
+        # An unresolved cp_backend "auto" (head counts unknown) leaves the cell check to Unsloth at load.
         caps.check(query, cells = not (sizes["cp"] > 1 and cp_backend is None))
     except NotImplementedError as exc:
         text = str(exc)
+        if _UNVERIFIED in text:
+            raise ParallelPlanError(
+                "parallel_unsupported",
+                request.get("parallel_mode"),
+                unverified_layout_message(text),
+            ) from None
         message, _, alternative = text.partition(" Instead: ")
         layout = text.rsplit(" (layout ", 1)[1] if " (layout " in text else ""
         alternative = alternative.rsplit(" (layout", 1)[0].strip().rstrip(".") or None
@@ -531,6 +584,49 @@ def _core_check(
             _plain_core_message(message),
             alternative,
         )
+
+
+def _auto_cp_backend(
+    heads: Optional[tuple],
+    cp: int,
+    tp: int = 1,
+) -> Optional[str]:
+    """What Unsloth's cp_backend "auto" picks (context_parallel.resolve_cp_backend): Ulysses when the attention
+    heads per tensor parallel rank split over cp, else ring. None when the head counts are unknown."""
+    if not heads:
+        return None
+    n_heads, n_kv = heads
+    n_heads //= max(tp, 1)
+    n_kv = n_kv // tp if tp > 1 and n_kv % tp == 0 else n_kv
+    if (
+        n_heads > 0
+        and n_kv > 0
+        and n_heads % cp == 0
+        and n_heads % n_kv == 0
+        and (n_kv % cp == 0 or cp % n_kv == 0)
+    ):
+        return "ulysses"
+    return "ring"
+
+
+# Core's cell gate: a layout it has no parity / engagement evidence for on this model.
+_UNVERIFIED = "has no numeric parity / engagement / compile evidence"
+
+
+def unverified_layout_message(text: str) -> str:
+    """Core's cell-gate refusal in plain words; the raw text names test cells and internal tooling."""
+    family = re.search(r"family='([^']+)'", text) or re.search(
+        r"cell '(?:MoE )?([a-z0-9_.]+) x ", text
+    )
+    model = f" for {family.group(1)} models" if family else " for this model"
+    return f"Unsloth has not verified this multi-GPU layout{model} yet, so it refuses to train it. Use DDP or FSDP2."
+
+
+def plain_training_error(text: str) -> str:
+    """A training error as the Train page shows it: Core's unverified-layout refusal in plain words."""
+    if isinstance(text, str) and _UNVERIFIED in text:
+        return unverified_layout_message(text)
+    return text
 
 
 _REASON_BELOW = "(its reason follows the layout below)"
@@ -687,8 +783,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             notes.append(_mixed_gpu_note(mode))
         env: dict = {}
         sizes = None
-        if mode == FSDP2:
-            sizes = {"fsdp": True}
+        if multi and mode != CUSTOM and n >= 2:
+            sizes = _sizes_for(mode, n)
         elif mode == CUSTOM and spec:
             try:
                 sizes = _parse_spec(spec, n)
@@ -697,6 +793,20 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
             # Core keeps FSDP2 blocks gathered when the weights alone fit a card, ignoring optimizer state.
             env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
+        shards = bool(sizes and (sizes.get("fsdp") or sizes.get("tp", 1) > 1))
+        if (
+            multi
+            and shards
+            and model.get("mode") == "full"
+            and bitsandbytes_optimizer(request.get("optim") or "adamw_8bit")
+        ):
+            notes.append(
+                "Full finetuning with sharded weights uses adamw_torch: 8-bit AdamW loses most bfloat16 updates there."
+            )
+        if multi and sizes and sizes.get("fsdp") and model.get("is_moe"):
+            warnings.append(
+                "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits each GPU."
+            )
         return {
             "requested_mode": requested or AUTO,
             "mode": mode,

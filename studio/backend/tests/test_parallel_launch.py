@@ -242,3 +242,52 @@ def test_wait_for_ranks_reports_a_rank_that_failed_its_save(monkeypatch):
     )
     monkeypatch.setattr(parallel_launch, "_PROCS", [_Proc(0), _Proc(0)])
     assert parallel_launch.wait_for_ranks(timeout = 5) is None
+
+
+@pytest.mark.parametrize(
+    "layout, dp, shards",
+    [
+        ("dp=2", 2, False),
+        ("dp=2,fsdp=1", 2, True),
+        ("dp_shard=2", 2, True),
+        ("tp=2", 1, True),
+        ("tp_size=2", 1, True),
+        ("cp=2,fsdp=1", 1, True),
+        ("cp=2", 1, False),
+        ("pp=2", 1, False),
+        ("ep=2", 2, False),
+    ],
+)
+def test_layout_reads_replicas_and_sharded_weights(monkeypatch, layout, dp, shards):
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
+    monkeypatch.setenv("UNSLOTH_PARALLEL", layout)
+    assert parallel_launch.data_parallel_size() == dp
+    assert parallel_launch.shards_weights() is shards
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "1")
+    assert parallel_launch.shards_weights() is False
+
+
+@pytest.mark.parametrize(
+    "training_type, optim, layout, expected",
+    [
+        ("Full Finetuning", "adamw_8bit", "dp=2,fsdp=1", "adamw_torch"),
+        ("Full Finetuning", "paged_adamw_8bit", "tp=2", "adamw_torch"),
+        ("Full Finetuning", "adamw_8bit", "dp=2", "adamw_8bit"),
+        ("Full Finetuning", "adamw_torch_fused", "dp=2,fsdp=1", "adamw_torch_fused"),
+        ("LoRA/QLoRA", "adamw_8bit", "dp=2,fsdp=1", "adamw_8bit"),
+    ],
+)
+def test_sharded_full_finetune_steps_with_torch_adamw(
+    monkeypatch, training_type, optim, layout, expected
+):
+    # bfloat16 stochastic rounding steps DTensor weights only on the torch AdamW route.
+    from core.training import worker as training_worker
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_PARALLEL_WORLD", "2")
+    monkeypatch.setenv("UNSLOTH_PARALLEL", layout)
+    monkeypatch.delenv(parallel_launch.CHILD_ENV, raising = False)
+    events = queue.Queue()
+    config = {"training_type": training_type, "optim": optim}
+    assert training_worker._optimizer_for_run(config, events) == expected
+    warned = [] if events.empty() else [events.get_nowait()]
+    assert bool(warned) is (expected != optim)
