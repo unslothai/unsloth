@@ -5841,6 +5841,8 @@ class FastBaseModel:
     ):
         offload_layers = legacy_offload_layers(kwargs, offload_layers)
         prefetch_depth = prefetch_depth_arg(kwargs)
+        # QAT distillation (models/_qat_distill.py); Unsloth's own option, never a LoraConfig field.
+        qat_distill = kwargs.pop("qat_distill", None)
         reject_alora(model, kwargs.get("alora_invocation_tokens"))
         # PEFT < 0.21 drops a scalar layer 0 with layers_pattern.
         if isinstance(layers_to_transform, int) and not isinstance(layers_to_transform, bool):
@@ -6350,7 +6352,14 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _original_car
         if qat_scheme is not None:
             print("Unsloth: Applying QAT to mitigate quantization degradation")
+            from ._qat_distill import set_qat_distill
+
+            set_qat_distill(model, qat_distill)
             model = _prepare_model_for_qat(model, qat_scheme)
+        elif qat_distill not in (None, False):
+            raise ValueError(
+                "Unsloth: qat_distill distills a QAT model from its 16-bit base; pass qat_scheme too."
+            )
         fix_lora_auto_mapping(model)
         requires_grad_for_gradient_checkpointing(model)
         trust_remote_code = getattr(model, "_unsloth_trust_remote_code", False)
