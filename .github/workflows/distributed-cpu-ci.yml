@@ -32,11 +32,8 @@ on:
       - 'tests/conftest.py'
       - 'tests/__init__.py'
       - 'pyproject.toml'
-      # The install: requirements, the pinned ruff-unsloth read from the pre-commit config.
+      # The install's requirements.
       - 'studio/backend/requirements/**'
-      - '.pre-commit-config.yaml'
-      - 'scripts/run_ruff_format.py'
-      - '.github/actions/pip-cache-restore/**'
       - '.github/actions/merge-ref-age/**'
       - '.github/workflows/distributed-cpu-ci.yml'
   push:
@@ -61,11 +58,8 @@ on:
       - 'tests/conftest.py'
       - 'tests/__init__.py'
       - 'pyproject.toml'
-      # The install: requirements, the pinned ruff-unsloth read from the pre-commit config.
+      # The install's requirements.
       - 'studio/backend/requirements/**'
-      - '.pre-commit-config.yaml'
-      - 'scripts/run_ruff_format.py'
-      - '.github/actions/pip-cache-restore/**'
       - '.github/actions/merge-ref-age/**'
       - '.github/workflows/distributed-cpu-ci.yml'
   schedule:
@@ -312,23 +306,11 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Backend CI's repo-cpu-tests entry, read-only: the same install, so a second entry would
-      # hold the same wheels twice (READ_ONLY_BORROWERS in tests/studio/test_pip_cache_naming.py).
-      - name: Restore the pip cache
-        id: pip-cache
-        uses: ./.github/actions/pip-cache-restore
-        with:
-          name: repo-cpu-tests
-          key-files: |
-            pyproject.toml
-            studio/backend/requirements/*.txt
-
-      # node and uv are optional; dependent suites self-skip without them.
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
-        with:
-          node-version: '22'
-
-      - name: Install uv (for tests/python/* sandboxed venvs)
+      # No pip cache, node or ruff-unsloth here, unlike Backend CI's repo-cpu-tests: uv installs every
+      # package below without reading pip's cache, which then only served `pip install uv` and took 5 to
+      # 16 s to restore, and no multi-rank test runs node or ruff. All 31 jobs paid for each step. The
+      # install itself stays identical to Backend CI's (tests/test_ci_repo_cpu_shards.py).
+      - name: Install uv (the installer of the next step)
         run: pip install uv
 
       # Backend CI's install minus sentence-transformers (tests/test_ci_repo_cpu_shards.py checks the rest is
@@ -370,25 +352,6 @@ jobs:
             sleep $((5 * attempt))
           done
           uv pip install --system -e . --no-deps
-
-      # ruff-unsloth wheels read from .pre-commit-config.yaml so test_formatter_fixed_point.py
-      # does not skip. pip keeps the one whose marker matches this runner and checks its sha256.
-      - name: Install the pinned ruff-unsloth (formatter fixed-point guard)
-        run: |
-          python -c 'import sys; sys.path.insert(0, "scripts"); import run_ruff_format as r; print("\n".join(r.pinned_requirements(r.CONFIG.read_text(encoding = "utf-8"))))' > "$RUNNER_TEMP/ruff-unsloth.txt"
-          if [ ! -s "$RUNNER_TEMP/ruff-unsloth.txt" ]; then
-            echo "::error::.pre-commit-config.yaml no longer pins ruff-unsloth for ruff-format-with-kwargs"
-            exit 1
-          fi
-          # The wheel is a GitHub release asset; a 504 there is not retried by pip, so retry here.
-          # Those 504s come in bursts lasting minutes, so back off for about five minutes in total.
-          for attempt in 1 2 3 4 5 6; do
-            if pip install -r "$RUNNER_TEMP/ruff-unsloth.txt"; then
-              break
-            fi
-            [ "$attempt" -eq 6 ] && { echo "::error::ruff-unsloth install failed after 6 attempts"; exit 1; }
-            sleep $((10 << (attempt - 1)))
-          done
 
       - name: Repo tests (CPU, auto-discovered)
         env:

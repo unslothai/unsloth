@@ -20,8 +20,6 @@ SAVE_SUFFIX = "actions/pip-cache-save"
 # core-cpu-setup on the same matrix, asserted by test_zoo_suite_parallel_isolation.py.
 READ_ONLY_BORROWERS = {
     "consolidated-tests-ci.yml:consolidated-zoo": "consolidated",
-    # Backend CI's multi-rank shards, split into their own path-filtered workflow: same install.
-    "distributed-cpu-ci.yml:distributed-cpu-tests": "repo-cpu-tests",
 }
 
 
