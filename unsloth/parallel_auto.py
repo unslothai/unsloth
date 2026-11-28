@@ -335,6 +335,8 @@ def _describe(choice, entries):
             f"margin {_gib(first['margin'])} fits on every rank ({len(entries)} ranks, tightest has "
             f"{_gib(tight['capacity'])}). Set {FLAG}=\"fsdp=1\" to force FSDP2."
         )
+    if routed is not None and all(e.get("why") == routed["why"] for e in entries):
+        return f"{head}: {routed['why']}. Set {FLAG}=\"fsdp=0\" to force DDP."  # one reason, not one per rank
     reasons = []
     for rank, e in enumerate(entries):
         if e.get("fits"):

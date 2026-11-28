@@ -313,6 +313,7 @@ def test_auto_does_not_size_a_gguf_file_from_safetensors(clean):
         reason = auto._STATE["reason"]
         assert "gguf_file load is not sized" in reason, reason
         assert ("keeps the gguf_packed = True blocks replicated" in reason) == packed, reason
+        assert "rank 1:" not in reason, reason  # the same reason on every rank is given once
 
 
 def test_auto_takes_ddp_for_gguf_packed_when_fsdp2_would_refuse_it(clean):
