@@ -51,6 +51,7 @@ def _runtime(n_ctx = 4096):
         kv_unified = True,
         n_ubatch = 512,
         cache_type_kv = None,
+        flash_attn = True,
     )
 
 
@@ -88,6 +89,42 @@ class TestKvGpuShare:
         # -ngl 3: physical layers 2, 3 on the GPU, so slots 2, 3 and 5 (full, swa, full).
         assert probe._kv_gpu_share(3, 4096) == pytest.approx(9 / 12)
 
+    def test_scalar_heads_shared_kv_tail(self):
+        # No SWA vector: the last 6 of 12 layers share KV, and the estimator floors at one layer.
+        probe = _probe(None, n_layers = 12, _shared_kv_layers = 6)
+        assert probe._kv_gpu_share(7, 4096) == 0.0
+        assert probe._kv_gpu_share(8, 4096) == pytest.approx(1 / 6)
+        probe._shared_kv_layers = 12
+        assert probe._kv_gpu_share(12, 4096) == 0.0
+        assert probe._kv_gpu_share(13, 4096) == 1.0
+
+    def test_target_kv_leaves_the_nextn_block_out(self):
+        # Hybrid recurrent + one MTP block: the target cache skips it, so -ngl 2 holds none.
+        probe = _probe(
+            None,
+            n_layers = 5,
+            _n_kv_heads_by_layer = [0, 0, 0, 8, 8],
+            _ssm_inner_size = 64,
+            _full_attention_interval = 4,
+            _nextn_predict_layers = 1,
+        )
+        assert probe._kv_gpu_share(2, 4096) == 0.0
+        assert probe._kv_gpu_share(3, 4096) == 1.0
+
+    def test_recurrent_state_follows_its_own_layers(self, monkeypatch):
+        probe = _probe(None, n_layers = 4, _n_kv_heads_by_layer = [0, 0, 0, 8])
+        monkeypatch.setattr(probe, "_rollback_state_bytes", lambda n_parallel = 1: 100)
+        # -ngl 2: the attention layer is on the GPU, all three recurrent layers on the CPU.
+        assert probe._kv_gpu_share(2, 4096, kv_bytes = 400) == pytest.approx(0.75)
+        assert probe._kv_gpu_share(3, 4096, kv_bytes = 400) == pytest.approx((300 + 100 / 3) / 400)
+        # Without the total, attention cells only.
+        assert probe._kv_gpu_share(2, 4096) == 1.0
+
+    def test_scalar_head_hybrid_uses_the_attention_interval(self):
+        probe = _probe(None, n_layers = 8, _ssm_inner_size = 64, _full_attention_interval = 4)
+        # Attention at layers 3 and 7; -ngl 5 offloads layers 4..7.
+        assert probe._kv_gpu_share(5, 4096) == 0.5
+
     def test_unweighable_header_is_none(self):
         # Uniform attention, no per-layer heads: nothing to weigh, the caller falls back.
         probe = _probe(None, n_layers = 12)
@@ -101,22 +138,38 @@ class TestRouteKvShare:
         probe = _probe(_GEMMA3_PATTERN)
         fraction = ri._gguf_offloaded_layer_fraction("manual", 9, 18, device_pin_governs = True)
         assert fraction == pytest.approx(9 / 19)
-        share = ri._gguf_gpu_kv_share(probe, fraction, 18, _runtime())
+        share = ri._gguf_gpu_kv_share(probe, fraction, 18, _runtime(), 1)
         assert share == pytest.approx(14 / 27)
+
+    def test_flash_attn_state_reaches_the_split(self):
+        import routes.inference as ri
+
+        seen = {}
+
+        class _Probe:
+            def _kv_gpu_share(self, gpu_layers, n_ctx, **kw):
+                seen.update(kw, gpu_layers = gpu_layers)
+                return 0.25
+
+        runtime = _runtime()
+        runtime.flash_attn = False
+        assert ri._gguf_gpu_kv_share(_Probe(), 9 / 19, 18, runtime, 123) == 0.25
+        assert seen["flash_attn"] is False and seen["kv_bytes"] == 123 and seen["gpu_layers"] == 9
 
     def test_falls_back_to_the_layer_fraction(self):
         import routes.inference as ri
 
         fraction = 6 / 13
         assert (
-            ri._gguf_gpu_kv_share(_probe(None, n_layers = 12), fraction, 12, _runtime()) == fraction
+            ri._gguf_gpu_kv_share(_probe(None, n_layers = 12), fraction, 12, _runtime(), 1)
+            == fraction
         )
 
         class _Broken:
             def _kv_gpu_share(self, *a, **k):
                 raise RuntimeError("unread header")
 
-        assert ri._gguf_gpu_kv_share(_Broken(), fraction, 12, _runtime()) == fraction
+        assert ri._gguf_gpu_kv_share(_Broken(), fraction, 12, _runtime(), 1) == fraction
         # Zero and full offload never ask the header.
-        assert ri._gguf_gpu_kv_share(_Broken(), 0.0, 12, _runtime()) == 0.0
-        assert ri._gguf_gpu_kv_share(_Broken(), 1.0, 12, _runtime()) == 1.0
+        assert ri._gguf_gpu_kv_share(_Broken(), 0.0, 12, _runtime(), 1) == 0.0
+        assert ri._gguf_gpu_kv_share(_Broken(), 1.0, 12, _runtime(), 1) == 1.0

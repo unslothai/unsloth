@@ -18989,28 +18989,53 @@ class LlamaCppBackend:
             weights.append(int(width * (swa_cells if is_swa else full_cells)))
         return weights if any(weights) else []
 
-    def _kv_gpu_share(self, gpu_layers: int, n_ctx: int, **shape) -> Optional[float]:
+    def _kv_gpu_share(
+        self,
+        gpu_layers: int,
+        n_ctx: int,
+        *,
+        kv_bytes: Optional[int] = None,
+        **shape,
+    ) -> Optional[float]:
         """Share of the KV cache -ngl ``gpu_layers`` puts on the GPU, or None when unweighable.
         llama.cpp offloads weight layers at or past n_weight_layers + 1 - ngl (i_gpu_start), and a
-        loop slot's cache sits with the physical layer it reuses; weighted as _kv_layer_weights."""
+        loop slot's cache sits with the physical layer it reuses; weighted as _kv_layer_weights.
+        ``kv_bytes``: the priced total, so a hybrid's fixed recurrent state follows its own layers."""
         n_slots = self._n_layers or 0
         if n_slots <= 0:
             return None
+        # MTP blocks hold no target KV where the total leaves them out.
+        n_target = n_slots
+        if self._target_kv_excludes_nextn():
+            n_target = max(1, n_slots - (self._nextn_predict_layers or 0))
         try:
             weights = self._kv_layer_weights(n_ctx, **shape)
         except Exception:  # noqa: BLE001 -- unweighable header: the caller's fallback
             weights = []
-        if len(weights) != n_slots or sum(weights) <= 0:
-            # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
+        recurrent_mask = None
+        if len(weights) != n_slots or sum(weights[:n_target]) <= 0:
             heads = getattr(self, "_n_kv_heads_by_layer", None)
-            if not (isinstance(heads, (list, tuple)) and len(heads) == n_slots):
-                return None
-            weights = [max(0, int(h or 0)) for h in heads]
             shared = int(getattr(self, "_shared_kv_layers", None) or 0)
-            if 0 < shared < n_slots:
-                weights[n_slots - shared :] = [0] * shared
-            if sum(weights) <= 0:
+            interval = getattr(self, "_full_attention_interval", None)
+            if isinstance(heads, (list, tuple)) and len(heads) == n_slots:
+                # Per-layer KV heads (hybrid models): layers with none allocate no growing cache.
+                weights = [max(0, int(h or 0)) for h in heads]
+                if 0 < shared < n_slots:
+                    weights[n_slots - shared :] = [0] * shared
+                recurrent_mask = [not int(h or 0) for h in heads[:n_target]]
+            elif self._ssm_inner_size is not None and interval:
+                # Scalar-head hybrid: llama.cpp's is_recr, every interval-th layer attends.
+                weights = [int((i + 1) % int(interval) == 0) for i in range(n_slots)]
+                recurrent_mask = [not w for w in weights[:n_target]]
+            elif shared > 0:
+                # Scalar heads, shared-KV tail: the estimator's max(1, ...) floor.
+                allocating = max(1, n_target - shared)
+                weights = [1] * allocating + [0] * (n_slots - allocating)
+            else:
                 return None
+        weights = list(weights[:n_target]) + [0] * (n_slots - n_target)
+        if sum(weights) <= 0:
+            return None
         n_phys = self.n_weight_layers or n_slots
         phys = list(range(n_slots))
         start, end = getattr(self, "_loop_start", None), getattr(self, "_loop_end", None)
@@ -19028,8 +19053,19 @@ class LlamaCppBackend:
         elif n_phys != n_slots:
             return None
         first_gpu = max(0, n_phys + 1 - max(0, int(gpu_layers)))
-        on_gpu = sum(w for w, p in zip(weights, phys) if p >= first_gpu)
-        return on_gpu / sum(weights)
+        on_gpu = [p >= first_gpu for p in phys]
+        share = sum(w for w, g in zip(weights, on_gpu) if g) / sum(weights)
+        if recurrent_mask and kv_bytes:
+            # The total holds the live recurrent state beside the growing KV, on the recurrent layers.
+            rec_layers = [g for g, r in zip(on_gpu[:n_target], recurrent_mask) if r]
+            try:
+                recurrent = int(self._rollback_state_bytes(int(shape.get("n_parallel") or 1)) or 0)
+            except Exception:  # noqa: BLE001 -- not a recurrent hybrid
+                recurrent = 0
+            if rec_layers and 0 < recurrent < kv_bytes:
+                rec_share = sum(rec_layers) / len(rec_layers)
+                share = (share * (kv_bytes - recurrent) + rec_share * recurrent) / kv_bytes
+        return share
 
     def _kv_heads_for_layer(self, layer_idx: int, fallback: int) -> int:
         if self._n_kv_heads_by_layer is not None and layer_idx < len(self._n_kv_heads_by_layer):
