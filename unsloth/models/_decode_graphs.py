@@ -1054,7 +1054,7 @@ def keep_for_training(model):
             getattr(m.__dict__.get("_unsloth_decode_graphs"), "graphs", None)
             for m in model.modules()
         ):
-            # FastModel (generic) graphs only: their kept StaticCache stays through the step, re-capturing next round costs nothing measurable.
+            # FastModel graphs: keeping the StaticCache through the step costs memory, re-capturing costs nothing measurable.
             KEEP_DECISIONS["released"] += 1
             return False
         if _sleepable(model) and held <= KEEP_RESIDUAL_FRACTION * _total_bytes(device):

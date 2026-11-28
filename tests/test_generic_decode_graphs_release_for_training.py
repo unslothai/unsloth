@@ -22,7 +22,7 @@ def G(monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     monkeypatch.delenv(ENV, raising = False)
-    # A training step already ran without the graphs (released at step 0, now step 1) and plenty is free.
+    # Measured step ran without the graphs and plenty is free: auto would keep FastLanguageModel graphs.
     monkeypatch.setattr(module, "_held", lambda model: (GB, torch.device("cuda", 0)))
     monkeypatch.setattr(module, "_optimizer_steps", lambda: 1)
     monkeypatch.setattr(module, "_allocator", lambda device: (2 * GB, 0, 3 * GB))
