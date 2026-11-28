@@ -82,6 +82,7 @@ _DROPOUT_KEYS = (
     "attn_pdrop",
     "embd_pdrop",
 )
+# Expert counts: a mixture-of-experts window also holds every layer's recorded router logits (float32 at most).
 _MOE_KEYS = ("num_experts", "num_local_experts", "n_routed_experts", "moe_num_experts")
 
 
@@ -99,6 +100,14 @@ def _engine_rng():
 
 
 _ENGINE_RNG = {}
+
+
+def _engine_module():
+    return (
+        sys.modules.get(getattr(run_layer_major, "__module__", None) or "")
+        if run_layer_major is not None
+        else None
+    )
 
 
 def _mode():
@@ -629,10 +638,11 @@ def layer_major_ineligible(
     if why is not None:
         return why
     config = _text_config(model)
-    for key in _MOE_KEYS:
-        value = getattr(config, key, 0)
-        if isinstance(value, int) and value > 0:
-            return "a mixture-of-experts model (router losses)"
+    if _engine_module() is not None and not hasattr(_engine_module(), "_thread_forwards"):
+        for key in _MOE_KEYS:
+            value = getattr(config, key, 0)
+            if isinstance(value, int) and value > 0:
+                return "a mixture-of-experts model (unsloth_zoo is too old to carry router losses through windows)"
     if not _engine_rng():
         # An unsloth_zoo window without random-draw plans would draw in another order across micro-batches.
         why = _random_draws_expected(trainer, model)
@@ -818,6 +828,12 @@ def _fits(
         torch.empty((), dtype = weight.dtype).element_size() if weight.dtype.is_floating_point else 2
     )
     need = boundary_bytes(tokens, hidden, len(layers), element)
+    if getattr(config, "output_router_logits", False):
+        # The router logits of every layer and micro-batch, kept as leaves for the load-balancing loss's gradient.
+        experts = max(
+            [v for v in (getattr(config, k, 0) for k in _MOE_KEYS) if isinstance(v, int)] + [0]
+        )
+        need += sum(tokens) * experts * len(layers) * 4
     if not torch.cuda.is_available():
         return True, need
     devices = {p.device for p in layers.parameters() if p.is_cuda}
