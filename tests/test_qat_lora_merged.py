@@ -309,6 +309,32 @@ def test_disabled_quantizer_keeps_the_adapter_and_mixed_batches_are_refused(sche
             up(x, adapter_names = ["default"] * x.shape[0])
 
 
+@pytest.mark.parametrize("scheme", ["int4", "fp8-fp8"])
+def test_stripped_model_runs_plain_lora(scheme, monkeypatch):
+    """save_pretrained_torchao strips fake quantization in place: the live model is plain LoRA afterwards."""
+    from unsloth.models._utils import _strip_torchao_fake_quantization
+
+    model = _model(scheme, monkeypatch)
+    model._torchao_config = model.base_model.model._torchao_config
+    _strip_torchao_fake_quantization(model)
+    x = _x()
+    up, down = _lora_layers(model)
+
+    def plain(proj, h):
+        A, B = proj.lora_A["default"].weight, proj.lora_B["default"].weight
+        return F.linear(h, proj.get_base_layer().weight) + proj.scaling["default"] * F.linear(
+            h, B @ A
+        )
+
+    with torch.no_grad():
+        torch.testing.assert_close(
+            model(x), plain(down, torch.relu(plain(up, x))), rtol = 1e-5, atol = 1e-5
+        )
+        torch.testing.assert_close(
+            up(x, adapter_names = ["default"] * x.shape[0]), plain(up, x), rtol = 1e-5, atol = 1e-5
+        )
+
+
 def test_default_stays_base_only(monkeypatch):
     monkeypatch.delenv("UNSLOTH_QAT_LORA_MERGED", raising = False)
     model = _model("int4", monkeypatch, merged = None)

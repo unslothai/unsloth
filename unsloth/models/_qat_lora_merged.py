@@ -317,8 +317,9 @@ def _exact_lora_forward(self, x, *args, **kwargs):
     value exactly 0 to carry the straight-through LoRA gradients, on a detached input so dX comes from the base."""
     base = self.get_base_layer()
     adapter = _active_adapter(self)
-    # A switched-off weight quantizer returns the plain base weight: then the adapter must add its real value.
-    if adapter is None or args or kwargs or not base.weight_fake_quantizer.enabled:
+    quantizer = base._modules.get("weight_fake_quantizer")
+    # A switched-off quantizer returns the plain base weight, and an export strips it: the adapter adds its value.
+    if adapter is None or args or kwargs or quantizer is None or not quantizer.enabled:
         return type(self).forward(self, x, *args, **kwargs)
     A, _, scale = adapter
     out = base(x)
@@ -328,6 +329,11 @@ def _exact_lora_forward(self, x, *args, **kwargs):
 
 
 def _refuse_mixed_batch(self, *args, **kwargs):
+    base = self.get_base_layer()
+    if base._modules.get("weight_fake_quantizer") is None and "weight_config" not in base.__dict__:
+        return type(self)._mixed_batch_forward(
+            self, *args, **kwargs
+        )  # QAT stripped: plain LoRA again
     raise NotImplementedError(
         "Unsloth: merged QAT-LoRA layers compute the base and the adapter as one merged weight, so a batch that "
         "mixes adapters per row (adapter_names = ...) cannot run on them. Run one adapter per batch."
@@ -358,7 +364,8 @@ def _merged_microscaling_forward(self, x, *args, **kwargs):
     a detached input, so dX = G Q(W + s B A) comes from the base alone."""
     base = self.get_base_layer()
     adapter = None if base.__dict__.get(_TEACHER, False) else _active_adapter(self)
-    if adapter is None or args or kwargs:
+    # "weight_config": still a torchao NVFP4 / MX QAT linear (an export strips it to nn.Linear).
+    if adapter is None or args or kwargs or "weight_config" not in base.__dict__:
         return type(self).forward(self, x, *args, **kwargs)
     A, B, scale = adapter
     if not torch.compiler.is_compiling():
