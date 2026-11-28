@@ -13408,6 +13408,15 @@ class VideoBackend:
                     speed_optims += ("vae_rocm_pertap_conv",)
             except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
                 logger.warning("video.vae_rocm_pertap: not installed: %s", exc)
+            # Apple MPS: Conv3d runs as per-tap Conv2d on torch < 2.14 (stock is 8-14x slower there and a 1.7 GB call
+            # can hang the GPU); from 2.14 only wide-channel small-frame calls and calls over the size guard.
+            try:
+                from .video_vae_mps_pertap import OPTIM_NAME as _MPS_PERTAP
+                from .video_vae_mps_pertap import install_on_pipe as install_vae_mps_pertap
+                if install_vae_mps_pertap(pipe, target, logger = logger):
+                    speed_optims += (_MPS_PERTAP,)
+            except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
+                logger.warning("video.vae_mps_pertap: not installed: %s", exc)
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:

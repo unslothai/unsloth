@@ -168,6 +168,11 @@ def _cat_front_h3_conv(module: Any, hidden_states: Any) -> Any:
     padded = h3_causal_pad(
         hidden_states, int(module.spatial_padding or 0), module.spatial_padding_mode, front
     )
+    if getattr(module.__dict__.get("_conv_forward"), "_unsloth_mps_pertap", False) and tuple(
+        module.padding
+    ) == (0, 0, 0):
+        # video_vae_mps_pertap's wrap: the same F.conv3d (padding 0, zeros mode) or its per-tap form
+        return module._conv_forward(padded, module.weight, module.bias)
     return F.conv3d(
         padded,
         module.weight,
