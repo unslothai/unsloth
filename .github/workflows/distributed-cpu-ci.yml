@@ -397,7 +397,7 @@ jobs:
         # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --max-worker-restart=0 --timeout=330 --timeout-method=thread -o faulthandler_timeout=300 \
             -m 'not server and not e2e'
 
       - name: How the ranks started (forked from the zygote, or spawned again and why)

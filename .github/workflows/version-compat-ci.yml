@@ -88,7 +88,7 @@ jobs:
             tests/version_compat/test_no_dtype_kwarg_at_load.py \
             tests/version_compat/test_trl_vllm_colocate_weight_sync.py \
             tests/version_compat/test_router_aux_loss_non_reentrant_gc.py \
-            -n 4 --dist loadfile -v --tb=short
+            -n 4 --max-worker-restart=0 --dist loadfile -v --tb=short
 
   cap-site-consistency:
     name: version-window drift (${{ matrix.os }})
