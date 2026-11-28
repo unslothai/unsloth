@@ -86,9 +86,10 @@ class FastLanguageModel(FastCPUModel):
         from .tiling import check_tiling_available, loader_tile_mlp
 
         check_tiling_available(unsloth_tiled_mlp)
-        from ._gguf_load import require_gguf_package
+        from ._gguf_load import refuse_gguf_packed_on_cpu, require_gguf_package
 
         require_gguf_package(kwargs.get("gguf_file"))
+        refuse_gguf_packed_on_cpu(kwargs)
         model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
         loader_tile_mlp(model, unsloth_tiled_mlp)
         _report_cpu_memory("load", model)
