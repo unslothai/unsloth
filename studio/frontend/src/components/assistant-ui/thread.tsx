@@ -181,6 +181,11 @@ import { Button } from "@/components/ui/button";
 import { MascotImg } from "@/components/mascot-img";
 import { Spinner } from "@/components/ui/spinner";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -209,6 +214,16 @@ import {
   exportConversationPdf,
 } from "@/features/chat/prompt-storage/prompt-storage-dialog";
 import { ExportFormatItems } from "@/features/chat/components/export-format-items";
+import {
+  DecisionComposerPanel,
+  DecisionComposerPills,
+} from "@/features/chat/components/decision-composer-pills";
+import { useDecisionConfigStore } from "@/features/chat/stores/decision-config-store";
+import {
+  DecisionAnswerCard,
+  type DecisionMessagePayload,
+} from "@/features/chat/components/decision-answer-card";
+import { decisionNativeText } from "@/features/chat/lib/decision-result";
 import {
   listPromptEntries,
   listPromptLists,
@@ -3142,6 +3157,19 @@ const Composer: FC<{
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
 
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // A decision model reads the composer text as its state, not as a chat prompt.
+  const loadedIsDecision = useChatRuntimeStore((s) => s.loadedIsDecision);
+  // Attachments stay only when the decision model actually reads images.
+  const loadedIsMultimodal = useChatRuntimeStore((s) => s.loadedIsMultimodal);
+  // A conversation opens decision drawers above the input; a new chat below it.
+  const decisionPanelAtTop = useAuiState(
+    ({ thread }) => thread.messages.length > 0,
+  );
+  const decisionPanelOpen = useDecisionConfigStore(
+    (s) => s.openPanel !== "none",
+  );
+  const decisionDrawerOpen = loadedIsDecision && decisionPanelOpen;
+  const t = useT();
   const codeToolsEnabled = useChatRuntimeStore((s) => s.codeToolsEnabled);
   const imageToolsEnabled = useChatRuntimeStore((s) => s.imageToolsEnabled);
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
@@ -5900,6 +5928,8 @@ const Composer: FC<{
       );
       submitIntentRef.current = "default";
       pendingFollowUpBehaviorRef.current = behavior;
+      // Sending takes the decision drawers with it; they describe this turn only.
+      useDecisionConfigStore.getState().setPanel("none");
       if (isResearchActive) {
         event.preventDefault();
         return;
@@ -6370,8 +6400,17 @@ const Composer: FC<{
           className="unsloth-composer-left"
           data-pill-compact={pillCompact}
         >
-          {toolsMenu}
-          {!isDictating ? pills : null}
+          {loadedIsDecision ? (
+            <>
+              {loadedIsMultimodal ? toolsMenu : null}
+              <DecisionComposerPills />
+            </>
+          ) : (
+            <>
+              {toolsMenu}
+              {!isDictating ? pills : null}
+            </>
+          )}
         </div>
         {isDictating ? (
           <ChatDictationBar
@@ -6395,7 +6434,11 @@ const Composer: FC<{
                 id={inputId}
                 submitMode="none"
                 placeholder={
-                  overlay ? "Type your edits for your image" : "Ask anything"
+                  overlay
+                    ? "Type your edits for your image"
+                    : loadedIsDecision
+                      ? t("decisions.composerPlaceholder")
+                      : "Ask anything"
                 }
                 ref={composerSurfaceRef}
                 data-type-to-activate="composer"
@@ -6504,6 +6547,8 @@ const Composer: FC<{
       // skip find-in-page because it cannot index the textarea and would match toolbar pills.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       className="aui-composer-root relative flex w-full flex-col"
+      data-decision-drawer={decisionDrawerOpen ? "open" : undefined}
+      data-decision-placement={decisionDrawerOpen ? (decisionPanelAtTop ? "top" : "bottom") : undefined}
       data-writing-expanded={
         isWritingExpanded && !isDictating ? "true" : undefined
       }
@@ -6523,6 +6568,11 @@ const Composer: FC<{
           onClose={() => setYoutubeLink(null)}
         />
       ) : null}
+      {/* A decision drawer is a sibling of the composer surface, like the prompt
+          queue: one shared outline, never a border drawn inside another border. */}
+      {!isDictating && decisionPanelAtTop ? (
+        <DecisionComposerPanel placement="top" />
+      ) : null}
       {isTauri ? (
         <div className="aui-composer-attachment-dropzone unsloth-composer-surface relative z-10">
           {composerContent}
@@ -6539,6 +6589,9 @@ const Composer: FC<{
           {dropOverlay}
         </ComposerPrimitive.AttachmentDropzone>
       )}
+      {!isDictating && !decisionPanelAtTop ? (
+        <DecisionComposerPanel placement="bottom" />
+      ) : null}
     </ComposerPrimitive.Root>
     </ComposerPrimitive.Unstable_TriggerPopoverRoot>
     </PromptQueueContext.Provider>
@@ -8534,6 +8587,15 @@ const AssistantMessage: FC = () => {
   const metadataResearchRunId = useAuiState(({ message }) =>
     getResearchRunId(message.metadata),
   );
+  // A decision answer is rendered as a card; its text stays for history and copy.
+  const decisionPayload = useAuiState(
+    ({ message }) =>
+      (
+        message.metadata as
+          | { custom?: { decision?: DecisionMessagePayload } }
+          | undefined
+      )?.custom?.decision ?? null,
+  );
   const boundResearchAssistantMessageId = useResearchRunStore((state) =>
     metadataResearchRunId
       ? state.sessions[metadataResearchRunId]?.run?.assistantMessageId
@@ -8648,14 +8710,18 @@ const AssistantMessage: FC = () => {
                 <DiffusionCanvas />
 
                 <PartsWithRoundTail>
-                  <MessagePrimitive.Parts
-                    components={ASSISTANT_PART_COMPONENTS}
-                    unstable_showEmptyOnNonTextEnd={false}
-                  />
+                  {decisionPayload ? (
+                    <DecisionAnswerCard payload={decisionPayload} />
+                  ) : (
+                    <MessagePrimitive.Parts
+                      components={ASSISTANT_PART_COMPONENTS}
+                      unstable_showEmptyOnNonTextEnd={false}
+                    />
+                  )}
                 </PartsWithRoundTail>
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
-                <ContinueMessageBar />
+                {decisionPayload ? null : <ContinueMessageBar />}
               </>
             )}
             <MessageError />
@@ -8665,10 +8731,10 @@ const AssistantMessage: FC = () => {
 
       <div className="aui-assistant-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
         {/* First, so the action bar mounting on hover never moves it. */}
-        <AssistantMessageTime />
+        {decisionPayload ? null : <AssistantMessageTime />}
         {/* Match the row height so wrapping live text cannot move the picker. */}
-        <BranchPicker className="mr-0.5 h-8" />
-        <LiveGenerationLine />
+        {decisionPayload ? null : <BranchPicker className="mr-0.5 h-8" />}
+        {decisionPayload ? null : <LiveGenerationLine />}
         <AssistantActionBar />
       </div>
       </WindowedMessageBody>
@@ -9002,8 +9068,30 @@ const CopyButton: FC = () => {
   const aui = useAui();
   const [copied, setCopied] = useState(false);
   const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A decision reply copies what the model actually returned, not its rendering.
+  const decisionNative = useAuiState(
+    ({ message }) =>
+      (
+        message.metadata as
+          | { custom?: { decision?: DecisionMessagePayload } }
+          | undefined
+      )?.custom?.decision?.native ?? null,
+  );
 
   const handleCopy = async () => {
+    if (decisionNative != null) {
+      if (await copyToClipboard(decisionNativeText(decisionNative))) {
+        setCopied(true);
+        if (resetTimeoutRef.current) {
+          clearTimeout(resetTimeoutRef.current);
+        }
+        resetTimeoutRef.current = setTimeout(() => {
+          setCopied(false);
+          resetTimeoutRef.current = null;
+        }, COPY_RESET_MS);
+      }
+      return;
+    }
     // getCopyText reads content only, and a long paste sits in an attachment.
     const pasted = attachmentsPastedText(aui.message().getState().attachments);
     // Strip image tokens or the clipboard gets `[[img:0123456789ab]]` where the picture was.
@@ -9126,6 +9214,93 @@ async function exportMessageMarkdown(content: string): Promise<void> {
     }
   }
 }
+const formatDecisionMs = (ms: number): string =>
+  ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+
+const DecisionTiming: FC = () => {
+  const t = useT();
+  const decision = useAuiState(
+    ({ message }) =>
+      (
+        message.metadata as
+          | { custom?: { decision?: DecisionMessagePayload } }
+          | undefined
+      )?.custom?.decision ?? null,
+  );
+  if (!decision) return null;
+  const tokens = decision.usage?.input_tokens ?? 0;
+  const ms = decision.latency_ms ?? 0;
+  if (ms <= 0 || tokens <= 0) return null;
+  const rate = tokens / (ms / 1000);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          data-slot="message-timing-trigger"
+          aria-label={t("generationStats.timing.trigger")}
+          className="flex items-center rounded-[10px] p-1 font-mono text-chat-icon-fg text-ui-13 tabular-nums transition-colors hover:bg-chat-icon-bg-hover hover:text-chat-icon-fg-hover"
+        >
+          {t("decisions.tokPerSec", { rate: rate.toFixed(1) })}
+        </button>
+      </TooltipTrigger>
+      <TooltipContent
+        side="top"
+        align="center"
+        sideOffset={8}
+        variant="rich"
+        className="[&_span>svg]:hidden!"
+      >
+        <div className="grid min-w-44 gap-1.5 text-xs">
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">
+              {t("generationStats.timing.promptEval")}
+            </span>
+            <span className="font-mono tabular-nums">
+              {formatDecisionMs(ms)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">
+              {t("generationStats.timing.promptSpeed")}
+            </span>
+            <span className="font-mono tabular-nums">
+              {t("decisions.tokPerSec", { rate: rate.toFixed(1) })}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">
+              {t("generationStats.timing.tokens")}
+            </span>
+            <span className="font-mono tabular-nums">
+              {tokens.toLocaleString()}
+            </span>
+          </div>
+          <div className="my-0.5 border-t border-border/40" />
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-muted-foreground">
+              {t("generationStats.timing.total")}
+            </span>
+            <span className="font-mono tabular-nums">
+              {formatDecisionMs(ms)}
+            </span>
+          </div>
+          {decision.model ? (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">
+                {t("decisions.modelLabel")}
+              </span>
+              <span className="max-w-40 truncate font-mono tabular-nums">
+                {decision.model}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      </TooltipContent>
+    </Tooltip>
+  );
+};
+
 const AssistantActionBar: FC = () => {
   const aui = useAui();
   const moreMenuTriggerRef = useRef<HTMLButtonElement>(null);
@@ -9140,6 +9315,31 @@ const AssistantActionBar: FC = () => {
   const inlineEdit = useChatPreferencesStore((s) => s.showInlineEditResponse);
   // hideWhenRunning is thread-level; keep the bar while speaking, it holds the only Stop control.
   const speaking = useAuiState(({ message }) => message.speech != null);
+  // A decision reply has no prose to speak, edit, fork, continue or export.
+  const isDecisionMessage = useAuiState(
+    ({ message }) =>
+      Boolean(
+        (
+          message.metadata as
+            | { custom?: { decision?: unknown } }
+            | undefined
+        )?.custom?.decision,
+      ),
+  );
+
+  if (isDecisionMessage) {
+    return (
+      <ActionBarPrimitive.Root
+        hideWhenRunning={true}
+        autohide="not-last"
+        className="aui-assistant-action-bar-root col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 text-chat-icon-fg [&_button:not([data-slot=message-timing-trigger])]:size-8 [&_button]:!rounded-full [&_button:hover]:bg-chat-icon-bg-hover [&_button:hover]:text-chat-icon-fg-hover"
+      >
+        <CopyButton />
+        <DeleteMessageButton />
+        <DecisionTiming />
+      </ActionBarPrimitive.Root>
+    );
+  }
 
   return (
     <>
@@ -9159,7 +9359,7 @@ const AssistantActionBar: FC = () => {
             </TooltipIconButton>
           </ActionBarPrimitive.Reload>
         )}
-        {ttsEnabled && (
+        {ttsEnabled && !isDecisionMessage && (
           <MessagePrimitive.If speaking={false}>
             <ActionBarPrimitive.Speak asChild={true}>
               <TooltipIconButton tooltip="Read aloud" aria-label="Read aloud">
@@ -9208,7 +9408,7 @@ const AssistantActionBar: FC = () => {
               {/* Keep the click that dismisses the menu off the bar's buttons. */}
               <MenuDismissGuard triggerRef={moreMenuTriggerRef} />
               <MessageMenuTime onShowDetails={() => setDetailsOpen(true)} />
-              <ContinueResponseMenuItem />
+              {!isDecisionMessage && <ContinueResponseMenuItem />}
               {!inlineEdit && <EditAssistantMessageMenuItem />}
               <ActionBarPrimitive.ExportMarkdown
                 asChild={true}
@@ -9275,6 +9475,7 @@ const AssistantActionBar: FC = () => {
           </ActionBarMorePrimitive.Content>
         </ActionBarMorePrimitive.Root>
         <MessageTiming side="top" className="h-8 px-2" />
+        <DecisionTiming />
       </ActionBarPrimitive.Root>
       <MessageResponseDetailsSheet
         open={detailsOpen}

@@ -2701,6 +2701,11 @@ type ChatRuntimeStore = {
   loadedIsGguf: boolean | null;
   /** Backend-reported: native-audio checkpoints are served off the MLX path. */
   loadedIsMlx: boolean | null;
+  /** Backend-reported: the loaded GGUF answers decisions only (llama-server /v1/systemone),
+   *  so the Chat page shows the Decision console instead of the chat composer. */
+  loadedIsDecision: boolean;
+  /** The GGUF's `<arch>.decision.type` (e.g. "lfm3-d1") when loadedIsDecision is true. */
+  loadedDecisionType: string | null;
   /** Null when the backend does not answer, which is not a confirmed false. */
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
@@ -4665,6 +4670,8 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedEngineLaunch: DEFAULT_ENGINE_LAUNCH_FIELDS,
   loadedIsGguf: null,
   loadedIsMlx: null,
+  loadedIsDecision: false,
+  loadedDecisionType: null,
   loadedContextEnforced: null,
   loadedContextUnboundedWhenBatched: false,
   loadedParallelSlots: null,

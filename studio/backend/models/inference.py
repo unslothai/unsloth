@@ -1795,6 +1795,16 @@ class _InferenceRuntimeFields(BaseModel):
     )
 
     is_vision: bool = Field(False, description = "Whether model is a vision model")
+    is_decision: bool = Field(
+        False,
+        description = "Whether the loaded model answers decisions only: llama-server serves it "
+        "on /v1/systemone (Studio: POST /api/inference/decision) and cannot generate text.",
+    )
+    decision_type: Optional[str] = Field(
+        None,
+        description = "The GGUF's `<arch>.decision.type` (for example lfm3-d1) when is_decision "
+        "is true; null otherwise.",
+    )
     is_diffusion: bool = Field(
         False, description = "Whether model is a block-diffusion model (DiffusionGemma)"
     )

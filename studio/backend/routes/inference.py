@@ -9238,6 +9238,12 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
+        is_decision = bool(getattr(llama_backend, "is_decision", False)),
+        decision_type = (
+            getattr(llama_backend, "_decision_type", None)
+            if getattr(llama_backend, "is_decision", False)
+            else None
+        ),
         npu_context_fit = None,
         npu_power_mode = None,
         npu_prefill_chunk_len = None,
@@ -23830,6 +23836,118 @@ async def cancel_inference(request: Request, current_subject: str = Depends(get_
 
     n = _cancel_by_keys(keys)
     return {"cancelled": n}
+
+
+class DecisionQuestionIn(BaseModel):
+    """One typed question: the shape llama-server's /v1/systemone takes."""
+
+    type: str
+    instructions: Any = None
+    criteria: Any = None
+
+
+class DecisionRequestIn(BaseModel):
+    """A decision request for the loaded decision-only GGUF."""
+
+    state: Any
+    questions: dict[str, DecisionQuestionIn]
+    images: Optional[List[str]] = None
+    audio: Optional[List[str]] = None
+
+
+MAX_DECISION_QUESTIONS = 64
+MAX_DECISION_STATE_CHARS = 200_000
+
+
+@studio_router.post("/decision")
+async def run_loaded_decision(
+    payload: DecisionRequestIn, current_subject: str = Depends(get_current_subject)
+):
+    """Answer a decision request with the loaded decision-only GGUF.
+
+    llama-server serves such a model on /v1/systemone only (it cannot generate
+    text), so the Chat Decision console posts here instead of
+    /v1/chat/completions. The upstream body is returned as-is, plus the latency
+    this proxy measured.
+    """
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        raise HTTPException(status_code = 409, detail = "Load a decision model first.")
+    if not getattr(llama_backend, "is_decision", False):
+        raise HTTPException(
+            status_code = 400,
+            detail = "The loaded model is not a decision model: it answers chat, not /v1/systemone.",
+        )
+    if not payload.questions:
+        raise HTTPException(status_code = 422, detail = "Send at least one question.")
+    if len(payload.questions) > MAX_DECISION_QUESTIONS:
+        raise HTTPException(
+            status_code = 422,
+            detail = f"At most {MAX_DECISION_QUESTIONS} questions per request.",
+        )
+    if isinstance(payload.state, str) and len(payload.state) > MAX_DECISION_STATE_CHARS:
+        raise HTTPException(
+            status_code = 422,
+            detail = f"State is longer than {MAX_DECISION_STATE_CHARS} characters.",
+        )
+
+    body: dict = {
+        "state": payload.state,
+        "questions": {
+            name: question.model_dump(exclude_none = True)
+            for name, question in payload.questions.items()
+        },
+    }
+    if payload.images:
+        body["images"] = payload.images
+    if payload.audio:
+        body["audio"] = payload.audio
+
+    url = f"{llama_backend.base_url}/v1/systemone"
+    headers = dict(llama_backend._auth_headers or {})
+    started = time.perf_counter()
+    try:
+        response = await asyncio.to_thread(
+            functools.partial(
+                httpx.post,
+                url,
+                json = body,
+                headers = headers,
+                # Prompt processing on a long state is the only slow part; no tokens are generated.
+                timeout = 300.0,
+                trust_env = False,
+            )
+        )
+    except httpx.HTTPError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = f"llama-server did not answer the decision request: {exc}",
+        ) from exc
+    latency_ms = round((time.perf_counter() - started) * 1000, 1)
+
+    try:
+        data = response.json()
+    except ValueError:
+        data = None
+    if response.status_code >= 400:
+        message = None
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                message = error.get("message")
+            elif isinstance(error, str):
+                message = error
+        raise HTTPException(
+            status_code = response.status_code,
+            detail = message or f"llama-server returned {response.status_code}.",
+        )
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code = 502, detail = "llama-server returned an unreadable decision body."
+        )
+    data["model"] = llama_backend.model_identifier
+    data["latency_ms"] = latency_ms
+    return JSONResponse(data)
 
 
 @studio_router.post("/tool-confirm")

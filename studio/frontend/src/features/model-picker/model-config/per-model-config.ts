@@ -260,6 +260,9 @@ export function loadedContextFields(resp: {
   is_gguf?: boolean;
   is_mlx?: boolean;
   is_npu?: boolean;
+  /** Decision-only GGUF: llama-server answers it on /v1/systemone, not chat. */
+  is_decision?: boolean;
+  decision_type?: string | null;
   context_length?: number | null;
   native_context_length?: number | null;
   npu_context_fit?: number | null;
@@ -274,6 +277,9 @@ export function loadedContextFields(resp: {
   nativeContextLength: number | null;
   loadedIsGguf: boolean | null;
   loadedIsMlx: boolean | null;
+  /** True when the loaded model answers decisions only; the Chat page then shows the Decision console. */
+  loadedIsDecision: boolean;
+  loadedDecisionType: string | null;
   loadedContextEnforced: boolean | null;
   loadedContextUnboundedWhenBatched: boolean;
   loadedParallelSlots: number | null;
@@ -287,6 +293,8 @@ export function loadedContextFields(resp: {
       nativeContextLength: null,
       loadedIsGguf: null,
       loadedIsMlx: null,
+      loadedIsDecision: false,
+      loadedDecisionType: null,
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
@@ -310,6 +318,8 @@ export function loadedContextFields(resp: {
       nativeContextLength: null,
       loadedIsGguf: false,
       loadedIsMlx: resp.is_mlx ?? null,
+      loadedIsDecision: false,
+      loadedDecisionType: null,
       loadedContextEnforced: null,
       loadedContextUnboundedWhenBatched: false,
       loadedParallelSlots: null,
@@ -324,6 +334,9 @@ export function loadedContextFields(resp: {
     loadedIsGguf: isGguf,
     // Backend's answer, so native audio off the MLX path is not taken for MLX.
     loadedIsMlx: resp.is_mlx ?? null,
+    loadedIsDecision: isGguf && resp.is_decision === true,
+    loadedDecisionType:
+      isGguf && resp.is_decision === true ? (resp.decision_type ?? null) : null,
     // llama.cpp allocates what it reports, so GGUF is enforced by construction.
     loadedContextEnforced: isGguf ? true : (resp.context_length_enforced ?? null),
     // Same response as the other two, so they never mix across loads.

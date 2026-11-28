@@ -2286,7 +2286,8 @@ function createStudioDbAdapter(
         firstAssistant?.metadata?.custom,
       );
 
-      if (!autoTitle) {
+      // A decision model cannot answer the title prompt (it has no text generation).
+      if (!autoTitle || useChatRuntimeStore.getState().loadedIsDecision) {
         const title = fallbackTitleFromUserText(userText);
         await persistTitle(title);
         return streamTitle(title);
