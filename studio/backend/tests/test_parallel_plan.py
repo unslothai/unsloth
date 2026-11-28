@@ -549,29 +549,6 @@ def test_bare_switch_in_a_custom_layout_reads_as_one():
     assert err.value.payload["code"] == "parallel_bad_spec"
 
 
-@pytest.mark.parametrize(
-    "spec, shards",
-    [
-        ("fsdp=2", True),
-        ("fsdp2=1", True),
-        ("fsdp_size=2", True),
-        ("dp_shard=2", True),
-        ("fsdp", True),
-        ("dp=2,fsdp=1", True),
-        ("tp=2", True),
-        ("tp_size=2", True),
-        ("cp=2,fsdp=1", True),
-        ("dp=2", False),
-        ("cp=2", False),
-        ("pp=2", False),
-        ("ep=2", False),
-        ("fsdp=0,dp=2", False),
-    ],
-)
-def test_layout_shards_weights_reads_cores_parse(spec, shards):
-    assert pp.layout_shards_weights(spec, 2) is shards
-
-
 def test_plain_training_error_rewrites_only_the_cell_gate():
     raw = (
         "Unsloth: composition: this cell has no numeric parity / engagement / compile evidence yet: cell "
@@ -595,30 +572,23 @@ def test_plain_training_error_rewrites_only_the_cell_gate():
     assert pp.plain_training_error("CUDA out of memory") == "CUDA out of memory"
 
 
-def test_sharded_full_finetune_notes_the_optimizer_and_moe_fsdp2_warns():
-    def notes(mode, model):
-        return pp.plan({"parallel_mode": mode, "optim": "adamw_8bit"}, _host(2), model)["notes"]
-
-    assert any("adamw_torch" in n for n in notes("fsdp2", _model(mode = "full")))
-    assert any("adamw_torch" in n for n in notes("tp", _model(mode = "full")))
-    assert not any("adamw_torch" in n for n in notes("ddp", _model(mode = "full")))
-    assert not any("adamw_torch" in n for n in notes("fsdp2", _model()))
+def test_fsdp2_on_a_moe_model_warns():
     moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
     assert any("mixture-of-experts" in w for w in moe["warnings"])
+    dense = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model())
+    assert not any("mixture-of-experts" in w for w in dense["warnings"])
 
 
-def test_fsdp2_is_sized_for_torch_adamw_and_layer_split_for_the_selected_optimizer():
-    # A sharded bfloat16 full finetune steps with torch AdamW: Auto must not pick FSDP2 on the 8-bit size.
-    model = {**_model(need = 31.6, mode = "full"), "fsdp2_per_gpu_gb": {2: 20.2}}
+def test_unpinned_layer_split_shows_no_per_gpu_figure():
+    model = _model(need = 31.6, mode = "full")
     model["per_gpu_gb"][2] = 16.4
-    host = _host(2, gpus = [{**_t4(i), "total_gb": 24.0, "free_gb": 19.0} for i in range(2)])
+    host = _host(2, gpus = [{**_t4(i), "total_gb": 24.0, "free_gb": 15.0} for i in range(2)])
     plan = pp.plan({"parallel_mode": "auto"}, host, model)
     assert plan["mode"] == "layer_split", plan["reason"]
     # Unpinned, the start-time selection picks the cards: no per-GPU figure until the count is known.
     assert plan["estimate"]["per_gpu_gb"]["layer_split"] is None
     pinned = pp.plan({"parallel_mode": "layer_split", "gpu_ids": [0, 1]}, host, model)
-    row = pinned["estimate"]["per_gpu_gb"]
-    assert (row["fsdp2"], row["layer_split"]) == (20.2, 16.4)
+    assert pinned["estimate"]["per_gpu_gb"]["layer_split"] == 16.4
 
 
 def test_the_cell_gate_is_left_to_the_load():

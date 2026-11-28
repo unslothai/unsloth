@@ -291,7 +291,6 @@ def model_facts(
     facts: dict = {
         "required_gb": None,
         "per_gpu_gb": {},
-        "fsdp2_per_gpu_gb": {},
         "is_moe": False,
         "family": "",
         "multimodal": False,
@@ -321,27 +320,6 @@ def model_facts(
     for key, value in (meta.get("vram_breakdown") or {}).items():
         if key.startswith("min_per_gpu_") and value is not None:
             facts["per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
-    if training_type == "Full Finetuning" and bnb_adamw(optimizer):
-        # Under FSDP2 a bfloat16 full finetune steps with torch AdamW (worker._optimizer_for_run). Whether the
-        # weights are bfloat16 is known only in the worker, so the shards are sized for the larger optimizer.
-        try:
-            _, sharded = hw.estimate_required_model_memory_gb(
-                model_name,
-                hf_token = hf_token,
-                training_type = training_type,
-                load_in_4bit = load_in_4bit,
-                batch_size = batch_size,
-                max_seq_length = max_seq_length,
-                lora_rank = lora_rank,
-                target_modules = target_modules,
-                gradient_checkpointing = gradient_checkpointing,
-                optimizer = "adamw_torch",
-            )
-        except Exception:  # noqa: BLE001 -- keep the selected optimizer's shards
-            sharded = {}
-        for key, value in (sharded.get("vram_breakdown") or {}).items():
-            if key.startswith("min_per_gpu_") and value is not None:
-                facts["fsdp2_per_gpu_gb"][int(key.rsplit("_", 1)[1])] = float(value)
     try:
         estimate_model = hw._resolve_model_identifier_for_gpu_estimate(
             model_name, hf_token = hf_token
@@ -363,15 +341,6 @@ def model_facts(
         if isinstance(experts, int):
             facts["num_experts"] = experts
     return facts
-
-
-# The bitsandbytes AdamW names Unsloth keeps on DTensor shards (fsdp2_native._BNB_LOCAL_SHARD_OPTIMS): their step
-# skips bfloat16 stochastic rounding. Core already switches the other bitsandbytes optimizers to torch's.
-_BNB_ADAMW = ("adamw_8bit", "adamw_bnb_8bit", "paged_adamw_8bit", "paged_adamw_32bit")
-
-
-def bnb_adamw(name: Optional[str]) -> bool:
-    return str(name or "").strip().lower() in _BNB_ADAMW
 
 
 def _config_traits(config) -> dict:
@@ -493,15 +462,6 @@ def _parse_spec(raw: str, world: int) -> dict:
     sizes["cp_backend"] = spec.get("cp_backend")
     sizes["pp_schedule"] = spec.get("pp_schedule")
     return sizes
-
-
-def layout_shards_weights(spec: Optional[str], world: int) -> bool:
-    """FSDP2 or tensor parallel in this layout, by Core's own parse: every rank holds only shards of the weights."""
-    try:
-        sizes = _parse_spec(spec, world)
-    except ParallelPlanError:
-        return False
-    return bool(sizes.get("fsdp")) or sizes.get("tp", 1) > 1
 
 
 def _core_check(
@@ -713,20 +673,10 @@ def _sizes_for(mode: str, world: int) -> dict:
     return sizes
 
 
-def _fsdp2_gb(model: dict, n: int) -> Optional[float]:
-    """Per-GPU need under FSDP2, for the optimizer the run may step with there (model_facts)."""
-    return (model.get("fsdp2_per_gpu_gb") or {}).get(n) or (model.get("per_gpu_gb") or {}).get(n)
-
-
 def _estimate_row(model: dict, n: int) -> dict:
     single = model.get("required_gb")
-    split = (model.get("per_gpu_gb") or {}).get(max(n, 1))
-    return {
-        "single": single,
-        "ddp": single,
-        "fsdp2": _fsdp2_gb(model, max(n, 1)),
-        "layer_split": split,
-    }
+    sharded = (model.get("per_gpu_gb") or {}).get(max(n, 1))
+    return {"single": single, "ddp": single, "fsdp2": sharded, "layer_split": sharded}
 
 
 def _gpus_differ(gpus: list) -> bool:
@@ -777,8 +727,8 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
             notes.append(_mixed_gpu_note(mode))
         env: dict = {}
         sizes = None
-        if multi and mode != CUSTOM and n >= 2:
-            sizes = _sizes_for(mode, n)
+        if mode == FSDP2:
+            sizes = {"fsdp": True}
         elif mode == CUSTOM and spec:
             try:
                 sizes = _parse_spec(spec, n)
@@ -787,17 +737,6 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
         if sizes and sizes.get("fsdp") and need is not None and chosen and not _fits(need, chosen):
             # Core keeps FSDP2 blocks gathered when the weights alone fit a card, ignoring optimizer state.
             env["UNSLOTH_FSDP2_LAYOUT"] = "sharded"
-        shards = bool(sizes and (sizes.get("fsdp") or sizes.get("tp", 1) > 1))
-        if (
-            multi
-            and shards
-            and model.get("mode") == "full"
-            and bnb_adamw(request.get("optim") or "adamw_8bit")
-        ):
-            notes.append(
-                "Full finetuning with sharded bfloat16 weights steps with adamw_torch: bitsandbytes AdamW loses "
-                "most bfloat16 updates there."
-            )
         if multi and sizes and sizes.get("fsdp") and model.get("is_moe"):
             warnings.append(
                 "FSDP2 trains mixture-of-experts models many times slower than DDP; use DDP when the model fits "
@@ -873,7 +812,7 @@ def plan(request: dict, host: dict, model: Optional[dict]) -> dict:
                 + ("" if _fits(need, gpus) else ", and not every GPU has room for a full copy")
                 + f"; GPU {largest['index']} ({largest['name']}) holds it whole, so it trains there alone.",
             )
-        shard = _fsdp2_gb(model, len(gpus))
+        shard = (model.get("per_gpu_gb") or {}).get(len(gpus))
         if core.get(FSDP2) and shard is not None and _fits(shard, gpus):
             try:
                 _core_check(

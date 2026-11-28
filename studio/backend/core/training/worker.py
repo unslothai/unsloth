@@ -110,42 +110,6 @@ def _studio_main_rank() -> bool:
     return is_main_rank()
 
 
-def _optimizer_for_run(config: dict, event_queue: Any = None) -> str:
-    """torch AdamW for a full finetune whose weights are FSDP2 / tensor parallel shards. bfloat16 stochastic
-    rounding steps DTensor weights only on the torch AdamW route, so bitsandbytes AdamW there rounds every update
-    to nearest and most of them vanish."""
-    optim = config.get("optim", "adamw_8bit")
-    from core.training import parallel_launch
-    from core.training.parallel_plan import bnb_adamw, layout_shards_weights
-
-    if not (
-        config.get("training_type") == "Full Finetuning"
-        and bnb_adamw(optim)
-        and parallel_launch.is_multi_process()
-        and layout_shards_weights(os.environ.get("UNSLOTH_PARALLEL"), parallel_launch.world_size())
-        and _bfloat16_weights()
-    ):
-        return optim
-    message = (
-        f"Full finetuning with sharded weights (FSDP2 / tensor parallel) uses adamw_torch instead of {optim}: "
-        "bitsandbytes AdamW loses most bfloat16 updates on sharded weights."
-    )
-    logger.warning(message)
-    if event_queue is not None and parallel_launch.is_main_rank():
-        event_queue.put({"type": "warning", "message": message, "ts": time.time()})
-    return "adamw_torch"
-
-
-def _bfloat16_weights() -> bool:
-    """A full finetune trains bfloat16 weights here; without bfloat16 (T4, V100) Unsloth upcasts them to float32,
-    which needs no rounding."""
-    try:
-        from unsloth import is_bfloat16_supported
-        return bool(is_bfloat16_supported())
-    except Exception:  # noqa: BLE001 -- unknown: keep the switch, it trains either way
-        return True
-
-
 def _data_parallel_world_size(config: Optional[dict] = None) -> int:
     """Larger of env world size and CUDA device count, never the sum: distributed runs force n_gpu to 1.
     A Studio multi-process run counts dp replicas only: tp / pp / cp ranks read the same rows, and a layer split
@@ -5850,7 +5814,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
-            optim = _optimizer_for_run(config, event_queue),
+            optim = config.get("optim", "adamw_8bit"),
             lr_scheduler_type = config.get("lr_scheduler_type", "linear"),
             is_cpt = is_cpt,
             resume_from_checkpoint = resume_from_checkpoint,
