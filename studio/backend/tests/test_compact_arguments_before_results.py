@@ -62,6 +62,7 @@ def test_completed_code_is_compacted_before_findings_are_evicted():
         "Error: invalid data",
         "Traceback: failure",
         "Execution timed out after 20 seconds",
+        [{"type": "text", "text": "Exit code 1: NameError: rows"}],
     ],
 )
 def test_failed_code_remains_available_for_repair(result):

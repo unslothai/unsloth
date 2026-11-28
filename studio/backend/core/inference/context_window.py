@@ -694,6 +694,20 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
     return executed
 
 
+def _reply_may_have_failed(reply: object) -> bool:
+    """Unreadable replies count as failed, so a script the model may need to repair is kept."""
+    if isinstance(reply, list):
+        parts = [part for part in reply if isinstance(part, dict) and part.get("type") == "text"]
+        reply = " ".join(str(part.get("text") or "") for part in parts) if parts else None
+    if not isinstance(reply, str):
+        return True
+    head = reply[:200].strip().lower()
+    return head.startswith("exit code") or any(
+        marker in head
+        for marker in (*_FAILED_REPLY_MARKERS, "timed out", "timeout", "cancelled", "canceled")
+    )
+
+
 def compact_completed_tool_arguments(
     messages: list[dict],
     *,
@@ -727,20 +741,9 @@ def compact_completed_tool_arguments(
                 new_calls.append(call)
                 continue
             reply = answered[(index, str(call.get("id") or ""))]
-            if preserve_failed and isinstance(reply, str):
-                head = reply[:200].strip().lower()
-                if head.startswith("exit code") or any(
-                    marker in head
-                    for marker in (
-                        *_FAILED_REPLY_MARKERS,
-                        "timed out",
-                        "timeout",
-                        "cancelled",
-                        "canceled",
-                    )
-                ):
-                    new_calls.append(call)
-                    continue
+            if preserve_failed and _reply_may_have_failed(reply):
+                new_calls.append(call)
+                continue
             replacement = _compacted_arguments(
                 str(function.get("name") or ""),
                 function.get("arguments"),
