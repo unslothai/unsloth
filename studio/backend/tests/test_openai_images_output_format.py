@@ -279,13 +279,17 @@ def test_a_failed_background_gallery_write_keeps_the_response_and_releases_liven
 def test_the_liveness_hold_is_taken_before_a_lossy_response_returns(client, gallery):
     # The background write takes the persist marker before the handler returns, so between the
     # response and the gallery record liveness never reads idle: either the hold or the file is there.
-    for _ in range(5):
+    # Each request writes exactly one PNG, so the count to reach is known up front: deriving it from a
+    # hold read before the count raced the write finishing in between (hold seen, file then counted too).
+    before = len(list(gallery.glob("*.png")))
+    for i in range(1, 6):
         resp = _post(client, response_format = "b64_json", output_format = "jpeg")
         assert resp.status_code == 200, resp.text
         held = inference_routes._diffusion_persist_active
+        # Read after the hold: a hold of 0 means the write already finished, so its file must be there.
         written = len(list(gallery.glob("*.png")))
-        assert held > 0 or written >= 1
-        _gallery_pngs(gallery, written + (1 if held else 0))
+        assert held > 0 or written >= before + i, (held, written, before + i)
+        _gallery_pngs(gallery, before + i)
 
 
 def test_null_response_format_with_a_lossy_format_answers_inline(client, gallery):
