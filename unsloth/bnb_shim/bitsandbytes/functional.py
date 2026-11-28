@@ -44,13 +44,13 @@ def get_ptr(A: Optional[torch.Tensor]):
 
 def get_4bit_type(
     typename,
-    device = None,
-    blocksize = 64,
+    device=None,
+    blocksize=64,
 ):
     if device is None:
         device = "cuda"
     if typename == "nf4":
-        data = torch.tensor(_Q.NF4_CODE, dtype = torch.float32)
+        data = torch.tensor(_Q.NF4_CODE, dtype=torch.float32)
     elif typename == "fp4":
         data = torch.tensor(
             [
@@ -71,7 +71,7 @@ def get_4bit_type(
                 -2.0,
                 -3.0,
             ],
-            dtype = torch.float32,
+            dtype=torch.float32,
         )
         data.div_(data.abs().max())
     else:
@@ -102,13 +102,13 @@ class QuantState:
     def __init__(
         self,
         absmax,
-        shape = None,
-        code = None,
-        blocksize = None,
-        quant_type = None,
-        dtype = None,
-        offset = None,
-        state2 = None,
+        shape=None,
+        code=None,
+        blocksize=None,
+        quant_type=None,
+        dtype=None,
+        offset=None,
+        state2=None,
     ):
         self.absmax = absmax
         self.shape = shape
@@ -123,7 +123,7 @@ class QuantState:
     def __getattr__(self, name):
         # FSDP state_dict traversal resolves the packed key "quant_state.bitsandbytes__nf4" by getattr.
         if name.startswith("bitsandbytes__"):
-            qs_dict = self.as_dict(packed = True)
+            qs_dict = self.as_dict(packed=True)
             packed_key = "quant_state." + name
             if packed_key in qs_dict:
                 return qs_dict[packed_key]
@@ -165,22 +165,22 @@ class QuantState:
         if "nested_absmax" in qs_dict:
             offset = torch.tensor(float(qs_dict["nested_offset"])).to(device)
             state2 = cls(
-                absmax = qs_dict["nested_absmax"].to(device),
-                blocksize = qs_dict["nested_blocksize"],
-                code = qs_dict["nested_quant_map"].to(device),
-                dtype = getattr(torch, qs_dict["nested_dtype"]),
+                absmax=qs_dict["nested_absmax"].to(device),
+                blocksize=qs_dict["nested_blocksize"],
+                code=qs_dict["nested_quant_map"].to(device),
+                dtype=getattr(torch, qs_dict["nested_dtype"]),
             )
         else:
             offset, state2 = None, None
         return cls(
-            quant_type = qs_dict["quant_type"],
-            absmax = qs_dict["absmax"].to(device),
-            blocksize = qs_dict["blocksize"],
-            code = qs_dict["quant_map"].to(device),
-            dtype = getattr(torch, qs_dict["dtype"]),
-            shape = torch.Size(qs_dict["shape"]) if qs_dict["shape"] is not None else None,
-            offset = offset,
-            state2 = state2,
+            quant_type=qs_dict["quant_type"],
+            absmax=qs_dict["absmax"].to(device),
+            blocksize=qs_dict["blocksize"],
+            code=qs_dict["quant_map"].to(device),
+            dtype=getattr(torch, qs_dict["dtype"]),
+            shape=torch.Size(qs_dict["shape"]) if qs_dict["shape"] is not None else None,
+            offset=offset,
+            state2=state2,
         )
 
     def as_dict(self, packed: bool = False) -> dict:
@@ -224,9 +224,9 @@ class QuantState:
         if not isinstance(other, QuantState):
             return False
         return (
-            torch.allclose(self.absmax, other.absmax, atol = 1e-6)
+            torch.allclose(self.absmax, other.absmax, atol=1e-6)
             and self.shape == other.shape
-            and torch.allclose(self.code, other.code, atol = 1e-6)
+            and torch.allclose(self.code, other.code, atol=1e-6)
             and self.dtype == other.dtype
             and self.blocksize == other.blocksize
             and self.quant_type == other.quant_type
@@ -257,8 +257,8 @@ def quantize_blockwise(
     code: Optional[torch.Tensor] = None,
     absmax: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
-    blocksize = 4096,
-    nested = False,
+    blocksize=4096,
+    nested=False,
 ):
     if blocksize <= 0:
         raise ValueError(f"blocksize must be positive, got {blocksize}")
@@ -272,18 +272,18 @@ def quantize_blockwise(
     if nested:
         offset = _absmax.mean()
         _absmax -= offset
-        qabsmax, state2 = quantize_blockwise(_absmax, blocksize = blocksize, nested = False)
+        qabsmax, state2 = quantize_blockwise(_absmax, blocksize=blocksize, nested=False)
         quant_state = QuantState(
-            absmax = qabsmax,
-            code = code.to(A.device, copy = True),
-            blocksize = blocksize,
-            dtype = A.dtype,
-            offset = offset,
-            state2 = state2,
+            absmax=qabsmax,
+            code=code.to(A.device, copy=True),
+            blocksize=blocksize,
+            dtype=A.dtype,
+            offset=offset,
+            state2=state2,
         )
     else:
         quant_state = QuantState(
-            absmax = _absmax, code = code.to(A.device, copy = True), blocksize = blocksize, dtype = A.dtype
+            absmax=_absmax, code=code.to(A.device, copy=True), blocksize=blocksize, dtype=A.dtype
         )
     if out is not None:
         out.copy_(_out)
@@ -300,13 +300,13 @@ def dequantize_blockwise(
     code: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     blocksize: int = 4096,
-    nested = False,
+    nested=False,
 ) -> torch.Tensor:
     assert quant_state is not None or absmax is not None
     if code is None and quant_state is None:
         code = _dynamic_code(A.device)
     if quant_state is None:
-        quant_state = QuantState(absmax = absmax, code = code, blocksize = blocksize, dtype = torch.float32)
+        quant_state = QuantState(absmax=absmax, code=code, blocksize=blocksize, dtype=torch.float32)
     absmax = quant_state.absmax
     if quant_state.nested:
         absmax = dequantize_blockwise(quant_state.absmax, quant_state.state2)
@@ -325,10 +325,10 @@ def quantize_4bit(
     A: torch.Tensor,
     absmax: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
-    blocksize = None,
-    compress_statistics = False,
-    quant_type = "fp4",
-    quant_storage = torch.uint8,
+    blocksize=None,
+    compress_statistics=False,
+    quant_type="fp4",
+    quant_storage=torch.uint8,
 ):
     if blocksize is None:
         blocksize = 64
@@ -342,33 +342,33 @@ def quantize_4bit(
         )
     input_shape = A.shape
     packed, _absmax = _Q.quantize_4bit_blockwise(A, blocksize, quant_type)
-    itemsize = torch.empty((), dtype = quant_storage).element_size()
+    itemsize = torch.empty((), dtype=quant_storage).element_size()
     n_bytes = packed.numel()
     rows = n_bytes // itemsize
     _out = packed[: rows * itemsize].view(quant_storage).view(rows, 1)
-    code = get_4bit_type(quant_type, device = A.device)
+    code = get_4bit_type(quant_type, device=A.device)
     if compress_statistics:
         offset = _absmax.mean()
-        qabsmax, state2 = quantize_blockwise(_absmax - offset, blocksize = 256)
+        qabsmax, state2 = quantize_blockwise(_absmax - offset, blocksize=256)
         del _absmax
         state = QuantState(
-            absmax = qabsmax,
-            shape = input_shape,
-            dtype = A.dtype,
-            blocksize = blocksize,
-            code = code,
-            quant_type = quant_type,
-            offset = offset,
-            state2 = state2,
+            absmax=qabsmax,
+            shape=input_shape,
+            dtype=A.dtype,
+            blocksize=blocksize,
+            code=code,
+            quant_type=quant_type,
+            offset=offset,
+            state2=state2,
         )
     else:
         state = QuantState(
-            absmax = _absmax,
-            shape = input_shape,
-            dtype = A.dtype,
-            blocksize = blocksize,
-            code = code,
-            quant_type = quant_type,
+            absmax=_absmax,
+            shape=input_shape,
+            dtype=A.dtype,
+            blocksize=blocksize,
+            code=code,
+            quant_type=quant_type,
         )
     if out is not None:
         _out = out.copy_(_out)
@@ -379,22 +379,22 @@ def quantize_4bit(
 
 def quantize_fp4(
     A,
-    absmax = None,
-    out = None,
-    blocksize = None,
-    compress_statistics = False,
-    quant_storage = torch.uint8,
+    absmax=None,
+    out=None,
+    blocksize=None,
+    compress_statistics=False,
+    quant_storage=torch.uint8,
 ):
     return quantize_4bit(A, absmax, out, blocksize, compress_statistics, "fp4", quant_storage)
 
 
 def quantize_nf4(
     A,
-    absmax = None,
-    out = None,
-    blocksize = None,
-    compress_statistics = False,
-    quant_storage = torch.uint8,
+    absmax=None,
+    out=None,
+    blocksize=None,
+    compress_statistics=False,
+    quant_storage=torch.uint8,
 ):
     return quantize_4bit(A, absmax, out, blocksize, compress_statistics, "nf4", quant_storage)
 
@@ -427,22 +427,25 @@ def _triton_dequant(A, absmax, quant_state, out):
             state2.blocksize,
         )
         if not isinstance(offset, torch.Tensor):
-            offset = torch.tensor(offset, dtype = torch.float32, device = A.device)
+            offset = torch.tensor(offset, dtype=torch.float32, device=A.device)
     else:
         code2 = absmax2 = offset = None
         blocksize2 = 0
+    code = quant_state.code
+    if code is None:
+        code = get_4bit_type("nf4", device=A.device)
     return dequantize_nf4(
         A.reshape(-1).view(torch.uint8),
         absmax,
         code2,
         absmax2,
         offset,
-        quant_state.code,
+        code,
         quant_state.blocksize,
         blocksize2,
         quant_state.shape,
         quant_state.dtype,
-        out = out,
+        out=out,
     )
 
 
@@ -452,7 +455,7 @@ def dequantize_4bit(
     absmax: Optional[torch.Tensor] = None,
     out: Optional[torch.Tensor] = None,
     blocksize: Optional[int] = None,
-    quant_type = "fp4",
+    quant_type="fp4",
 ) -> torch.Tensor:
     if blocksize is None:
         blocksize = 64
@@ -462,11 +465,11 @@ def dequantize_4bit(
                 "dequantize_4bit requires both absmax and out when quant_state is not provided"
             )
         quant_state = QuantState(
-            absmax = absmax,
-            shape = out.shape,
-            dtype = out.dtype,
-            blocksize = blocksize,
-            quant_type = quant_type,
+            absmax=absmax,
+            shape=out.shape,
+            dtype=out.dtype,
+            blocksize=blocksize,
+            quant_type=quant_type,
         )
     if quant_state.blocksize not in _BLOCKSIZES:
         raise ValueError(f"invalid blocksize {quant_state.blocksize}")
@@ -479,8 +482,9 @@ def dequantize_4bit(
     result = None
     try:
         result = _triton_dequant(A, quant_state.absmax, quant_state, out)
-    except Exception:
-        result = None
+    except Exception as error:
+        if not _Q.triton_failed(error):
+            raise
     if result is None:
         absmax = quant_state.absmax
         if quant_state.nested:
@@ -495,7 +499,7 @@ def dequantize_4bit(
             quant_state.quant_type,
             quant_state.shape,
             quant_state.dtype,
-            code = quant_state.code,
+            code=quant_state.code,
         )
         if out is not None:
             result = out.copy_(result)
@@ -507,20 +511,20 @@ def dequantize_4bit(
 
 def dequantize_fp4(
     A,
-    quant_state = None,
-    absmax = None,
-    out = None,
-    blocksize = None,
+    quant_state=None,
+    absmax=None,
+    out=None,
+    blocksize=None,
 ):
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, "fp4")
 
 
 def dequantize_nf4(
     A,
-    quant_state = None,
-    absmax = None,
-    out = None,
-    blocksize = None,
+    quant_state=None,
+    absmax=None,
+    out=None,
+    blocksize=None,
 ):
     return dequantize_4bit(A, quant_state, absmax, out, blocksize, "nf4")
 
@@ -528,10 +532,10 @@ def dequantize_nf4(
 def gemv_4bit(
     A,
     B,
-    out = None,
-    transposed_A = False,
-    transposed_B = False,
-    state = None,
+    out=None,
+    transposed_A=False,
+    transposed_B=False,
+    state=None,
 ):
     """A @ dequantize(B).T, the shape bitsandbytes' gemv_4bit returns."""
     if state is None:

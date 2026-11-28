@@ -113,9 +113,9 @@ _FLT_MAX = 3.4028234663852886e38
 
 
 def create_dynamic_map(
-    signed = True,
-    max_exponent_bits = 7,
-    total_bits = 8,
+    signed=True,
+    max_exponent_bits=7,
+    total_bits=8,
 ):
     """The 8-bit dynamic tree code bitsandbytes quantizes double-quant absmax with (same float32s)."""
     data = []
@@ -127,13 +127,13 @@ def create_dynamic_map(
             if signed
             else 2 ** (i + non_sign_bits - max_exponent_bits + 1) + 1
         )
-        boundaries = torch.linspace(0.1, 1, fraction_items, dtype = torch.float32)
+        boundaries = torch.linspace(0.1, 1, fraction_items, dtype=torch.float32)
         means = (boundaries[:-1] + boundaries[1:]) / 2.0
         data += ((10 ** (-(max_exponent_bits - 1) + i)) * means).tolist()
         if signed:
             data += (-(10 ** (-(max_exponent_bits - 1) + i)) * means).tolist()
     if additional_items > 0:
-        boundaries = torch.linspace(0.1, 1, additional_items + 1, dtype = torch.float32)
+        boundaries = torch.linspace(0.1, 1, additional_items + 1, dtype=torch.float32)
         means = (boundaries[:-1] + boundaries[1:]) / 2.0
         data += ((10 ** (-(max_exponent_bits - 1) + i)) * means).tolist()
         if signed:
@@ -143,7 +143,7 @@ def create_dynamic_map(
     assert len(data) == 2**total_bits
     data += [0] * (256 - len(data))
     data.sort()
-    return torch.tensor(data, dtype = torch.float32)
+    return torch.tensor(data, dtype=torch.float32)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -152,7 +152,7 @@ def create_dynamic_map(
 
 
 def _ftz(x):
-    return torch.where(x.abs() < _FLT_MIN, torch.zeros((), dtype = x.dtype, device = x.device), x)
+    return torch.where(x.abs() < _FLT_MIN, torch.zeros((), dtype=x.dtype, device=x.device), x)
 
 
 def _blocks(A, blocksize):
@@ -168,7 +168,7 @@ def _blocks(A, blocksize):
 def _absmax(x):
     # fmaxf from -FLT_MAX: NaN inputs are ignored (an all NaN block gives -FLT_MAX).
     a = x.abs()
-    return torch.where(torch.isnan(a), torch.full_like(a, -_FLT_MAX), a).amax(dim = 1)
+    return torch.where(torch.isnan(a), torch.full_like(a, -_FLT_MAX), a).amax(dim=1)
 
 
 def _scaled(A, blocksize):
@@ -181,19 +181,19 @@ def _scaled(A, blocksize):
 
 def _code_4bit(scaled, quant_type):
     if quant_type == "nf4":
-        t = torch.tensor(_NF4_THRESHOLDS, dtype = torch.float32, device = scaled.device)
+        t = torch.tensor(_NF4_THRESHOLDS, dtype=torch.float32, device=scaled.device)
         return (scaled.unsqueeze(-1) > t).sum(-1).to(torch.uint8)
-    t = torch.tensor(_FP4_THRESHOLDS, dtype = torch.float32, device = scaled.device)
+    t = torch.tensor(_FP4_THRESHOLDS, dtype=torch.float32, device=scaled.device)
     bucket = (scaled.abs().unsqueeze(-1) > t).sum(-1)
-    table = torch.tensor(_FP4_BUCKET_CODE, dtype = torch.uint8, device = scaled.device)
+    table = torch.tensor(_FP4_BUCKET_CODE, dtype=torch.uint8, device=scaled.device)
     sign = (scaled < 0).to(torch.uint8) << 3
     return table[bucket] | sign
 
 
 def quantize_4bit_torch(
     A,
-    blocksize = 64,
-    quant_type = "nf4",
+    blocksize=64,
+    quant_type="nf4",
 ):
     """Returns (packed uint8 [(n + 1) // 2], fp32 absmax [blocks]); high nibble first."""
     scaled, absmax, n = _scaled(A, blocksize)
@@ -208,7 +208,7 @@ def quantize_4bit_torch(
 
 def _dynamic_search(code, x):
     # dQuantize<0>: the bitsandbytes binary search over the 256-entry code, then nearest by midpoint.
-    pivot = torch.full_like(x, 127, dtype = torch.long)
+    pivot = torch.full_like(x, 127, dtype=torch.long)
     upper_pivot = torch.full_like(pivot, 255)
     lower_pivot = torch.zeros_like(pivot)
     lower = torch.full_like(x, -1.0)
@@ -240,11 +240,11 @@ def _dynamic_search(code, x):
 def quantize_8bit_torch(
     A,
     code,
-    blocksize = 256,
+    blocksize=256,
 ):
     """Returns (uint8 codes shaped like A, fp32 absmax [blocks])."""
     scaled, absmax, n = _scaled(A, blocksize)
-    q = _dynamic_search(code.to(device = scaled.device, dtype = torch.float32), scaled)
+    q = _dynamic_search(code.to(device=scaled.device, dtype=torch.float32), scaled)
     return q.reshape(-1)[:n].view(A.shape), absmax
 
 
@@ -257,10 +257,10 @@ def dequantize_8bit_blockwise(
     absmax,
     code,
     blocksize,
-    dtype = torch.float32,
+    dtype=torch.float32,
 ):
     n = A.numel()
-    values = code.to(device = A.device, dtype = torch.float32)[A.reshape(-1).long()]
+    values = code.to(device=A.device, dtype=torch.float32)[A.reshape(-1).long()]
     scale = _dequant_absmax(absmax, blocksize)[:n]
     return (values * scale).to(dtype).view(A.shape)
 
@@ -272,17 +272,17 @@ def dequantize_4bit_blockwise(
     quant_type,
     shape,
     dtype,
-    code = None,
+    code=None,
 ):
     """absmax already dequantized to fp32. `code` overrides the built-in table."""
     n = math.prod(shape)
     if code is None:
         code = NF4_CODE if quant_type == "nf4" else FP4_CODE
-        code = torch.tensor(code, dtype = torch.float32, device = A.device)
+        code = torch.tensor(code, dtype=torch.float32, device=A.device)
     else:
-        code = code.to(device = A.device, dtype = torch.float32)
+        code = code.to(device=A.device, dtype=torch.float32)
     packed = A.reshape(-1).view(torch.uint8)
-    q = torch.stack([packed >> 4, packed & 0x0F], dim = -1).reshape(-1)[:n]
+    q = torch.stack([packed >> 4, packed & 0x0F], dim=-1).reshape(-1)[:n]
     scale = _dequant_absmax(absmax, blocksize)[:n]
     return (code[q.long()] * scale).to(dtype).view(shape)
 
@@ -304,7 +304,7 @@ if triton is not None:
     def _t_rcp(x, EXACT: tl.constexpr):
         if EXACT:
             return tl.inline_asm_elementwise(
-                "rcp.approx.ftz.f32 $0, $1;", "=r,r", [x], dtype = tl.float32, is_pure = True, pack = 1
+                "rcp.approx.ftz.f32 $0, $1;", "=r,r", [x], dtype=tl.float32, is_pure=True, pack=1
             )
         else:
             return 1.0 / x
@@ -313,7 +313,7 @@ if triton is not None:
     def _t_mul(a, b, EXACT: tl.constexpr):
         if EXACT:
             return tl.inline_asm_elementwise(
-                "mul.ftz.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype = tl.float32, is_pure = True, pack = 1
+                "mul.ftz.f32 $0, $1, $2;", "=r,r,r", [a, b], dtype=tl.float32, is_pure=True, pack=1
             )
         else:
             return a * b
@@ -330,7 +330,7 @@ if triton is not None:
 
     @triton.jit
     def _t_nf4(x, T_ptr):
-        q = tl.zeros(x.shape, dtype = tl.int32)
+        q = tl.zeros(x.shape, dtype=tl.int32)
         for k in tl.static_range(15):
             q += (x > tl.load(T_ptr + k)).to(tl.int32)
         return q
@@ -338,7 +338,7 @@ if triton is not None:
     @triton.jit
     def _t_fp4(x, T_ptr):
         a = tl.abs(x)
-        b = tl.zeros(x.shape, dtype = tl.int32)
+        b = tl.zeros(x.shape, dtype=tl.int32)
         for k in tl.static_range(7):
             b += (a > tl.load(T_ptr + k)).to(tl.int32)
         # bucket -> code: 0,1,6,7,4,5,2,3
@@ -364,12 +364,12 @@ if triton is not None:
         rows = tl.program_id(0).to(tl.int64) * ROWS + tl.arange(0, ROWS)
         cols = tl.arange(0, HALF)
         even = rows[:, None] * BLOCK + 2 * cols[None, :]
-        x0 = tl.load(A + even, mask = even < n, other = 0.0).to(tl.float32)
-        x1 = tl.load(A + even + 1, mask = (even + 1) < n, other = 0.0).to(tl.float32)
+        x0 = tl.load(A + even, mask=even < n, other=0.0).to(tl.float32)
+        x1 = tl.load(A + even + 1, mask=(even + 1) < n, other=0.0).to(tl.float32)
         a0 = _t_absmax_input(x0)
         a1 = _t_absmax_input(x1)
-        absmax = tl.maximum(tl.max(a0, axis = 1), tl.max(a1, axis = 1))
-        tl.store(ABSMAX + rows, absmax, mask = rows < n_blocks)
+        absmax = tl.maximum(tl.max(a0, axis=1), tl.max(a1, axis=1))
+        tl.store(ABSMAX + rows, absmax, mask=rows < n_blocks)
         r = _t_rcp(absmax, EXACT)[:, None]
         s0 = _t_mul(x0, r, EXACT)
         s1 = _t_mul(x1, r, EXACT)
@@ -384,7 +384,7 @@ if triton is not None:
             q1 = _t_fp4(s1, T_ptr)
         byte = ((q0 << 4) | q1).to(tl.uint8)
         offs = rows[:, None] * HALF + cols[None, :]
-        tl.store(OUT + offs, byte, mask = offs < n_bytes)
+        tl.store(OUT + offs, byte, mask=offs < n_bytes)
 
     @triton.jit
     def _quant8_kernel(
@@ -402,9 +402,9 @@ if triton is not None:
         cols = tl.arange(0, BLOCK)
         offs = rows[:, None] * BLOCK + cols[None, :]
         mask = offs < n
-        x = tl.load(A + offs, mask = mask, other = 0.0).to(tl.float32)
-        absmax = tl.max(_t_absmax_input(x), axis = 1)
-        tl.store(ABSMAX + rows, absmax, mask = rows < n_blocks)
+        x = tl.load(A + offs, mask=mask, other=0.0).to(tl.float32)
+        absmax = tl.max(_t_absmax_input(x), axis=1)
+        tl.store(ABSMAX + rows, absmax, mask=rows < n_blocks)
         x = _t_mul(x, _t_rcp(absmax, EXACT)[:, None], EXACT)
         if not EXACT:
             x = _t_ftz(x)
@@ -432,13 +432,13 @@ if triton is not None:
         q = tl.where(
             gt, tl.where(x > up, upper_pivot, pivot), tl.where(x < down, lower_pivot, pivot)
         )
-        tl.store(OUT + offs, q.to(tl.uint8), mask = mask)
+        tl.store(OUT + offs, q.to(tl.uint8), mask=mask)
 
 
 _TRITON = None
 
 
-def triton_quantize_available(device = None):
+def triton_quantize_available(device=None):
     """Triton quantize kernels usable (UNSLOTH_BNB_SHIM_TRITON=0 forces the torch path)."""
     global _TRITON
     if triton is None or os.environ.get("UNSLOTH_BNB_SHIM_TRITON", "1") == "0":
@@ -446,8 +446,31 @@ def triton_quantize_available(device = None):
     if device is not None and torch.device(device).type != "cuda":
         return False
     if _TRITON is None:
-        _TRITON = torch.cuda.is_available()
+        try:
+            # The NF4 kernels' PTX needs Volta or newer; ROCm runs the IEEE variant.
+            _TRITON = torch.cuda.is_available() and (
+                torch.version.hip is not None
+                or all(
+                    torch.cuda.get_device_capability(i)[0] >= 7
+                    for i in range(torch.cuda.device_count())
+                )
+            )
+        except Exception:
+            _TRITON = False
     return _TRITON
+
+
+def triton_failed(error):
+    """A Triton compile / launch failure switches the stand-in to torch for good (not for OOM)."""
+    global _TRITON
+    if isinstance(error, torch.cuda.OutOfMemoryError) or torch.compiler.is_compiling():
+        return False
+    _TRITON = False
+    print(
+        f"Unsloth: bitsandbytes stand-in Triton kernels failed ({type(error).__name__}: {error}), "
+        "using torch."
+    )
+    return True
 
 
 _THRESHOLD_CACHE = {}
@@ -458,65 +481,82 @@ def _thresholds(quant_type, device):
     t = _THRESHOLD_CACHE.get(key)
     if t is None:
         values = _NF4_THRESHOLDS if quant_type == "nf4" else _FP4_THRESHOLDS
-        t = _THRESHOLD_CACHE[key] = torch.tensor(values, dtype = torch.float32, device = device)
+        t = _THRESHOLD_CACHE[key] = torch.tensor(values, dtype=torch.float32, device=device)
     return t
 
 
 def quantize_4bit_blockwise(
     A,
-    blocksize = 64,
-    quant_type = "nf4",
+    blocksize=64,
+    quant_type="nf4",
 ):
     """bitsandbytes quantize_4bit core: (packed uint8 [(n + 1) // 2], fp32 absmax [blocks])."""
     if quant_type not in ("nf4", "fp4"):
         raise ValueError(f"quant_type must be 'nf4' or 'fp4', got {quant_type!r}")
     A = A.contiguous()
     if A.is_cuda and triton_quantize_available(A.device):
-        n = A.numel()
-        blocks = -(n // -blocksize)
-        n_bytes = (n + 1) // 2
-        out = torch.empty(n_bytes, dtype = torch.uint8, device = A.device)
-        absmax = torch.empty(blocks, dtype = torch.float32, device = A.device)
-        if n == 0:
-            return out, absmax
-        rows = max(1, min(64, 4096 // blocksize))
-        with torch.cuda.device(A.device):
-            _quant4_kernel[(-(blocks // -rows),)](
-                A,
-                out,
-                absmax,
-                _thresholds(quant_type, A.device),
-                n,
-                n_bytes,
-                blocks,
-                BLOCK = blocksize,
-                ROWS = rows,
-                NF4 = quant_type == "nf4",
-                EXACT = _EXACT,
-            )
-        return out, absmax
+        try:
+            return _quantize_4bit_triton(A, blocksize, quant_type)
+        except Exception as error:
+            if not triton_failed(error):
+                raise
     return quantize_4bit_torch(A, blocksize, quant_type)
+
+
+def _quantize_4bit_triton(A, blocksize, quant_type):
+    n = A.numel()
+    blocks = -(n // -blocksize)
+    n_bytes = (n + 1) // 2
+    out = torch.empty(n_bytes, dtype=torch.uint8, device=A.device)
+    absmax = torch.empty(blocks, dtype=torch.float32, device=A.device)
+    if n == 0:
+        return out, absmax
+    rows = max(1, min(64, 4096 // blocksize))
+    with torch.cuda.device(A.device):
+        _quant4_kernel[(-(blocks // -rows),)](
+            A,
+            out,
+            absmax,
+            _thresholds(quant_type, A.device),
+            n,
+            n_bytes,
+            blocks,
+            BLOCK=blocksize,
+            ROWS=rows,
+            NF4=quant_type == "nf4",
+            EXACT=_EXACT,
+        )
+    return out, absmax
 
 
 def quantize_8bit_blockwise(
     A,
     code,
-    blocksize = 256,
+    blocksize=256,
 ):
     """bitsandbytes quantize_blockwise core: (uint8 codes like A, fp32 absmax [blocks])."""
     A = A.contiguous()
-    code = code.to(device = A.device, dtype = torch.float32).contiguous()
-    if A.is_cuda and triton_quantize_available(A.device):
-        n = A.numel()
-        blocks = -(n // -blocksize)
-        out = torch.empty(A.shape, dtype = torch.uint8, device = A.device)
-        absmax = torch.empty(blocks, dtype = torch.float32, device = A.device)
-        if n == 0:
-            return out, absmax
-        rows = max(1, min(16, 4096 // blocksize))
-        with torch.cuda.device(A.device):
-            _quant8_kernel[(-(blocks // -rows),)](
-                A, out, absmax, code, n, blocks, BLOCK = blocksize, ROWS = rows, EXACT = _EXACT
-            )
-        return out, absmax
+    code = code.to(device=A.device, dtype=torch.float32).contiguous()
+    pow2 = blocksize > 1 and blocksize & (blocksize - 1) == 0
+    if A.is_cuda and pow2 and code.numel() == 256 and triton_quantize_available(A.device):
+        try:
+            return _quantize_8bit_triton(A, code, blocksize)
+        except Exception as error:
+            if not triton_failed(error):
+                raise
     return quantize_8bit_torch(A, code, blocksize)
+
+
+def _quantize_8bit_triton(A, code, blocksize):
+    n = A.numel()
+    blocks = -(n // -blocksize)
+    out = torch.empty(A.shape, dtype=torch.uint8, device=A.device)
+    absmax = torch.empty(blocks, dtype=torch.float32, device=A.device)
+    if n == 0:
+        return out, absmax
+    rows = max(1, min(16, 4096 // blocksize))
+    with torch.cuda.device(A.device):
+        _quant8_kernel[(-(blocks // -rows),)](
+            A, out, absmax, code, n, blocks, BLOCK=blocksize, ROWS=rows, EXACT=_EXACT
+        )
+    return out, absmax
