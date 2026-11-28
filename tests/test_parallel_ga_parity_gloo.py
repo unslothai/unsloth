@@ -21,6 +21,8 @@ Fast by construction: one 2-rank gloo world (and one 4-rank world for the compos
 cell in turn, beside one process that runs the oracle and the one-process references; tiny 2-layer Llama.
 
 QLoRA-shaped cells train float32 adapters over a frozen bfloat16 base (bitsandbytes 4-bit needs CUDA).
+accelerate's FSDP2 is not a cell: a CPU launch runs accelerate as MULTI_CPU, which builds no FSDP plugin, so Unsloth
+hands UNSLOTH_FSDP2=1 to native FSDP2 there (fsdp2_launch.reclaim_native_fsdp2_for_cpu_trainer).
 
 ``UNSLOTH_TEST_GA_FAULT=<name>`` (tests/_shared/ga_faults.py) injects a known bug in every process; each fails at
 least one test here (lora = test_lora_matches_the_oracle, composed = test_composed_lora_matches_the_oracle,
@@ -29,8 +31,9 @@ one = test_one_process_matches_the_oracle, full = test_bf16_full_finetuning_chan
     drop_num_items          one, lora (every cell), composed (both)
     micro_mean              one, lora (every cell), composed (both)
     count_padding           one, lora (every cell), composed (both)
-    per_rank_norm           lora[ddp, fsdp2_*, cp2, ep2, ddp / fsdp2_native frozen bf16 base], composed[fsdp2_tp2]
-    skip_count_allreduce    lora[ddp, fsdp2_*, tp2, cp2, ddp_packed, ep2, every frozen bf16 base], composed[fsdp2_tp2]
+    per_rank_norm           lora[ddp, fsdp2_native, cp2, ep2, ddp / fsdp2_native frozen bf16 base], composed[fsdp2_tp2]
+    skip_count_allreduce    lora[ddp, fsdp2_native, tp2, cp2, ddp_packed, ep2, every frozen bf16 base],
+                            composed[fsdp2_tp2]
     cp_double_count         lora[cp2]
     tp_double_count         lora[tp2, pp2_*, tp2 frozen bf16 base], composed (both)
     pp_world_count          lora[pp2_gpipe, pp2_1f1b], composed[tp2_pp2]
@@ -65,8 +68,9 @@ sys.path.insert(0, HERE)
 import test_parallel_cp_compose_gloo as cc  # noqa: E402
 from test_tp_native_oracle import LLAMA  # noqa: E402
 
-# One worker runs the module: its tests share the worlds spawned once below.
-pytestmark = pytest.mark.xdist_group("parallel_ga_parity_gloo")
+# One worker runs the module: its tests share the worlds spawned once below, and the first test of each world
+# carries that spawn (about a minute on a loaded runner) inside its own timeout.
+pytestmark = [pytest.mark.xdist_group("parallel_ga_parity_gloo"), pytest.mark.timeout(900)]
 
 SEQ = cc.SEQ
 GA = 2
@@ -103,10 +107,6 @@ _LORA = dict(padding = PADDING, ga = GA, steps = STEPS)
 WORLD2 = {
     "ddp": ({}, dict(bs = 2, **_LORA)),
     "fsdp2_native": ({"UNSLOTH_FSDP2": "1"}, dict(bs = 2, **_LORA)),
-    "fsdp2_accelerate": (
-        {"UNSLOTH_FSDP2": "1", "UNSLOTH_FSDP2_BACKEND": "accelerate"},
-        dict(bs = 2, **_LORA),
-    ),
     "tp2": ({"UNSLOTH_TP_SIZE": "2"}, dict(bs = 4, **_LORA)),
     "pp2_gpipe": (
         {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_SCHEDULE": "gpipe"},
@@ -392,9 +392,8 @@ def _spawn_all(worlds):
                 jobs.append((which, world, rank, process))
         for *_, p in jobs:
             p.start()
-        deadline = (
-            time.time() + 300
-        )  # inside pytest-timeout (330 s in CI): a hung rank fails the module
+        # Inside the module's timeout: a hung rank fails the module, not the job.
+        deadline = time.time() + 600
         for *_, p in jobs:
             p.join(max(1, deadline - time.time()))
         for *_, p in jobs:
@@ -508,10 +507,8 @@ def _engaged(name, cell, rank):
     if name.startswith("pp2_"):
         want = {"gpipe": ["ScheduleGPipe"], "1f1b": ["Schedule1F1B"]}[name.split("_")[1]]
         assert cell["pp_schedules"] == want, (name, cell.get("pp_schedules"))
-    if name.startswith("fsdp2") and name != "fsdp2_accelerate":
+    if name.startswith("fsdp2"):
         assert cell["native_fsdp2"], (name, cell.get("banner"))
-    if name == "fsdp2_accelerate":
-        assert not cell["native_fsdp2"], (name, cell.get("banner"))
     if name == "cp2":
         assert cell["cp_group"] == [0, 1] and cell["ulysses_calls"] > 0, (
             name,
