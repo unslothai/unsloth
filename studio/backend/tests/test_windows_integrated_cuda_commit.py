@@ -39,8 +39,11 @@ def _host(
     integrated,
     commit = None,
     pool = N1X_CUDA_TOTAL,
+    limit = N1X_COMMIT_LIMIT,
+    order = "PCI_BUS_ID",
 ):
     monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", {}, raising = False)
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_IDS", {})
     monkeypatch.setattr(LlamaCppBackend, "_INTEGRATED_CUDA_POOL_MIB", {})
     monkeypatch.setattr(
@@ -63,12 +66,12 @@ def _host(
     monkeypatch.setattr(
         host_memory,
         "windows_commit_mib",
-        lambda: None if commit is None else (commit, N1X_COMMIT_LIMIT),
+        lambda: None if commit is None else (commit, limit),
     )
     monkeypatch.delenv(diffusion_memory._WIN_IGPU_COMMIT_CAP_ENV, raising = False)
     for var in ("CUDA_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
         monkeypatch.delenv(var, raising = False)
-    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", order)
 
 
 def _torch_rows(monkeypatch, free_mib, total_mib):
@@ -107,6 +110,55 @@ def test_n1x_rows_are_capped_at_commit(monkeypatch, commit, smi_free, cuda_free)
 
     assert smi == [expected]
     assert torch_rows == [expected]
+    # The child's --fit reads CUDA free, so the gap to commit is kept free on top of its margin.
+    assert LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB == {0: cuda_free - commit}
+
+
+def test_the_cap_never_credits_more_than_the_driver_has_free(monkeypatch):
+    # A large page file: commit available is above CUDA free, so CUDA free is the ceiling.
+    _host(monkeypatch, platform = "win32", integrated = True, commit = 90000, limit = 150000)
+    smi = LlamaCppBackend._widen_integrated_cuda_rows([(0, HELD_SMI_FREE, N1X_SMI_TOTAL)])
+    torch_rows = _torch_rows(monkeypatch, HELD_CUDA_FREE, N1X_CUDA_TOTAL)
+    assert torch_rows == [(0, HELD_CUDA_FREE - _IGPU_HOST_RESERVE_MIB, N1X_CUDA_TOTAL)]
+    # nvidia-smi sees the carve-out only; its used part is counted out of the pool.
+    assert smi[0][1] <= HELD_CUDA_FREE - _IGPU_HOST_RESERVE_MIB
+
+
+def test_a_single_n1x_is_capped_under_fastest_first(monkeypatch):
+    _host(monkeypatch, platform = "win32", integrated = True, commit = HELD_COMMIT, order = "")
+    rows = LlamaCppBackend._widen_integrated_cuda_rows([(0, HELD_SMI_FREE, N1X_SMI_TOTAL)])
+    assert rows == [(0, HELD_COMMIT - _IGPU_HOST_RESERVE_MIB, N1X_COMMIT_LIMIT)]
+
+
+def test_fastest_first_still_refuses_the_join_off_windows(monkeypatch):
+    _host(monkeypatch, platform = "linux", integrated = True, order = "")
+    row = [(0, HELD_SMI_FREE, N1X_SMI_TOTAL)]
+    assert LlamaCppBackend._widen_integrated_cuda_rows(list(row)) == row
+
+
+def test_an_unsized_pool_keeps_its_free_reading_under_the_cap(monkeypatch):
+    _host(monkeypatch, platform = "win32", integrated = True, commit = HELD_COMMIT, pool = 0)
+    rows = LlamaCppBackend._widen_integrated_cuda_rows([(0, 8000, 0)])
+    assert rows == [(0, 8000 - _IGPU_HOST_RESERVE_MIB, 0)]
+
+
+def test_the_fit_target_keeps_the_commit_gap_free(tmp_path, monkeypatch):
+    from core.inference.llama_cpp import GgufLoadIntent
+
+    from . import _sidecar_fit_helpers as h
+    from .test_llama_cpp_gpu_oom_respawn import _spawn_cmd
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio_home"))
+    targets = []
+    for gap in (0, 53023):
+        backend, gguf = h.cuda_backend(tmp_path, memory = ((0, 46_000, 46_000),))
+        monkeypatch.setattr(
+            LlamaCppBackend, "_WINDOWS_COMMIT_FIT_HEADROOM_MIB", {0: gap} if gap else {}
+        )
+        intent = GgufLoadIntent(gguf_path = str(gguf), model_identifier = "test", n_ctx = 8192)
+        targets.append(h.last(_spawn_cmd(backend, intent), "--fit-target"))
+    assert targets[0] is None  # llama.cpp's default margin, unchanged
+    assert targets[1] == str(int(llama_cpp._LLAMA_FIT_TARGET_DEFAULT_MIB) + 53023)
 
 
 def test_n1x_without_a_commit_reading_keeps_the_shared_pool_sizing(monkeypatch):

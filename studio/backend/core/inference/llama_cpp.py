@@ -8426,9 +8426,17 @@ def _windows_integrated_cuda_commit_mib(free_mib: int, total_mib: int) -> Option
         return None
     try:
         from .diffusion_memory import _windows_integrated_commit_credit_mib
-        return _windows_integrated_commit_credit_mib(free_mib, total_mib)
+
+        # A zero total is an unsized pool, not an empty one: cap by commit alone and keep the 0.
+        sized = int(total_mib) > 0
+        commit = _windows_integrated_commit_credit_mib(
+            free_mib, total_mib if sized else max(int(free_mib), 0)
+        )
     except Exception:  # noqa: BLE001 - an unread commit keeps the shared-pool sizing
         return None
+    if commit is None:
+        return None
+    return commit[0], commit[1] if sized else 0
 
 
 def _resolve_llama_binary(binary: str, *, template_only: bool = False) -> Path:
@@ -13693,8 +13701,12 @@ class LlamaCppBackend:
             raw_mask = os.environ.get("CUDA_VISIBLE_DEVICES")
             mask_unset = raw_mask is None or not raw_mask.strip()
             mappable = mask_unset or LlamaCppBackend._resolve_visible_physical_ids() is not None
-            # No single-row exemption; main.py sets PCI_BUS_ID, so Spark/Jetson/N1X qualify.
-            if not (mappable and order == "PCI_BUS_ID"):
+            # No single-row exemption, except for the Windows commit cap: one unmasked device on each
+            # side is the same device in any order. main.py sets PCI_BUS_ID, so Spark/Jetson/N1X qualify.
+            one_device = mask_unset and len(gpus) == 1 and {gpus[0][0]} == set(integrated)
+            if not (mappable and order == "PCI_BUS_ID") and not (
+                one_device and sys.platform == "win32"
+            ):
                 logger.debug(
                     "Not widening integrated CUDA rows: CUDA_DEVICE_ORDER is %r and "
                     "the mask %s, so a CUDA id cannot be joined to an nvidia-smi index "
@@ -13718,8 +13730,12 @@ class LlamaCppBackend:
                 if pool_mib > total_mib:
                     total_mib = pool_mib
                 raw_mib = free_mib
-                # nvidia-smi's free is the carve-out alone; commit is the whole pool's ceiling.
-                commit = _windows_integrated_cuda_commit_mib(total_mib, total_mib)
+                # nvidia-smi's free is the carve-out alone; what the carve-out holds is used pool too.
+                driver_free_mib = free_mib + max(0, total_mib - cli_total_mib)
+                commit = _windows_integrated_cuda_commit_mib(driver_free_mib, total_mib)
+                LlamaCppBackend._note_commit_fit_headroom(
+                    idx, driver_free_mib, commit, shared_count
+                )
                 if commit is not None:
                     raw_mib, total_mib = commit
                 # MemAvailable: both free readings undercount here. A zero total never caps.
@@ -13751,6 +13767,21 @@ class LlamaCppBackend:
         except Exception as e:
             logger.debug(f"integrated CUDA pool sizing failed: {e}")
             return gpus
+
+    # Per PHYSICAL id: how far the driver's free reading (what llama.cpp's --fit reads) sits above
+    # the Windows commit a row was capped at. Set by the GPU probes, read when --fit-target is priced.
+    _WINDOWS_COMMIT_FIT_HEADROOM_MIB: dict[int, int] = {}
+
+    @staticmethod
+    def _note_commit_fit_headroom(
+        idx: int, driver_free_mib: int, commit: Optional[tuple[int, int]], shared_count: int
+    ) -> None:
+        if commit is None:
+            LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB.pop(idx, None)
+            return
+        LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB[idx] = max(
+            0, int(driver_free_mib) - int(commit[0])
+        ) // max(1, shared_count)
 
     @staticmethod
     def _integrated_cuda_unified_memory(gpu_indices = None) -> bool:
@@ -16043,6 +16074,9 @@ class LlamaCppBackend:
                         raw_mib = min(raw_mib, avail)
                 elif integrated:
                     commit = _windows_integrated_cuda_commit_mib(raw_mib, total_mib)
+                    LlamaCppBackend._note_commit_fit_headroom(
+                        idx, raw_mib, commit, max(1, shared_cuda_count)
+                    )
                     # cudaMemGetInfo reports MemFree; MemAvailable adds back the page cache.
                     avail = LlamaCppBackend._available_system_memory_mib()
                     if commit is not None:
@@ -27402,6 +27436,27 @@ class LlamaCppBackend:
                                 _idx: max(_min_delta, _delta) + _oom_headroom_mib
                                 for _idx, _delta in _fit_target_delta_by_idx.items()
                             }
+
+                    # Windows integrated CUDA: llama.cpp's fitter reads the driver's free memory,
+                    # which counts shared RAM past the commit the row was capped at; keep it free.
+                    _commit_fit_by_idx = {
+                        int(_idx): LlamaCppBackend._WINDOWS_COMMIT_FIT_HEADROOM_MIB.get(
+                            int(_idx), 0
+                        )
+                        for _idx, _free in gpus
+                    }
+                    if any(_commit_fit_by_idx.values()):
+                        _fit_target_delta_mib += max(_commit_fit_by_idx.values())
+                        if _fit_target_delta_by_idx:
+                            _fit_target_delta_by_idx = {
+                                _idx: _delta + _commit_fit_by_idx.get(int(_idx), 0)
+                                for _idx, _delta in _fit_target_delta_by_idx.items()
+                            }
+                        logger.info(
+                            "Windows integrated GPU: --fit keeps %d MiB more free, the driver's "
+                            "free reading above available commit.",
+                            max(_commit_fit_by_idx.values()),
+                        )
 
                     _sysmem_fallback = self._sysmem_fallback_risk(binary)
 
