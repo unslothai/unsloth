@@ -228,7 +228,8 @@ def test_disabled_adapters_and_quantizers_fall_back(monkeypatch):
     x = _x()
     with torch.no_grad():
         with merged.disable_adapter(), base_only.disable_adapter():
-            torch.testing.assert_close(merged(x), base_only(x), rtol = 0, atol = 0)
+            # Not bitwise: base-only QAT rounds its frozen weights in place (_qat_round.py) where it can.
+            torch.testing.assert_close(merged(x), base_only(x), rtol = 1e-6, atol = 1e-6)
         # A disabled quantizer (QAD teacher) runs the unquantized weight.
         for m in merged.modules():
             if isinstance(m, qlm.MergedLoRAWeightFakeQuantizer):
