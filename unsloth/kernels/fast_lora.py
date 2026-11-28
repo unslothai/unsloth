@@ -1747,6 +1747,9 @@ def frozen_base_lora_forward(proj, x, args, kwargs):
         out = _apply(LoRA_W, X, W, W_quant, A, B, S)
     else:
         out = _apply(LoRA_W, X, W, W_quant, A, B, S, dropout_p and dropout_p[0], bias)
+    base_bias = proj.base_layer.bias
+    if base_bias is not None:
+        out = out + base_bias.to(out.dtype)
     return out if x.dim() == 3 else out.reshape(*shape[:-1], out.shape[-1])
 
 

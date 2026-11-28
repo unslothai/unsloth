@@ -29,22 +29,25 @@ from unsloth.models import float8_training as f8t  # noqa: E402
 
 
 class _Tiny(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, bias):
         super().__init__()
         from transformers import PretrainedConfig
 
         self.config = PretrainedConfig()
-        self.proj = torch.nn.Linear(2048, 1024, bias = False)
+        self.proj = torch.nn.Linear(2048, 1024, bias = bias)
 
     def forward(self, x):
         return self.proj(x)
 
 
-def _lora_layer(monkeypatch):
+def _lora_layer(monkeypatch, bias = False):
     monkeypatch.setattr(f8t, "_prepare_fp8_lora_loss", lambda m: None)
     monkeypatch.setattr(f8t, "_prepare_fp8_lora_operators", lambda m: None)
     torch.manual_seed(0)
-    model = _Tiny().to("cuda", torch.bfloat16).requires_grad_(False)
+    model = _Tiny(bias).to("cuda", torch.bfloat16).requires_grad_(False)
+    if bias:
+        with torch.no_grad():
+            model.proj.bias.normal_()
     model = peft.get_peft_model(
         model, peft.LoraConfig(r = 16, lora_alpha = 32, target_modules = ["proj"])
     )
@@ -62,8 +65,9 @@ def _unfused(layer, x):
     return layer.base_layer(x) + layer.scaling["default"] * ((x @ A.t()) @ B.t())
 
 
-def test_fused_matches_unfused_and_uses_the_epilogue(monkeypatch):
-    layer = _lora_layer(monkeypatch)
+@pytest.mark.parametrize("bias", [False, True])
+def test_fused_matches_unfused_and_uses_the_epilogue(monkeypatch, bias):
+    layer = _lora_layer(monkeypatch, bias)
     calls = []
     original = IL.Int8LoRABaseState.lora_first
     monkeypatch.setattr(
