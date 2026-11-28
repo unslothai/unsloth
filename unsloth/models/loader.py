@@ -1272,6 +1272,31 @@ def _reattach_saved_mtp_head(
         )
 
 
+def _lora_dtype_peft(fn):
+    """get_peft_model(..., lora_dtype = torch.bfloat16): keep the LoRA / DoRA adapters in bfloat16 instead of
+    Unsloth's float32. The trainer then steps them with stochastic rounding (optimizers/bf16_stochastic_rounding.py),
+    which keeps the float32 adapters' expected update, for half the adapter, gradient and AdamW state memory. Default
+    None: float32 adapters, unchanged. Cast before tensor parallel shards the adapters."""
+
+    @functools.wraps(fn)
+    def get_peft_model(
+        model,
+        *args,
+        lora_dtype = None,
+        **kwargs,
+    ):
+        from ..optimizers.bf16_stochastic_rounding import cast_lora_adapters_, resolve_lora_dtype
+
+        dtype = resolve_lora_dtype(lora_dtype)  # a bad value raises before PEFT changes the model
+        out = fn(model, *args, **kwargs)
+        model_out = out[0] if isinstance(out, (tuple, list)) and out else out
+        if dtype is not None and isinstance(model_out, torch.nn.Module):
+            cast_lora_adapters_(model_out, dtype)
+        return out
+
+    return get_peft_model
+
+
 def _diffusion_peft_kwargs(
     model,
     args,
@@ -1343,6 +1368,7 @@ class FastLanguageModel(FastLlamaModel):
     # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
     @staticmethod
     @tensor_parallel_env_peft
+    @_lora_dtype_peft
     @functools.wraps(FastLlamaModel.get_peft_model)
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
@@ -2390,6 +2416,7 @@ class FastModel(FastBaseModel):
 
     @staticmethod
     @tensor_parallel_env_peft
+    @_lora_dtype_peft
     def get_peft_model(model, *args, **kwargs):
         raise_if_unsaved_reap(model)
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.

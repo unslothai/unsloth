@@ -31,6 +31,8 @@ __all__ = [
     "enable_bf16_stochastic_rounding",
     "stochastic_round_to_bf16_",
     "bf16_stochastic_rounding_enabled",
+    "cast_lora_adapters_",
+    "resolve_lora_dtype",
 ]
 
 _MARK = "_unsloth_bf16_stochastic_rounding"
@@ -1072,6 +1074,57 @@ def enable_bf16_stochastic_rounding(
             "Set UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 to turn this off."
         )
     return len(params)
+
+
+# What Unsloth's prepare_model_for_training upcasts to float32 under LoRA (unsloth_zoo/training_utils.py).
+_ADAPTER_KEYS = (
+    ".lora_A.",
+    ".lora_B.",
+    ".lora_embedding_A.",
+    ".lora_embedding_B.",
+    ".lora_magnitude_vector",
+)
+
+
+def resolve_lora_dtype(lora_dtype):
+    """get_peft_model(lora_dtype = ...): None or float32 keeps Unsloth's float32 adapters, bfloat16 keeps them in
+    bfloat16. Anything else raises before PEFT touches the model."""
+    if lora_dtype is None:
+        return None
+    if isinstance(lora_dtype, str):
+        names = {
+            "bfloat16": torch.bfloat16,
+            "bf16": torch.bfloat16,
+            "float32": torch.float32,
+            "fp32": torch.float32,
+        }
+        lora_dtype = names.get(lora_dtype.strip().lower().removeprefix("torch."), lora_dtype)
+    if lora_dtype == torch.float32:
+        return None
+    if lora_dtype != torch.bfloat16:
+        raise ValueError(
+            f"Unsloth: lora_dtype must be None, torch.float32 or torch.bfloat16, not {lora_dtype!r}."
+        )
+    return torch.bfloat16
+
+
+def cast_lora_adapters_(model, dtype = torch.bfloat16):
+    """Cast the trained float32 LoRA / DoRA adapters in place (Parameter identity kept), so they train in bfloat16
+    with stochastic rounding: half the adapter, gradient and AdamW state memory. Returns how many it cast."""
+    cast = 0
+    for name, p in model.named_parameters():
+        if p.requires_grad and p.dtype == torch.float32 and any(k in name for k in _ADAPTER_KEYS):
+            p.data = p.data.to(dtype)
+            cast += 1
+    if cast:
+        message = (
+            f"Unsloth: keeps {cast} LoRA adapter tensors in bfloat16 (lora_dtype = torch.bfloat16); "
+            "the trainer steps them with stochastic rounding."
+        )
+        if not bf16_stochastic_rounding_enabled():
+            message += " UNSLOTH_BF16_STOCHASTIC_ROUNDING=0 is set, so updates smaller than bfloat16's spacing are lost."
+        print(message)
+    return cast
 
 
 def _unsloth_model(model):
