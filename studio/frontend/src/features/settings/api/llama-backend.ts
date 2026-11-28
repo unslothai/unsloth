@@ -28,13 +28,20 @@ export type {
   LlamaEffectiveBackend,
 } from "./llama-backend-payload";
 
-/** Always refetches: the install on disk and the in-flight job change under it. */
+/** Always refetches; with forceRefresh, maxAgeSeconds allows a server resolve at most that old. */
 export async function loadLlamaBackendStatus(
   forceRefresh = false,
+  maxAgeSeconds?: number,
 ): Promise<LlamaBackendStatus> {
-  const res = await authFetch(
-    `/api/llama/backend${forceRefresh ? "?force_refresh=true" : ""}`,
-  );
+  const query = new URLSearchParams();
+  if (forceRefresh) {
+    query.set("force_refresh", "true");
+    if (maxAgeSeconds !== undefined) {
+      query.set("max_age_seconds", String(maxAgeSeconds));
+    }
+  }
+  const qs = query.toString();
+  const res = await authFetch(`/api/llama/backend${qs ? `?${qs}` : ""}`);
   if (!res.ok) {
     throw new Error(
       await readFastApiError(res, "Failed to load llama.cpp backend status"),

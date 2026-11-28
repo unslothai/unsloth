@@ -32,6 +32,7 @@ from utils.llama_cpp_changelog import (
     unavailable_reason,
 )
 from utils.prebuilt import freshness_flow as _freshness_flow
+from utils.prebuilt import single_flight
 from utils.prebuilt import update_flow as _flow
 from utils.prebuilt.llama_backend import (
     REQUESTABLE_BACKENDS,
@@ -565,6 +566,7 @@ def _resolve_backends_for_host(
     force_refresh: bool = False,
     published_repo: Optional[str] = None,
     rocm_gfx: Optional[str] = None,
+    max_age: Optional[float] = None,
 ) -> Optional[dict]:
     """Ask the installer which backends it could install here. None on any failure. ``rocm_gfx`` replays the marker's arch as _run_llama_phase does: this subprocess re-probes from scratch, so a host whose arch only Windows setup could infer resolves "auto" to CPU. The REMEMBERED spelling, so a live probe still wins."""
     args: list[str] = []
@@ -580,6 +582,7 @@ def _resolve_backends_for_host(
         mode = ("--resolve-backends", "latest"),
         extra_args = tuple(args),
         extra_env = {"UNSLOTH_ROCM_GFX_REMEMBERED": rocm_gfx} if rocm_gfx else None,
+        **({"max_age": max_age} if max_age is not None else {}),
     )
 
 
@@ -724,8 +727,15 @@ def _pending_backend_migration(
     return target
 
 
-def get_backend_status(*, force_refresh: bool = False) -> dict:
-    """Return the installed backend and host-compatible alternatives."""
+# Upper bound on how old an answer a forced picker read may accept (the client asks for less).
+_BACKEND_STATUS_MAX_AGE_CAP_SECONDS = 300.0
+
+
+def get_backend_status(*, force_refresh: bool = False, max_age: Optional[float] = None) -> dict:
+    """Installed backend plus host-compatible alternatives. ``max_age`` (forced only) reuses a resolve at most that old; installs clear the caches."""
+    if max_age is not None:
+        max_age = max(0.0, min(float(max_age), _BACKEND_STATUS_MAX_AGE_CAP_SECONDS))
+    reuse = {"max_age": max_age} if force_refresh and max_age else {}
     binary = _find_binary()
     marker = read_install_marker(binary)
     unsupported = _switch_support(binary, marker)
@@ -758,6 +768,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         published_repo = repo,
         # The same recovery the update-status path uses, or the picker describes a different host: no arch here reads an AMD box with no probes as CPU-only, so Settings offers an Automatic that installs something else.
         rocm_gfx = _remembered_rocm_gfx(marker),
+        **reuse,
     )
     if not resolved:
         status["reason"] = "unresolved"
@@ -765,7 +776,7 @@ def get_backend_status(*, force_refresh: bool = False) -> dict:
         return status
     assets = None
     try:
-        assets = latest_release_assets(repo, force_refresh = force_refresh)
+        assets = latest_release_assets(repo, force_refresh = force_refresh, **reuse)
     except Exception as exc:  # pragma: no cover - network defensive
         logger.debug("llama backend: asset size lookup failed", error = str(exc))
     options = _backend_options(resolved, assets)
@@ -867,7 +878,7 @@ def _run_llama_phase(
 
         # Drop stale caches so the banner re-checks the swapped marker. If GitHub is offline, latest stays unknown and the banner fails open.
         reset_caches(drop_disk = True)
-        _backends_memo.clear()
+        single_flight.invalidate(_backends_memo)
         try:
             latest_published_release(repo, force_refresh = True)
         except Exception as exc:  # pragma: no cover - network defensive

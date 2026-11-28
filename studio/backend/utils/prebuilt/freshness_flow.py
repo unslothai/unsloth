@@ -18,6 +18,7 @@ from typing import Any, Callable, Optional
 import structlog
 
 from utils.auth_safe import auth_safe_open
+from utils.prebuilt import single_flight
 from utils.update_status import update_checks_disabled
 
 logger = structlog.get_logger(__name__)
@@ -268,8 +269,12 @@ def fetch_latest_release_assets(
     newest = _newest_published_release_in_pass(repo, timeout, log_message = log_message)
     if newest is None:
         return None
+    return release_asset_sizes(newest)
+
+
+def release_asset_sizes(release: dict) -> dict[str, int]:
     assets: dict[str, int] = {}
-    for a in newest.get("assets") or []:
+    for a in release.get("assets") or []:
         name, size = a.get("name"), a.get("size")
         if isinstance(name, str) and isinstance(size, int):
             assets[name] = size
@@ -332,20 +337,40 @@ def latest_release_assets(
     force_refresh: bool,
     memo: dict[str, tuple[float, dict[str, int]]],
     fetch: Callable[[str], Optional[dict[str, int]]],
+    max_age: Optional[float] = None,
 ) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart re-fetches."""
+    """Newest-release asset sizes for `repo` (24h TTL, None if never fetched). ``max_age`` lets a forced call accept sizes at most that old."""
     if not repo:
         return None
     now = time.time()
-    if not force_refresh:
-        cached = memo.get(repo)
-        if cached and now - cached[0] < RELEASE_CACHE_TTL_SECONDS:
+    cached = memo.get(repo)
+    if cached:
+        age = now - cached[0]
+        if not force_refresh and age < RELEASE_CACHE_TTL_SECONDS:
             return cached[1]
+        if force_refresh and max_age is not None and 0 <= age < max_age:
+            return cached[1]
+    gen = single_flight.generation(memo)
+    return single_flight.run(
+        ("release_assets", id(memo), gen, repo),
+        lambda: _fetch_release_assets_into(repo, memo, fetch, gen),
+    )
+
+
+def _fetch_release_assets_into(
+    repo: str,
+    memo: dict[str, tuple[float, dict[str, int]]],
+    fetch: Callable[[str], Optional[dict[str, int]]],
+    gen: int,
+) -> Optional[dict[str, int]]:
+    now = time.time()
     assets = fetch(repo)
     if assets is None:
         cached = memo.get(repo)
         return cached[1] if cached else None
-    memo[repo] = (now, assets)
+    # Not stored if an install invalidated the memo during the read.
+    if single_flight.generation(memo) == gen:
+        memo[repo] = (now, assets)
     return assets
 
 
@@ -431,8 +456,9 @@ def reset_caches(
     caches: tuple[dict, ...], *, drop_disk: bool, cache_dir: Callable[[], Path]
 ) -> None:
     """Drop the in-memory freshness caches; with drop_disk also the on-disk 24h release cache (see the component modules for why)."""
+    # Bumps generations so in-flight fills do not write pre-install answers back.
     for cache in caches:
-        cache.clear()
+        single_flight.invalidate(cache)
     if drop_disk:
         import shutil
 

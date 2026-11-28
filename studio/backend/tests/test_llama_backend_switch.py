@@ -1426,3 +1426,355 @@ def test_windows_dlls_are_not_physical_gpu_evidence(tmp_path, monkeypatch):
 
     assert path_settings.host_gpu_vendors() == {"amd"}
     assert path_settings.host_gpu_vendors(reachable = False) is None
+
+
+def _hold_until_joined(waiters: int) -> None:
+    """Block the leader until ``waiters`` callers are parked on it (a fixed sleep raced slow thread start-up)."""
+    from utils.prebuilt import single_flight
+
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        with single_flight._lock:
+            entries = list(single_flight._inflight.values())
+        # Event.wait parks each joiner on the event's condition (CPython keeps them in _waiters).
+        if entries and all(len(e["done"]._cond._waiters) >= waiters for e in entries):
+            return
+        time.sleep(0.01)
+    raise AssertionError(f"{waiters} callers never joined the in-flight call")
+
+
+def _counting_resolver_run(
+    monkeypatch,
+    *,
+    delay = 0.0,
+    hold_for = 0,
+):
+    calls: list = []
+
+    def _run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if hold_for and len(calls) == 1:
+            _hold_until_joined(hold_for)
+        time.sleep(delay)
+        payload = {"backends": [{"backend": "auto", "available": True, "resolved_backend": "cuda"}]}
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload)})()
+
+    monkeypatch.setattr(upd._flow.subprocess, "run", _run)
+    return calls
+
+
+def _resolver_kwargs(tmp_path, memo, **overrides):
+    kwargs = {
+        "force_refresh": True,
+        "memo": memo,
+        "installer_script": lambda: tmp_path / "install.py",
+        "log_message": "test resolver failed",
+        "mode": ("--resolve-backends", "latest"),
+    }
+    kwargs.update(overrides)
+    return kwargs
+
+
+def test_concurrent_forced_resolves_share_one_child(monkeypatch, tmp_path):
+    calls = _counting_resolver_run(monkeypatch, hold_for = 2)
+    memo: dict = {}
+    results: list = []
+    threads = [
+        threading.Thread(
+            target = lambda: results.append(
+                upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+            )
+        )
+        for _ in range(3)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(calls) == 1
+    assert len(results) == 3 and all(r == results[0] and r for r in results)
+    upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+    assert len(calls) == 2
+
+
+def test_concurrent_resolves_with_different_keys_do_not_share(monkeypatch, tmp_path):
+    calls = _counting_resolver_run(monkeypatch, delay = 0.2)
+    memo: dict = {}
+    threads = [
+        threading.Thread(
+            target = upd._flow.resolve_prebuilt_for_host,
+            kwargs = _resolver_kwargs(tmp_path, memo, extra_env = env),
+        )
+        for env in (None, {"UNSLOTH_ROCM_GFX_REMEMBERED": "gfx1151"})
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(calls) == 2
+
+
+def test_a_forced_resolve_reuses_only_within_max_age(monkeypatch, tmp_path):
+    calls = _counting_resolver_run(monkeypatch)
+    memo: dict = {}
+    first = upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+    assert len(calls) == 1
+    # Forced without max_age: always a fresh child (folder change, install poll, apply).
+    upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+    assert len(calls) == 2
+    # Forced with max_age and a young answer: reused, same payload.
+    assert (
+        upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
+        == first
+    )
+    assert len(calls) == 2
+    # Older than max_age, or from the future (clock moved back): re-resolved.
+    memo["at"] -= 121
+    upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
+    assert len(calls) == 3
+    memo["at"] += 3600
+    upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
+    assert len(calls) == 4
+    upd._flow.resolve_prebuilt_for_host(
+        **_resolver_kwargs(tmp_path, memo, max_age = 120, extra_args = ("--install-dir", "x"))
+    )
+    assert len(calls) == 5
+
+
+def test_concurrent_forced_asset_reads_share_one_fetch(monkeypatch):
+    fetched: list = []
+
+    def _fetch(repo, timeout = 5.0):
+        fetched.append(repo)
+        if len(fetched) == 1:
+            _hold_until_joined(1)
+        return {"a.tar.gz": 1}
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_assets", _fetch)
+    results: list = []
+    threads = [
+        threading.Thread(
+            target = lambda: results.append(
+                freshness.latest_release_assets("unslothai/llama.cpp", force_refresh = True)
+            )
+        )
+        for _ in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert fetched == ["unslothai/llama.cpp"]
+    assert results == [{"a.tar.gz": 1}, {"a.tar.gz": 1}]
+    # max_age reuses the young list; a plain forced read fetches again.
+    freshness.latest_release_assets("unslothai/llama.cpp", force_refresh = True, max_age = 120)
+    assert len(fetched) == 1
+    freshness.latest_release_assets("unslothai/llama.cpp", force_refresh = True)
+    assert len(fetched) == 2
+
+
+def test_an_install_during_a_resolve_drops_its_pre_install_answer(monkeypatch, tmp_path):
+    release_first = threading.Event()
+    first_started = threading.Event()
+    calls: list = []
+
+    def _run(cmd, **kwargs):
+        calls.append(len(calls))
+        n = len(calls)
+        if n == 1:
+            first_started.set()
+            assert release_first.wait(10)
+        payload = {"backends": [], "run": n}
+        return type("Result", (), {"returncode": 0, "stdout": json.dumps(payload)})()
+
+    monkeypatch.setattr(upd._flow.subprocess, "run", _run)
+    memo: dict = {}
+    results: dict = {}
+    before = threading.Thread(
+        target = lambda: results.__setitem__(
+            "before", upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo))
+        )
+    )
+    before.start()
+    assert first_started.wait(10)
+    # The install finishes while that child still runs.
+    upd.single_flight.invalidate(memo)
+    # A caller after the install does not join the pre-install flight: it runs its own child.
+    after = upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))
+    assert after["run"] == 2 and len(calls) == 2
+    release_first.set()
+    before.join(10)
+    assert not before.is_alive()
+    # The pre-install caller still gets its own answer, but it is never stored or reused.
+    assert results["before"]["run"] == 1
+    assert memo["value"]["run"] == 2
+    assert (
+        upd._flow.resolve_prebuilt_for_host(**_resolver_kwargs(tmp_path, memo, max_age = 120))["run"]
+        == 2
+    )
+    assert len(calls) == 2
+
+
+def test_an_install_during_an_asset_read_drops_its_pre_install_sizes(monkeypatch):
+    release_first = threading.Event()
+    first_started = threading.Event()
+    fetched: list = []
+
+    def _fetch(repo, timeout = 5.0):
+        fetched.append(repo)
+        n = len(fetched)
+        if n == 1:
+            first_started.set()
+            assert release_first.wait(10)
+        return {"a.tar.gz": n}
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_assets", _fetch)
+    repo = "unslothai/llama.cpp"
+    results: dict = {}
+    before = threading.Thread(
+        target = lambda: results.__setitem__(
+            "before", freshness.latest_release_assets(repo, force_refresh = True)
+        )
+    )
+    before.start()
+    assert first_started.wait(10)
+    freshness.reset_caches()
+    after = freshness.latest_release_assets(repo, force_refresh = True, max_age = 120)
+    assert after == {"a.tar.gz": 2} and len(fetched) == 2
+    release_first.set()
+    before.join(10)
+    assert not before.is_alive()
+    assert results["before"] == {"a.tar.gz": 1}
+    assert freshness._assets_memo[repo][1] == {"a.tar.gz": 2}
+    assert freshness.latest_release_assets(repo, force_refresh = True, max_age = 120) == {"a.tar.gz": 2}
+    assert len(fetched) == 2
+
+
+def test_a_re_entrant_same_key_single_flight_call_returns(monkeypatch):
+    from utils.prebuilt import single_flight
+
+    out: dict = {}
+
+    def _inner():
+        return "inner"
+
+    def _outer():
+        return ("outer", single_flight.run(("reentry-test",), _inner))
+
+    worker = threading.Thread(
+        target = lambda: out.__setitem__("v", single_flight.run(("reentry-test",), _outer)),
+        daemon = True,
+    )
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "re-entrant single_flight.run deadlocked"
+    assert out["v"] == ("outer", "inner")
+    assert ("reentry-test",) not in single_flight._inflight
+
+
+def test_the_install_path_invalidates_the_backends_memo():
+    import inspect
+
+    source = inspect.getsource(upd._run_llama_phase)
+    assert "single_flight.invalidate(_backends_memo)" in source
+    assert "_backends_memo.clear()" not in source
+
+
+# Captured at import, before the autouse fixture stubs it out.
+_fetch_latest_release_tag = freshness._fetch_latest_release_tag
+
+
+def test_the_release_tag_read_keeps_the_same_release_asset_sizes(monkeypatch):
+    monkeypatch.setattr(freshness, "_fetch_latest_release_tag", _fetch_latest_release_tag)
+    release = {
+        "tag_name": "b9600",
+        "assets": [{"name": "app-b9600-linux-x64-cpu.tar.gz", "size": 7}],
+    }
+    monkeypatch.setattr(freshness._flow, "_fetch_newest_published_release", lambda *a, **k: release)
+    monkeypatch.setattr(
+        freshness,
+        "_fetch_latest_release_assets",
+        lambda *a, **k: pytest.fail("the asset list must come from the tag read"),
+    )
+    assert freshness.latest_published_release("unslothai/llama.cpp", force_refresh = True) == "b9600"
+    assert freshness.latest_release_assets(
+        "unslothai/llama.cpp", force_refresh = True, max_age = 120
+    ) == {"app-b9600-linux-x64-cpu.tar.gz": 7}
+
+
+def _picker_counts(monkeypatch, tmp_path):
+    _install(monkeypatch, tmp_path)
+    monkeypatch.setattr(upd, "_resolve_backends_for_host", _resolve_backends_for_host)
+    calls = _counting_resolver_run(monkeypatch)
+    fetched: list = []
+
+    def _fetch(repo, timeout = 5.0):
+        fetched.append(repo)
+        return {"app-b9596-mix-abc-linux-x64-cuda12.tar.gz": 5}
+
+    monkeypatch.setattr(freshness, "_fetch_latest_release_assets", _fetch)
+    return calls, fetched
+
+
+def test_opening_the_picker_after_the_update_check_reuses_its_resolve(monkeypatch, tmp_path):
+    calls, fetched = _picker_counts(monkeypatch, tmp_path)
+    marker = upd.read_install_marker(upd._find_binary())
+    # The page-load forced update check runs the same resolve for an automatic install.
+    upd._pending_backend_migration(upd._find_binary(), marker, force_refresh = True)
+    assert len(calls) == 1
+    forced = upd.get_backend_status(force_refresh = True)
+    assert len(calls) == 2 and len(fetched) == 1
+    opened = upd.get_backend_status(force_refresh = True, max_age = 120)
+    assert len(calls) == 2 and len(fetched) == 1
+    assert opened == forced
+    # Folder change / apply / poll stay forced.
+    upd.get_backend_status(force_refresh = True)
+    assert len(calls) == 3 and len(fetched) == 2
+    upd._backends_memo["at"] -= upd._BACKEND_STATUS_MAX_AGE_CAP_SECONDS + 1
+    freshness._assets_memo["unslothai/llama.cpp"] = (
+        freshness._assets_memo["unslothai/llama.cpp"][0]
+        - upd._BACKEND_STATUS_MAX_AGE_CAP_SECONDS
+        - 1,
+        freshness._assets_memo["unslothai/llama.cpp"][1],
+    )
+    upd.get_backend_status(force_refresh = True, max_age = 10**9)
+    assert len(calls) == 4 and len(fetched) == 3
+
+
+def test_a_finished_install_is_never_answered_from_the_reuse_window(monkeypatch, tmp_path):
+    calls, _ = _picker_counts(monkeypatch, tmp_path)
+    upd.get_backend_status(force_refresh = True)
+    assert len(calls) == 1
+    # _run_llama_phase drops both caches after the installer swaps the tree.
+    freshness.reset_caches(drop_disk = True)
+    upd.single_flight.invalidate(upd._backends_memo)
+    upd.get_backend_status(force_refresh = True, max_age = 120)
+    assert len(calls) == 2
+
+
+def test_the_backend_route_passes_the_reuse_window_only_when_asked(monkeypatch):
+    import asyncio
+
+    import routes.llama as llama_routes
+
+    seen: list = []
+
+    def _status(**kwargs):
+        seen.append(kwargs)
+        return {"supported": False, "reason": "not_installed", "job": {}}
+
+    monkeypatch.setattr(llama_routes, "get_backend_status", _status)
+    asyncio.run(
+        llama_routes.llama_backend_status(
+            force_refresh = True, max_age_seconds = None, current_subject = "u"
+        )
+    )
+    asyncio.run(
+        llama_routes.llama_backend_status(
+            force_refresh = True, max_age_seconds = 120, current_subject = "u"
+        )
+    )
+    assert seen == [
+        {"force_refresh": True, "max_age": None},
+        {"force_refresh": True, "max_age": 120},
+    ]

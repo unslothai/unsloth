@@ -313,10 +313,17 @@ async def llama_backend_status(
     force_refresh: bool = Query(
         False, description = "Bypass the 24h resolver cache for an explicit re-check."
     ),
+    max_age_seconds: Optional[float] = Query(
+        None,
+        ge = 0,
+        description = "With force_refresh, accept a resolve at most this many seconds old (capped server-side).",
+    ),
     current_subject: str = Depends(get_current_subject),
 ) -> LlamaBackendStatusResponse:
     # Off the event loop: resolving the options runs the installer's probe.
-    status = await asyncio.to_thread(get_backend_status, force_refresh = force_refresh)
+    status = await asyncio.to_thread(
+        get_backend_status, force_refresh = force_refresh, max_age = max_age_seconds
+    )
     return LlamaBackendStatusResponse(**status)
 
 
