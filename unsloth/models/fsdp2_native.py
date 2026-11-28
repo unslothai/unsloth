@@ -732,6 +732,24 @@ def _int8_params(model):
     return found
 
 
+def _integer_coded_params(model):
+    """Frozen integer-coded weights (zoo packed expert stacks, GGUF blocks) stay replicated: fully_shard
+    cannot shard integer tensors, and gathering would drop the subclass and its block scales."""
+    found = {
+        p
+        for p in model.parameters()
+        if not (p.is_floating_point() or p.is_complex())
+        and not _is_params4bit(p)
+        and not _is_int8_param(p)
+    }
+    if found:
+        _print_rank0(
+            f"Unsloth: native FSDP2 keeps {len(found)} frozen packed (integer-coded) weights replicated: "
+            "FSDP2 cannot shard them or keep their block scales."
+        )
+    return found
+
+
 def _placed_cuda_device(model, tensors, device):
     """A model already (partly) on CUDA shards onto this rank's GPU, cuda:LOCAL_RANK, not wherever its
     first weight sits: device_map = {"": 0} on every rank would put every rank's mesh on GPU 0 (NCCL
@@ -1890,6 +1908,10 @@ def _place_replicated(params, device):
                 f"{p.device}, not {device}. Load the model onto each rank's device first."
             )
         p.data = p.data.to(device)
+        if not (p.is_floating_point() or p.is_complex()):
+            for key, value in list(p.__dict__.items()):
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    setattr(p, key, value.to(device))
         moved += 1
     return moved
 
@@ -2179,6 +2201,14 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
                 "Upgrade torch, or load the model in 4-bit or 16-bit."
             )
         ignored.update(int8)
+        packed = _integer_coded_params(model)
+        if packed and not _supports_ignored_params(fully_shard):
+            raise RuntimeError(
+                "Unsloth: native FSDP2 keeps packed (NVFP4 / MXFP8 / MXFP4 / GGUF) weights replicated, "
+                f"which needs torch with fully_shard(ignored_params) (2.7+); this is torch {torch.__version__}. "
+                "Upgrade torch, or load the model in 16-bit or bitsandbytes 4-bit."
+            )
+        ignored.update(packed)
         ignored.update(
             tables
         )  # frozen lookup tables: whole on every rank, never sharded / gathered / reduced
@@ -3613,10 +3643,9 @@ def native_save_optimizer(
     from .fsdp2_save import _dist, _wait_for_writer, mesh_writer_rank
 
     writer_rank = mesh_writer_rank(model)
-    export = contextlib.nullcontext()
-    if writer_rank == 0:
-        from .fsdp2_bnb_optim import full_cpu_state_export
-        export = full_cpu_state_export(optimizer)
+    from .fsdp2_bnb_optim import full_cpu_state_export
+
+    export = full_cpu_state_export(optimizer, writer_rank)
     with export, _host_state_gatherable(optimizer):
         state = get_optimizer_state_dict(
             model,

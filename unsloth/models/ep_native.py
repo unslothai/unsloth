@@ -611,7 +611,11 @@ _DDP_FIT_FRACTION = 0.6
 def _device_total_bytes():
     if not torch.cuda.is_available():
         return None
-    return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+    # Advisory hint only: a CPU-mesh rank whose current device cannot be read gives none.
+    try:
+        return torch.cuda.get_device_properties(torch.cuda.current_device()).total_memory
+    except Exception:
+        return None
 
 
 def _list_exchange_hint(model, listed, ep):

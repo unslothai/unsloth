@@ -698,6 +698,26 @@ def _bnb_import(inner, state_dict):
     return None
 
 
+def _host_dtensor(value, p, local):
+    """Wrap host `value` as `p`-shaped DTensor without copying it to the device (from_local would).
+    Cast here: a cast in the optimizer load would rewrap it on the host device."""
+    from .tp_native import _dtensor_api
+
+    if local.is_floating_point() and value.is_floating_point():
+        value = value.to(dtype = local.dtype)
+    stub = torch.empty((), dtype = value.dtype, device = local.device).expand(value.shape)
+    out = _dtensor_api()[0].from_local(
+        stub,
+        p.device_mesh,
+        p.placements,
+        run_check = False,
+        shape = p.shape,
+        stride = p.stride(),
+    )
+    out._local_tensor = value.contiguous()
+    return out
+
+
 def _load_named(
     model,
     inner,
@@ -765,10 +785,11 @@ def _load_named(
                     if torch.is_tensor(value) and value.ndim > 0:
                         value = _to_local(f"{n} ({key})", value, smap, local)
                         wrap = _is_dtensor(p) and not bnb
-                        # DTensor.from_local moves its local tensor to the mesh's device anyway.
-                        if not host or wrap:
+                        if wrap and host:
+                            value = _host_dtensor(value, p, local)
+                        elif not host:
                             value = value.to(local.device)
-                        if wrap:
+                        if wrap and not host:
                             value = _dtensor_api()[0].from_local(
                                 value,
                                 p.device_mesh,

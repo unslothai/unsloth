@@ -191,7 +191,11 @@ def test_a_flux3_load_without_the_capability_renders_alone_and_says_why(studio):
     assert all(r.status_code == 200 for r in responses)
     assert _alone(backend) == ["a fox", "a cat"]
     assert _batched_calls(backend) == []
-    assert trace.snapshot()["fallbacks"].get("family renders one image per forward") == 2
+    # The route admits FLUX.3; this load's family (no batched_forward) is refused by the engine plan.
+    from core.inference.diffusion_families import detect_family
+
+    assert adapters.batched_forward(detect_family("", name))
+    assert trace.snapshot()["fallbacks"].get("engine policy or prompt layout") == 2
 
 
 # ------------------------------------------------------------------------------------------- policy
@@ -452,6 +456,50 @@ def _fake_generate(cost, *, leak = False):
         return {"images": [_Image(hash((p, s)) + noise) for p, s in zip(rows, row_seeds)]}
 
     return generate, clock, calls
+
+
+def test_the_race_warms_its_batches_inside_the_off_request_scope(monkeypatch):
+    """Qwen-Image-2.1 compiles a mixed-length batch only off-request: the race's warm-ups must open that scope,
+    or it splits the prompts by length and races separate forwards instead of the shared one."""
+    import contextlib
+
+    from core.inference import diffusion_qwenimage21 as q21
+
+    monkeypatch.setattr(race, "record", lambda *a, **k: True)
+    scoped: list = []
+    inside = {"on": False}
+
+    @contextlib.contextmanager
+    def warming():
+        inside["on"] = True
+        try:
+            yield
+        finally:
+            inside["on"] = False
+
+    monkeypatch.setattr(q21, "warming_mixed_lengths", warming)
+    generate, clock, _calls = _fake_generate(lambda rows: 1.0 + 0.5 * (rows - 1))
+
+    def watched(*args, **kwargs):
+        scoped.append((len(kwargs.get("prompts") or [None]), inside["on"]))
+        return generate(*args, **kwargs)
+
+    race.run_race(
+        watched,
+        types.SimpleNamespace(cuda_graphs = ()),
+        idle = lambda: True,
+        width = 512,
+        height = 512,
+        sizes = (2,),
+        repeats = 1,
+        clock = lambda: clock["t"],
+    )
+    batched = [on for rows, on in scoped if rows > 1]
+    assert (
+        batched and batched[0] is True
+    ), "the untimed batched warm-up runs in the off-request scope"
+    assert not any(on for rows, on in scoped if rows == 1), "solo renders never open it"
+    assert batched[1:] and not any(batched[1:]), "timed arms run as a request would"
 
 
 def test_the_race_promotes_a_real_win_and_reports_an_exact_path(monkeypatch):

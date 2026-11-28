@@ -29,6 +29,22 @@ FILE_NAME = "batch_quality.json"
 # (family name, device class, path) -> verdict. Only PASS verdicts measured on a release build belong here.
 SHIPPED: dict[tuple[str, str, str], dict] = {}
 
+# FLUX.3 klein, RTX PRO 6000 (G4), Low VRAM int8, 16 steps, batch 2, 8 prompts x 3 seeds vs eager bf16.
+_KLEIN_G4 = {
+    "verdict": "PASS",
+    "n": 24,
+    "upper": 0.0061,
+    "mean": 0.0024,
+    "eps": EPS,
+    "size": 2,
+    "steps": 16,
+    "source": "lfl_klein_g4 (studio-batch-flux3-anima, #19837 e5b8e3838 base)",
+}
+for _path in ("eager", "graph"):
+    SHIPPED[("flux.3-klein", "NVIDIA RTX PRO 6000 Blackwell Server Edition", _path)] = dict(
+        _KLEIN_G4, path = _path
+    )
+
 _LOCK = threading.Lock()
 _DEVICE_CLASS: dict[str, Optional[str]] = {}
 

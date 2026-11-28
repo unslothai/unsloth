@@ -2,6 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSettingsDialogStore } from "@/features/settings";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { cn } from "@/lib/utils";
+import { useId, useState } from "react";
 import { ChipIcon } from "@/lib/hugeicons-derived";
 import {
   CpuIcon,
@@ -54,24 +58,48 @@ export function ModelsHeader({
   onTitleClick: () => void;
 }) {
   const openSettings = useSettingsDialogStore((s) => s.openDialog);
+  const mobile = useIsMobile();
+  const [deviceOpen, setDeviceOpen] = useState(false);
+  const deviceId = useId();
+  const subtitle = isDataset
+    ? "Discover and download datasets locally."
+    : "Discover and download models locally.";
   const gpuMemoryValue = gpuSharedLabel
     ? `${gpuLabel} VRAM + ${gpuSharedLabel}`
     : gpuLabel;
   return (
-    <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+    <header className="font-heading flex flex-wrap items-center justify-between gap-3">
       <PageHeading
         title={isDataset ? "Datasets" : "Model hub"}
         onTitleClick={onTitleClick}
-        subtitle={
-          isDataset
-            ? "Discover and download datasets locally."
-            : "Discover and download models locally."
-        }
+        subtitle={mobile ? undefined : subtitle}
       />
 
+      {mobile && (
+        <button
+          type="button"
+          data-tour="hub-device"
+          aria-expanded={deviceOpen}
+          aria-controls={deviceId}
+          onClick={() => setDeviceOpen((open) => !open)}
+          className="inline-flex min-h-11 items-center gap-1.5 rounded-md px-1.5 text-ui-13 font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <HugeiconsIcon icon={CpuIcon} className="size-4" />
+          Device
+          <HugeiconsIcon
+            icon={ChevronDownStandardIcon}
+            className={cn("size-3.5", deviceOpen && "rotate-180")}
+          />
+        </button>
+      )}
       <div
-        data-tour="hub-device"
-        className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 max-sm:justify-start sm:flex-1"
+        id={deviceId}
+        data-tour={mobile ? undefined : "hub-device"}
+        className={cn(
+          "flex min-w-0 flex-wrap items-center gap-1.5 md:flex-1 md:justify-end",
+          mobile && "w-full rounded-xl border border-border bg-muted/30 p-3",
+          mobile && !deviceOpen && "hidden",
+        )}
       >
         <HfTokenIndicator onOpenSettings={() => openSettings("general")} />
         <TransportToggle />

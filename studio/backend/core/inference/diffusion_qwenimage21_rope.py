@@ -19,6 +19,12 @@ REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
+
+def _transformer_module() -> Any:
+    import importlib
+    return importlib.import_module(_MODULE)
+
+
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
     # 0.41.0 splits heads by ``attn.heads``; main d42ebf9c by ``attn.inner_dim // attn.heads`` (tensor parallel),
@@ -143,7 +149,20 @@ def _inductor_emulates() -> bool:
     return bool(getattr(config, "emulate_precision_casts", False))
 
 
-def _make_rope(stock: Any) -> Any:
+# ``_ARMED``: real arithmetic on; ``_ROWS``: wrapper kept for per-row tables alone.
+_ARMED = [False]
+_ROWS = [False]
+
+
+def rows_rope(x: Any, freqs_cis: Any) -> Any:
+    """Stock complex RoPE with a per-row ``(batch, seq, dim / 2)`` table."""
+    import torch
+
+    x_rotated = torch.view_as_complex(x.float().reshape(*x.shape[:-1], -1, 2))
+    return torch.view_as_real(x_rotated * freqs_cis.unsqueeze(2)).flatten(3).type_as(x)
+
+
+def _make_rope(stock: Any, armed: Any = None) -> Any:
     import torch
 
     def apply_rotary_emb_qwen(
@@ -152,8 +171,11 @@ def _make_rope(stock: Any) -> Any:
         use_real = True,
         use_real_unbind_dim = -1,
     ):
+        if not use_real and getattr(freqs_cis, "ndim", 2) == 3:
+            return rows_rope(x, freqs_cis)
         if (
-            not use_real
+            (armed is None or armed[0])
+            and not use_real
             and torch.compiler.is_compiling()
             and x.device.type == "cuda"
             and getattr(freqs_cis, "dtype", None) == torch.complex64
@@ -201,24 +223,21 @@ def install(logger: Any = None, device: Any = None) -> bool:
             logger.info("diffusion.qwenimage21: complex RoPE kept: probe failed: %s", exc)
         return False
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _transformer_module()
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     with _LOCK:
         current = getattr(mod, "apply_rotary_emb_qwen", None)
         if getattr(current, "__unsloth_real_rope__", False):
+            _ARMED[0] = True
             return True
         why = why_unsupported(mod)
         if why is not None:
             if logger is not None:
                 logger.info("diffusion.qwenimage21: complex RoPE kept: %s", why)
             return False
-        wrapper = _WRAPPERS.get(current)
-        if wrapper is None:
-            wrapper = _WRAPPERS[current] = _make_rope(current)
-        _INSTALLED[mod] = current
-        mod.apply_rotary_emb_qwen = wrapper
+        _wrap(mod, current)
+        _ARMED[0] = True
     if logger is not None:
         logger.info(
             "diffusion.qwenimage21: RoPE runs in real arithmetic inside the compiled blocks"
@@ -227,9 +246,7 @@ def install(logger: Any = None, device: Any = None) -> bool:
 
 
 def probe_split_cards(cards: Any) -> tuple:
-    """A layer split runs its blocks on several cards, and the real-arithmetic wrapper reads each card's own probe
-    (an unprobed card keeps the complex form). Probes every card not yet probed; nothing when no install probed a
-    card (the patch is not in use). Returns the cards whose probe passed."""
+    """Probe each unprobed card of a layer split (no-op when the patch is unused); returns cards that passed."""
     if real_rope_disabled() or not _FUSION:
         return ()
     import torch
@@ -243,13 +260,67 @@ def probe_split_cards(cards: Any) -> tuple:
     return tuple(index for index in cards if _FUSION.get(index) is not None)
 
 
+def _wrap(mod: Any, current: Any) -> None:
+    wrapper = _WRAPPERS.get(current)
+    if wrapper is None:
+        wrapper = _WRAPPERS[current] = _make_rope(current, _ARMED)
+    _INSTALLED[mod] = current
+    mod.apply_rotary_emb_qwen = wrapper
+
+
+def _restore() -> None:
+    for mod, stock in list(_INSTALLED.items()):
+        if getattr(getattr(mod, "apply_rotary_emb_qwen", None), "__unsloth_real_rope__", False):
+            mod.apply_rotary_emb_qwen = stock
+        _INSTALLED.pop(mod, None)
+
+
 def uninstall() -> None:
+    """Real arithmetic off; the wrapper stays (complex form only) while the fast step needs per-row tables."""
     with _LOCK:
-        for mod, stock in list(_INSTALLED.items()):
-            if getattr(getattr(mod, "apply_rotary_emb_qwen", None), "__unsloth_real_rope__", False):
-                mod.apply_rotary_emb_qwen = stock
-            _INSTALLED.pop(mod, None)
+        _ARMED[0] = False
+        if not _ROWS[0]:
+            _restore()
+
+
+def install_rows(logger: Any = None) -> bool:
+    """Make ``apply_rotary_emb_qwen`` accept per-row tables; 2-D tables keep their current path. Idempotent."""
+    try:
+        mod = _transformer_module()
+    except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
+        return False
+    with _LOCK:
+        current = getattr(mod, "apply_rotary_emb_qwen", None)
+        if not getattr(current, "__unsloth_real_rope__", False):
+            got = _digest(current)
+            if got not in _FINGERPRINTS["apply_rotary_emb_qwen"]:
+                if logger is not None:
+                    logger.info(
+                        "diffusion.qwenimage21: per-row RoPE unavailable: apply_rotary_emb_qwen differs (%s)",
+                        got,
+                    )
+                return False
+            _wrap(mod, current)
+        _ROWS[0] = True
+    return True
+
+
+def uninstall_rows() -> None:
+    with _LOCK:
+        _ROWS[0] = False
+        if not _ARMED[0]:
+            _restore()
+
+
+def rows_ready() -> bool:
+    try:
+        mod = _transformer_module()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(
+        getattr(getattr(mod, "apply_rotary_emb_qwen", None), "__unsloth_real_rope__", False)
+    )
 
 
 def is_installed() -> bool:
-    return bool(_INSTALLED)
+    return bool(_INSTALLED) and _ARMED[0]

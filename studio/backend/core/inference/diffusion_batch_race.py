@@ -550,9 +550,10 @@ def run_race(
         try:
             # Warm-ups (untimed): the serial shape, then each batched arm; a batched graph at this size records here.
             solo(prompts[0], seeds[0])
-            batch(prompts, seeds, capture = True)
-            if "batched_eager" in arms:
-                batch(prompts, seeds, eager = True)
+            with _off_request_warm():
+                batch(prompts, seeds, capture = True)
+                if "batched_eager" in arms:
+                    batch(prompts, seeds, eager = True)
             samples: dict[str, list] = {arm: [] for arm in arms}
             for _ in range(max(1, int(repeats))):
                 order = ["serial", *arms]
@@ -687,6 +688,16 @@ def _release_cached() -> None:
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
         pass
+
+
+def _off_request_warm() -> Any:
+    """The scope an idle-engine warm-up opens, where a family may compile what it never compiles on a request
+    (Qwen-Image-2.1's mixed-length batch, which its requests then reuse)."""
+    try:
+        from .diffusion_qwenimage21 import warming_mixed_lengths
+    except Exception:  # noqa: BLE001 - no Qwen-Image-2.1 support: nothing to open
+        return _nullctx()
+    return warming_mixed_lengths()
 
 
 @contextmanager

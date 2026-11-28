@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The Apple Silicon torch 2.13 route in install.sh agrees with the pins Studio installs beside it."""
+"""The Apple Silicon torch route in install.sh (2.14.1 for new homes, 2.13.0 move floor) agrees with Studio's pins."""
 
 from __future__ import annotations
 import re
@@ -38,12 +38,23 @@ def _route_body() -> str:
 
 
 def test_macos_route_is_one_minor_with_its_torchvision():
-    assert _assignment("_MACOS_NEW_INSTALL_TORCH") == "torch>=2.13.0,<2.14.0"
+    assert _assignment("_MACOS_NEW_INSTALL_TORCH") == "torch>=2.14.1,<2.15.0"
     # torchvision 0.N pairs with torch 2.(N - 15).
-    assert 'TORCHVISION_CONSTRAINT="torchvision>=0.28.0,<0.29.0"' in _route_body()
+    assert 'TORCHVISION_CONSTRAINT="torchvision>=0.29.0,<0.30.0"' in _route_body()
     # torchaudio keeps the shared window: 2.11 is the last release and pairs with every newer torch.
     assert "TORCHAUDIO_CONSTRAINT" not in _route_body()
     assert _assignment("_TORCHAUDIO_CEILING") == "2.12.0"
+
+
+def test_macos_route_admits_what_it_installs_and_never_moves_a_home_unasked():
+    # Torch moves only on a fresh home or a repair (UNSLOTH_TORCH_UPGRADE=1): no below-floor move on a plain re-run.
+    assert "_MACOS_TORCH_MOVE_FLOOR" not in INSTALL_SH
+    # The PyPI admission check asks about the release the route installs.
+    route = INSTALL_SH.split('elif [ "$SKIP_TORCH" = false ] && [ "$(_macos_torch213_platform', 1)[
+        1
+    ].split("\nfi\n", 1)[0]
+    assert '_pypi_unsloth_admits_torch "2.14.1"' in route
+    assert '_pypi_unsloth_admits_torch "2.13.0"' not in route
 
 
 def test_macos_preservation_ceiling_matches_cu130():
@@ -72,4 +83,5 @@ def test_mflux_pin_floor_is_met_by_the_route():
     version = tuple(int(p) for p in pins[0].split("==", 1)[1].split(".")[:2])
     if version >= (0, 20):
         floor = _assignment("_MACOS_NEW_INSTALL_TORCH").split(",", 1)[0]
-        assert floor == "torch>=2.13.0"
+        assert floor.startswith("torch>=")
+        assert tuple(int(p) for p in floor[len("torch>=") :].split(".")[:2]) >= (2, 13)
