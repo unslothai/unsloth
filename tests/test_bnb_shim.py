@@ -78,6 +78,7 @@ def test_off_and_working_install_are_left_alone():
         """
         off = shim.install()
         os.environ["UNSLOTH_BNB_SHIM"] = "auto"
+        shim._has_gpu = lambda: True
         shim._real_installed = lambda: True
         shim._real_unusable = lambda: False
         auto_working = shim.install()
@@ -93,6 +94,7 @@ def test_off_and_working_install_are_left_alone():
 def test_auto_registers_when_missing_or_unusable():
     out = run(
         """
+        shim._has_gpu = lambda: True
         shim._real_installed = lambda: False
         missing = shim.install()
         appended = type(sys.meta_path[-1]).__name__
@@ -264,7 +266,7 @@ def test_optimizers_fall_back_and_int8_refuses():
     out = run(
         """
         shim.install()
-        import contextlib, io
+        import contextlib, io, pickle
         import torch
         import bitsandbytes as bnb
         p = torch.nn.Parameter(torch.ones(4))
@@ -275,6 +277,21 @@ def test_optimizers_fall_back_and_int8_refuses():
             bnb.optim.AdamW([p], lr = 0.1, optim_bits = 8)
         p.grad = torch.ones(4)
         opt.step()
+        pickle.loads(pickle.dumps(opt.state_dict()))
+        pickle.loads(pickle.dumps(bnb.optim.PagedAdamW8bit))
+        try:
+            bnb.optim.AdamW8bit([torch.nn.Parameter(torch.ones(4, dtype = torch.float16))])
+            fp16 = "built"
+        except RuntimeError as e:
+            fp16 = str(e)
+        fresh = bnb.optim.AdamW8bit([torch.nn.Parameter(torch.ones(4))])
+        native = {"state": {0: {"step": torch.tensor(1.0), "state1": torch.zeros(4, dtype = torch.uint8)}},
+                  "param_groups": fresh.state_dict()["param_groups"]}
+        try:
+            fresh.load_state_dict(native)
+            resume = "loaded"
+        except RuntimeError as e:
+            resume = str(e)
         try:
             bnb.nn.Linear8bitLt(4, 4)
             int8 = "built"
@@ -286,17 +303,61 @@ def test_optimizers_fall_back_and_int8_refuses():
         except RuntimeError as e:
             lion = str(e)
         print("OUT " + json.dumps({
-            "torch_adamw": isinstance(opt, torch.optim.AdamW), "module": type(opt).__module__,
+            "exact_torch": type(opt) is torch.optim.AdamW, "factory_module": bnb.optim.AdamW.__module__,
             "stepped": float(p[0]), "notices": printed.getvalue().count("runs torch.optim.AdamW"),
-            "int8": int8, "lion": lion,
+            "fp16": fp16, "resume": resume, "int8": int8, "lion": lion,
             "manager": type(bnb.optim.GlobalOptimManager.get_instance()).__name__,
         }))
         """
     )
-    assert out["torch_adamw"] and out["module"].startswith("bitsandbytes.optim")
+    # A real torch optimizer: Unsloth's torch-optimizer paths (checkpoints, FSDP2, rounding) apply.
+    assert out["exact_torch"] and out["factory_module"] == "bitsandbytes.optim"
     assert out["stepped"] < 1.0 and out["notices"] == 1
+    assert "float16" in out["fp16"] and "8-bit state" in out["resume"]
     assert "load_in_8bit" in out["int8"] and "bitsandbytes" in out["lion"]
     assert out["manager"] == "GlobalOptimManager"
+
+
+def test_auto_without_gpu_does_nothing():
+    out = run(
+        """
+        shim._real_installed = lambda: False
+        print("OUT " + json.dumps({"installed": shim.install(),
+                                   "finders": [type(f).__name__ for f in sys.meta_path]}))
+        """,
+        mode = "auto",
+    )
+    assert out["installed"] is False and "_ShimFinder" not in out["finders"]
+
+
+def test_vllm_gate_and_int8_refusal():
+    out = run(
+        """
+        shim.install()
+        g = shim.vllm_blocked
+        try:
+            shim.refuse_int8(True)
+            int8 = "allowed"
+        except RuntimeError:
+            int8 = "refused"
+        print("OUT " + json.dumps({
+            "4bit": g("unsloth/Qwen3-0.6B", True, False, False, False, None),
+            "prequantized_name": g("unsloth/Qwen3-0.6B-unsloth-bnb-4bit", False, False, False, False, None),
+            "bnb_config": g("org/model", False, False, False, False, {"load_in_4bit": True}),
+            "16bit": g("unsloth/Qwen3-0.6B", True, False, True, False, None),
+            "full_ft": g("unsloth/Qwen3-0.6B", True, False, False, True, None),
+            "int8": int8,
+        }))
+        """
+    )
+    assert out == {
+        "4bit": True,
+        "prequantized_name": True,
+        "bnb_config": True,
+        "16bit": False,
+        "full_ft": False,
+        "int8": "refused",
+    }
 
 
 def test_native_library_reads_as_missing():
@@ -345,3 +406,32 @@ def test_unusable_probe_pins_windows_rocm_version_first():
         mode = "auto",
     )
     assert out["calls"][:2] == ["pin", "import"], out
+
+
+def test_matmul_4bit_bias_grad_matches_dense():
+    # Unbatched (1-D) and batched inputs: the bias grad has the bias shape and equals the dense one.
+    out = run(
+        """
+        shim.install()
+        import torch
+        import bitsandbytes as bnb
+        from bitsandbytes import functional as F
+        torch.manual_seed(0)
+        w = torch.randn(32, 64)
+        q, st = F.quantize_4bit(w, blocksize = 64, quant_type = "nf4")
+        W = F.dequantize_4bit(q, st)
+        res = {}
+        for name, shape in (("unbatched", (64,)), ("batched", (2, 3, 64))):
+            x = torch.randn(shape, requires_grad = True)
+            b = torch.randn(32, requires_grad = True)
+            bnb.matmul_4bit(x, q, st, bias = b).pow(2).sum().backward()
+            x2 = x.detach().clone().requires_grad_(True)
+            b2 = b.detach().clone().requires_grad_(True)
+            torch.nn.functional.linear(x2, W, b2).pow(2).sum().backward()
+            res[name] = [list(b.grad.shape), bool(torch.allclose(b.grad, b2.grad)),
+                         bool(torch.allclose(x.grad, x2.grad))]
+        print("OUT " + json.dumps(res))
+        """
+    )
+    assert out["unbatched"] == [[32], True, True], out
+    assert out["batched"] == [[32], True, True], out

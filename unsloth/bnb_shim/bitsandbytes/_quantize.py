@@ -180,14 +180,22 @@ def _scaled(A, blocksize):
 
 
 def _code_4bit(scaled, quant_type):
+    # A sorted comparison tree codes x as the count of thresholds below it (bucketize, left);
+    # NaN compares false everywhere, so it codes as 0 there.
+    nan = torch.isnan(scaled)
     if quant_type == "nf4":
         t = torch.tensor(_NF4_THRESHOLDS, dtype = torch.float32, device = scaled.device)
-        return (scaled.unsqueeze(-1) > t).sum(-1).to(torch.uint8)
+        q = torch.bucketize(scaled, t)
+        return torch.where(nan, 0, q).to(torch.uint8)
     t = torch.tensor(_FP4_THRESHOLDS, dtype = torch.float32, device = scaled.device)
-    bucket = (scaled.abs().unsqueeze(-1) > t).sum(-1)
+    bucket = torch.where(nan, 0, torch.bucketize(scaled.abs(), t))
     table = torch.tensor(_FP4_BUCKET_CODE, dtype = torch.uint8, device = scaled.device)
     sign = (scaled < 0).to(torch.uint8) << 3
     return table[bucket] | sign
+
+
+# Blocks per chunk on the torch path, bounding its float32 temporaries (about 16M elements).
+_TORCH_CHUNK = 1 << 24
 
 
 def quantize_4bit_torch(
@@ -196,14 +204,21 @@ def quantize_4bit_torch(
     quant_type = "nf4",
 ):
     """Returns (packed uint8 [(n + 1) // 2], fp32 absmax [blocks]); high nibble first."""
-    scaled, absmax, n = _scaled(A, blocksize)
-    q = _code_4bit(scaled, quant_type).reshape(-1)[:n]
-    if n % 2:
-        # bitsandbytes codes the zero it pads the last block with (NaN in an all zero block).
-        pad = scaled.reshape(-1)[n : n + 1]
-        q = torch.cat([q, _code_4bit(pad, quant_type)])
-    q = q.view(-1, 2)
-    return (q[:, 0] << 4) | q[:, 1], absmax
+    flat = A.reshape(-1)
+    n = flat.numel()
+    step = max(blocksize, (_TORCH_CHUNK // blocksize) * blocksize)
+    packed, absmax = [], []
+    for start in range(0, max(n, 1), step):
+        chunk = flat[start : start + step]
+        scaled, chunk_absmax, m = _scaled(chunk, blocksize)
+        # bitsandbytes codes the zero it pads the last block with (NaN in an all zero block),
+        # so an odd count keeps one padded code for the low nibble of the last byte.
+        q = _code_4bit(scaled.reshape(-1)[: m + (m % 2)], quant_type).view(-1, 2)
+        packed.append((q[:, 0] << 4) | q[:, 1])
+        absmax.append(chunk_absmax)
+        if n == 0:
+            break
+    return torch.cat(packed), torch.cat(absmax)
 
 
 def _dynamic_search(code, x):

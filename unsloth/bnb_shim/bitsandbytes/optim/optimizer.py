@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""bitsandbytes optimizers for Unsloth's bitsandbytes stand-in: the torch optimizer with the same
-update (8-bit and paged state are bitsandbytes native features), after a one time notice."""
+"""bitsandbytes optimizers for Unsloth's bitsandbytes stand-in. AdamW8bit and friends build the
+plain torch optimizer with the same update rule (8-bit and paged state are bitsandbytes native
+features), after a one time notice. The result is a real torch.optim instance, so code that
+checks for torch optimizers (checkpointing, FSDP2, stochastic rounding) treats it as one."""
 
 import torch
 
@@ -26,6 +28,8 @@ _BNB_ONLY = (
     "max_unorm",
     "skip_zeros",
 )
+# Keys only bitsandbytes optimizer state has: such a checkpoint cannot resume a torch optimizer.
+_BNB_STATE_KEYS = ("state1", "state2", "qmap1", "qmap2", "absmax1", "absmax2")
 
 
 class GlobalOptimManager:
@@ -63,7 +67,8 @@ class GlobalOptimManager:
         pass
 
     def register_module_override(self, module, param_name, config):
-        self.module_weight_config_triple.append((module, param_name, config))
+        # Full precision state already: nothing to override, and nothing kept alive.
+        pass
 
 
 class Optimizer8bit(torch.optim.Optimizer):
@@ -84,28 +89,58 @@ class Optimizer2State(Optimizer8bit):
     pass
 
 
-def torch_optimizer_fallback(
-    name,
-    base,
-    rename = None,
-    drop = (),
-):
-    """A `base` subclass named `name` that accepts and ignores bitsandbytes-only arguments."""
+def _parameters(params):
+    for item in params:
+        if isinstance(item, dict):
+            yield from item.get("params", ())
+        else:
+            yield item
 
-    def __init__(self, params, *args, **kwargs):
+
+def _refuse_bnb_state(optimizer, state_dict):
+    for state in (state_dict.get("state") or {}).values():
+        if isinstance(state, dict) and any(key in state for key in _BNB_STATE_KEYS):
+            raise RuntimeError(
+                "Unsloth: this optimizer checkpoint holds bitsandbytes 8-bit state, which the "
+                "bitsandbytes stand-in's torch optimizer cannot resume. Resume with bitsandbytes "
+                "installed, or start the optimizer fresh."
+            )
+
+
+def torch_optimizer_fallback(name, base):
+    """A factory named `name`: calling it returns a `base` (torch) optimizer, ignoring
+    bitsandbytes-only arguments."""
+
+    def __new__(cls, params, *args, **kwargs):
+        for key in _BNB_ONLY:
+            kwargs.pop(key, None)
+        params = list(params)
+        if any(
+            getattr(p, "dtype", None) is torch.float16 and p.requires_grad
+            for p in _parameters(params)
+        ):
+            # bitsandbytes keeps fp32 math for fp16 weights; torch state in fp16 overflows.
+            raise RuntimeError(
+                f"Unsloth: `{name}` without bitsandbytes runs torch.optim.{base.__name__}, which "
+                "cannot step float16 parameters safely. Train float32 / bfloat16 parameters, "
+                "or install bitsandbytes."
+            )
         if name not in _NOTICED:
             _NOTICED.add(name)
             # print, not warnings.warn: training scripts commonly silence warnings.
             print(
-                f"Unsloth: bitsandbytes is not installed, so `{name}` runs torch.optim."
+                f"Unsloth: bitsandbytes is unavailable, so `{name}` runs torch.optim."
                 f"{base.__name__} with full precision optimizer states (more memory than 8-bit "
                 "states, same update rule). Install bitsandbytes for 8-bit or paged optimizers."
             )
-        for key in _BNB_ONLY + tuple(drop):
-            kwargs.pop(key, None)
-        for old, new in (rename or {}).items():
-            if old in kwargs:
-                kwargs[new] = kwargs.pop(old)
-        base.__init__(self, params, *args, **kwargs)
+        optimizer = base(params, *args, **kwargs)
+        hook = getattr(optimizer, "register_load_state_dict_pre_hook", None)
+        if hook is not None:
+            hook(_refuse_bnb_state)
+        return optimizer
 
-    return type(name, (base,), {"__init__": __init__, "__module__": "bitsandbytes.optim.optimizer"})
+    return type(
+        name,
+        (),
+        {"__new__": __new__, "__module__": "bitsandbytes.optim", "__qualname__": name},
+    )

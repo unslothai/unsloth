@@ -26,7 +26,7 @@ class MatMul4Bit(torch.autograd.Function):
         ctx.B = B
         ctx.has_bias = bias is not None
         ctx.dtype_bias = None if bias is None else bias.dtype
-        W = F.dequantize_4bit(B.view(-1, 1), quant_state).to(A.dtype)
+        W = F._dequantize_4bit_impl(B.reshape(-1, 1), quant_state).to(A.dtype)
         output = F_nn.linear(A, W, bias)
         if out is not None:
             out.copy_(output)
@@ -38,9 +38,14 @@ class MatMul4Bit(torch.autograd.Function):
         req_A, _, _, req_bias, _ = ctx.needs_input_grad
         grad_A = grad_bias = None
         if req_bias:
-            grad_bias = grad_output.sum(dim = tuple(range(grad_output.dim() - 1))).to(ctx.dtype_bias)
+            # Sum over the batch dims only: an unbatched (1-D) input's bias grad is grad_output itself
+            # (sum(dim = ()) would reduce everything to a scalar).
+            grad_bias = grad_output
+            if grad_output.dim() > 1:
+                grad_bias = grad_output.reshape(-1, grad_output.shape[-1]).sum(0)
+            grad_bias = grad_bias.to(ctx.dtype_bias)
         if req_A:
-            W = F.dequantize_4bit(ctx.B.view(-1, 1), ctx.state).to(grad_output.dtype)
+            W = F._dequantize_4bit_impl(ctx.B.reshape(-1, 1), ctx.state).to(grad_output.dtype)
             grad_A = torch.matmul(grad_output, W)
         return grad_A, None, None, grad_bias, None
 
@@ -55,12 +60,13 @@ def matmul_4bit(
     if quant_state is None:
         raise ValueError("quant_state is required")
     if A.numel() == 0:
-        shape = quant_state.shape
-        return torch.empty(A.shape[:-1] + shape[:1], dtype = A.dtype, device = A.device)
+        # Empty batch: stay connected to autograd (bitsandbytes returns an empty result too).
+        N, K = quant_state.shape
+        return F_nn.linear(A, A.new_zeros(N, K), bias)
     if A.requires_grad or (bias is not None and bias.requires_grad):
         if torch.is_grad_enabled():
             return MatMul4Bit.apply(A, B, out, bias, quant_state)
-    W = F.dequantize_4bit(B.view(-1, 1), quant_state).to(A.dtype)
+    W = F._dequantize_4bit_impl(B.reshape(-1, 1), quant_state).to(A.dtype)
     result = F_nn.linear(A, W, bias)
     if out is not None:
         out.copy_(result)

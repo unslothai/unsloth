@@ -19,7 +19,7 @@ import importlib.metadata
 import os
 import sys
 
-__all__ = ["SHIM_VERSION", "install", "is_active", "is_shim", "loader_guard"]
+__all__ = ["SHIM_VERSION", "install", "is_active", "is_shim", "refuse_int8", "vllm_blocked"]
 
 SHIM_VERSION = "0.49.2"
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +81,8 @@ def is_shim(module = None):
     """True if `module` (default: the imported `bitsandbytes`) is the stand-in."""
     if module is None:
         module = sys.modules.get(_NAME)
+        if module is None:
+            return _STATE["active"]
     return bool(getattr(module, "__unsloth_shim__", False))
 
 
@@ -91,6 +93,14 @@ def is_active():
 def _purge():
     for name in [m for m in sys.modules if m == _NAME or m.startswith(_NAME + ".")]:
         sys.modules.pop(name, None)
+
+
+def _has_gpu():
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
 
 
 def _real_unusable():
@@ -132,6 +142,15 @@ def _refresh_availability_caches():
                 getattr(getattr(import_utils, name, None), "cache_clear", lambda: None)()
         except Exception:
             pass
+    integration = sys.modules.get("transformers.integrations.bitsandbytes")
+    if integration is not None and getattr(integration, "bnb", None) is None:
+        # Imported while bitsandbytes was missing, so its module-level `import bitsandbytes as bnb`
+        # never ran; bind the stand-in its functions read.
+        try:
+            import bitsandbytes
+            integration.bnb = bitsandbytes
+        except Exception:
+            pass
     for module_name, names in (
         ("peft.import_utils", ("is_bnb_available", "is_bnb_4bit_available")),
         (
@@ -161,6 +180,9 @@ def install():
         # Imported before Unsloth: whatever it is, the process already uses it.
         return False
     real = loaded is not None or _real_installed()
+    if mode == "auto" and not _has_gpu():
+        # Its kernels need a CUDA / ROCm GPU; elsewhere nothing would use 4-bit anyway.
+        return False
     if mode == "auto" and real:
         if not _real_unusable():
             return False
@@ -171,7 +193,7 @@ def install():
         reason = "it is not installed"
     _purge()
     finder = _ShimFinder()
-    if real:
+    if real or mode == "force":
         sys.meta_path.insert(0, finder)
     else:
         sys.meta_path.append(finder)
@@ -202,18 +224,32 @@ INT8_MESSAGE = (
 )
 
 
-def loader_guard(load_in_4bit, load_in_8bit, fast_inference):
-    """Called by the loaders before weights load. With the stand-in active: refuse load_in_8bit, and
-    turn off fast_inference for 4-bit (vLLM's bitsandbytes loader needs the native library).
-    Returns the fast_inference to use."""
-    if not is_shim():
-        return fast_inference
-    if load_in_8bit:
+def refuse_int8(load_in_8bit):
+    """Loaders call this before weights load: LLM.int8 needs the native library."""
+    if load_in_8bit and is_shim():
         raise RuntimeError(INT8_MESSAGE)
-    if fast_inference and load_in_4bit:
-        print(
-            "Unsloth: fast_inference (vLLM) loads 4-bit weights with the bitsandbytes native library, "
-            "which is unavailable - continuing with fast_inference = False."
-        )
+
+
+def vllm_blocked(
+    model_name, load_in_4bit, load_in_8bit, load_in_16bit, full_finetuning, quantization_config
+):
+    """True when fast_inference would hand vLLM a bitsandbytes model while the stand-in is active:
+    vLLM's bitsandbytes loader needs the native library. 16-bit loads keep vLLM."""
+    if not is_shim():
         return False
-    return fast_inference
+    if load_in_8bit:
+        return True
+    config = quantization_config
+    if isinstance(config, dict):
+        wants = (
+            config.get("load_in_4bit")
+            or config.get("load_in_8bit")
+            or "bitsandbytes" in str(config.get("quant_method", ""))
+        )
+    elif config is not None:
+        wants = getattr(config, "load_in_4bit", False) or getattr(config, "load_in_8bit", False)
+    else:
+        wants = False
+    if wants or "bnb" in str(model_name).lower():
+        return True
+    return bool(load_in_4bit) and not load_in_16bit and not full_finetuning

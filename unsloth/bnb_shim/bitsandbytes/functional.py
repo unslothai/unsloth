@@ -5,6 +5,7 @@
 blockwise (de)quantization subset transformers, PEFT and Unsloth call, on Unsloth's Triton kernels
 (torch elsewhere). Serialized states use the bitsandbytes layout, so checkpoints load either way."""
 
+import os
 from typing import Any, Optional
 
 import torch
@@ -33,6 +34,8 @@ __all__ = [
 name2qmap = {}
 create_dynamic_map = _Q.create_dynamic_map
 _BLOCKSIZES = (32, 64, 128, 256, 512, 1024, 2048, 4096)
+# UNSLOTH_BNB_TRITON=0 (Unsloth's NF4 kernel switch) also keeps this stand-in on torch dequantize.
+_TRITON_DEQUANT = os.environ.get("UNSLOTH_BNB_TRITON", "1") != "0"
 
 
 def get_ptr(A: Optional[torch.Tensor]):
@@ -344,8 +347,11 @@ def quantize_4bit(
     packed, _absmax = _Q.quantize_4bit_blockwise(A, blocksize, quant_type)
     itemsize = torch.empty((), dtype = quant_storage).element_size()
     n_bytes = packed.numel()
-    rows = n_bytes // itemsize
-    _out = packed[: rows * itemsize].view(quant_storage).view(rows, 1)
+    rows = -(n_bytes // -itemsize)
+    if rows * itemsize != n_bytes:
+        # Wider storage than the bytes fill: zero pad the tail rather than drop packed codes.
+        packed = torch.cat([packed, packed.new_zeros(rows * itemsize - n_bytes)])
+    _out = packed.view(quant_storage).view(rows, 1)
     code = get_4bit_type(quant_type, device = A.device)
     if compress_statistics:
         offset = _absmax.mean()
@@ -411,6 +417,7 @@ def _triton_dequant(A, absmax, quant_state, out):
         or quant_state.dtype not in (torch.float16, torch.bfloat16, torch.float32)
         or not _pow2(quant_state.blocksize)
         or (quant_state.nested and not _pow2(quant_state.state2.blocksize))
+        or not _TRITON_DEQUANT
         or not _Q.triton_quantize_available(A.device)
     ):
         return None
@@ -479,9 +486,24 @@ def dequantize_4bit(
         raise ValueError(
             f"Blockwise 4bit dequantization only supports 16/32-bit floats, but got {quant_state.dtype}"
         )
+    result = _dequantize_4bit_impl(A, quant_state, out)
+    # Callers passing the packed weight transposed ([1, n // 2]) get the output transposed back.
+    if A.shape[0] == 1:
+        return result.t()
+    return result
+
+
+def _dequantize_4bit_impl(
+    A,
+    quant_state,
+    out = None,
+    use_triton = True,
+):
+    """Dequantize to quant_state.shape (no transposed-input handling)."""
     result = None
     try:
-        result = _triton_dequant(A, quant_state.absmax, quant_state, out)
+        if use_triton:
+            result = _triton_dequant(A, quant_state.absmax, quant_state, out)
     except Exception as error:
         if not _Q.triton_failed(error):
             raise
@@ -503,9 +525,6 @@ def dequantize_4bit(
         )
         if out is not None:
             result = out.copy_(result)
-    # Callers passing the packed weight transposed ([1, n // 2]) get the output transposed back.
-    if A.shape[0] == 1:
-        return result.t()
     return result
 
 
@@ -542,7 +561,7 @@ def gemv_4bit(
         raise ValueError(
             "state cannot be None. gemv_4bit() requires the state from quantize_4bit()"
         )
-    W = dequantize_4bit(B.view(-1, 1), state).to(A.dtype)
+    W = _dequantize_4bit_impl(B.reshape(-1, 1), state).to(A.dtype)
     result = torch.nn.functional.linear(A, W)
     if out is not None:
         return out.copy_(result)
