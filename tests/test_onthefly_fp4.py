@@ -106,6 +106,57 @@ def test_decorator_rewrites_only_string_flags():
         wrapped("m", load_in_4bit = "nvfp4", fast_inference = True)
 
 
+@pytest.mark.parametrize(
+    "extra",
+    [
+        dict(load_in_8bit = True),
+        dict(load_in_8bit = "fp8"),
+        dict(load_in_16bit = True),
+        dict(load_in_fp8 = True),
+        dict(load_in_fp8 = "block"),
+        dict(float8_training = "fp8_lora"),
+    ],
+)
+def test_fp4_string_refuses_a_second_precision(extra):
+    # The FP4 request reaches from_pretrained as load_in_4bit = False, so its 4bit / 8bit / 16bit conflict
+    # check cannot see it: the decorator refuses the combination itself.
+    calls = []
+
+    def from_pretrained(
+        model_name = "m",
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        load_in_fp8 = False,
+        float8_training = None,
+        **kwargs,
+    ):
+        calls.append(1)
+
+    wrapped = oq.onthefly_lowbit_load(from_pretrained)
+    with pytest.raises(ValueError, match = "cannot be combined"):
+        wrapped("m", load_in_4bit = "nvfp4", **extra)
+    assert not calls
+
+    # FastLanguageModel / FastModel take float8_training through **kwargs.
+    def loose(
+        model_name = "m",
+        load_in_4bit = True,
+        load_in_8bit = False,
+        load_in_16bit = False,
+        load_in_fp8 = False,
+        **kwargs,
+    ):
+        calls.append(1)
+
+    loose = oq.onthefly_lowbit_load(loose)
+    with pytest.raises(ValueError, match = "cannot be combined"):
+        loose("m", load_in_4bit = "mxfp4", **extra)
+    assert not calls
+    # The same flags with a bool load_in_4bit pass through for from_pretrained's own checks.
+    wrapped("m", load_in_4bit = False, **{k: v for k, v in extra.items() if not isinstance(v, str)})
+
+
 # ---- quantizers ---------------------------------------------------------------------------------------------
 
 
@@ -342,6 +393,114 @@ def test_loads_outside_the_block_are_untouched(cpu_hook, tiny_dense):
     from transformers import AutoModelForCausalLM
     model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
     assert not any(type(m) in (_Routed, oq._PendingFP4Linear) for m in model.modules())
+
+
+def test_save_writes_the_supplied_state_dict_not_the_live_weights(cpu_hook, tiny_dense, tmp_path):
+    from transformers import AutoModelForCausalLM
+
+    with oq.onthefly_fp4_loading("nvfp4"):
+        model = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
+    key = "model.layers.0.self_attn.q_proj"
+    live = model.get_submodule(key)
+    assert type(live) is _Routed
+    live_dense = _decode(live.weight_packed, live.weight_scale, live.weight_global_scale)
+    assert live_dense.abs().sum() > 0
+    # A snapshot whose packed codes all decode to zero (code 0), the rest of the model unchanged.
+    supplied = {k: v.clone() for k, v in model.state_dict().items()}
+    supplied[key + ".weight_packed"].zero_()
+    model.save_pretrained(str(tmp_path), state_dict = supplied)
+    reloaded = AutoModelForCausalLM.from_pretrained(str(tmp_path), dtype = torch.bfloat16)
+    saved = reloaded.get_submodule(key).weight
+    assert torch.count_nonzero(saved).item() == 0, "save_pretrained wrote the live weight"
+    # Every other packed layer is the decode of its supplied (unchanged) tensors.
+    other = "model.layers.1.mlp.down_proj"
+    m = model.get_submodule(other)
+    want = _decode(m.weight_packed, m.weight_scale, m.weight_global_scale).to(torch.bfloat16)
+    assert torch.equal(reloaded.get_submodule(other).weight, want)
+    # The live model is untouched by the save.
+    assert torch.equal(
+        _decode(live.weight_packed, live.weight_scale, live.weight_global_scale), live_dense
+    )
+
+
+def _drop_key(src, dst, key):
+    import shutil
+
+    from safetensors.torch import load_file, save_file
+
+    shutil.copytree(src, dst)
+    path = os.path.join(dst, "model.safetensors")
+    tensors = load_file(path)
+    del tensors[key]
+    save_file(tensors, path, metadata = {"format": "pt"})
+    return dst
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp4"])
+def test_missing_weights_are_initialized_before_they_are_quantized(
+    cpu_hook, tiny_dense, tmp_path, monkeypatch, fmt
+):
+    import transformers.modeling_utils as mu
+    from transformers import AutoModelForCausalLM
+
+    if mu.PreTrainedModel.__dict__.get("_finalize_model_loading") is None:
+        pytest.skip("transformers 4.x materializes missing weights on the CPU after the load")
+    key = "model.layers.0.self_attn.q_proj"
+    path = _drop_key(tiny_dense, str(tmp_path / "missing"), key + ".weight")
+    # Uninitialized storage as a sentinel: whatever the loader allocates for the missing weight reads 17.
+    empty_like = torch.empty_like
+    monkeypatch.setattr(
+        torch,
+        "empty_like",
+        lambda t, *a, **k: empty_like(t, *a, **k).fill_(17.0)
+        if t.is_floating_point()
+        else empty_like(t, *a, **k),
+    )
+    oq.onthefly_fp4_stats(reset = True)
+    with oq.onthefly_fp4_loading(fmt):
+        model = AutoModelForCausalLM.from_pretrained(path, dtype = torch.bfloat16)
+    module = model.get_submodule(key)
+    assert type(module) is _Routed and module.weight_packed.dtype == torch.uint8
+    W = _decode(module.weight_packed, module.weight_scale, module.weight_global_scale)
+    std = model.config.initializer_range
+    assert W.abs().max().item() < 1.0, "the missing weight was quantized before its initialization"
+    assert 0.5 * std < W.float().std().item() < 2.0 * std
+    stats = oq.onthefly_fp4_stats()
+    assert stats["linear"] == 14 and stats["skipped"] == 0
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp4"])
+@pytest.mark.parametrize("method", ["max6", "4over6"])
+def test_tiny_magnitude_weights_keep_finite_scales(fmt, method):
+    # amax 2^-118: 6 * 448 / amax (NVFP4) and 2^(8 - e_max) (MXFP4) overflow float32 to inf, which decoded
+    # all-zero blocks to NaN (0 * inf) and every other block to 0.
+    w = torch.zeros(4, 64, dtype = torch.bfloat16)
+    w[0, 0] = 2.0**-118
+    w[1, 37] = -(2.0**-119)
+    packed, scale, global_scale = fq.fp4_quantize_weight(w, fmt, method)
+    assert torch.isfinite(global_scale).all()
+    W = _decode(packed, scale, global_scale)
+    assert torch.isfinite(W).all()
+    assert torch.count_nonzero(W[2:]).item() == 0
+    R = w.float()
+    if fmt == "mxfp4":
+        # Both values are E2M1 multiples of an E8M0 scale in range: OCP MXFP4 holds them exactly.
+        assert torch.equal(W, R)
+    else:
+        # (W - R).norm() underflows fp32 at this magnitude: compare against the largest value instead.
+        assert ((W - R).abs().max() / R.abs().max()).item() < 0.15
+
+
+@pytest.mark.parametrize("fmt", ["nvfp4", "mxfp4"])
+def test_ordinary_weights_quantize_as_before(fmt):
+    # In-range tensors never reach the overflow guards: ordinary FP4 error, finite scales.
+    torch.manual_seed(0)
+    w = (torch.randn(64, 128) * 0.02).to(torch.bfloat16)
+    w[3, :32] *= 2.0**-20  # a wide-exponent block (MXFP4 keeps e4m3 scales up to a 17-octave span)
+    packed, scale, global_scale = fq.fp4_quantize_weight(w, fmt, "4over6")
+    W = _decode(packed, scale, global_scale)
+    assert torch.isfinite(global_scale).all() and torch.isfinite(W).all()
+    assert ((W - w.float()).norm() / w.float().norm()).item() < 0.15
 
 
 # ---- end to end on a GPU (fresh process per case) -----------------------------------------------------------
