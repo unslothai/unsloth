@@ -9,6 +9,7 @@ import {
   COLOR_THEMES,
   COLOR_THEME_IDS,
   FLAVOR_THEME_IDS,
+  HALLOWEEN_THEME_IDS,
   isColorThemeId,
 } from "../src/features/settings/lib/color-themes.ts";
 
@@ -18,6 +19,7 @@ const read = (path: string) =>
 const indexCss = read("../src/index.css");
 const themeBoot = read("../public/theme-boot.js");
 const backendSettings = read("../../backend/routes/settings.py");
+const SEEDED_THEME_IDS = [...FLAVOR_THEME_IDS, ...HALLOWEEN_THEME_IDS];
 
 test("every non-standard theme is applied by the boot script", () => {
   for (const id of COLOR_THEME_IDS) {
@@ -33,8 +35,8 @@ test("the backend accepts every theme id", () => {
   assert.deepEqual([...accepted].sort(), [...COLOR_THEME_IDS].sort());
 });
 
-test("every flavor theme has light and dark seed blocks", () => {
-  for (const id of FLAVOR_THEME_IDS) {
+test("every flavor and Halloween theme has light and dark seed blocks", () => {
+  for (const id of SEEDED_THEME_IDS) {
     assert.ok(
       indexCss.includes(`:root[data-palette="${id}"]:not(.dark) {`),
       `${id} light`,
@@ -64,12 +66,13 @@ test("isColorThemeId rejects unknown values", () => {
   assert.equal(isColorThemeId(null), false);
 });
 
-test("Trick or Treat is a year-round theme; retired Halloween ids fall back", () => {
+test("Trick or Treat is a year-round theme; the other Halloween themes are regular palettes", () => {
   assert.ok((FLAVOR_THEME_IDS as readonly string[]).includes("trick-or-treat"));
   assert.equal(COLOR_THEMES["trick-or-treat"].light.accent, "#f0b400");
   assert.equal(COLOR_THEMES["trick-or-treat"].dark.accent, "#ffc400");
+  assert.ok(!(HALLOWEEN_THEME_IDS as readonly string[]).includes("trick-or-treat"));
   for (const id of ["pumpkin", "gothic", "black-cat", "candycorn"]) {
-    assert.equal(isColorThemeId(id), false, id);
+    assert.equal(isColorThemeId(id), true, id);
   }
 });
 
@@ -103,8 +106,8 @@ function mix(hex: string, target: string, amount: number): string {
 // Trick or Treat's light mode keeps a bright gold on purpose, below the floor.
 const ACCENT_FLOOR_EXEMPT = new Set(["trick-or-treat light"]);
 
-test("flavor accents used as text meet the accent-text floor", () => {
-  for (const id of FLAVOR_THEME_IDS) {
+test("flavor and Halloween accents used as text meet the accent-text floor", () => {
+  for (const id of SEEDED_THEME_IDS) {
     for (const [mode, selector] of [
       ["light", `:root[data-palette="${id}"]:not(.dark) {`],
       ["dark", `:root[data-palette="${id}"].dark {`],
@@ -140,4 +143,16 @@ test("More themes leads with Butterfly Pea and Earl Grey, and Cherry is just Che
   assert.equal(FLAVOR_THEME_IDS.indexOf("blueberry"), 11);
   assert.equal(FLAVOR_THEME_IDS.indexOf("honey"), 13);
   assert.equal(COLOR_THEMES.cherry.name, "Cherry");
+});
+
+test("nine Halloween themes glow around the focused composer; Trick or Treat and Goth do not", () => {
+  const glowing = HALLOWEEN_THEME_IDS.filter((id) => id !== "gothic");
+  for (const mode of [":not(.dark)", ".dark"]) {
+    const rule = indexCss.match(
+      new RegExp(`:root:where\\(([^)]*)\\)${mode.replace(/[.()]/g, "\\$&")}\\s+:is\\(\\.chat-composer-surface, \\.unsloth-composer-surface\\):focus-within`),
+    );
+    assert.ok(rule, mode);
+    const ids = [...rule[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...ids].sort(), [...glowing].sort(), mode);
+  }
 });
