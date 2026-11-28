@@ -340,3 +340,55 @@ def test_bf16_stochastic_rounding_drives_the_stand_in():
     # The rounding wrapper sees a bitsandbytes Adam with 8-bit state and steps it in one kernel.
     assert out["covered"] == 1 and out["codes"] == "torch.uint8"
     assert out["fused"] == 3, out
+
+
+MULTI_TENSOR = """
+import json, os, sys, torch
+import bitsandbytes as bnb
+from unsloth.kernels import adam8bit_blockwise as K
+dev = "cuda"
+SPECS = [((300, 257), torch.bfloat16), ((4097,), torch.bfloat16), ((64, 64), torch.float32), ((300,), torch.float32),
+         ((5000,), torch.float16), ((1,), torch.float32), ((70001,), torch.float32)]
+
+
+def run(multi):
+    os.environ["UNSLOTH_BNB_SHIM_MULTI_TENSOR"] = "1" if multi else "0"
+    g0 = torch.Generator(device = dev).manual_seed(0)
+    ps = [torch.nn.Parameter(torch.randn(s, generator = g0, device = dev).to(d)) for s, d in SPECS]
+    opt = bnb.optim.AdamW8bit([{"params": ps[:4], "weight_decay": 0.1}, {"params": ps[4:], "lr": 3e-3, "weight_decay": 0.0}],
+                              lr = 1e-3)
+    for t in range(1, 13):
+        for i, p in enumerate(ps):
+            # some weights miss a gradient on some steps
+            p.grad = None if (i == 1 and t % 4 == 0) else torch.randn(p.shape, generator = g0, device = dev).to(p.dtype)
+        if t == 7:  # resume mid-run from its own checkpoint
+            opt.load_state_dict(opt.state_dict())
+        opt.param_groups[0]["lr"] = 1e-3 * (1 - t / 13)
+        opt.step()
+    torch.cuda.synchronize()
+    return ps, opt
+
+
+pa, oa = run(True)
+pb, ob = run(False)
+same = all(torch.equal(a.view(torch.uint8), b.view(torch.uint8)) for a, b in zip(pa, pb))
+for a, b in zip(pa, pb):
+    for k, v in oa.state[a].items():
+        w = ob.state[b][k]
+        same = same and (torch.equal(v, w) if torch.is_tensor(v) else v == w)
+variants = sum(len(c[0]) for c in K._adam8bit_multi_kernel.device_caches.values())
+variants32 = sum(len(c[0]) for c in K._adam32bit_multi_kernel.device_caches.values())
+print("OUT " + json.dumps({"same": same, "multi_steps": oa.__dict__.get("_unsloth_multi_tensor_steps", 0),
+                           "single_steps": ob.__dict__.get("_unsloth_multi_tensor_steps", 0),
+                           "variants": variants, "variants32": variants32}))
+"""
+
+
+def test_multi_tensor_step_matches_per_tensor_step():
+    out = run(MULTI_TENSOR)
+    # One launch per (dtype, state kind) per step, bit-identical to one launch per weight, across
+    # param groups, missing gradients and a state_dict reload.
+    assert out["same"], out
+    assert out["multi_steps"] == 12 and out["single_steps"] == 0, out
+    # 8-bit: bf16 + fp16 + fp32 weights; 32-bit: small fp32 weights; at most 2 variants per dtype
+    assert out["variants"] <= 6 and out["variants32"] <= 2, out

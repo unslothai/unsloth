@@ -38,6 +38,8 @@ __all__ = [
     "adam_32bit_step",
     "compiled_safe_8bit_step",
     "compiled_safe_32bit_step",
+    "MultiTensorPlan",
+    "MAX_GROUPS",
 ]
 
 BLOCKSIZE = 256  # bitsandbytes' blockwise optimizer block (Optimizer2State.init_state)
@@ -292,6 +294,170 @@ def _adam32bit_kernel(
     tl.store(S2 + offs, s2, valid)
 
 
+@triton.jit
+def _pick(g, V0, V1, V2, V3):
+    # a per-group scalar (at most 4 param groups per multi-tensor launch)
+    return tl.where(g == 0, V0, tl.where(g == 1, V1, tl.where(g == 2, V2, V3)))
+
+
+@triton.jit
+def _tensor_args(t, GROUPS, STEPS, LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, B21, B22, B23,
+                 EPS0, EPS1, EPS2, EPS3, WD0, WD1, WD2, WD3):  # fmt: skip
+    g = tl.load(GROUPS + t)
+    step = tl.load(STEPS + t)
+    return (
+        g,
+        step,
+        _pick(g, LR0, LR1, LR2, LR3),
+        _pick(g, B10, B11, B12, B13),
+        _pick(g, B20, B21, B22, B23),
+        _pick(g, EPS0, EPS1, EPS2, EPS3),
+        _pick(g, WD0, WD1, WD2, WD3),
+    )
+
+
+# Multi-tensor launches: one program per 256-element block of any weight in the launch, driven by
+# device tables of data pointers / sizes / (tensor, block) per program. Same op sequence per element
+# as the per-tensor kernels above, so the bits are bitsandbytes' too.
+@triton.jit
+def _adam8bit_multi_kernel(
+    PTRS,  # int64 [6, T]: weight, gradient, state1, state2, absmax1, absmax2 data pointers
+    NUMELS,  # int64 [T]
+    GROUPS,  # int32 [T]: param group of each weight (0..3)
+    STEPS,  # int32 [T]: step count, already advanced for this step
+    BLOCK_T,  # int32 [blocks]: weight of each program
+    BLOCK_J,  # int32 [blocks]: block of that weight
+    T,
+    Q1,
+    Q2,
+    LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, B21, B22, B23,
+    EPS0, EPS1, EPS2, EPS3, WD0, WD1, WD2, WD3,
+    GNORM_SCALE,
+    DTYPE: tl.constexpr,  # weight / gradient dtype of the whole launch
+    S2_PRODUCT_FMA: tl.constexpr,
+    ALIGNED: tl.constexpr,  # every pointer 16 byte aligned
+    BLOCK: tl.constexpr,  # 256
+    EXACT: tl.constexpr,
+):  # fmt: skip
+    b = tl.program_id(0)
+    t = tl.load(BLOCK_T + b)
+    j = tl.load(BLOCK_J + b).to(tl.int64)
+    n = tl.load(NUMELS + t)
+    grp, step, lr, beta1, beta2, eps, wd = _tensor_args(
+        t, GROUPS, STEPS, LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, B21, B22, B23,
+        EPS0, EPS1, EPS2, EPS3, WD0, WD1, WD2, WD3,
+    )  # fmt: skip
+    P = tl.load(PTRS + t).to(tl.pointer_type(DTYPE))
+    G = tl.load(PTRS + T + t).to(tl.pointer_type(DTYPE))
+    S1 = tl.load(PTRS + 2 * T + t).to(tl.pointer_type(tl.uint8))
+    S2 = tl.load(PTRS + 3 * T + t).to(tl.pointer_type(tl.uint8))
+    A1 = tl.load(PTRS + 4 * T + t).to(tl.pointer_type(tl.float32))
+    A2 = tl.load(PTRS + 5 * T + t).to(tl.pointer_type(tl.float32))
+    if ALIGNED:
+        P = tl.multiple_of(P, 16)
+        G = tl.multiple_of(G, 16)
+        S1 = tl.multiple_of(S1, 16)
+        S2 = tl.multiple_of(S2, 16)
+    offs = j * BLOCK + tl.arange(0, BLOCK)
+    valid = offs < n
+    beta1, beta2, correction2, step_size, decay = _scalars(
+        step, lr, beta1, beta2, wd, (1,), False, EXACT
+    )
+    one = tl.full((1,), 1.0, tl.float32)
+    g = tl.load(G + offs, valid, 0.0).to(tl.float32)
+    c1 = tl.load(S1 + offs, valid, 128).to(tl.int32)
+    c2 = tl.load(S2 + offs, valid, 0).to(tl.int32)
+    finite = (g == g) & (tl.abs(g) != float("inf"))
+    g = _mul(g, GNORM_SCALE + tl.zeros(g.shape, tl.float32), EXACT)
+    a1 = tl.load(A1 + j)
+    a2 = tl.load(A2 + j)
+    s2 = _mul(tl.load(Q2 + c2), a2 + tl.zeros(g.shape, tl.float32), EXACT)
+    w2g = _mul(_add(one, -beta2, EXACT), g, EXACT)
+    if S2_PRODUCT_FMA:
+        s2 = _fma(w2g, g, _mul(s2, beta2, EXACT), EXACT)
+    else:
+        s2 = _fma(s2, beta2, _mul(g, w2g, EXACT), EXACT)
+    s1 = _mul(tl.load(Q1 + c1), a1 + tl.zeros(g.shape, tl.float32), EXACT)
+    s1 = _fma(_add(one, -beta1, EXACT), g, _mul(s1, beta1, EXACT), EXACT)
+    s1 = tl.where(finite, s1, 0.0)
+    s2 = tl.where(finite, s2, 0.0)
+    new1 = tl.max(tl.abs(s1), axis = 0)
+    new2 = tl.max(tl.abs(s2), axis = 0)
+    tl.store(A1 + j, new1)
+    tl.store(A2 + j, new2)
+    p_in = tl.load(P + offs, valid, 0.0)
+    p = p_in.to(tl.float32)
+    denom = _fma(correction2, eps + tl.zeros((1,), tl.float32), _sqrt(s2, EXACT), EXACT)
+    p = _fma(step_size, _div(s1, denom, EXACT), p, EXACT).to(DTYPE)
+    if wd > 0.0:
+        p = _mul(decay, p.to(tl.float32), EXACT).to(DTYPE)
+    tl.store(P + offs, tl.where(finite, p, p_in), valid)
+    q1 = _quantize(Q1, _div(s1, new1 + tl.zeros(g.shape, tl.float32), EXACT), True, EXACT)
+    code_neg = tl.load(Q1 + q1).to(tl.int32, bitcast = True) < 0
+    s1_neg = s1.to(tl.int32, bitcast = True) < 0
+    q1 = tl.where(code_neg != s1_neg, tl.where(s1 > 0.0, q1 + 1, q1 - 1), q1)
+    q2 = _quantize(Q2, _div(s2, new2 + tl.zeros(g.shape, tl.float32), EXACT), False, EXACT)
+    tl.store(S1 + offs, (q1 & 255).to(tl.uint8), valid)
+    tl.store(S2 + offs, q2.to(tl.uint8), valid)
+
+
+@triton.jit
+def _adam32bit_multi_kernel(
+    PTRS,  # int64 [4, T]: weight, gradient, state1, state2
+    NUMELS,
+    GROUPS,
+    STEPS,
+    BLOCK_T,
+    BLOCK_J,
+    T,
+    LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, B21, B22, B23,
+    EPS0, EPS1, EPS2, EPS3, WD0, WD1, WD2, WD3,
+    GNORM_SCALE,
+    DTYPE: tl.constexpr,
+    ALIGNED: tl.constexpr,
+    BLOCK: tl.constexpr,
+    EXACT: tl.constexpr,
+):  # fmt: skip
+    b = tl.program_id(0)
+    t = tl.load(BLOCK_T + b)
+    j = tl.load(BLOCK_J + b).to(tl.int64)
+    n = tl.load(NUMELS + t)
+    grp, step, lr, beta1, beta2, eps, wd = _tensor_args(
+        t, GROUPS, STEPS, LR0, LR1, LR2, LR3, B10, B11, B12, B13, B20, B21, B22, B23,
+        EPS0, EPS1, EPS2, EPS3, WD0, WD1, WD2, WD3,
+    )  # fmt: skip
+    P = tl.load(PTRS + t).to(tl.pointer_type(DTYPE))
+    G = tl.load(PTRS + T + t).to(tl.pointer_type(DTYPE))
+    S1 = tl.load(PTRS + 2 * T + t).to(tl.pointer_type(tl.float32))
+    S2 = tl.load(PTRS + 3 * T + t).to(tl.pointer_type(tl.float32))
+    if ALIGNED:
+        P = tl.multiple_of(P, 16)
+        G = tl.multiple_of(G, 16)
+        S1 = tl.multiple_of(S1, 16)
+        S2 = tl.multiple_of(S2, 16)
+    offs = j * BLOCK + tl.arange(0, BLOCK)
+    valid = offs < n
+    beta1, beta2, correction2, step_size, decay = _scalars(
+        step, lr, beta1, beta2, wd, (1,), False, EXACT
+    )
+    one = tl.full((1,), 1.0, tl.float32)
+    g = tl.load(G + offs, valid, 0.0).to(tl.float32)
+    g = _mul(g, GNORM_SCALE + tl.zeros(g.shape, tl.float32), EXACT)
+    s1 = tl.load(S1 + offs, valid, 0.0)
+    s2 = tl.load(S2 + offs, valid, 0.0)
+    s1 = _fma(s1, beta1, _mul(_add(one, -beta1, EXACT), g, EXACT), EXACT)
+    s2 = _fma(s2, beta2, _mul(_add(one, -beta2, EXACT), _mul(g, g, EXACT), EXACT), EXACT)
+    p_in = tl.load(P + offs, valid, 0.0)
+    p = p_in.to(tl.float32)
+    denom = _fma(correction2, eps + tl.zeros((1,), tl.float32), _sqrt(s2, EXACT), EXACT)
+    p = _fma(step_size, _div(s1, denom, EXACT), p, EXACT).to(DTYPE)
+    if wd > 0.0:
+        p = _mul(decay, p.to(tl.float32), EXACT).to(DTYPE)
+    tl.store(P + offs, p, valid)
+    tl.store(S1 + offs, s1, valid)
+    tl.store(S2 + offs, s2, valid)
+
+
 tag_compile_cache(__file__)
 
 # Compiled kernels by specialization: one step launches a kernel per weight (hundreds per step for
@@ -457,6 +623,100 @@ def adam_32bit_step(
             BLOCK = _ELEMS_32,
             EXACT = _EXACT,
         )
+
+
+_MULTI_BLOCK_32 = 1024  # elements per program, 32-bit state multi-tensor launch
+MAX_GROUPS = 4  # param groups one multi-tensor launch can serve
+
+
+class MultiTensorPlan:
+    """Device tables for one multi-tensor launch: weights of one dtype and one state kind (8-bit or
+    32-bit) on one device. Weight / state pointers are fixed at build; the gradient row is refreshed
+    when a gradient moved; the step counts live on the device and advance in place."""
+
+    def __init__(self, params, states, groups, eight):
+        device = params[0].device
+        self.eight, self.dtype, self.device = eight, params[0].dtype, device
+        self.T = len(params)
+        block = BLOCKSIZE if eight else _MULTI_BLOCK_32
+        self.block = block
+        keys = ("state1", "state2", "absmax1", "absmax2") if eight else ("state1", "state2")
+        rows = [[p.data_ptr() for p in params], [0] * self.T]
+        rows += [[st[k].data_ptr() for st in states] for k in keys]
+        self.grad_ptrs = None
+        tensors = list(params) + [st[k] for st in states for k in keys]
+        self.aligned = all(t.data_ptr() % 16 == 0 for t in tensors)
+        with torch.cuda.device(device):
+            self.ptrs = torch.tensor(rows, dtype = torch.int64).to(device)
+            numels = torch.tensor([p.numel() for p in params], dtype = torch.int64)
+            nblocks = -(numels // -block)
+            self.blocks = int(nblocks.sum())
+            starts = torch.cumsum(nblocks, 0) - nblocks
+            self.numels = numels.to(device)
+            self.groups = torch.tensor(groups, dtype = torch.int32).to(device)
+            self.steps = torch.tensor([int(st["step"]) for st in states], dtype = torch.int32).to(
+                device
+            )
+            ids = torch.arange(self.T, dtype = torch.int64, device = device)
+            nb = nblocks.to(device)
+            self.block_t = torch.repeat_interleave(ids, nb).to(torch.int32)
+            self.block_j = (
+                torch.arange(self.blocks, dtype = torch.int64, device = device)
+                - torch.repeat_interleave(starts.to(device), nb)
+            ).to(torch.int32)
+        self.qmap1 = states[0].get("qmap1") if eight else None
+        self.qmap2 = states[0].get("qmap2") if eight else None
+
+    def set_grads(self, grads):
+        ptrs = [g.data_ptr() for g in grads]
+        if ptrs != self.grad_ptrs:
+            # pageable host -> device copy, stream ordered; no device sync
+            self.ptrs[1].copy_(torch.tensor(ptrs, dtype = torch.int64), non_blocking = True)
+            self.grad_ptrs = ptrs
+            self.aligned_grads = all(p % 16 == 0 for p in ptrs)
+
+    def launch(
+        self,
+        group_scalars,
+        gnorm_scale = 1.0,
+    ):
+        """group_scalars: up to MAX_GROUPS (lr, beta1, beta2, eps, weight_decay) tuples."""
+        if self.blocks == 0:
+            return
+        cols = list(zip(*group_scalars))
+        pad = lambda xs: [float(x) for x in xs] + [0.0] * (MAX_GROUPS - len(xs))
+        scalars = []
+        for col in cols:
+            scalars += pad(col)
+        self.steps.add_(1)
+        aligned = self.aligned and self.aligned_grads
+        with torch.cuda.device(self.device):
+            if self.eight:
+                _run(
+                    _adam8bit_multi_kernel,
+                    (self.blocks,),
+                    (self.ptrs, self.numels, self.groups, self.steps, self.block_t, self.block_j,
+                     self.T, self.qmap1, self.qmap2, *scalars, float(gnorm_scale)),
+                    DTYPE = _TL_DTYPE[self.dtype],
+                    S2_PRODUCT_FMA = _S2_PRODUCT_FMA[self.dtype],
+                    ALIGNED = aligned,
+                    BLOCK = BLOCKSIZE,
+                    EXACT = _EXACT,
+                )  # fmt: skip
+            else:
+                _run(
+                    _adam32bit_multi_kernel,
+                    (self.blocks,),
+                    (self.ptrs, self.numels, self.groups, self.steps, self.block_t, self.block_j,
+                     self.T, *scalars, float(gnorm_scale)),
+                    DTYPE = _TL_DTYPE[self.dtype],
+                    ALIGNED = aligned,
+                    BLOCK = _MULTI_BLOCK_32,
+                    EXACT = _EXACT,
+                )  # fmt: skip
+
+
+_TL_DTYPE = {torch.float32: tl.float32, torch.float16: tl.float16, torch.bfloat16: tl.bfloat16}
 
 
 # Opaque ops for steps inside torch.compile'd code (Dynamo would otherwise trace the launcher).

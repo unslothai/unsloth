@@ -182,6 +182,190 @@ def _flat_state(t, p):
     return t.contiguous()
 
 
+def _multi_tensor_wanted():
+    # UNSLOTH_BNB_SHIM_MULTI_TENSOR=0 steps every weight with its own launch (update_step).
+    return os.environ.get("UNSLOTH_BNB_SHIM_MULTI_TENSOR", "1") != "0"
+
+
+_PLANS = "_unsloth_multi_tensor_plans"
+_STEPS = "_unsloth_multi_tensor_steps"
+
+
+def _multi_tensor_step(optimizer):
+    """Every weight of the step in one launch per (weight dtype, state kind): bitsandbytes' update,
+    bit for bit, without a launch per tensor. Returns False (nothing changed) when the optimizer or a
+    weight is not one it covers; then each weight takes update_step as before. Covered: plain
+    contiguous CUDA weights and gradients of one device, float32 / float16 / bfloat16, Python int
+    steps (not capturable), at most 4 param groups, no instance-level or subclass override of
+    update_step / init_state / get_config (bfloat16 stochastic rounding, FSDP2 shards keep theirs)."""
+    if not _multi_tensor_wanted() or getattr(optimizer, "capturable", False):
+        return False
+    cls = type(optimizer)
+    if (
+        not isinstance(optimizer, Optimizer2State)
+        or optimizer.optimizer_name != "adam"
+        or any(k in vars(optimizer) for k in ("update_step", "init_state", "get_config"))
+        or cls.update_step is not Optimizer2State.update_step
+        or cls.init_state is not Optimizer2State.init_state
+        or cls.get_config is not Optimizer8bit.get_config
+        or torch.compiler.is_compiling()
+    ):
+        return False
+    groups = optimizer.param_groups
+    if len(groups) > 4:
+        return False
+    active = []
+    device = None
+    for gindex, group in enumerate(groups):
+        for pindex, p in enumerate(group["params"]):
+            g = p.grad
+            if g is None:
+                continue
+            if (
+                type(p) not in (torch.nn.Parameter, torch.Tensor)
+                or type(g) is not torch.Tensor
+                or p.device.type != "cuda"
+                or g.device != p.device
+                or (device is not None and p.device != device)
+                or p.dtype not in (torch.float32, torch.float16, torch.bfloat16)
+                or g.dtype != p.dtype
+                or g.layout != torch.strided
+                or not p.is_contiguous()
+                or not g.is_contiguous()
+            ):
+                return False
+            device = p.device
+            active.append((gindex, pindex, group, p))
+    if not active:
+        return False
+    if any(p.dtype is torch.bfloat16 for _, _, _, p in active) and not _bf16_triton_ok(device):
+        return False
+    kernels = _triton_kernels(device)
+    if kernels is None:
+        return False
+    # Per-group scalars; a per-parameter override of any of them keeps the per-tensor route.
+    scalars = {}
+    for gindex, pindex, group, p in active:
+        config = optimizer.get_config(gindex, pindex, group)
+        if len(config["betas"]) != 2 or config["max_unorm"] > 0.0 or config["skip_zeros"]:
+            return False
+        lr = config["lr"]
+        value = (
+            float(lr) if torch.is_tensor(lr) else lr,
+            *config["betas"],
+            config["eps"],
+            config["weight_decay"],
+        )
+        if scalars.setdefault(gindex, value) != value:
+            return False
+    for gindex, pindex, group, p in active:
+        if len(optimizer.state[p]) == 0:
+            optimizer.init_state(group, p, gindex, pindex)
+    parts = {}
+    for gindex, pindex, group, p in active:
+        st = optimizer.state[p]
+        if torch.is_tensor(st.get("step")) or isinstance(st.get("step"), bool):
+            return False
+        eight = st["state1"].dtype == torch.uint8
+        keys = (
+            ("state1", "state2", "absmax1", "absmax2", "qmap1", "qmap2")
+            if eight
+            else ("state1", "state2")
+        )
+        for k in keys:
+            v = st.get(k)
+            if not torch.is_tensor(v) or v.device != device or not v.is_contiguous():
+                return False
+        parts.setdefault((p.dtype, eight), []).append((gindex, p, st))
+    order = sorted(scalars)
+    group_scalars = [scalars[g] for g in order]
+    slot = {g: i for i, g in enumerate(order)}
+    plans = optimizer.__dict__.setdefault(_PLANS, {})
+    launches = []
+    for key, members in parts.items():
+        plan = plans.get(key)
+        if plan is None or not _plan_matches(plan, members, slot):
+            if key[1] and not _same_qmaps(members):
+                return False
+            try:
+                plan = kernels.MultiTensorPlan(
+                    [p for _, p, _ in members],
+                    [st for _, _, st in members],
+                    [slot[g] for g, _, _ in members],
+                    key[1],
+                )
+            except torch.cuda.OutOfMemoryError:
+                plans.clear()
+                return False
+            plan.members = [
+                [p, st, slot[g], _state_ids(st), int(st["step"]), p.data_ptr()]
+                for g, p, st in members
+            ]
+            plans[key] = plan
+        launches.append((plan, members))
+    for plan, members in launches:
+        try:
+            plan.set_grads([p.grad for _, p, _ in members])
+            plan.launch(group_scalars)
+        except Exception as error:
+            # A failed launch leaves this plan's device step counts unknown: rebuild next time.
+            plans.clear()
+            if not _triton_failed(error):
+                raise
+            return False if plan is launches[0][0] else _finish_rest(optimizer, launches, plan)
+        for member in plan.members:
+            member[1]["step"] += 1
+            member[4] += 1
+    optimizer.__dict__[_STEPS] = optimizer.__dict__.get(_STEPS, 0) + 1
+    return True
+
+
+def _state_ids(st):
+    return tuple(
+        id(st.get(k)) for k in ("state1", "state2", "absmax1", "absmax2", "qmap1", "qmap2")
+    )
+
+
+def _plan_matches(plan, members, slot):
+    if len(plan.members) != len(members):
+        return False
+    for (p0, st0, g0, ids0, step0, ptr0), (g, p, st) in zip(plan.members, members):
+        if (
+            p0 is not p
+            or st0 is not st
+            or g0 != slot[g]
+            or ids0 != _state_ids(st)
+            or step0 != st["step"]
+            or ptr0 != p.data_ptr()
+        ):
+            return False
+    return True
+
+
+def _same_qmaps(members):
+    q1, q2 = members[0][2]["qmap1"], members[0][2]["qmap2"]
+    for _, _, st in members[1:]:
+        if st["qmap1"] is not q1 and not torch.equal(st["qmap1"], q1):
+            return False
+        if st["qmap2"] is not q2 and not torch.equal(st["qmap2"], q2):
+            return False
+    return True
+
+
+def _finish_rest(optimizer, launches, failed):
+    """A later launch failed after earlier ones stepped their weights: step the rest per tensor."""
+    done = set()
+    for plan, members in launches:
+        if plan is failed:
+            break
+        done.update(id(p) for _, p, _ in members)
+    for gindex, group in enumerate(optimizer.param_groups):
+        for pindex, p in enumerate(group["params"]):
+            if p.grad is not None and id(p) not in done:
+                optimizer.update_step(group, p, gindex, pindex)
+    return True
+
+
 class Optimizer8bit(torch.optim.Optimizer):
     _FSDP_WRAPPED_QUANT_STATE_KEY = "__bnb_optimizer_quant_state__"
 
@@ -359,6 +543,8 @@ class Optimizer8bit(torch.optim.Optimizer):
             self.check_overrides()
             self.to_gpu()
             self.initialized = True
+        if _multi_tensor_step(self):
+            return loss
         for gindex, group in enumerate(self.param_groups):
             for pindex, p in enumerate(group["params"]):
                 if p.grad is None:
