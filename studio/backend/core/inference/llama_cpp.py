@@ -7905,8 +7905,10 @@ _LAZY_READ_TENSORS = _LOOKUP_LAZY_READ_TENSORS
 _LAZY_READ_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 _LAZY_RESIDENT_MARGIN_FRAC = 0.10
 # Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
-# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
-_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe"})
+# Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520). qwen35,
+# qwen35moe and glm5-next load the whole NextN block under nextn_flags' mtp flags (b12776);
+# Qwen3.5-9B-MTP UD-Q4_K_XL, MTP off: CUDA0 holds 147.6 MiB (the block) under its tensor table.
+_NEXTN_SKIPPED_WITHOUT_MTP_ARCHS = frozenset({"nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next"})
 # --tensor-read-lazy predates ggml-org/llama.cpp#27969; a build reads only its own spelling.
 _LAZY_MODE_SPELLINGS: dict[str, tuple[frozenset[str], str]] = {
     "--lazy-mode": (frozenset({"-lzm", "--lazy-mode"}), "LLAMA_ARG_LAZY_MODE"),

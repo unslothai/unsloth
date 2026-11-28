@@ -240,16 +240,18 @@ def _nextn_gguf(tmp_path, arch, nextn):
     return str(path)
 
 
-def test_unloaded_nextn_bytes_are_the_head_block_only(tmp_path):
+# b12776 loads these archs' whole NextN block under nextn_flags' mtp flags (TENSOR_SKIP without load_mtp).
+@pytest.mark.parametrize("arch", ["nemotron_h_moe", "qwen35", "qwen35moe", "glm5-next"])
+def test_unloaded_nextn_bytes_are_the_head_block_only(tmp_path, arch):
     from core.inference.llama_cpp import LlamaCppBackend
 
-    path = _nextn_gguf(tmp_path, "nemotron_h_moe", 1)
+    path = _nextn_gguf(tmp_path, arch, 1)
     b = LlamaCppBackend(manages_processes = False)
     b._read_gguf_metadata(path)
     assert b._unloaded_nextn_bytes(path) == 4 * (1024 + 2048)
 
 
-@pytest.mark.parametrize("arch, nextn", [("qwen35moe", 1), ("glm4moe", 1), ("nemotron_h_moe", 0)])
+@pytest.mark.parametrize("arch, nextn", [("glm4moe", 1), ("nemotron_h_moe", 0), ("qwen35", 0)])
 def test_unloaded_nextn_bytes_are_zero_elsewhere(tmp_path, arch, nextn):
     from core.inference.llama_cpp import LlamaCppBackend
 
@@ -257,6 +259,25 @@ def test_unloaded_nextn_bytes_are_zero_elsewhere(tmp_path, arch, nextn):
     b = LlamaCppBackend(manages_processes = False)
     b._read_gguf_metadata(path)
     assert b._unloaded_nextn_bytes(path) == 0
+
+
+@pytest.mark.parametrize("engages", [False, True])
+def test_estimate_drops_the_nextn_block_unless_mtp_engages(tmp_path, monkeypatch, engages):
+    from types import SimpleNamespace
+
+    import routes.inference as ri
+
+    path = _nextn_gguf(tmp_path, "qwen35", 1)
+    config = SimpleNamespace(
+        identifier = "local/model", gguf_file = path, is_gguf = True, gguf_mmproj_file = None
+    )
+    file_bytes = Path(path).stat().st_size
+    monkeypatch.setattr(ri, "_gguf_resident_file_gb", lambda cfg, **kw: file_bytes / 1024**3)
+    monkeypatch.setattr(ri, "_embedded_mtp_engages", lambda *a, **k: engages)
+    ri._estimate_files_cache.clear()
+    b = ri._gguf_memory_breakdown(config, path, n_ctx = 512, speculative_type = "off")
+    # The head block is 4 * (1024 + 2048) bytes; draft-mtp loads it, so it stays charged.
+    assert b.weights_bytes == file_bytes - (0 if engages else 4 * (1024 + 2048))
 
 
 def test_tensor_scan_is_unchanged_without_also(tmp_path):
