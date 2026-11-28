@@ -497,6 +497,10 @@ def _case_train(
     eval_no_grad = False,
     padding = None,
     hf_loss = False,
+    dtype = "float32",
+    optim = "adamw_torch",
+    lr = 1e-2,
+    weights_changed = False,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -569,7 +573,7 @@ def _case_train(
                 device_map = {"": torch.cuda.current_device()},
             )
         return AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype = torch.float32, attn_implementation = attn, **extra
+            model_name, torch_dtype = getattr(torch, dtype), attn_implementation = attn, **extra
         )
 
     def peft(model):
@@ -619,6 +623,9 @@ def _case_train(
         model = peft(model)
     else:
         model.train()
+        if dtype == "bfloat16":
+            # What every Unsloth full finetuning load stamps: the trainer turns bfloat16 stochastic rounding on.
+            model._unsloth_full_finetuning = True
     count = device != "cpu" or os.environ.get("UNSLOTH_TEST_COUNT_MOE") == "1"
     moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
@@ -698,8 +705,8 @@ def _case_train(
         per_device_train_batch_size = bs,
         gradient_accumulation_steps = ga,
         max_steps = steps,
-        learning_rate = 1e-2,
-        optim = "adamw_torch",
+        learning_rate = lr,
+        optim = optim,
         adam_epsilon = _ADAM_EPS,
         lr_scheduler_type = "constant",
         warmup_steps = 0,
@@ -921,6 +928,9 @@ def _case_train(
         "is_tp": is_tp,
         "is_ep": is_ep,
         "stage": None if stage is None else int(stage.stage_index),
+        "pp_schedules": None
+        if stage is None
+        else sorted({type(s).__name__ for s in getattr(stage, "_shapes", {}).values()}),
         "carried_aux_steps": None
         if stage is None
         else int(getattr(stage, "carried_router_aux_steps", 0)),
@@ -968,9 +978,49 @@ def _case_train(
         else None,
         "router_aux_scale": getattr(manager, "router_aux_scale", None),
     }
+    if weights_changed:
+        res.update(_weights_changed(trainer, ckpt, dtype))
     if dist.is_initialized():
         dist.barrier()
     return res
+
+
+def _weights_changed(trainer, ckpt, dtype):
+    """Per trained weight (n changed, n elements) against the checkpoint, and the optimizer's stochastic rounding
+    counters. Collective under FSDP2 / TP (full_tensor), so every rank calls it."""
+    import glob
+
+    from safetensors.torch import load_file
+
+    init = {}
+    for path in sorted(glob.glob(os.path.join(ckpt, "*.safetensors"))):
+        init.update(load_file(path))
+    changed = {}
+    for name, p in trainer.model.named_parameters():
+        if not p.requires_grad:
+            continue
+        key = name.replace("module.", "").replace("_orig_mod.", "")
+        full = _full(p.detach())
+        if key in init:
+            want = init[key].to(getattr(torch, dtype))
+            changed[key] = (int((full != want).sum()), full.numel())
+    opt = trainer.optimizer
+    while hasattr(opt, "optimizer") and opt.optimizer is not opt:
+        opt = opt.optimizer
+    from unsloth.optimizers import bf16_stochastic_rounding as sr
+
+    counters = {
+        k: v for k, v in vars(opt).items() if k.startswith("_unsloth_sr_") and isinstance(v, int)
+    }
+    return {
+        "changed": changed,
+        "sr_covered": getattr(opt, sr._MARK, None),
+        "sr_counters": counters,
+        "optimizer": type(opt).__module__ + "." + type(opt).__name__,
+        "param_dtypes": sorted(
+            {str(p.dtype) for p in trainer.model.parameters() if p.requires_grad}
+        ),
+    }
 
 
 CASES = {"train": _case_train}
