@@ -13,9 +13,10 @@
 - `load_in_8bit = "int8"`: the rotated int8 frozen LoRA base (`float8_training = "int8_lora"`): a 16-bit load
   whose LoRA base GEMMs run as block-Hadamard rotated int8 (unsloth.kernels.int8_lora).
 - `load_in_8bit = "bnb"` / `"bitsandbytes"` / `"llm.int8"`: bitsandbytes LLM.int8, always.
-- `load_in_8bit = True`: bitsandbytes LLM.int8, except for LoRA on a 16-bit checkpoint on a GPU where the
-  rotated int8 base is measured faster with the same eval loss (RTX 50 / RTX PRO 6000, compute capability
-  12.0), which runs `"int8"` instead and says so once. `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes.
+- `load_in_8bit = True` (with `load_in_4bit = False`): bitsandbytes LLM.int8, except for LoRA on a 16-bit
+  checkpoint on a GPU where the rotated int8 base is measured faster than bitsandbytes and bf16 with the same
+  eval loss (RTX 50 / RTX PRO 6000, compute capability 12.0), which runs `"int8"` instead and says so once.
+  `UNSLOTH_LOAD_IN_8BIT_AUTO=0` keeps bitsandbytes.
 
 `load_in_4bit = True` is untouched.
 """
@@ -205,6 +206,17 @@ def _int8_auto_config_reason(arguments, extra):
             return "its config could not be read"
     if getattr(config, "quantization_config", None) is not None:
         return "the checkpoint is pre-quantized"
+    try:
+        # FastModel routes text-diffusion models to FastDiffusionModel, which has no int8 / fp8 LoRA base.
+        from .diffusion import is_diffusion_model_type
+        from .diffusion_profiles import resolve_diffusion_profile
+        if (
+            is_diffusion_model_type(_model_types(config))
+            or resolve_diffusion_profile(config) is not None
+        ):
+            return "a text-diffusion model"
+    except Exception:
+        return "its model family could not be checked"
     hidden = _text_hidden_size(config)
     try:
         from ..kernels.int8_lora import MIN_HIDDEN
@@ -238,6 +250,9 @@ def _int8_auto_reason(arguments, extra):
         return "load_in_fp8"
     if _explicit_4bit(arguments):
         return f"load_in_4bit = {arguments['load_in_4bit']!r}"
+    if "load_in_4bit" not in arguments:
+        # load_in_4bit keeps its True default: True alone has always been refused as 4-bit + 8-bit, on every GPU.
+        return "load_in_4bit left at its default"
     if arguments.get("load_in_16bit", False):
         return "load_in_16bit"
     if extra.get("float8_training", None) not in (None, False):
@@ -347,14 +362,20 @@ def onthefly_lowbit_load(fn):
             if decision == "int8":
                 args, kwargs = bound.args, bound.kwargs
         if not (keep_bnb or decision == "bnb"):
-            return _load(args, kwargs, bound, arguments)
+            return _load(args, kwargs, bound, arguments, keep_bnb)
         token = _BNB8_KEPT.set(True)
         try:
-            return _load(args, kwargs, bound, arguments)
+            return _load(args, kwargs, bound, arguments, keep_bnb)
         finally:
             _BNB8_KEPT.reset(token)
 
-    def _load(args, kwargs, bound, arguments):
+    def _load(
+        args,
+        kwargs,
+        bound,
+        arguments,
+        keep_bnb = False,
+    ):
         l4 = arguments.get("load_in_4bit", None)
         l8 = arguments.get("load_in_8bit", None)
         if not isinstance(l4, str) and not isinstance(l8, str):
@@ -374,9 +395,9 @@ def onthefly_lowbit_load(fn):
         arguments["load_in_8bit"] = l8
         if fp8 is not False:
             arguments["load_in_fp8"] = fp8
-            if not explicit_4bit:
-                # load_in_4bit defaults to True: fp8 asked through load_in_8bit replaces it.
-                arguments["load_in_4bit"] = False
+        if (fp8 is not False or keep_bnb) and not explicit_4bit:
+            # load_in_4bit defaults to True: fp8 / bitsandbytes asked through a load_in_8bit string replaces it.
+            arguments["load_in_4bit"] = False
         if fmt is None:
             return fn(*bound.args, **bound.kwargs)
         with onthefly_fp4_loading(fmt):

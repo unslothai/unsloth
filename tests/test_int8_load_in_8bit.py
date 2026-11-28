@@ -77,7 +77,9 @@ def test_int8_string_conflicts_raise(wrapped, kwargs, exc):
 
 @pytest.mark.parametrize("name", ["bnb", "bitsandbytes", "llm.int8", "BNB-8bit"])
 def test_bnb_string_is_bitsandbytes_even_where_auto_picks_int8(wrapped, int8_gpu, name):
-    assert wrapped("m", load_in_8bit = name) == (True, True, False, None)
+    # Like the fp8 strings, a bitsandbytes string replaces the load_in_4bit = True default.
+    assert wrapped("m", load_in_8bit = name) == (False, True, False, None)
+    assert wrapped("m", load_in_8bit = name, load_in_4bit = False) == (False, True, False, None)
     assert oq.normalize_lowbit_flags(False, name) == (False, True, False, None)
 
 
@@ -98,11 +100,12 @@ def test_explicit_bnb_survives_a_nested_load(int8_gpu):
     assert outer("m", load_in_4bit = False, load_in_8bit = "bnb") == (False, True, False, None)
     assert outer("m", load_in_4bit = False, load_in_8bit = True) == (False, False, False, "int8_lora")
     assert inner("m", load_in_4bit = False, load_in_8bit = True) == (False, False, False, "int8_lora")
+    assert outer("m", load_in_8bit = "bnb") == (False, True, False, None)
 
 
 def test_true_stays_bitsandbytes_off_the_measured_gpus(wrapped, monkeypatch):
     monkeypatch.setattr(oq, "_int8_auto_device_reason", lambda: "compute capability 9.0 is not one")
-    assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == (False, True, False, None)
 
 
 @pytest.mark.parametrize("l4", [True, "nf4", "nvfp4", "int4"])
@@ -118,9 +121,16 @@ def test_explicit_4bit_strings_are_not_dropped(wrapped, int8_gpu, l4):
 
 
 def test_true_picks_int8_on_the_measured_gpus_and_says_so_once(wrapped, int8_gpu, capsys):
-    assert wrapped("m", load_in_8bit = True) == (False, False, False, "int8_lora")
-    assert wrapped("m", load_in_8bit = True) == (False, False, False, "int8_lora")
+    for _ in range(2):
+        assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == (
+            False,
+            False,
+            False,
+            "int8_lora",
+        )
     assert capsys.readouterr().out.count("load_in_8bit = True runs the rotated int8") == 1
+    # load_in_4bit left at its True default: unchanged (the loader refuses 4-bit + 8-bit as before).
+    assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
 
 
 @pytest.mark.parametrize(
@@ -135,13 +145,14 @@ def test_true_picks_int8_on_the_measured_gpus_and_says_so_once(wrapped, int8_gpu
     ],
 )
 def test_true_keeps_bitsandbytes_where_int8_cannot_replace_it(wrapped, int8_gpu, kwargs):
+    kwargs = {"load_in_4bit": False, **kwargs}
     l4, l8, fp8, f8 = wrapped("m", load_in_8bit = True, **kwargs)
     assert l8 is True and f8 == kwargs.get("float8_training")
 
 
 def test_auto_kill_switch(wrapped, int8_gpu, monkeypatch):
     monkeypatch.setenv(oq.AUTO_8BIT_ENV, "0")
-    assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == (False, True, False, None)
 
 
 def test_false_and_fp8_untouched(wrapped, int8_gpu):
@@ -204,6 +215,16 @@ def test_config_rule(tmp_path):
         oq._int8_auto_config_reason({"model_name": _config_dir(tmp_path)}, {"gguf_file": "x.gguf"})
         is not None
     )
+
+
+def test_config_rule_keeps_bitsandbytes_for_text_diffusion(tmp_path, monkeypatch):
+    from unsloth.models import diffusion
+
+    path = _config_dir(tmp_path)
+    monkeypatch.setattr(
+        diffusion, "is_diffusion_model_type", lambda model_types: "qwen3" in model_types
+    )
+    assert "text-diffusion" in oq._int8_auto_config_reason({"model_name": path}, {})
 
 
 def test_config_probe_forwards_offline_and_cache_options(monkeypatch):
@@ -281,7 +302,7 @@ _ROCM = torch.cuda.is_available() and torch.version.hip is not None
 @pytest.mark.skipif(not _ROCM, reason = "needs a ROCm GPU")
 def test_rocm_true_stays_bitsandbytes_and_int8_refuses(wrapped):
     assert oq._int8_auto_device_reason() == "not an NVIDIA GPU"
-    assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
+    assert wrapped("m", load_in_8bit = True, load_in_4bit = False) == (False, True, False, None)
     from unsloth import precision as P
 
     with pytest.raises(P.PrecisionRefused):
