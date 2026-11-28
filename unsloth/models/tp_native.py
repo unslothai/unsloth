@@ -6619,6 +6619,8 @@ def tp_trainer_setup(
         True  # the generated TRL trainers skip for_inference()
     )
     _tp_scaler(trainer, dp_size)
+    if not pipeline:  # pipeline parallel forms the router aux loss itself (pp_env)
+        _tp_router_aux(trainer, tp_mesh.size())
     trainer.__dict__["save_model"] = types.MethodType(_tp_trainer_save_model, trainer)
     for name in ("evaluate", "predict") if cp_data is not None and not pipeline else ():
         trainer.__dict__[name] = _refuse_tp_trainer_call(name)
@@ -7171,6 +7173,61 @@ def _tp_trainer_save_model(
 
 def _has_peft_config(model):
     return any(getattr(level, "peft_config", None) for level in _tp_chain(model))
+
+
+def _tp_router_aux_scale(trainer, tp):
+    """1 / tp for a MoE forward that adds router_aux_loss_coef x aux_loss unweighted (the stock transformers
+    forward, zoo's GA scaler absent, a Trainer that does not add the aux loss itself), else 1.0.
+
+    The Trainer multiplies the loss by the world size (dp x tp) and its token count counts every dp replica's
+    tokens tp times, so the token-normalised cross entropy comes out as on dp GPUs. An unweighted aux loss is
+    the same on every tp rank (replicated router inputs) and would be carried tp times. Zoo's scaler weights
+    it by local / num_items_in_batch, which already divides by tp; TRL >= 1.15 adds it after the scaling."""
+    from ..context_parallel import _causal_lm, _forward_functions
+    from .pp_env import _compute_loss_adds_router_aux
+
+    inner = _causal_lm(getattr(trainer, "model", None))
+    if inner is None or tp <= 1:
+        return 1.0
+    # Without cross-device token averaging the Trainer neither gathers the count nor multiplies the loss by
+    # the world size: nothing is carried tp times.
+    if not getattr(getattr(trainer, "args", None), "average_tokens_across_devices", False):
+        return 1.0
+    if any("unsloth_ga_scale_aux_loss" in fn.__code__.co_names for fn in _forward_functions(inner)):
+        return 1.0
+    if _compute_loss_adds_router_aux(getattr(type(trainer), "compute_loss", None)):
+        return 1.0
+    return 1.0 / tp
+
+
+def _tp_router_aux(trainer, tp):
+    """Inside a training step whose loss the Trainer multiplies by the world size (evaluation is not),
+    run the CausalLM with router_aux_loss_coef x _tp_router_aux_scale. outputs.aux_loss stays unscaled."""
+    from ..context_parallel import _causal_lm
+
+    scale = _tp_router_aux_scale(trainer, tp)
+    if scale == 1.0:
+        return
+    inner = _causal_lm(trainer.model)
+    original = trainer.training_step
+
+    def training_step(self, *args, **kwargs):
+        coef = vars(inner).get("router_aux_loss_coef")
+        num_items = kwargs.get("num_items_in_batch", args[2] if len(args) > 2 else None)
+        # Trainer.compute_loss multiplies by the world size only with a count that reaches the loss.
+        scaled = num_items is not None and (
+            getattr(self, "model_accepts_loss_kwargs", False)
+            or getattr(self, "compute_loss_func", None) is not None
+        )
+        if not scaled or isinstance(coef, bool) or not isinstance(coef, (int, float)) or not coef:
+            return original(*args, **kwargs)
+        inner.router_aux_loss_coef = coef * scale
+        try:
+            return original(*args, **kwargs)
+        finally:
+            inner.router_aux_loss_coef = coef
+
+    trainer.__dict__["training_step"] = types.MethodType(training_step, trainer)
 
 
 def _tp_scaler(trainer, dp):
