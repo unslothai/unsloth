@@ -204,6 +204,8 @@ def _case(rank, world_size, shim):
     whole = _absmax_bytes(head)
     head_info = _shard(head, world_size, q, shard_absmax=True, mixed=True)
     out["absmax_sharded"] = (base_info["absmax_sharded"], head_info["absmax_sharded"])
+    # torch < 2.8 (one dtype per unit, frozen weights included): no float storage, absmax replicated.
+    out["float_storage"] = q.float_storage_survives_wrap(native=True)
     out["bytes_whole"] = whole
     out["bytes_base"] = _absmax_bytes(base)
     out["bytes_head"] = _absmax_bytes(head)
@@ -415,12 +417,16 @@ def _run(world_size, shim):
 
 def _check(results, world_size):
     for rank, r in results.items():
-        # Two weights split evenly into self-contained shards; the third stays whole.
-        assert r["absmax_sharded"] == (0, 2), r
         whole = r["bytes_whole"]
         assert r["bytes_base"] == whole, r
-        assert r["bytes_head"] == [whole[0] // world_size, whole[1] // world_size, whole[2]], r
-        assert r["originals_freed"] == [True, True, False], r
+        if r["float_storage"]:
+            # Two weights split evenly into self-contained shards; the third stays whole.
+            assert r["absmax_sharded"] == (0, 2), r
+            assert r["bytes_head"] == [whole[0] // world_size, whole[1] // world_size, whole[2]], r
+            assert r["originals_freed"] == [True, True, False], r
+        else:
+            assert r["absmax_sharded"] == (0, 0), r
+            assert r["bytes_head"] == whole, r
         assert r["absmax_between_steps"] == [True, True, True], r
         assert r["steps_changed_loss"], r
         assert r["losses_bitwise"] and r["grads_bitwise"], r
