@@ -362,6 +362,9 @@ class _UNet2DConditionModel(torch.nn.Module):
         ({"offload_policy": "group", "_hooked": True}, True),
         ({"offload_policy": "group", "_hooked": True, "_offloaded_off": True}, False),
         ({"offload_policy": "group"}, True),
+        # Whole-module offload: accelerate's render-thread hooks move the UNet under a parked replay.
+        ({"offload_policy": "model", "_hooked": True}, False),
+        ({"offload_policy": "model"}, False),
         ({"speed_mode": "max"}, False),
         ({"speed_optims": ("cuda_graph",)}, False),
         ({"transformer_cache": "fbcache"}, False),

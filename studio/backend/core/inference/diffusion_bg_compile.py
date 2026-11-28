@@ -1839,11 +1839,15 @@ def select_module(
     device: Any,
     backend: Any,
     denoiser_hooked: bool,
+    model_offload: bool = False,
+    logger: Any = None,
 ) -> Any:
     """The one dense default-tier CUDA denoiser whose compile may move off the render, or None.
 
     Not torchao (~30x slower eager), GGUF (compiles only its dequant), a step cache (toggles graphs per step) or
-    max-autotune (an explicit request to pay the compile). An offloaded denoiser only with ``offloaded_enabled``."""
+    max-autotune (an explicit request to pay the compile). An offloaded denoiser only with ``offloaded_enabled``,
+    and never under whole-module (accelerate model-CPU) offload: the render thread's hooks move the weights back
+    to the host under a parked replay, so the resumed trace sees CPU params beside CUDA inputs."""
     if not enabled():
         return None
     if "compiled" not in tuple(speed_optims or ()) or not default_tier:
@@ -1857,7 +1861,15 @@ def select_module(
         modules = _denoiser_modules(pipe)
     except Exception:  # noqa: BLE001
         return None
-    return modules[0] if len(modules) == 1 else None
+    if len(modules) != 1:
+        return None
+    if model_offload:
+        if logger is not None:
+            logger.info(
+                "diffusion.bg_compile: skipped under model offload; the denoiser compiles inline on the render"
+            )
+        return None
+    return modules[0]
 
 
 def arm(
