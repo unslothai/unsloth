@@ -48,9 +48,8 @@ _FP8_NAMES = {
 }
 _INT8_NAMES = ("int8", "int8_rotated", "rotated_int8", "int8_lora")
 _BNB8_NAMES = ("bnb", "bnb_int8", "bnb_8bit", "bitsandbytes", "llm.int8", "llm_int8")
-# load_in_8bit = True picks the rotated int8 base only on these compute capabilities: where it was timed faster
-# than bf16 and bitsandbytes 8-bit LoRA with the same eval loss (RTX 5090, RTX PRO 6000). sm80 / sm89 run its
-# Triton int8 GEMM slower than bf16; sm90 / sm100 / sm121 are untimed.
+# Where load_in_8bit = True picks the int8 base: timed faster than bf16 and bitsandbytes (RTX 5090, RTX PRO 6000).
+# sm80 / sm89 run its Triton int8 GEMM slower than bf16; sm90 / sm100 / sm121 are untimed.
 _INT8_AUTO_CAPABILITIES = ((12, 0),)
 AUTO_8BIT_ENV = "UNSLOTH_LOAD_IN_8BIT_AUTO"
 _CONFIG_OPTIONS = ("cache_dir", "local_files_only", "subfolder", "proxies")
@@ -174,8 +173,7 @@ def _int8_auto_config_reason(arguments, extra):
         or extra.get("quantization_config") is not None
     ):
         return "not a plain 16-bit checkpoint"
-    # The caller's config-loading options (offline, custom cache) and the loader's offline rule: offline when
-    # asked (local_files_only or HF_HUB_OFFLINE), else online with one offline retry on a network error.
+    # The loader's offline rule: offline when asked, else online with one offline retry.
     options = {k: extra[k] for k in _CONFIG_OPTIONS if extra.get(k, None) is not None}
     try:
         from transformers import AutoConfig
