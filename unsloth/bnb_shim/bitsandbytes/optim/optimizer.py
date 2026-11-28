@@ -89,10 +89,26 @@ class Optimizer2State(Optimizer8bit):
     pass
 
 
+def _materialize(params):
+    """List of parameters or of param-group dicts, every generator consumed exactly once."""
+    out = []
+    for item in params:
+        if isinstance(item, dict):
+            group = dict(item)
+            group_params = group.get("params", ())
+            if isinstance(group_params, torch.Tensor):
+                group_params = [group_params]
+            group["params"] = list(group_params)
+            out.append(group)
+        else:
+            out.append(item)
+    return out
+
+
 def _parameters(params):
     for item in params:
         if isinstance(item, dict):
-            yield from item.get("params", ())
+            yield from item["params"]
         else:
             yield item
 
@@ -114,7 +130,7 @@ def torch_optimizer_fallback(name, base):
     def __new__(cls, params, *args, **kwargs):
         for key in _BNB_ONLY:
             kwargs.pop(key, None)
-        params = list(params)
+        params = _materialize([params] if isinstance(params, torch.Tensor) else params)
         if any(
             getattr(p, "dtype", None) is torch.float16 and p.requires_grad
             for p in _parameters(params)

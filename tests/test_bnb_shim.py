@@ -278,6 +278,10 @@ def test_optimizers_fall_back_and_int8_refuses():
         p.grad = torch.ones(4)
         opt.step()
         pickle.loads(pickle.dumps(opt.state_dict()))
+        # Param groups given as generators (Trainer builds lists, others may not) keep their params.
+        q = torch.nn.Parameter(torch.ones(3))
+        grouped = bnb.optim.AdamW8bit(({"params": (t for t in [q]), "lr": 0.1},))
+        group_sizes = [len(g["params"]) for g in grouped.param_groups]
         pickle.loads(pickle.dumps(bnb.optim.PagedAdamW8bit))
         try:
             bnb.optim.AdamW8bit([torch.nn.Parameter(torch.ones(4, dtype = torch.float16))])
@@ -305,7 +309,7 @@ def test_optimizers_fall_back_and_int8_refuses():
         print("OUT " + json.dumps({
             "exact_torch": type(opt) is torch.optim.AdamW, "factory_module": bnb.optim.AdamW.__module__,
             "stepped": float(p[0]), "notices": printed.getvalue().count("runs torch.optim.AdamW"),
-            "fp16": fp16, "resume": resume, "int8": int8, "lion": lion,
+            "fp16": fp16, "resume": resume, "int8": int8, "lion": lion, "group_sizes": group_sizes,
             "manager": type(bnb.optim.GlobalOptimManager.get_instance()).__name__,
         }))
         """
@@ -314,6 +318,7 @@ def test_optimizers_fall_back_and_int8_refuses():
     assert out["exact_torch"] and out["factory_module"] == "bitsandbytes.optim"
     assert out["stepped"] < 1.0 and out["notices"] == 1
     assert "float16" in out["fp16"] and "8-bit state" in out["resume"]
+    assert out["group_sizes"] == [1]
     assert "load_in_8bit" in out["int8"] and "bitsandbytes" in out["lion"]
     assert out["manager"] == "GlobalOptimManager"
 
