@@ -15889,6 +15889,7 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
         return False
     from core.inference.llama_cpp import (
         _MTP_MIN_SIZE_B,
+        _arch_has_fast_mla_mtp,
         _canonicalize_spec_mode,
         _extra_args_set_spec_type,
         _extract_model_size_b,
@@ -15918,7 +15919,12 @@ def _embedded_mtp_engages(probe, config, speculative_type, extras) -> bool:
     size_b = _extract_model_size_b(getattr(config, "identifier", None))
     if size_b is not None and size_b < _MTP_MIN_SIZE_B:
         return False
-    if getattr(probe, "_kv_lora_rank", None) is not None and not _mla_mtp_auto_enabled():
+    # Same exemption as the launcher: fast-MLA archs keep Auto MTP.
+    if (
+        getattr(probe, "_kv_lora_rank", None) is not None
+        and not _mla_mtp_auto_enabled()
+        and not _arch_has_fast_mla_mtp(getattr(probe, "_architecture", None))
+    ):
         return False
     return True
 
@@ -16106,9 +16112,19 @@ def _gguf_memory_breakdown(
     # Embedded NextN head has no file but still allocates draft KV; safe to price unconditionally.
     probe = _probe_backend()
     probe._read_gguf_metadata(gguf_path)
-    embedded_mtp = bool(
-        not charged_drafter and _embedded_mtp_engages(probe, config, speculative_type, extras)
-    )
+    mtp_engages = _embedded_mtp_engages(probe, config, speculative_type, extras)
+    embedded_mtp = bool(not charged_drafter and mtp_engages)
+    # Without draft-mtp llama.cpp skips the embedded NextN block (TENSOR_SKIP); /load drops it too.
+    nextn_unloaded = 0
+    from core.inference.llama_cpp import _draft_file_may_infer_mtp
+
+    if not mtp_engages and not _draft_file_may_infer_mtp(extras, os.environ):
+        try:
+            nextn_unloaded = min(gpu_files_bytes, int(probe._unloaded_nextn_bytes(gguf_path) or 0))
+        except Exception as exc:  # noqa: BLE001 -- unreadable header: no discount
+            logger.debug("NextN block scan failed while pricing the estimate: %s", exc)
+    gpu_files_bytes -= nextn_unloaded
+    weights_bytes -= nextn_unloaded
     # Not re-placed by draft-only pins: an embedded head keeps the target's placement.
     if charged_drafter or embedded_mtp:
         drafter_path, drafter_kind = charged_drafter or (None, "mtp")
@@ -16134,8 +16150,7 @@ def _gguf_memory_breakdown(
             drafter_kind,
             extras,
             # Asked of the header: the predicate that engages an embedded head also gates draft-mtp emission.
-            studio_emits_mtp = embedded_mtp
-            or _embedded_mtp_engages(probe, config, speculative_type, extras),
+            studio_emits_mtp = embedded_mtp or mtp_engages,
         )
         # Use the target's layout, not helper defaults, or the drafter cache is under-priced.
         _draft_v_type = draft_v or _field_draft_cache or env_draft_v
@@ -16184,7 +16199,9 @@ def _gguf_memory_breakdown(
     )
 
     # Only the main weight is split by --gpu-layers; companions have their own placement flags.
-    main_bytes = min(gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path))
+    main_bytes = min(
+        gpu_files_bytes, LlamaCppBackend._get_gguf_size_bytes(gguf_path) - nextn_unloaded
+    )
     companion_bytes = max(0, gpu_files_bytes - main_bytes)
     from core.inference.llama_cpp import (
         _effective_lazy_mode,
