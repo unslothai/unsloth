@@ -3417,6 +3417,8 @@ export const fa = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "پاسخ‌ها" },
         thinkingTools: { title: "تفکر و ابزارها" },

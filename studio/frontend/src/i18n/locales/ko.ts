@@ -3190,6 +3190,8 @@ export const ko = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "응답" },
         thinkingTools: { title: "생각과 도구" },

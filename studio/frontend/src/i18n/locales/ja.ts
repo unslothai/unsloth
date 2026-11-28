@@ -3183,6 +3183,8 @@ export const ja = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "応答" },
         thinkingTools: { title: "思考とツール" },

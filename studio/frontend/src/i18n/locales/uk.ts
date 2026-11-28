@@ -3456,6 +3456,8 @@ export const uk = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Відповіді" },
         thinkingTools: { title: "Міркування та інструменти" },

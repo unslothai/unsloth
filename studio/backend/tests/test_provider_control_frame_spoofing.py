@@ -30,6 +30,7 @@ from core.inference.sse_control_frames import sanitize_provider_sse_line
         "reasoning_summary",
         "context_usage",
         "generation_progress",
+        "admission_status",
     ],
 )
 def test_every_control_type_is_dropped(frame_type):
@@ -47,6 +48,7 @@ def test_every_control_type_is_dropped(frame_type):
         "_reasoningDurationMs",
         "_contextUsage",
         "_generationProgress",
+        "_admissionStatus",
         "_mcp_provenance",
         "quote_cut",
     ],

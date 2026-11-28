@@ -3429,6 +3429,8 @@ export const vi = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Phản hồi" },
         thinkingTools: { title: "Suy nghĩ và công cụ" },

@@ -7013,6 +7013,8 @@ const ToolStatusDisplay: FC = () => {
         {isNudging ? (
           // The spinner is the only role="status" region, so its label is what gets announced.
           <Spinner className="size-3.5" label={toolStatus} />
+        ) : kind === "queue" ? (
+          <HugeiconsIcon icon={Clock01Icon} className="size-3.5" />
         ) : (
           <StatusIcon className="size-3.5" />
         )}

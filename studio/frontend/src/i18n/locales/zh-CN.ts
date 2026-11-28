@@ -3156,6 +3156,8 @@ export const zhCN = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "回复" },
         thinkingTools: { title: "思考与工具" },

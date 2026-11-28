@@ -74,6 +74,7 @@ export function appendRecoveredDelta(
 export function generationChunkCountsTowardTiming(payload: unknown): boolean {
   const chunk = payload as
     | {
+        _admissionStatus?: unknown;
         _reasoningDurationMs?: unknown;
         _contextUsage?: unknown;
         _generationProgress?: unknown;
@@ -86,6 +87,7 @@ export function generationChunkCountsTowardTiming(payload: unknown): boolean {
     | undefined;
   if (!chunk || typeof chunk !== "object") return false;
   if (
+    "_admissionStatus" in chunk ||
     "_reasoningDurationMs" in chunk ||
     "_contextUsage" in chunk ||
     "_generationProgress" in chunk ||

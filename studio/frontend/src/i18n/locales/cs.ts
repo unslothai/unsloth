@@ -3447,6 +3447,8 @@ export const cs = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Odpovědi" },
         thinkingTools: { title: "Přemýšlení a nástroje" },

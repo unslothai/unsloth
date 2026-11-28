@@ -28,6 +28,12 @@ test("sandbox tools keep the terminal glyph", () => {
   }
 });
 
+
+test("admission waits keep the clock glyph", () => {
+  assert.equal(toolStatusKind("Waiting for shared context capacity"), "queue");
+  assert.equal(toolStatusKind("Waiting for a serving slot"), "queue");
+});
+
 test("every other status keeps the globe", () => {
   for (const status of [
     "Searching: red square",

@@ -25,6 +25,7 @@ _CONTROL_TYPES = frozenset(
         "reasoning_summary",
         "context_usage",
         "generation_progress",
+        "admission_status",
     }
 )
 
@@ -36,6 +37,7 @@ _CONTROL_KEYS = (
     "_reasoningDurationMs",
     "_contextUsage",
     "_generationProgress",
+    "_admissionStatus",
     "_mcp_provenance",
     "quote_cut",
 )

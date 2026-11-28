@@ -3476,6 +3476,8 @@ export const es419 = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "Respuestas" },
         thinkingTools: { title: "Razonamiento y herramientas" },

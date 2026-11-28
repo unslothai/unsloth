@@ -3197,6 +3197,8 @@ export const ar = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "الردود" },
         thinkingTools: { title: "التفكير والأدوات" },

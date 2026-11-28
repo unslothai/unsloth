@@ -3206,6 +3206,8 @@ export const hi = {
       },
     },
     chat: {
+      admissionContextCapacity: "Waiting for shared context capacity",
+      admissionServingSlot: "Waiting for a serving slot",
       groups: {
         replies: { title: "उत्तर" },
         thinkingTools: { title: "सोच और टूल" },

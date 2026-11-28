@@ -78,6 +78,9 @@ export function normalizeChatGenerationChunkPayload(
     }
     // Persisted control frames arrive as plain chunks (the decoder drops the SSE event field); re-tag
     // them as chat-api.ts does or a resumed run loses tool activity.
+    if (frameType === "admission_status") {
+      return { _admissionStatus: payload } as unknown as OpenAIChatChunk;
+    }
     if (frameType === "tool_status") {
       return {
         _toolStatus: (payload as { content?: unknown }).content ?? "",
