@@ -29444,8 +29444,56 @@ def _prepare_audio_for_llama(b64: str) -> tuple[str, str]:
     return _prepare_audio_clips_for_llama([b64])[0]
 
 
+# Follow-up turns replay the same recording, so the last transcode is kept (one entry, at most the ~33 MB base64 WAV budget).
+_PREPARED_AUDIO_CACHE: dict = {}
+_PREPARED_AUDIO_CACHE_LOCK = threading.Lock()
+_PREPARED_AUDIO_CACHE_MAX_CHARS = 4 * math.ceil(STT_AUDIO_RAW_MAX_BYTES / 3) + 4096
+
+
+def _clear_prepared_audio_cache() -> None:
+    with _PREPARED_AUDIO_CACHE_LOCK:
+        _PREPARED_AUDIO_CACHE.clear()
+
+
+def _prepared_audio_key(clips: list[str]) -> tuple:
+    digest = _hashlib.sha256()
+    for clip in clips:
+        data = clip.encode("utf-8", "surrogatepass")
+        digest.update(len(data).to_bytes(8, "little"))
+        digest.update(data)
+    limits = (
+        _MAX_AUDIO_RAW_BYTES,
+        _MAX_AUDIO_SECONDS,
+        _MAX_DECODED_SAMPLES,
+        _MAX_DECODE_BLOCK_SAMPLES,
+        _RESAMPLE_SLICE_SAMPLES,
+        _MIN_TRANSCODE_AUDIO_SAMPLE_RATE,
+        _MIN_AUDIO_SECONDS,
+    )
+    return (digest.digest(), _AUDIO_BUDGET_LEFT.get(), limits)
+
+
 def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
     """Clips share one byte and duration budget, so the result ignores attachment order. Blocking: call via a thread from async paths."""
+    lengths = tuple(len(clip) for clip in clips)
+    with _PREPARED_AUDIO_CACHE_LOCK:
+        entry = _PREPARED_AUDIO_CACHE.get(lengths)
+    # Hash only when the lengths match the kept entry, so uncached wav/mp3 turns pay nothing.
+    key = _prepared_audio_key(clips) if entry is not None else None
+    if entry is not None and entry[0] == key:
+        return list(entry[1])
+    prepared, transcoded = _prepare_audio_clips_for_llama_uncached(clips)
+    # Errors are not cached, so they re-run.
+    if transcoded and sum(len(clip) for clip, _ in prepared) <= _PREPARED_AUDIO_CACHE_MAX_CHARS:
+        key = key or _prepared_audio_key(clips)
+        with _PREPARED_AUDIO_CACHE_LOCK:
+            _PREPARED_AUDIO_CACHE.clear()
+            _PREPARED_AUDIO_CACHE[lengths] = (key, tuple(prepared))
+    return prepared
+
+
+def _prepare_audio_clips_for_llama_uncached(clips: list[str]) -> tuple[list[tuple[str, str]], bool]:
+    """(prepared clips, whether any clip was transcoded)."""
     stripped = [_strip_audio_data_uri(clip) for clip in clips]
     raws = [base64.b64decode(clip) for clip in stripped]
     passthrough = [_llama_passthrough_audio(raw) for raw in raws]
@@ -29492,7 +29540,7 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
                 raise ValueError("decoded audio exceeds the transcoded WAV size limit")
             arr, sr = _resample_mono_linear(arr, sr, shared_rate), shared_rate
         prepared.append((base64.b64encode(_mono_f32_to_wav_bytes(arr, sr)).decode("ascii"), "wav"))
-    return prepared
+    return prepared, len(passthrough) != sum(kept is not None for kept in passthrough)
 
 
 def _shared_wav_rate(clips: list[tuple[int, int]], budget: int) -> int:
