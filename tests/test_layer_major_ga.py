@@ -80,8 +80,36 @@ class _Swap:
             self._tot["compute_ms"] += 100.0
 
 
-def _model(dropout = 0.0, arch = "Llama"):
+# Mixture-of-experts families: the router load-balancing loss on (TRL's SFTTrainer default), the router trained.
+_MOE = {
+    "Qwen3Moe": dict(
+        moe_intermediate_size = 32,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        decoder_sparse_step = 1,
+        mlp_only_layers = [],
+        head_dim = 16,
+    ),
+    "Mixtral": dict(num_local_experts = 4, num_experts_per_tok = 2),
+    "GptOss": dict(
+        num_local_experts = 4,
+        num_experts_per_tok = 2,
+        head_dim = 16,
+        sliding_window = 8,
+        layer_types = ["sliding_attention", "full_attention"] * 2,
+    ),
+}
+
+
+def _model(
+    dropout = 0.0,
+    arch = "Llama",
+    reentrant = True,
+):
     torch.manual_seed(0)
+    if not hasattr(transformers, f"{arch}ForCausalLM"):
+        pytest.skip(f"transformers {transformers.__version__} has no {arch}ForCausalLM")
+    moe = _MOE.get(arch)
     cfg = getattr(transformers, f"{arch}Config")(
         hidden_size = 64,
         intermediate_size = 128,
@@ -90,11 +118,12 @@ def _model(dropout = 0.0, arch = "Llama"):
         num_key_value_heads = 2,
         vocab_size = 256,
         max_position_embeddings = 256,
+        **(dict(moe, output_router_logits = True, router_aux_loss_coef = 0.5) if moe else {}),
     )
     cfg._attn_implementation = "eager"
     model = getattr(transformers, f"{arch}ForCausalLM")(cfg)
     model.config.use_cache = False
-    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": True})
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": reentrant})
     model = peft.get_peft_model(
         model,
         peft.LoraConfig(
@@ -107,13 +136,15 @@ def _model(dropout = 0.0, arch = "Llama"):
                 "k_proj",
                 "v_proj",
                 "o_proj",
-                "gate_proj",
-                "up_proj",
-                "down_proj",
-            ],
+            ]
+            + ([] if moe else ["gate_proj", "up_proj", "down_proj"]),
         ),
     )
     model.enable_input_require_grads()
+    if moe:
+        for name, p in model.named_parameters():
+            if name.endswith((".gate.weight", ".router.weight", ".router.bias")):
+                p.requires_grad_(True)
     return model
 
 
@@ -156,6 +187,7 @@ def _train(
     arch = "Llama",
     collate = None,
     model_hook = None,
+    reentrant = True,
     **extra_args,
 ):
     if mode is None:
@@ -164,7 +196,7 @@ def _train(
         monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
     base = trainer_base or transformers.Trainer
     T = type("T", (base,), {})
-    model = _model(dropout, arch)
+    model = _model(dropout, arch, reentrant)
     if model_hook is not None:
         model = model_hook(model) or model
     sw = _Swap(stall)
@@ -329,12 +361,137 @@ def test_no_block_swap_means_no_window(ga, tmp_path, monkeypatch):
     assert _windows(engine) == 0
 
 
-def test_lora_dropout_is_ineligible(ga, tmp_path, monkeypatch, capsys):
+def _fixed_collate(rows, length = 20):
+    """Every micro-batch padded to one length: one micro-batch signature, so its random draws are learned once."""
+    out = _collate(rows)
+    pad = length - out["input_ids"].shape[1]
+    return {
+        k: torch.nn.functional.pad(v, (0, pad), value = -100 if k == "labels" else 0)
+        for k, v in out.items()
+    }
+
+
+def _assert_bitwise(a, b):
+    (w0, l0), (w1, l1) = a, b
+    assert l0 == l1 and l0
+    assert w0.keys() == w1.keys()
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+def _attention_dropout(p):
+    def hook(model):
+        model.config.attention_dropout = p
+        for m in model.modules():
+            if hasattr(m, "attention_dropout"):
+                m.attention_dropout = p
+
+    return hook
+
+
+def _head_dropout(kind, p = 0.3):
+    def hook(model):
+        base = model.get_base_model().model
+        base.norm = torch.nn.Sequential(
+            base.norm, getattr(torch.nn, kind)(p)
+        )  # after the layers: the loss part
+
+    return hook
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "lora_dropout",
+        "attention_dropout",
+        "neftune",
+        "Dropout1d",
+        "AlphaDropout",
+        "FeatureAlphaDropout",
+    ],
+)
+def test_random_draws_match_standard_accumulation_bitwise(ga, tmp_path, monkeypatch, capsys, case):
+    """lora_dropout, config attention dropout, NEFTune noise and every dropout kind (here in the head, the loss
+    part): the first step is standard and teaches the window each micro-batch's draws, the later steps run windows,
+    and losses and LoRA weights are bitwise those of UNSLOTH_OFFLOAD_LAYER_MAJOR = 0."""
     mod, engine = ga
+    kw = {"collate": _fixed_collate, "steps": 3}
+    if case == "lora_dropout":
+        kw["dropout"] = 0.1
+    elif case == "attention_dropout":
+        kw["model_hook"] = _attention_dropout(0.1)
+    elif case == "neftune":
+        kw["neftune_noise_alpha"] = 5.0
+    else:
+        if not hasattr(torch.nn, case):
+            pytest.skip(case)
+        kw["model_hook"] = _head_dropout(case)
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", **kw)
+    assert _windows(engine) == 0
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", **kw)
+    assert _windows(engine) == 2
+    assert engine.layer_major_stats()["rng_mismatches"] == 0
+    assert "learns them from this step" in capsys.readouterr().out
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_trl_sft_trainer_with_lora_dropout_matches_standard_bitwise(ga, tmp_path, monkeypatch):
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    a = _sft(mod, tmp_path, monkeypatch, "0", dropout = 0.1, steps = 3, collate = _fixed_collate)
+    assert _windows(engine) == 0
+    b = _sft(mod, tmp_path, monkeypatch, "1", dropout = 0.1, steps = 3, collate = _fixed_collate)
+    assert _windows(engine) == 2
+    _assert_bitwise(a, b)
+
+
+def test_new_micro_batch_shapes_with_dropout_are_learned_first(ga, tmp_path, monkeypatch):
+    """Dynamic padding: a step with a micro-batch shape whose draws were not seen runs the standard way (and is
+    learned); every step stays bitwise."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", dropout = 0.1, steps = 4)
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", dropout = 0.1, steps = 4)
+    assert engine.layer_major_stats()["rng_mismatches"] == 0
+    assert _windows(engine) < 4
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_a_wrong_learned_count_rolls_back_and_is_relearned(ga, tmp_path, monkeypatch):
+    """A ledger entry off by one draw: that step's window rolls back (rng_mismatches 1), the step runs the standard
+    way and relearns, the next step's window is exact."""
+    mod, engine = ga
+    kw = {"collate": _fixed_collate, "steps": 4, "dropout": 0.1}
+
+    class Corrupt(transformers.TrainerCallback):
+        def on_step_end(self, args, state, control, **kwargs):
+            if state.global_step == 1:
+                mod._rng_flush(_LAST[0])
+                ledger = _LAST[0].__dict__["_unsloth_layer_major_rng"]["ledger"]
+                assert ledger
+                for k, (count, cuda) in list(ledger.items()):
+                    ledger[k] = (count + 1, cuda)
+
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", **kw)
+    engine.layer_major_stats(reset = True)
+    w1, l1, _ = _train(
+        mod, tmp_path, monkeypatch, "1", trainer_kwargs = {"callbacks": [Corrupt()]}, **kw
+    )
+    st = engine.layer_major_stats()
+    assert st["rng_mismatches"] == 1 and st["windows"] == 2
+    _assert_bitwise((w0, l0), (w1, l1))
+
+
+def test_dropout_with_an_engine_without_draw_plans_stays_standard(
+    ga, tmp_path, monkeypatch, capsys
+):
+    mod, engine = ga
+    monkeypatch.setattr(mod, "_engine_rng", lambda: False)
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", dropout = 0.1)
     assert _windows(engine) == 0
-    assert "dropout" in capsys.readouterr().out
+    assert "too old to keep random draws" in capsys.readouterr().out
 
 
 def test_trainer_overriding_compute_loss_is_ineligible(ga, tmp_path, monkeypatch):
@@ -375,6 +532,12 @@ def _sft(
     mode,
     trainer_cls = None,
     abort_once = False,
+    dropout = 0.0,
+    steps = 2,
+    collate = None,
+    arch = "Llama",
+    reentrant = True,
+    **extra_args,
 ):
     trl = pytest.importorskip("trl")
     monkeypatch.setenv("UNSLOTH_OFFLOAD_LAYER_MAJOR", mode)
@@ -382,7 +545,7 @@ def _sft(
     T = (
         trainer_cls or trl.SFTTrainer
     )  # the real SFTTrainer chain over the patched transformers.Trainer
-    model = _model()
+    model = _model(dropout, arch = arch, reentrant = reentrant)
     model.get_base_model().model.layers._unsloth_block_swap = _Swap()
     data = _Data()
     try:
@@ -394,7 +557,7 @@ def _sft(
         output_dir = str(tmp_path / f"sft{mode}"),
         per_device_train_batch_size = 2,
         gradient_accumulation_steps = 3,
-        max_steps = 2,
+        max_steps = steps,
         learning_rate = 1e-2,
         logging_steps = 1,
         report_to = [],
@@ -407,12 +570,13 @@ def _sft(
         disable_tqdm = True,
         dataset_kwargs = {"skip_prepare_dataset": True},
         remove_unused_columns = False,
+        **extra_args,
     )
     trainer = T(
         model = model,
         args = args,
         train_dataset = ds,
-        data_collator = _collate,
+        data_collator = collate or _collate,
         processing_class = _tokenizer(),
     )
     if abort_once:
@@ -440,7 +604,7 @@ def _sft(
         {
             k: v
             for k, v in h.items()
-            if k in ("loss", "entropy", "mean_token_accuracy", "num_tokens")
+            if k in ("loss", "entropy", "mean_token_accuracy", "num_tokens", "aux_loss")
         }
         for h in trainer.state.log_history
         if "loss" in h
@@ -824,43 +988,33 @@ def test_standalone_training_steps_keep_no_prefetched_batch(ga, tmp_path, monkey
     _LAST.clear()
 
 
-@pytest.mark.parametrize("mode, want", [("auto", 0), ("1", 2)])
-def test_decoders_outside_the_auto_list_need_an_explicit_opt_in(
-    ga, tmp_path, monkeypatch, capsys, mode, want
+@pytest.mark.parametrize("mode", ["auto", "1"])
+def test_decoders_outside_the_old_auto_list_engage_by_structure(
+    ga, tmp_path, monkeypatch, capsys, mode
 ):
+    """No class allowlist: Olmo (never on the old auto list) runs windows under auto after its measured steps, as
+    under 1, bitwise, with no opt-in line."""
     mod, engine = ga
     if not hasattr(transformers, "OlmoForCausalLM"):
         pytest.skip("no Olmo in this transformers")
-    base = _train(mod, tmp_path, monkeypatch, "0", arch = "Olmo")
+    base = _train(mod, tmp_path, monkeypatch, "0", arch = "Olmo", steps = 4)
     capsys.readouterr()
     engine.layer_major_stats(reset = True)
-    run = _train(
-        mod, tmp_path, monkeypatch, mode, arch = "Olmo", steps = 2 if mode == "1" else 4, stall = 50.0
-    )
+    run = _train(mod, tmp_path, monkeypatch, mode, arch = "Olmo", steps = 4, stall = 50.0)
     out = capsys.readouterr().out
-    assert _windows(engine) == want
-    if mode == "auto":
-        assert out.count("opt-in for OlmoDecoderLayer") == 1
-    else:
-        assert "opt-in" not in out
-        _same(base, run)
+    assert _windows(engine) == (2 if mode == "auto" else 4)
+    assert "opt-in" not in out
+    _same(base, run)
 
 
-def test_auto_list_covers_the_dense_families(ga):
+def test_dense_families_pass_the_structural_checks(ga):
     mod, engine = ga
-    for arch, name in (
-        ("Llama", "LlamaDecoderLayer"),
-        ("Qwen2", "Qwen2DecoderLayer"),
-        ("Mistral", "MistralDecoderLayer"),
-    ):
+    assert not hasattr(mod, "_AUTO_LAYERS") and not hasattr(mod, "_auto_layers_ok")
+    for arch in ("Llama", "Qwen2", "Mistral", "Olmo"):
+        if not hasattr(transformers, f"{arch}ForCausalLM"):
+            continue
         model = _model(arch = arch)
-        layers = model.get_base_model().model.layers
-        assert mod._auto_layers_ok(model, layers) == (True, None), arch
-    model = _model(arch = "Olmo")
-    assert mod._auto_layers_ok(model, model.get_base_model().model.layers) == (
-        False,
-        "OlmoDecoderLayer",
-    )
+        assert mod._structural_blocker(model, model.get_base_model().model.layers) is None, arch
 
 
 # ---------------------------------------------------------------- round 3 review fixes (each fails without its fix)
@@ -879,20 +1033,6 @@ def test_wrapped_training_step_overrides_are_ineligible(ga, tmp_path, monkeypatc
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", trainer_base = Wrapped)
     assert _windows(engine) == 0
-
-
-def test_dropout_outside_the_decoder_is_ineligible(ga, tmp_path, monkeypatch, capsys):
-    mod, engine = ga
-
-    def head_dropout(model):
-        head = model.get_base_model().lm_head
-        head.drop = torch.nn.Dropout(0.3)  # as lora_dropout on a head adapter
-        head.register_forward_hook(lambda module, args, out: module.drop(out))
-
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", model_hook = head_dropout)
-    assert _windows(engine) == 0
-    assert "Dropout(p = 0.3)" in capsys.readouterr().out
 
 
 def test_gradient_hooks_on_trainable_parameters_are_ineligible(ga, tmp_path, monkeypatch):
@@ -992,30 +1132,6 @@ def test_trainer_classes_are_matched_by_identity_not_name(ga, tmp_path, monkeypa
     Lookalike.__module__ = "unsloth_finetune"
     engine.layer_major_stats(reset = True)
     _train(mod, tmp_path, monkeypatch, "1", trainer_base = Lookalike)
-    assert _windows(engine) == 0
-
-
-@pytest.mark.parametrize("kind", ["Dropout1d", "AlphaDropout", "FeatureAlphaDropout"])
-def test_every_dropout_kind_is_ineligible(ga, tmp_path, monkeypatch, capsys, kind):
-    mod, engine = ga
-    if not hasattr(torch.nn, kind):
-        pytest.skip(kind)
-
-    def add(model):
-        emb = model.get_base_model().model.embed_tokens
-        emb.drop = getattr(torch.nn, kind)(0.3)
-        emb.register_forward_hook(lambda module, args, out: module.drop(out))
-
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", model_hook = add)
-    assert _windows(engine) == 0
-    assert f"{kind}(p = 0.3)" in capsys.readouterr().out
-
-
-def test_neftune_is_ineligible(ga, tmp_path, monkeypatch):
-    mod, engine = ga
-    engine.layer_major_stats(reset = True)
-    _train(mod, tmp_path, monkeypatch, "1", neftune_noise_alpha = 5.0)
     assert _windows(engine) == 0
 
 
@@ -1295,3 +1411,63 @@ def test_instance_training_step_overrides_keep_no_prefetched_batch(ga, tmp_path,
     assert refs and len(alive) == 2 and alive[1] == alive[0], alive
     assert "_unsloth_layer_major_batch" not in _LAST[0].__dict__
     _LAST.clear()
+
+
+def test_windows_wait_until_torch_compile_has_settled(ga, tmp_path, monkeypatch, capsys):
+    """Compiled decoder code: Dynamo picks graphs by the order of first calls, so windows start only after a step
+    that compiled nothing (here: step 1 has no history, step 2 compiled), and the run stays bitwise."""
+    mod, engine = ga
+    if getattr(mod, "compile_epoch", None) is None:
+        pytest.skip("unsloth_zoo without compile watching")
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", steps = 4)
+
+    def epoch():
+        trainer = _LAST[0] if _LAST else None
+        step = trainer.state.global_step if trainer is not None else 0
+        return (min(step, 1),)  # graphs built during step 1, nothing after
+
+    monkeypatch.setattr(mod, "compile_epoch", epoch)
+    monkeypatch.setattr(mod, "_compiled_code", lambda layers: True)
+    engine.layer_major_stats(reset = True)
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", steps = 4)
+    assert _windows(engine) == 2
+    assert "while torch.compile is still building graphs" in capsys.readouterr().out
+    assert l0 == l1
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+@pytest.mark.parametrize("reentrant", [True, False])
+@pytest.mark.parametrize("arch", sorted(_MOE))
+def test_moe_trainer_matches_standard_accumulation_bitwise(
+    ga, tmp_path, monkeypatch, arch, reentrant
+):
+    """Mixture-of-experts decoders with the router load-balancing loss: windows run, the logged losses and the LoRA
+    and router weights are bitwise those of standard accumulation (non-reentrant checkpointing differentiates the
+    recorded router logits, reentrant does not, in both)."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0, _ = _train(mod, tmp_path, monkeypatch, "0", arch = arch, reentrant = reentrant)
+    assert _windows(engine) == 0
+    w1, l1, _ = _train(mod, tmp_path, monkeypatch, "1", arch = arch, reentrant = reentrant)
+    assert _windows(engine) == 2 and engine.layer_major_stats()["aborts"] == 0
+    assert l0 == l1 and len(l0) == 2
+    assert w0.keys() == w1.keys() and any(
+        k.endswith((".gate.weight", ".router.weight")) for k in w0
+    )
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k
+
+
+@pytest.mark.parametrize("arch", ["Qwen3Moe", "Mixtral"])
+def test_moe_trl_sft_trainer_matches_standard_accumulation_bitwise(ga, tmp_path, monkeypatch, arch):
+    """TRL's SFTTrainer on a mixture-of-experts decoder (its aux_loss metric included), non-reentrant checkpointing."""
+    mod, engine = ga
+    engine.layer_major_stats(reset = True)
+    w0, l0 = _sft(mod, tmp_path, monkeypatch, "0", arch = arch, reentrant = False)
+    assert _windows(engine) == 0
+    w1, l1 = _sft(mod, tmp_path, monkeypatch, "1", arch = arch, reentrant = False)
+    assert _windows(engine) == 2
+    assert l0 == l1 and len(l0) == 2
+    for k in w0:
+        assert torch.equal(w0[k], w1[k]), k

@@ -578,7 +578,9 @@ def _no_output_capture(layer):
     """Hide the trial forward from transformers output recording (an extra router_logits entry skews the aux loss)."""
     swapped = []
     for module in layer.modules():
-        fn = module.__dict__.get("forward")
+        # Through attribute lookup: inside a layer-major window transformers 4.x's capture wrappers are kept per
+        # thread by a class-level forward, not in the instance dict.
+        fn = getattr(module, "forward", None)
         # functools.wraps copies __qualname__, not the code object's.
         code = getattr(fn, "__code__", None)
         qual = getattr(code, "co_qualname", None)  # Python >= 3.11
