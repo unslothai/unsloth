@@ -37,8 +37,7 @@ BeforeAll {
     if (-not $script:SetupPs1) { throw "Could not locate studio/setup.ps1 (set SETUP_PS1_PATH)." }
     $script:SetupPs1 = (Resolve-Path -LiteralPath $script:SetupPs1).Path
 
-    # Read as UTF-8 on every host: 5.1's Get-Content would decode the U+2500 rule in the
-    # section marker as ANSI and the anchor below would never match.
+    # Read as UTF-8 on every host, so the anchors below match the same text on 5.1 and 7.
     $script:SetupText = [System.IO.File]::ReadAllText($script:SetupPs1, [System.Text.Encoding]::UTF8)
     $lines = $script:SetupText -split "`r?`n"
 
@@ -72,8 +71,9 @@ BeforeAll {
         { param($j) $j -gt 0 -and $lines[$j] -eq '    }' -and
                     ($lines[($j - 3)..($j - 1)] -join "`n").Contains('[TAURI:DIAG] elevated=') }) + "`n}"
 
-    $rule = [string][char]0x2500 + [char]0x2500
-    $marker = "# $rule Finish with the setup script this update installed $rule"
+    # setup.ps1 is ASCII-only since #19976 (its signature must verify on every locale), so the
+    # section marker spells its rule with two hyphens rather than U+2500.
+    $marker = '# -- Finish with the setup script this update installed --'
     $script:RerunBlock = Get-LineSlice 'the rerun block' `
         { param($i) $lines[$i] -eq $marker } `
         { param($j) $lines[$j] -eq '}' }

@@ -5252,6 +5252,40 @@ def _auto_offline_keeps_cached_seed(
         return False
 
 
+def _auto_dense_load_exceeds_host_ram(fam: Any, scheme: Optional[str]) -> bool:
+    """An AUTO load whose dense bf16 pipeline would not fit host RAM keeps the hosted int8 ``scheme`` checkpoint.
+
+    Only families whose hosted int8 file replaces the dense shards (``native_offload_from_hosted_int8``: Wan2.2-T2V-A14B
+    reads 29 GB instead of two fp32 14B experts). The dense price is the family's bf16 component sizes plus the
+    small-host reserve, against available host RAM (``video_native_stream.decide``). Unreadable keeps the bf16 rule."""
+    try:
+        if scheme != TQ_INT8 or not getattr(fam, "native_offload_from_hosted_int8", False):
+            return False
+        from . import diffusion_small_host as small_host
+        from .video_native_stream import decide
+
+        if small_host.host_ram_check_disabled():
+            return False
+        sizes = tuple(getattr(fam, "bf16_components_gb", None) or ())
+        if not sizes:
+            return False
+        dense_mib = int(sum(float(x) for x in sizes) * 1000.0**3 / 2**20)
+        total, available = small_host.host_ram_mib()
+        engaged, why = decide(
+            dense_mib, available_mib = available, reserve_mib = small_host.host_reserve_mib(total)
+        )
+        if engaged:
+            logger.info(
+                "video.denoiser_prequant: auto keeps the hosted %s checkpoint for %s: %s",
+                scheme,
+                getattr(fam, "name", None),
+                why,
+            )
+        return engaged
+    except Exception:  # noqa: BLE001 -- unanswerable keeps the bf16 rule
+        return False
+
+
 def _auto_keeps_resident_bf16(plan: Any, target: Any) -> bool:
     """The bf16 plan keeps the DiT resident on a measured budget, so auto runs bf16 (int8 fails the LPIPS bar there)."""
     if plan is None or not plan_keeps_transformer_resident(plan):
@@ -6010,7 +6044,12 @@ def _video_single_card_for_sidecar(
     if secondary is None or fallback is None:
         return plan
     why = f"the {fam.name} text encoder runs in a sidecar a split cannot move"
-    if _video_sidecar_multigpu(fam):
+    from .diffusion_multigpu import secondary_below_primary
+
+    if secondary_below_primary(int(secondary)):
+        # the worker picks its own kernels in another process, unchecked per card: never on a lower card of a mixed pair
+        why = f"the {fam.name} sidecar text encoder is not checked against cuda:{secondary}, a lower-capability card"
+    elif _video_sidecar_multigpu(fam):
         from .diffusion_multigpu import secondary_resident_limit_mib
         from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
@@ -9349,6 +9388,7 @@ class VideoBackend:
                     and not _auto_offline_keeps_cached_seed(
                         fam, scheme, base, hf_token = hf_token, local_files_only = local_files_only
                     )
+                    and not _auto_dense_load_exceeds_host_ram(fam, scheme)
                 ) and _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -11843,6 +11883,7 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 fetch_repos = (fetch_base,),
             )
+            and not _auto_dense_load_exceeds_host_ram(fam, denoiser_seed_scheme)
         ):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(
@@ -13408,18 +13449,26 @@ class VideoBackend:
                     speed_optims += ("vae_rocm_pertap_conv",)
             except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
                 logger.warning("video.vae_rocm_pertap: not installed: %s", exc)
+            # Apple MPS: Conv3d runs as per-tap Conv2d on torch < 2.14 (stock is 8-14x slower there and a 1.7 GB call
+            # can hang the GPU); from 2.14 only wide-channel small-frame calls and calls over the size guard.
+            try:
+                from .video_vae_mps_pertap import OPTIM_NAME as _MPS_PERTAP
+                from .video_vae_mps_pertap import install_on_pipe as install_vae_mps_pertap
+                if install_vae_mps_pertap(pipe, target, logger = logger):
+                    speed_optims += (_MPS_PERTAP,)
+            except Exception as exc:  # noqa: BLE001 - the stock Conv3d decode stays
+                logger.warning("video.vae_mps_pertap: not installed: %s", exc)
             if vae_tiling and target.device == "cuda":
                 # Tiled Wan decodes share their spatial tiles with the selection's second card (bitwise the stock tiles).
                 try:
-                    from .diffusion_multigpu import current_selection
+                    from .diffusion_multigpu import current_selection, same_model_secondaries
                     from .video_vae_multigpu import install as install_vae_multigpu
 
                     selection = current_selection()
-                    if (
-                        selection is not None
-                        and selection.secondaries
-                        and install_vae_multigpu(pipe, int(selection.secondaries[0]), logger = logger)
-                    ):
+                    # a tile split runs the same decode on both cards: same card model only (a mixed pair would split
+                    # it across different kernels and wait on the slower card, which nothing here prices)
+                    partners = same_model_secondaries(selection, logger = logger)
+                    if partners and install_vae_multigpu(pipe, int(partners[0]), logger = logger):
                         speed_optims += ("vae_multigpu_tiles",)
                 except Exception as exc:  # noqa: BLE001 - the decode stays on one card
                     logger.warning("video.vae_multigpu: not installed: %s", exc)

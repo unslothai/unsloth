@@ -2037,6 +2037,8 @@ def shard_model(model, config: Optional[FSDP2Config] = None):
     if config.cpu_offload:
         CPUOffloadPolicy = _fsdp_attr("CPUOffloadPolicy")
         offload_policy = CPUOffloadPolicy(pin_memory = device.type == "cuda")
+        if device.type == "cuda":
+            _install_offload_step_threads(None, True)  # also an optimizer built outside the Trainer
     from .fsdp2_perf import (
         _env_tristate,
         plan_fsdp2_layout,
@@ -5212,7 +5214,9 @@ _BNB_UNSUPPORTED = (
 def _swap_bnb_optimizer(training_args, cpu_shards = False):
     """bitsandbytes' optimizers step plain CUDA tensors; native FSDP2 parameters are DTensors. Adam /
     AdamW step the local shards instead, unless the shards sit on the CPU (CPU offload, a CPU mesh)
-    and this bitsandbytes cannot step CPU tensors: then the switch to torch's AdamW stays."""
+    and this bitsandbytes cannot step CPU tensors: then the switch to torch's AdamW stays. CPU-offloaded
+    shards also get their step's thread count sized (_install_offload_step_threads)."""
+    _install_offload_step_threads(training_args, cpu_shards)
     optim = getattr(training_args, "optim", None)
     if optim is None:
         return False
@@ -5280,6 +5284,127 @@ def _fused_cpu_adamw(
         training_args.optim = OptimizerNames("adamw_torch_fused")
     except Exception:
         training_args.optim = "adamw_torch_fused"
+    return True
+
+
+# torchrun (nproc > 1) and accelerate launch export OMP_NUM_THREADS=1, so the optimizer step over
+# CPU-offloaded shards runs on one core per rank. These hooks raise torch's intra-op threads for that
+# step only. The cap matches unsloth_zoo's CPU trainer.
+_OFFLOAD_STEP_HOOKS = None
+_OFFLOAD_THREAD_CAP = 16
+
+
+def _launcher_set_one_thread():
+    """OMP_NUM_THREADS=1 next to torchrun's (nproc > 1) or accelerate launch's markers is the launcher's
+    default, not the user's."""
+    if os.environ.get("OMP_NUM_THREADS", "").strip() != "1":
+        return False
+    if os.environ.get("MKL_NUM_THREADS", "").strip():
+        return False
+    try:
+        local = int(os.environ.get("LOCAL_WORLD_SIZE", "1"))
+    except ValueError:
+        local = 1
+    if os.environ.get("TORCHELASTIC_RUN_ID") and local > 1:
+        return True
+    return "ACCELERATE_MIXED_PRECISION" in os.environ
+
+
+def _offload_step_threads():
+    """Intra-op threads for an optimizer step over CPU-offloaded shards, or None to leave torch's pool
+    alone. UNSLOTH_CPU_THREADS sets the count. Otherwise only a launcher's OMP_NUM_THREADS=1 is
+    undone: a rank gets its share of the process's physical cores (split over the node's local ranks
+    unless the launcher bound each rank to its own CPUs), at most 16."""
+    explicit = os.environ.get("UNSLOTH_CPU_THREADS", "").strip()
+    if explicit:
+        try:
+            return max(1, int(explicit))
+        except ValueError:
+            return None
+    if not _launcher_set_one_thread():
+        return None
+    try:
+        local = max(1, int(os.environ.get("LOCAL_WORLD_SIZE", "1")))
+    except ValueError:
+        local = 1
+    cores, split = None, False
+    try:
+        from unsloth_zoo.cpu.runtime import cpu_compute_cores, _affinity_split_per_rank
+        cores = cpu_compute_cores()
+        split = bool(_affinity_split_per_rank(local))
+    except Exception:
+        pass
+    if cores is None:
+        try:
+            cores = len(os.sched_getaffinity(0))
+        except (AttributeError, OSError):
+            cores = os.cpu_count() or 1
+        try:
+            # Logical CPUs: count one per physical core when SMT is on.
+            with open("/sys/devices/system/cpu/smt/active", encoding = "utf-8") as f:
+                if f.read().strip() == "1":
+                    cores = max(1, cores // 2)
+        except OSError:
+            pass
+    threads = min(_OFFLOAD_THREAD_CAP, cores if split else cores // local)
+    return threads if threads > 1 else None
+
+
+def _offload_step_pre_hook(optimizer, args, kwargs):
+    state = optimizer.__dict__
+    on_cpu = state.get("_unsloth_offload_on_cpu")
+    if on_cpu is None:
+        on_cpu = state["_unsloth_offload_on_cpu"] = _optimizer_on_cpu(optimizer)
+    if not on_cpu or state.get("_unsloth_offload_threads_prev") is not None:
+        return None
+    target = state.get("_unsloth_offload_threads")
+    if target is None:
+        target = state["_unsloth_offload_threads"] = _offload_step_threads() or 0
+    current = torch.get_num_threads()
+    # Only a launcher's single thread is raised; a user's torch.set_num_threads(n > 1) is kept.
+    if (
+        not target
+        or target == current
+        or (current != 1 and "UNSLOTH_CPU_THREADS" not in os.environ)
+    ):
+        return None
+    torch.set_num_threads(target)
+    state["_unsloth_offload_threads_prev"] = current
+    if not state.get("_unsloth_offload_threads_said"):
+        state["_unsloth_offload_threads_said"] = True
+        _print_rank0(
+            f"Unsloth: native FSDP2 steps the CPU-offloaded optimizer on {target} threads per rank "
+            f"(was {current}: torchrun / accelerate launch set OMP_NUM_THREADS=1); UNSLOTH_CPU_THREADS "
+            "sets the count."
+        )
+    return None
+
+
+def _offload_step_post_hook(optimizer, args, kwargs):
+    previous = optimizer.__dict__.pop("_unsloth_offload_threads_prev", None)
+    if previous is not None:
+        torch.set_num_threads(previous)
+
+
+def _install_offload_step_threads(training_args, cpu_shards):
+    """Size torch's thread pool around optimizer steps over CPU-offloaded shards (CPUOffloadPolicy on a
+    GPU mesh; a CPU Trainer sizes its own pool). Global optimizer hooks, installed once."""
+    global _OFFLOAD_STEP_HOOKS
+    if not cpu_shards or _OFFLOAD_STEP_HOOKS is not None:
+        return False
+    if _trainer_uses_cpu(training_args) or not torch.cuda.is_available():
+        return False
+    try:
+        from torch.optim.optimizer import (
+            register_optimizer_step_post_hook,
+            register_optimizer_step_pre_hook,
+        )
+    except ImportError:
+        return False
+    _OFFLOAD_STEP_HOOKS = (
+        register_optimizer_step_pre_hook(_offload_step_pre_hook),
+        register_optimizer_step_post_hook(_offload_step_post_hook),
+    )
     return True
 
 

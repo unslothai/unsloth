@@ -198,10 +198,38 @@ def test_refuse_fp16_for_formats_whose_quantizer_rejects_it(name):
         f8t.resolve_float8_training(name, dtype = torch.float16)
 
 
-def test_refuse_blockwise_off_sm90(monkeypatch):
-    monkeypatch.setattr(f8t._precision, "current_gpu_class", lambda device = None: "sm120")
-    with pytest.raises(P.PrecisionRefused, match = "SM90 only"):
+@pytest.mark.parametrize("gpu", ["sm89", "sm100", "sm120"])
+def test_blockwise_runs_off_sm90_through_triton_but_is_not_offered(monkeypatch, gpu):
+    # The 1x128 / 128x128 Triton GEMMs ran on L4, B200 and RTX PRO 6000 (torch's blockwise scaled_mm
+    # is SM90 only), so the gate says explicit; the recipe is still planned, so it is not trainable by name.
+    gate = P.get_recipe("fp8_blockwise").gate(gpu)
+    assert gate.status == "explicit", gate
+    assert "Triton" in gate.evidence and "SM90 only" in gate.evidence
+    monkeypatch.setattr(f8t._precision, "current_gpu_class", lambda device = None: gpu)
+    with pytest.raises(P.PrecisionRefused, match = "not available in Unsloth yet"):
         f8t.resolve_float8_training("blockwise")
+
+
+def test_blockwise_still_refused_without_fp8_tensor_cores(monkeypatch):
+    for gpu in ("sm75", "sm80"):
+        monkeypatch.setattr(f8t._precision, "current_gpu_class", lambda device = None, g = gpu: g)
+        with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
+            f8t.resolve_float8_training("blockwise")
+
+
+def test_mxfp8_grouped_gates_measured():
+    r = P.get_recipe("mxfp8_grouped")
+    assert r.status == "planned"
+    # sm100: torch._scaled_grouped_mm with Unsloth's MX quantizer ran fwd / dgrad / wgrad at real MoE shapes.
+    assert r.gate("sm100").status == "explicit"
+    assert "torch._scaled_grouped_mm" in r.gate("sm100").evidence
+    # sm120 / sm89: torch refuses the scaled grouped GEMM outright.
+    for gpu in ("sm89", "sm120"):
+        with pytest.raises(P.PrecisionRefused, match = "compute capability 9.0 / 10.0"):
+            P.check_recipe("mxfp8_grouped", gpu = gpu, allow_planned = True)
+    assert P.check_recipe("mxfp8_grouped", gpu = "sm100", allow_planned = True).status == "explicit"
+    with pytest.raises(P.PrecisionRefused, match = "not available in Unsloth yet"):
+        P.check_recipe("mxfp8_grouped", gpu = "sm100")
 
 
 @pytest.mark.parametrize("name", ["mxfp8", "nvfp4"])

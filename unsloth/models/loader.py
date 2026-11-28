@@ -1419,7 +1419,7 @@ class FastLanguageModel(FastLlamaModel):
         **kwargs,
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
-        from .._gguf_load import require_gguf_package
+        from .._gguf_load import require_gguf_package, refuse_gguf_fast_inference
         from .gguf_packed import check_gguf_packed_request
 
         _unsloth_load_begins()
@@ -1432,6 +1432,7 @@ class FastLanguageModel(FastLlamaModel):
             load_in_fp8 = load_in_fp8,
             qat_scheme = qat_scheme,
         )
+        refuse_gguf_fast_inference(model_name, kwargs.get("gguf_file"), fast_inference)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit, gguf_packed = _gguf_packed
         )
@@ -2468,7 +2469,7 @@ class FastModel(FastBaseModel):
         **kwargs,
     ):
         from ._utils import _unsloth_load_begins, gguf_drop_bitsandbytes
-        from .._gguf_load import require_gguf_package
+        from .._gguf_load import require_gguf_package, refuse_gguf_fast_inference
         from .gguf_packed import check_gguf_packed_request
 
         _unsloth_load_begins()
@@ -2481,6 +2482,7 @@ class FastModel(FastBaseModel):
             load_in_fp8 = load_in_fp8,
             qat_scheme = qat_scheme,
         )
+        refuse_gguf_fast_inference(model_name, kwargs.get("gguf_file"), fast_inference)
         load_in_4bit, load_in_8bit = gguf_drop_bitsandbytes(
             kwargs.get("gguf_file"), load_in_4bit, load_in_8bit, gguf_packed = _gguf_packed
         )
