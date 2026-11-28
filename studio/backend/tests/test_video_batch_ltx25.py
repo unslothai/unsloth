@@ -508,10 +508,7 @@ def test_auto_batches_a_two_stage_low_vram_ltx25_load_and_keeps_the_rest_serial(
     assert "Low VRAM" in video_batch.load_decline_reason(
         _state(memory_mode = "auto", offload_policy = "none")
     )
-    # The one-stage recipe's batch of 2 did not pass the quality gate.
-    monkeypatch.setenv(video_ltx25.TWO_STAGE_ENV, "0")
-    assert "one-stage" in video_batch.load_decline_reason(_state())
-    monkeypatch.delenv(video_ltx25.TWO_STAGE_ENV)
+    # The one-stage recipe passes the same gate at 2 and 4 clips (test_auto_batches_the_one_stage_recipe_too).
     # Auto runs only the gated sizes; force runs any.
     state = _state()
     assert video_batch.auto_size_decline(state, 1) is None
@@ -535,6 +532,23 @@ def test_auto_batches_a_two_stage_low_vram_ltx25_load_and_keeps_the_rest_serial(
     )
     monkeypatch.setenv(video_batch.ENV, "off")
     assert video_batch.load_decline_reason(_state()) == f"{video_batch.ENV}=off"
+
+
+def test_auto_batches_the_one_stage_recipe_too(monkeypatch):
+    from core.inference import video_ltx25
+
+    monkeypatch.delenv(video_batch.ENV, raising = False)
+    # One stage under Low VRAM, eager: the paired gate against a bf16 / fp32-attention reference passed at 2 and 4.
+    monkeypatch.setenv(video_ltx25.TWO_STAGE_ENV, "0")
+    state = _state()
+    assert video_batch.load_decline_reason(state) is None
+    assert video_batch.auto_size_decline(state, 2) is None
+    assert video_batch.auto_size_decline(state, 4) is None
+    assert "not 3" in video_batch.auto_size_decline(state, 3)
+    # Still Low VRAM only: a DiT kept on the card stays serial whatever the recipe.
+    assert "Low VRAM" in video_batch.load_decline_reason(
+        _state(memory_mode = "auto", offload_policy = "none")
+    )
 
 
 def test_the_batch_key_carries_the_audio_shift():
