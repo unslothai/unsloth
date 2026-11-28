@@ -13,6 +13,8 @@ __all__ = [
     "is_gguf_path",
     "require_gguf_package",
     "refuse_gguf_on_mlx",
+    "refuse_gguf_fast_inference",
+    "refuse_gguf_packed_on_cpu",
     "has_tokenizer_files",
     "load_gguf_tokenizer_if_missing",
 ]
@@ -85,6 +87,39 @@ def refuse_gguf_on_mlx(model_name, gguf_file):
         'pass the repo or folder as `model_name` with `gguf_file = "<file>.gguf"`. The GGUF is dequantized to '
         "16-bit at load.\n"
         "  3. To only run the GGUF, use llama.cpp or Unsloth Studio."
+    )
+
+
+def refuse_gguf_fast_inference(model_name, gguf_file, fast_inference):
+    """`fast_inference = True` hands vLLM only the repo or folder name: it has no `gguf_file` argument, so vLLM would
+    load the safetensors beside the GGUF (a different checkpoint) or fail on a GGUF-only repo, and the training model
+    shares vLLM's weights, which Unsloth cannot read back from vLLM's GGUF-quantized layers. Refuse the pair before
+    anything loads instead of training on weights that are not the GGUF that was asked for."""
+    if not fast_inference or (not gguf_file and not is_gguf_path(model_name)):
+        return
+    asked = f"gguf_file = {gguf_file!r}" if gguf_file else f"{os.fspath(model_name)!r}"
+    raise NotImplementedError(
+        f"Unsloth: `fast_inference = True` (vLLM) cannot load a GGUF file ({asked}): vLLM would read the "
+        "repo's safetensors weights (or fail on a GGUF-only repo) instead of the GGUF. Options:\n"
+        "  1. Load without `fast_inference`: the GGUF is dequantized to 16-bit (or kept packed with "
+        "`gguf_packed = True`) and `model.generate` uses Unsloth's own inference.\n"
+        "  2. To generate with vLLM, load the GGUF once without `fast_inference`, save it with "
+        '`model.save_pretrained_merged(folder, tokenizer, save_method = "merged_16bit")`, and load that folder '
+        "with `fast_inference = True`."
+    )
+
+
+def refuse_gguf_packed_on_cpu(kwargs):
+    """The CPU backend loads a GGUF through transformers' dequantizing loader only; `gguf_packed` would reach
+    transformers as an unknown keyword and be dropped silently, so the model would load 16-bit while the caller
+    asked for packed blocks. Refuse it with the alternatives instead."""
+    if not kwargs.get("gguf_packed"):
+        kwargs.pop("gguf_packed", None)
+        return
+    raise NotImplementedError(
+        "Unsloth: `gguf_packed = True` keeps GGUF blocks packed for LoRA on CUDA GPUs; the CPU backend cannot "
+        "train on packed GGUF weights. Drop `gguf_packed` to load the GGUF dequantized to 16-bit on CPU "
+        f"(`gguf_file = {kwargs.get('gguf_file')!r}`), or run on a CUDA GPU."
     )
 
 

@@ -427,35 +427,41 @@ def _renew_interval_seconds() -> float:
     return min(30.0, max(0.25, lease / 4.0))
 
 
-def _image_urls(request_payload: dict[str, Any]) -> Iterator[dict[str, Any]]:
+def _embedded_media_slots(request_payload: dict[str, Any]) -> Iterator[tuple[dict[str, Any], str]]:
     for message in request_payload.get("messages", []):
         content = message.get("content")
-        if isinstance(content, list):
-            for part in content:
-                if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
-                    yield part["image_url"]
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "image_url" and isinstance(part.get("image_url"), dict):
+                url = part["image_url"]
+                if isinstance(url.get("url"), str):
+                    yield url, "url"
+            elif part.get("type") == "input_audio" and part.get("studio_replay") is True:
+                yield part["input_audio"], "data"
 
 
-def detach_embedded_images(request_payload: dict[str, Any]) -> dict[str, str]:
-    images: dict[str, str] = {}
-    for image_url in _image_urls(request_payload):
-        url = image_url.get("url")
-        if isinstance(url, str) and url.startswith("data:"):
-            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()
-            images[digest] = url
-            image_url["url"] = digest
-    return images
+def detach_embedded_media(request_payload: dict[str, Any]) -> dict[str, str]:
+    media: dict[str, str] = {}
+    for slot, key in _embedded_media_slots(request_payload):
+        value = slot[key]
+        if key == "url" and not value.startswith("data:"):
+            continue
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        media[digest] = value
+        slot[key] = digest
+    return media
 
 
-def _attach_embedded_images(request_payload: dict[str, Any], images: dict[str, str]) -> None:
-    for image_url in _image_urls(request_payload):
-        image_url["url"] = images.get(image_url.get("url"), image_url.get("url"))
+def _attach_embedded_media(request_payload: dict[str, Any], media: dict[str, str]) -> None:
+    for slot, key in _embedded_media_slots(request_payload):
+        slot[key] = media.get(slot[key], slot[key])
 
 
 class ChatGenerationSupervisor:
     def __init__(self, app: Any) -> None:
         self.app = app
-        self._detached_images: dict[str, dict[str, str]] = {}
+        self._detached_media: dict[str, dict[str, str]] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_events: dict[str, threading.Event] = {}
         self._active_registrations: dict[str, active_generations.ActiveGeneration] = {}
@@ -514,7 +520,7 @@ class ChatGenerationSupervisor:
         *,
         thread_id: str | None = None,
         model: str | None = None,
-        images: dict[str, str] | None = None,
+        media: dict[str, str] | None = None,
         external: bool = False,
     ) -> None:
         if (
@@ -525,8 +531,8 @@ class ChatGenerationSupervisor:
             )
         ):
             return
-        if images:
-            self._detached_images[run_id] = images
+        if media:
+            self._detached_media[run_id] = media
         cancel_event = self._cancel_events[run_id]
         activity = self._activities[run_id]
         try:
@@ -541,7 +547,7 @@ class ChatGenerationSupervisor:
         task.add_done_callback(lambda completed, rid = run_id: self._task_done(rid, completed))
 
     def _cleanup_registration(self, run_id: str) -> None:
-        self._detached_images.pop(run_id, None)
+        self._detached_media.pop(run_id, None)
         self._cancel_events.pop(run_id, None)
         activity = self._activities.pop(run_id, None)
         if activity is not None:
@@ -749,7 +755,7 @@ class ChatGenerationSupervisor:
                 request_payload = dict(run["requestPayload"])
                 timezone_headers = request_payload.pop(db.TIMEZONE_HEADERS_FIELD, None)
                 via_api_key = request_payload.pop(db.API_MONITOR_ORIGIN_FIELD, None)
-                _attach_embedded_images(request_payload, self._detached_images.pop(run_id, {}))
+                _attach_embedded_media(request_payload, self._detached_media.pop(run_id, {}))
                 payload = ChatCompletionRequest.model_validate(request_payload)
                 background = _background_request(
                     self.app,

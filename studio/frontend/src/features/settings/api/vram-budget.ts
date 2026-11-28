@@ -227,7 +227,6 @@ export function updateVramBudgetSettings(
         ? publishVramBudget(settings)
         : settings,
     (error: unknown) => {
-      // Re-stage a failed edit only while it is still the newest intent.
       if (
         generation === vramBudgetWriteGeneration &&
         stagedVramBudgetFraction === null

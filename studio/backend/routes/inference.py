@@ -2275,15 +2275,25 @@ def _openai_llama_admission_media_tokens(
     image_tokens: int = _OPENAI_LLAMA_ADMISSION_IMAGE_TOKENS,
     message_video_clips: Optional[list[str]] = None,
     legacy_image_in_messages: bool = False,
+    fitted_messages: Optional[list[dict]] = None,
 ) -> int:
     """Charge the legacy top-level image only when the messages do not already carry it: no double count."""
     extra = 0
     extra += max(0, message_image_parts) * image_tokens
     if not legacy_image_in_messages and _legacy_image_is_distinct(payload):
         extra += image_tokens
-    for audio in _request_audio_clips(payload):
-        if isinstance(audio, str) and audio:
-            extra += _openai_llama_admission_audio_tokens(audio)
+    if fitted_messages is not None and not getattr(payload, "audio_base64", None):
+        extra += sum(
+            part.get("studio_audio_tokens", 0)
+            for message in fitted_messages
+            if isinstance(content := message.get("content"), list)
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "input_audio"
+        )
+    else:
+        for audio in _request_audio_clips(payload):
+            if isinstance(audio, str) and audio:
+                extra += _openai_llama_admission_audio_tokens(audio)
     # _inject_video_part already spliced the legacy clip in, so do not charge it twice.
     if message_video_clips is None:
         value = getattr(payload, "video_base64", None)
@@ -2528,6 +2538,7 @@ def _count_gguf_admission_prompt(
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
             message_video_clips = _conversation_video_clips(messages),
             legacy_image_in_messages = prepared_body is not None,
+            fitted_messages = messages,
         )
     except Exception:
         logger.debug("Prompt count unavailable; reserving the context pool", exc_info = True)
@@ -2617,7 +2628,7 @@ async def _openai_llama_admission_reserve_async(
     would make it parse one, or a recording would make it decode one."""
     tokens = _TOKENS_UNSET
     if payload is not None and (
-        getattr(payload, "audio_base64", None)
+        _request_audio_clips(payload)
         or _messages_mention_mcp_images(
             messages_override if messages_override is not None else payload.messages
         )
@@ -2697,6 +2708,7 @@ def _openai_llama_admission_recost(
                 message_image_parts = message_image_parts,
                 image_tokens = _openai_llama_admission_image_tokens(llama_backend),
                 message_video_clips = _conversation_video_clips(conversation),
+                fitted_messages = conversation,
             )
         # Reading 'Max' literally would put the run back on the whole cache at its first round.
         share = max(1, budget // max(1, capacity))
@@ -3646,6 +3658,8 @@ from models.inference import (
     ValidateModelResponse,
     EstimateMemoryRequest,
     EstimateMemoryResponse,
+    GpuLayerEstimate,
+    GpuSplitBasis,
     Int8PrefillAvailabilityRequest,
     Int8PrefillAvailabilityResponse,
     AnePrefillAvailabilityRequest,
@@ -3892,13 +3906,9 @@ from core.inference.external_provider import (
     llama_cpp_template_controls,
     _is_kimi_k3,
     _is_openai_family_cloud,
-    _ANTHROPIC_COMPACTION_MIN,
-    _OPENAI_COMPACTION_MIN,
-    compacts_server_side,
 )
 from core.inference.external_tool_transport import OAICompatTransport
 from core.inference.sse_control_frames import (
-    _sse_payload,
     is_ui_control_sse_line,
     ServerToolCallStripper,
 )
@@ -4700,12 +4710,16 @@ def _sf_parse_think_markers(
     features: dict,
     enable_thinking: Optional[bool] = None,
     reasoning_effort: Optional[str] = None,
+    inkling_channel: bool = False,
 ) -> bool:
     """A hybrid template reads enable_thinking before reasoning_effort when both are sent (Kimi-K3)."""
     if features.get("reasoning_always_on"):
         return True
     if not features.get("supports_reasoning"):
         return False
+    # Inkling still reasons at effort none, so its thought is split as at any other effort.
+    if inkling_channel:
+        return True
     style = features.get("reasoning_style")
     resolved: dict = {}
     if style == "reasoning_effort":
@@ -4717,6 +4731,32 @@ def _sf_parse_think_markers(
         resolved["reasoning_effort"] = reasoning_effort
     # No launch default on this backend: an empty dict leaves the template's own.
     return _resolved_kwargs_think(None, resolved)
+
+
+def _sf_thought_ledger(
+    ledger: Optional[dict],
+    snapshot,
+    offset: int = 0,
+) -> Optional[dict]:
+    """Mirror a snapshot's thought spans into an extractor ledger, growing lengths in place; None until spans arrive."""
+    spans = getattr(snapshot, "thought_spans", None)
+    if spans is None:
+        return ledger
+    if ledger is None:
+        ledger = {"split": True}
+    seen = ledger.setdefault("spans", [])
+    for index, (at, length) in enumerate(spans):
+        if index < len(seen):
+            seen[index]["len"] = length
+            continue
+        entry = {"len": length}
+        if at + offset:
+            entry["at"] = at + offset
+            ledger.setdefault("later", []).append(entry)
+        else:
+            ledger.setdefault("wraps", []).append(entry)
+        seen.append(entry)
+    return ledger
 
 
 def _memory_tool_requested(payload) -> bool:
@@ -5224,12 +5264,22 @@ def _resolved_kwargs_think(llama_backend, resolved) -> bool:
     return bool(getattr(llama_backend, "reasoning_default", True))
 
 
+def _llama_inkling_channel(llama_backend) -> bool:
+    from core.inference.chat_template_helpers import replays_reasoning_content
+    from core.inference.llama_cpp import _rendered_chat_template
+
+    template = _rendered_chat_template(llama_backend)
+    return isinstance(template, str) and replays_reasoning_content(None, template = template)
+
+
 def _think_parsing_expected(llama_backend, payload) -> bool:
     """Literal think tags in prose stay text unless the model can reason, so the splitter runs only then."""
     if getattr(llama_backend, "reasoning_always_on", False):
         return True
     if not getattr(llama_backend, "supports_reasoning", True):
         return False
+    if _llama_inkling_channel(llama_backend):
+        return True
     # Use the effective template kwargs: effort-dial templates map enable_thinking=False to low.
     args = _anthropic_reasoning_args(payload)
     resolved = (
@@ -7879,7 +7929,7 @@ class _PrefillProgressSignal:
 
 
 async def _stall_wait_frames(next_task, signal: _PrefillProgressSignal, first_timeout: float):
-    """Wait for a GGUF generator step, yielding keep-alives on stall and, when live, progress frames.
+    """Wait for a local generator step, yielding keep-alives on stall and, when live, progress frames.
     Never cancels ``next_task``: the caller's finally drains it."""
     timeout = first_timeout
     waited = 0.0
@@ -15139,6 +15189,8 @@ class _GgufMemoryBreakdown(NamedTuple):
     kv_checkpoint_bytes: int = 0
     lookup_table_bytes: int = 0
     lookup_table_on_disk: bool = False
+    per_gpu: Optional[list[GpuLayerEstimate]] = None
+    per_gpu_basis: Optional[GpuSplitBasis] = None
 
 
 def _gguf_offloaded_layer_fraction(
@@ -15482,6 +15534,184 @@ def _cached_inference_devices() -> Optional[list[tuple[int, int, int]]]:
         return None
 
 
+class _ManualLayerSplit(NamedTuple):
+    ids: list[int]
+    shares: list[float]
+    basis: GpuSplitBasis
+
+
+def _manual_estimate_split(
+    request: EstimateMemoryRequest, gguf_path: str
+) -> Optional[_ManualLayerSplit]:
+    """Reconstruct the fixed layer split from the picker and /api/system's last inventory."""
+    from core.inference.llama_cpp import (
+        _CPU_FFN_COUNT_FLAGS,
+        _OVERRIDE_TENSOR_FLAGS,
+        _extra_args_main_device,
+        _extra_args_set_any_flag,
+    )
+    from core.inference.llama_server_args import (
+        _as_emitted,
+        _effective_tensor_parallel,
+        parse_gpu_layers_override,
+        parse_split_mode_override,
+        parse_tensor_split_override,
+    )
+
+    if request.gpu_memory_mode != "manual" or request.n_cpu_moe:
+        return None
+    args = request.llama_extra_args
+    try:
+        layers = parse_gpu_layers_override(args)
+        if layers is None:
+            layers = request.gpu_layers
+        if layers is None or layers <= 0:
+            return None
+        if _effective_tensor_parallel(args, bool(request.tensor_parallel)):
+            return None
+        if (parse_split_mode_override(args) or "layer").strip().lower() != "layer":
+            return None
+        # /load promotes these extras into the manual fields before stripping them.
+        ratio = parse_tensor_split_override(args, reserialized = True) or request.tensor_split
+    except ValueError:
+        return None
+
+    # These reach the child and can re-place tensors or devices (manual strips only -ncmoe/-cmoe).
+    if _extra_args_set_any_flag(
+        args,
+        _OVERRIDE_TENSOR_FLAGS
+        | _CPU_FFN_COUNT_FLAGS
+        | {
+            "--override-kv",
+            "--rpc",
+            "--moe-cache-mib",
+            "--ple",
+            "--shard",
+            "-mv",
+            "--model-vocoder",
+        },
+    ) or any(
+        os.environ.get(key)
+        for key in (
+            "LLAMA_ARG_OVERRIDE_TENSOR",
+            "LLAMA_ARG_N_CPU_FFN",
+            "LLAMA_ARG_RPC",
+            "LLAMA_ARG_MOE_CACHE_MIB",
+        )
+    ):
+        return None
+    if request.native_path_lease:
+        # A lease authorizes only sibling shards: validate them before GGUFReader opens any.
+        from core.inference.offload_layout import split_shard_paths
+        try:
+            for shard in split_shard_paths(gguf_path) or ():
+                _validate_native_gguf_companion(shard, gguf_path, "GGUF shard")
+        except HTTPException:
+            return None
+    pin = request.selected_gpu_ids
+    # A pin strips --device / LLAMA_ARG_DEVICE; unpinned, they can change membership and order.
+    if not pin and (
+        _extra_args_main_device(args) is not None or os.environ.get("LLAMA_ARG_DEVICE")
+    ):
+        return None
+    main = sys.modules.get("main")
+    cached = getattr(main, "_system_gpu_cache", None)
+    if not cached:
+        return None
+    sampled_at, (_, inventory) = cached
+    if not inventory or not inventory.get("available") or inventory.get("stale"):
+        return None
+    backend = inventory.get("backend")
+    if (
+        backend not in {"cuda", "rocm", "vulkan"}
+        # An unpinned ROCm child may drop GPUs unsupported by the installed llama.cpp build.
+        or (backend == "rocm" and not pin)
+        or not inventory.get("gguf_gpu_ids_supported")
+        or inventory.get("index_kind") not in {"physical", "vulkan", "cuda_device"}
+    ):
+        return None
+    devices = inventory.get("devices") or []
+    by_id = {d["index"]: d for d in devices if isinstance(d.get("index"), int)}
+    ids = list(pin or by_id)
+    if (
+        len(ids) < 2
+        or len(set(ids)) != len(ids)
+        or len(by_id) != len(devices)
+        or any(i not in by_id for i in ids)
+        or any(by_id[i].get("shared_memory") or by_id[i].get("unified_memory") for i in ids)
+    ):
+        return None
+    if ratio and len(ratio) == len(ids):
+        # Unpinned, the launch counts torch devices, which a Vulkan inventory need not match.
+        if not pin and backend == "vulkan":
+            return None
+        # An emitted ratio pins picker order (see _pin_visible_gpu_order_for_split).
+        rendered = [_as_emitted(v) for v in ratio]
+        try:
+            parse_tensor_split_override(["-ts", ",".join(str(v) for v in rendered)])
+        except ValueError:
+            return None
+        return _ManualLayerSplit(ids, rendered, "tensor_split")
+
+    if not pin:
+        # No ratio: the child keeps its inherited order, which the picker's PCI order may not match.
+        if backend == "cuda" and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID":
+            return None
+        ordinals = [d.get("visible_ordinal") for d in devices]
+        if set(ordinals) != set(range(len(ids))):
+            return None
+        ids = sorted(ids, key = lambda i: by_id[i]["visible_ordinal"])
+    if time.monotonic() - sampled_at >= getattr(main, "_SYSTEM_GPU_CACHE_TTL_SECONDS", 10.0):
+        return None
+    # llama.cpp splits by raw free bytes; rounded or display figures can move the boundary block.
+    free = [by_id[i].get("vram_free_bytes") for i in ids]
+    if any(type(value) is not int or value < 0 for value in free) or not any(free):
+        return None
+    return _ManualLayerSplit(ids, free, "free_memory")
+
+
+@functools.lru_cache(maxsize = 16)
+def _estimate_layer_layout(gguf_path: str, shard_stats: tuple):
+    """The header-derived layout survives slider changes until any shard changes."""
+    from core.inference.offload_layout import layout_from_gguf
+    return layout_from_gguf(gguf_path, all_shards = True)
+
+
+def _estimate_gpu_layers(
+    gguf_path: str,
+    gpu_layers: int,
+    split: _ManualLayerSplit,
+    cache_bytes: Optional[int],
+    n_parallel: int,
+) -> Optional[list[GpuLayerEstimate]]:
+    from core.inference.offload_layout import split_shard_paths
+    from core.inference.offload_planner import estimate_layer_split
+
+    try:
+        paths = split_shard_paths(gguf_path) or [gguf_path]
+        stats = [os.stat(path) for path in paths]
+        layout = _estimate_layer_layout(gguf_path, tuple((s.st_size, s.st_mtime_ns) for s in stats))
+    except OSError:
+        return None
+    rows = estimate_layer_split(
+        layout, gpu_layers, split.shares, kv_bytes = cache_bytes, n_parallel = n_parallel
+    )
+    return [
+        GpuLayerEstimate(
+            gpu_id = gpu_id,
+            layer_count = row.layer_count,
+            output_layer = row.has_output_layer,
+            weights_bytes = row.weights_bytes,
+            cache_bytes = (
+                row.kv_bytes + row.recurrent_bytes
+                if row.kv_bytes is not None and row.recurrent_bytes is not None
+                else None
+            ),
+        )
+        for gpu_id, row in zip(split.ids, rows)
+    ] or None
+
+
 def _tensor_split_possible(requested_gpu_ids: Optional[list[int]]) -> bool:
     """Tensor split needs two usable GPUs, since load_model falls back to a layer split below that."""
     if requested_gpu_ids:
@@ -15740,6 +15970,7 @@ def _gguf_memory_breakdown(
     # A GPU pin owns placement: load_model strips device flags and env before launch.
     device_pin_governs: bool = False,
     selected_gpu_ids: Optional[list[int]] = None,
+    layer_split: Optional[_ManualLayerSplit] = None,
 ) -> Optional[_GgufMemoryBreakdown]:
     """None if nothing sizes. Files are cached; the KV and compute buffers are re-derived per call."""
     from core.inference.llama_server_args import (
@@ -16208,8 +16439,40 @@ def _gguf_memory_breakdown(
     kv_on_gpu = _kv_offload_from_args(llama_extra_args) and gpu_fraction > 0.0
     # Context checkpoints are host heap (--cache-ram); excluded from the GPU figure.
     gpu_kv_bytes = max(0, runtime.kv_bytes - runtime.kv_checkpoint_bytes)
-    # Cache follows its layer's device; scale linearly by offloaded fraction (exact at 0 and full).
-    gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
+    per_gpu = None
+    if (
+        layer_split
+        and gpu_layers is not None
+        and not tensor_parallel
+        and not (embedded_mtp or companion_bytes or host_drafter_bytes or drafter_kv_unsized)
+        and not (adapter_bytes or adapters_unsized or lookup_table_bytes or _lt_device_bytes)
+        and not getattr(probe, "is_diffusion", False)
+    ):
+        from core.inference.llama_cpp import (
+            _extra_args_n_parallel,
+            _kv_bytes_per_elem,
+            _planned_main_cache_types,
+        )
+
+        cache_bytes = None
+        if not kv_on_gpu:
+            cache_bytes = 0
+        elif runtime.kv_estimable:
+            # Mixed K/V types or a pass-through --parallel make the aggregate cache unsplittable.
+            types = _planned_main_cache_types(cache_type_kv, extras)
+            slots = _extra_args_n_parallel(extras, {})
+            if len({_kv_bytes_per_elem(t) for t in types}) == 1 and slots in (
+                None,
+                runtime.n_parallel,
+            ):
+                cache_bytes = gpu_kv_bytes
+        per_gpu = _estimate_gpu_layers(
+            gguf_path, gpu_layers, layer_split, cache_bytes, runtime.n_parallel
+        )
+    if per_gpu and all(row.cache_bytes is not None for row in per_gpu):
+        gpu_bytes = sum(row.weights_bytes + row.cache_bytes for row in per_gpu)
+    else:
+        gpu_bytes = gpu_weights + (int(gpu_kv_bytes * gpu_fraction) if kv_on_gpu else 0)
     if gpu_fraction > 0.0:
         # Compute buffers land on the devices running layers.
         gpu_bytes += runtime.compute_bytes
@@ -16233,6 +16496,7 @@ def _gguf_memory_breakdown(
     ):
         # No GPU given or present: zero even for companions, which ignore --gpu-layers; a GPU pin overrides both readings.
         gpu_bytes = 0
+        per_gpu = None
         drafter_runtime_gpu_bytes = 0
     return _GgufMemoryBreakdown(
         weights_bytes = weights_bytes,
@@ -16255,6 +16519,8 @@ def _gguf_memory_breakdown(
         kv_checkpoint_bytes = runtime.kv_checkpoint_bytes,
         lookup_table_bytes = lookup_table_bytes,
         lookup_table_on_disk = lookup_table_on_disk,
+        per_gpu = per_gpu,
+        per_gpu_basis = layer_split.basis if per_gpu else None,
     )
 
 
@@ -23129,6 +23395,7 @@ async def estimate_memory(
             # A pin names the cards; the launch strips conflicting device flags.
             device_pin_governs = bool(request.selected_gpu_ids),
             selected_gpu_ids = pinned_gpu_ids,
+            layer_split = _manual_estimate_split(request, gguf_path),
         )
         breakdown = price(n_ctx = request.n_ctx or 0)
         if breakdown is None:
@@ -28634,9 +28901,9 @@ def _decode_within(
 def _request_audio_clips(payload) -> list[str]:
     """Every recording the request carries, ``audio_base64`` first."""
     first = getattr(payload, "audio_base64", None)
-    if not first:
-        return []
-    return [first, *(getattr(payload, "extra_audio_base64", None) or [])]
+    if first:
+        return [first, *(getattr(payload, "extra_audio_base64", None) or [])]
+    return [part.input_audio.data for part in _studio_audio_replay_parts(payload)]
 
 
 def _audio_too_large_detail(clip_count: int) -> str:
@@ -29395,12 +29662,38 @@ def _reject_misplaced_audio_parts(payload) -> None:
             f"At most {_MAX_AUDIO_CLIPS_PER_REQUEST} audio recordings per request are supported, "
             f"and this one carries {len(parts)}.",
         )
+    replay = [(index, part) for index, part in parts if part.studio_replay]
+    if replay:
+        if (
+            len(replay) != len(parts)
+            or replay[0][0] != replay[-1][0]
+            or replay[-1][0] == last_user
+            or getattr(payload, "audio_base64", None)
+        ):
+            _raise_unsupported_openai_parameter(
+                "messages",
+                "Studio audio replay supports recordings from one earlier user message on a turn "
+                "without new audio.",
+            )
+        if rejection := _request_audio_rejection(payload):
+            raise HTTPException(status_code = rejection[0], detail = rejection[1])
+        return
     if any(index != last_user for index, _ in parts):
         _raise_unsupported_openai_parameter(
             "messages",
             "Audio input is supported on the latest user message, and this one carries it on an "
             "earlier turn. Re-send the recording on the current turn.",
         )
+
+
+def _studio_audio_replay_parts(payload) -> list[InputAudioContentPart]:
+    return [
+        part
+        for msg in getattr(payload, "messages", None) or ()
+        if isinstance(getattr(msg, "content", None), list)
+        for part in msg.content
+        if isinstance(part, InputAudioContentPart) and part.studio_replay
+    ]
 
 
 def _messages_have_input_audio(messages) -> bool:
@@ -29435,7 +29728,7 @@ def _normalise_chat_content_parts(payload) -> None:
             continue
         kept = []
         for part in msg.content:
-            if isinstance(part, InputAudioContentPart):
+            if isinstance(part, InputAudioContentPart) and not part.studio_replay:
                 if msg.role == "user" and part.input_audio.data:
                     lifted.append(part.input_audio.data)
                 continue
@@ -30575,9 +30868,6 @@ async def _stop_on_cancel(agen, cancel_event: threading.Event):
 
 # keep these limits aligned with auto-compaction.ts, which derives catalogued-window thresholds.
 _EXTERNAL_COMPACTION_HEADROOM = 0.25
-# /compact on Anthropic lowers the native trigger to its 50K floor, which only fires on a prompt
-# past it; the margin covers the estimate running high. Shorter threads get Unsloth's summary.
-_ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS = 60_000
 _EXTERNAL_COMPACTION_THRESHOLD_MAX = 2_000_000
 
 
@@ -30612,12 +30902,10 @@ def _extends_turn(old: Any, new: Any) -> bool:
     return isinstance(old, list) and isinstance(new, list) and new[: len(old)] == old
 
 
-def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
-    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
-    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+def _active_turn_start(messages: list[dict], branch: Optional[list[dict]]) -> Optional[int]:
     asked = next((m for m in reversed(branch or ()) if m.get("role") == "user"), None)
     # Only the active copy: pinning every repeat of "continue" would pin their whole groups.
-    start = next(
+    return next(
         (
             i
             for i in range(len(messages) - 1, -1, -1)
@@ -30627,6 +30915,12 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         ),
         None,
     )
+
+
+def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> Optional[set[int]]:
+    """The user's own turn and the loop's latest exchange: a controller re-prompt after them reads
+    as the newest turn, and a reset would otherwise drop the evidence the final answer needs."""
+    start = _active_turn_start(messages, branch)
     if start is None:
         return None
     latest = next(
@@ -30634,6 +30928,46 @@ def _active_turn_anchors(messages: list[dict], branch: Optional[list[dict]]) -> 
         len(messages),
     )
     return {id(messages[start])} | {id(m) for m in messages[latest:]}
+
+
+def _shorten_turn_tool_results(
+    messages: list[dict],
+    branch: Optional[list[dict]],
+    target: int,
+    count: Callable[[list[dict]], int],
+) -> set[int]:
+    anchors = (
+        _active_turn_anchors(messages, branch) or _active_turn_anchors(messages, messages) or set()
+    )
+    start = next((i for i, m in enumerate(messages) if id(m) in anchors), len(messages))
+    # The newest call's results stay whole even under a trailing assistant prefill.
+    newest = next(
+        (
+            i
+            for i in range(len(messages) - 1, start, -1)
+            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")
+        ),
+        len(messages),
+    )
+    for message in messages[start + 1 : newest]:
+        if message.get("role") != "tool" or id(message) in anchors:
+            continue
+        if count(messages) <= target:
+            break
+        content = message.get("content")
+        # In place: the loop's later passes must send the results cut too.
+        if isinstance(content, str):
+            message["content"] = _shorten_tool_result(content)
+        elif isinstance(content, list):
+            message["content"] = [
+                {**part, "text": _shorten_tool_result(part["text"])}
+                if isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+                else part
+                for part in content
+            ]
+    return {id(message) for message in messages[start:]}
 
 
 def _extend_checkpoint_fit(state: dict, messages: list[dict]) -> Optional[list[dict]]:
@@ -30732,6 +31066,74 @@ def _overflow_retry_thresholds(refused_tokens: int, max_tokens: Optional[int]) -
     return [max(1, refused_tokens * eighths // 8) for eighths in (4, 5, 6, 7)] + [low]
 
 
+_CLIPPED_RESULT_MIN_CHARS = 400
+_CLIP_NOTICE_CHARS = 128
+
+
+def _clip_text(text: str, keep: int) -> str:
+    half = keep // 2
+    return (
+        f"{text[:half]}\n\n[... {len(text) - 2 * half:,} characters of this result were cut to fit "
+        f"the context window ...]\n\n{text[len(text) - half :]}"
+    )
+
+
+_OVERFLOW_TOOL_RESULT_CHARS = 200
+
+
+def _shorten_tool_result(text: str) -> str:
+    if len(text) <= 2 * _OVERFLOW_TOOL_RESULT_CHARS:
+        return text
+    return (
+        text[:_OVERFLOW_TOOL_RESULT_CHARS]
+        + f"\n\n... (truncated to fit the context window, {len(text)} chars total)"
+    )
+
+
+def _clip_turn_tool_results(
+    messages: list[dict],
+    start: int,
+    kept_ids: set[int],
+    target: int,
+    count_tokens: Callable[[list[dict]], int],
+) -> bool:
+    # Shortens only when that fits the turn, in place: eviction and the archive match by identity.
+    turn = [dict(m) for m in messages[start:]]
+    floor = [
+        m for m in messages[:start] if m.get("role") in ("system", "developer") or id(m) in kept_ids
+    ] + turn
+    over = count_tokens(floor) - target
+    for message in turn:
+        if over <= 0:
+            break
+        text = message.get("content")
+        if message.get("role") != "tool" or not isinstance(text, str):
+            continue
+        if len(text) - _CLIPPED_RESULT_MIN_CHARS <= _CLIP_NOTICE_CHARS:
+            continue
+        # The caller's counter: chars per token differ by script (CJK vs Latin).
+        low, high = _CLIPPED_RESULT_MIN_CHARS, len(text) - _CLIP_NOTICE_CHARS
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+        if over > 0:
+            continue
+        while high - low > 64:
+            middle = (low + high) // 2
+            message["content"] = _clip_text(text, middle)
+            if count_tokens(floor) <= target:
+                low = middle
+            else:
+                high = middle
+        message["content"] = _clip_text(text, low)
+        over = count_tokens(floor) - target
+    if over > 0:
+        return False
+    for original, clipped in zip(messages[start:], turn):
+        if clipped.get("content") is not original.get("content"):
+            original["content"] = clipped["content"]
+    return True
+
+
 def _fit_external_context(
     messages: list[dict],
     payload,
@@ -30744,13 +31146,19 @@ def _fit_external_context(
     replays_manual: bool = False,
     keep_ids: Optional[set[int]] = None,
     count_tokens: Optional[Callable[[list[dict]], int]] = None,
+    unsummarised: Optional[list[dict]] = None,
 ) -> tuple[list[dict], Optional[dict], Optional[int]]:
     """``branch`` is the client's request when ``messages`` is a tool loop's conversation: recall
     queries the user's turn, not a controller re-prompt, and still filters on the loop's turns.
     ``can_reset`` lets the fit start a checkpoint epoch, which /compact needs; ``replays_manual``
-    replays a /compact epoch on a request that may not start one."""
+    replays a /compact epoch on a request that may not start one. ``unsummarised`` is ``messages``
+    before a summary replaced its oldest turns, so those are archived and recalled too."""
+    from core.inference import cloud_compaction
     from core.inference.context_window import (
+        _ATTACHMENT_FIT_MARGIN,
         estimate_message_tokens_without_unpriced_media,
+        evicted_messages,
+        fit_oversized_attachments,
         prompt_budget,
         retrieval_budget,
     )
@@ -30803,17 +31211,29 @@ def _fit_external_context(
             can_reset = False,
             compaction_headroom_ratio = ratio,
         )
+    anchors = (
+        (_active_turn_anchors(messages, branch) or set()) if can_reset or replays_manual else set()
+    ) | (keep_ids or set())
+    turn = _active_turn_start(messages, branch) if tool_loop else None
+    if turn is not None:
+        messages = fit_oversized_attachments(
+            messages, context_length = context_length, max_tokens = max_tokens, count_tokens = _count
+        )
+        # The request always stays; the rest of the turn too, unless clipping cannot fit it.
+        if _clip_turn_tool_results(
+            messages,
+            turn,
+            keep_ids or set(),
+            int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN)),
+            _count,
+        ):
+            anchors |= {id(m) for m in messages[turn:]}
+        anchors.add(id(messages[turn]))
     # A replay recalls inline only when search_conversation cannot reach the epoch this turn.
     recall_offered = can_reset and "search_conversation" in _catalog_names(tools)
     fitted, truncation = _fit_with_instruction_pins(
         messages,
-        anchor_ids = (
-            (_active_turn_anchors(messages, branch) or set())
-            if can_reset or replays_manual
-            else set()
-        )
-        | (keep_ids or set())
-        or None,
+        anchor_ids = (anchors | cloud_compaction.request_reference_ids(messages, turn)) or None,
         context_length = context_length,
         max_tokens = max_tokens,
         count_tokens = _count,
@@ -30836,11 +31256,22 @@ def _fit_external_context(
         # The catalogue is chosen before this fit, so the turn that first evicts has no
         # search_conversation: recall inline, as the local plain path does, or a question about
         # an evicted attachment on that turn gets "I have no record of it".
+        archived_first = 0
+        if unsummarised and thread_id and evicted_messages(unsummarised, messages):
+            # The archive is capped oldest first: a summarised backlog would defer what this fit cut.
+            archived_first = _archive_and_recall(
+                fitted,
+                messages,
+                branch_messages = unsummarised,
+                thread_id = str(thread_id),
+                style = "inline",
+                recall_done = True,
+            )["counts"].get("archived_messages", 0)
         recall = _archive_and_recall(
             fitted,
-            messages,
+            unsummarised or messages,
             # The loop's own conversation filters, or tool results this turn evicted are unrecallable.
-            branch_messages = messages,
+            branch_messages = unsummarised or messages,
             query_messages = branch,
             thread_id = str(thread_id) if thread_id else None,
             style = "inline",
@@ -30856,6 +31287,10 @@ def _fit_external_context(
         )
         fitted = recall["conversation"]
         truncation = {**truncation, **recall["counts"]}
+        if archived_first:
+            truncation["archived_messages"] = (
+                truncation.get("archived_messages", 0) + archived_first
+            )
     return fitted, truncation, max_tokens
 
 
@@ -30881,6 +31316,7 @@ class _ExternalCompactionPlan:
         "summarise",
         "summary_failed",
         "summary_error",
+        "record",
     )
 
 
@@ -30892,6 +31328,8 @@ def _plan_external_compaction(
     auto: bool = True,
     force: Optional[str] = None,
     summarise: bool = True,
+    branch: Optional[list[dict]] = None,
+    written: tuple[dict, ...] = (),
 ) -> _ExternalCompactionPlan:
     """``auto`` fits to the request's compaction_threshold; without it only a saved summary is
     replayed. ``force`` summarises everything before the newest user turn whether or not the
@@ -30909,6 +31347,7 @@ def _plan_external_compaction(
     plan.summarise = summarise
     plan.summary_failed = None
     plan.summary_error = None
+    plan.record = None
     plan.to_summarise = []
     plan.body = cloud_compaction.body_messages(messages)
     count = _external_token_counter(payload, tools)
@@ -30926,7 +31365,7 @@ def _plan_external_compaction(
         plan.pins = set()
 
     thread_id = str(payload.thread_id) if payload.thread_id else None
-    record = cloud_compaction.stored_summary(thread_id, plan.body) if summarise else None
+    record = cloud_compaction.stored_summary(thread_id, plan.body, written) if summarise else None
     plan.covered = int(record["covered_messages"]) if record else 0
     plan.summary = record["summary"] if record else None
     plan.current = (
@@ -30943,15 +31382,18 @@ def _plan_external_compaction(
         plan.summary_failed = True
     elif summarise and (force or over):
         tail_tokens = 0 if force else cloud_compaction.tail_token_budget(plan.budget)
+        # A tool loop's re-prompts are user turns too: the reply in progress is never summarised.
+        turn = _active_turn_start(plan.body, branch)
         cut = cloud_compaction.tail_start(
-            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens
+            plan.body, estimate_message_tokens_without_unpriced_media, tail_tokens, turn
         )
         if cut <= plan.covered and tail_tokens:
             # The tail is within its share and the prompt still does not fit (a large tool
             # catalogue, a long system prompt): summarise up to the newest turn before evicting.
             cut = cloud_compaction.tail_start(
-                plan.body, estimate_message_tokens_without_unpriced_media, 0
+                plan.body, estimate_message_tokens_without_unpriced_media, 0, turn
             )
+        cut = cloud_compaction.keep_request_reference(plan.body, cut, turn)
         if cut > plan.covered:
             plan.cut = cut
             plan.to_summarise = plan.body[plan.covered : cut]
@@ -30976,6 +31418,7 @@ async def _finish_external_compaction(
     from core.inference import cloud_compaction
     from core.inference.context_window import (
         estimate_message_tokens_without_unpriced_media,
+        prompt_budget,
         retrieval_budget,
     )
     from core.inference.llama_cpp import _archive_and_recall
@@ -31056,7 +31499,7 @@ async def _finish_external_compaction(
             if isinstance(exc, (cloud_compaction.SummaryCutOff, cloud_compaction.SummaryTimedOut)):
                 cloud_compaction.remember_cut_off(thread_id, model)
         else:
-            await asyncio.to_thread(
+            plan.record = await asyncio.to_thread(
                 cloud_compaction.save_summary,
                 thread_id,
                 covered = plan.body[: plan.cut],
@@ -31074,11 +31517,19 @@ async def _finish_external_compaction(
     refusal = None
     max_tokens = plan.max_tokens
     fit_payload = payload if plan.auto else None
-    if plan.force == "overflow" and not summarised_now:
-        # The provider counted more than the estimate allowed for: evict down to half of it.
-        fit_payload = payload.model_copy(
-            update = {"compaction_threshold": max(1, count(current) // 2), "context_window": None}
-        )
+    turn_ids: set[int] = set()
+    if plan.force == "overflow":
+        # Provider counted more than estimated: aim for half, shortening this turn's tool results.
+        half = max(1, count(current) // 2)
+        target = prompt_budget(half, _effective_max_tokens(payload))
+        turn_ids = _shorten_turn_tool_results(current, branch, target, count)
+        if count(current) > target:
+            # Shortening fell short: leave the turn's older exchanges evictable.
+            turn_ids = set()
+        if not summarised_now:
+            fit_payload = payload.model_copy(
+                update = {"compaction_threshold": half, "context_window": None}
+            )
     if fit_payload is not None:
         fitted, evicted, max_tokens = await asyncio.to_thread(
             _fit_external_context,
@@ -31087,7 +31538,8 @@ async def _finish_external_compaction(
             tools = tools,
             branch = branch,
             tool_loop = tool_loop,
-            keep_ids = cloud_compaction.summary_turn_ids(current),
+            keep_ids = cloud_compaction.summary_turn_ids(current) | turn_ids,
+            unsummarised = plan.messages,
         )
         current = fitted
         if evicted and not plan.summarise:
@@ -31099,17 +31551,6 @@ async def _finish_external_compaction(
                 truncation["boundary_messages"] = plan.covered + int(
                     evicted.get("boundary_messages") or evicted["dropped_messages"]
                 )
-                # The fit archived only what it cut from the summarised prompt.
-                archived = await asyncio.to_thread(
-                    _archive_and_recall,
-                    current,
-                    plan.messages,
-                    branch_messages = plan.messages,
-                    thread_id = thread_id,
-                    style = "inline",
-                    recall_done = True,
-                )
-                truncation.update(archived["counts"])
         elif evicted:
             # Nothing could be dropped: the prompt is still too long, and any summary still stands.
             refusal = evicted
@@ -31161,31 +31602,6 @@ async def _finish_external_compaction(
     if truncation is None and refusal is not None:
         truncation = {**refusal, "summary_failed": bool(summary_failed)}
     return current, truncation, max_tokens
-
-
-def _is_compaction_block_sse(line: str) -> bool:
-    if '"compaction_block"' not in line:
-        return False
-    event = (_sse_payload(line) or {}).get("_toolEvent")
-    return isinstance(event, dict) and event.get("type") == "compaction_block"
-
-
-def _provider_compaction_truncation(messages: list[dict]) -> dict:
-    latest_user = max(
-        (index for index, message in enumerate(messages) if message.get("role") == "user"),
-        default = 0,
-    )
-    summarized = sum(
-        1
-        for message in messages[:latest_user]
-        if message.get("role") not in ("system", "developer")
-    )
-    return {
-        "dropped_messages": summarized,
-        "boundary_messages": summarized,
-        "fits": True,
-        "summarized": True,
-    }
 
 
 async def _proxy_to_external_provider(
@@ -31914,13 +32330,11 @@ async def _proxy_to_external_provider(
     )
     if _external_nudge:
         chat_messages = _append_to_system_message(chat_messages, _external_nudge)
-    _provider_compacts = compacts_server_side(provider_type, base_url, api_type, model)
     # UNSLOTH_CONTEXT_OVERFLOW must not bypass Studio's auto-compact switch.
     if (
         managed is None
         and payload.context_overflow == "truncate_oldest"
         and (provider_type == "ollama" or not payload.compaction_threshold)
-        and not _provider_compacts
     ):
         # a self-hosted server reports its startup window when the catalog has none.
         _loaded_window = None
@@ -31991,31 +32405,18 @@ async def _proxy_to_external_provider(
 
     _external_truncation = None
     _external_max_tokens = _effective_max_tokens(payload)
-    _compaction_fallback = None
     _request_branch = chat_messages
     _rolling = _rolling_context_policy(payload) is not None
-    # The connection's "Auto-compact after" may pass the 200K default, never the model's window.
-    _compaction_uncapped = bool(payload.compaction_uncapped and payload.compaction_threshold)
-    if _compaction_uncapped and payload.context_window:
+    if payload.compaction_uncapped and payload.compaction_threshold and payload.context_window:
         payload = payload.model_copy(
             update = {
                 "compaction_threshold": min(payload.compaction_threshold, payload.context_window)
             }
         )
     # No summary call; dropped turns go to the archive. "rolling" is the pre-summary cloud fit.
-    _evict_only = (
-        managed is None
-        and payload.compaction_mode in ("rolling", "checkpoint")
-        and not _provider_compacts
-    )
+    _evict_only = managed is None and payload.compaction_mode in ("rolling", "checkpoint")
     _rolling_only = _evict_only and payload.compaction_mode == "rolling"
-    # Eviction's replacement: providers that compact server-side keep doing so themselves.
-    _auto_summary = (
-        bool(payload.compaction_threshold)
-        and _rolling
-        and not _provider_compacts
-        and not _evict_only
-    )
+    _auto_summary = bool(payload.compaction_threshold) and _rolling and not _evict_only
     # /compact. A saved thread only, so the summary outlives this request.
     _compact_now = (
         managed is None
@@ -32023,22 +32424,7 @@ async def _proxy_to_external_provider(
         and payload.compact_context is True
         and bool(payload.thread_id)
     )
-    _first_turn_overrides: dict = {}
-    if _compact_now and _provider_compacts:
-        _native_trigger = None
-        if provider_type != "anthropic":
-            _native_trigger = _OPENAI_COMPACTION_MIN
-        elif (
-            await asyncio.to_thread(
-                _external_token_counter(payload, _external_fit_tools), chat_messages
-            )
-            >= _ANTHROPIC_NATIVE_COMPACT_NOW_TOKENS
-        ):
-            _native_trigger = _ANTHROPIC_COMPACTION_MIN
-        if _native_trigger is not None:
-            # The provider compacts on this request because its trigger is already behind us.
-            _first_turn_overrides = {"compaction_threshold": _native_trigger}
-    _manual_summary_pending = _compact_now and not _first_turn_overrides
+    _manual_summary_pending = _compact_now
     _has_saved_summary = False
     if (
         managed is None
@@ -32088,6 +32474,8 @@ async def _proxy_to_external_provider(
     _first_payload = _evicting_payload
     # The prompt last sent, so an overflow refit evicts below what the provider refused.
     _last_fit = None
+    _overflow_shrunk = False
+    _written_summaries: list[dict] = []
 
     # As the plain fit decides it: a cloud model that never gets Studio tools cannot search an epoch.
     _model_can_reset = managed is not None or provider_model_runs_local_tools(
@@ -32154,18 +32542,22 @@ async def _proxy_to_external_provider(
         """Yields a progress line when a summary has to be written first, then
         ``(messages, max_tokens, truncation_line)``."""
         nonlocal _external_truncation, _manual_summary_pending
-        nonlocal _evicting_payload, _first_payload, _last_fit
+        nonlocal _evicting_payload, _first_payload, _last_fit, _overflow_shrunk
         from core.inference import cloud_compaction
 
         if force is None and _manual_summary_pending:
             force = "manual"
         _manual_summary_pending = False
+        if force == "overflow":
+            # Unfitted rounds send the live conversation; _last_fit is then a stale earlier fit.
+            refused = _last_fit if _fit_active and _last_fit is not None else messages
+            refused_tokens = _external_token_counter(payload, tools)(refused)
         if _evict_only and force == "overflow":
             # Half the refused prompt first, looser only when what the fit keeps is larger; kept for
             # the loop's later passes. The window stays: the fit clamps the reply cap against it.
-            refused = _last_fit if _last_fit is not None else messages
-            refused_tokens = _external_token_counter(payload, tools)(refused)
             unbounded, first_unbounded = _evicting_payload, _first_payload
+            # The tightest probe that fit by shortening alone, used when no probe can drop a turn.
+            clipped = None
             for threshold in _overflow_retry_thresholds(
                 refused_tokens, _effective_max_tokens(unbounded)
             ):
@@ -32179,6 +32571,12 @@ async def _proxy_to_external_provider(
                 )
                 if truncation and truncation.get("dropped_messages") and truncation.get("fits"):
                     break
+                if clipped is None and truncation is None:
+                    clipped = (fitted, fallback_max_tokens, _evicting_payload, _first_payload)
+            else:
+                if clipped is not None:
+                    fitted, fallback_max_tokens, _evicting_payload, _first_payload = clipped
+                    truncation = None
         elif _evicting_fit:
             fitted, truncation, fallback_max_tokens = await _managed_context_fitter(messages, tools)
         else:
@@ -32190,6 +32588,8 @@ async def _proxy_to_external_provider(
                     tools = tools,
                     auto = _auto_summary if auto is None else auto,
                     force = force,
+                    branch = _request_branch,
+                    written = tuple(_written_summaries),
                 )
             if plan.to_summarise and not _non_stream_custom_responses:
                 yield cloud_compaction.COMPACTING_SSE_LINE
@@ -32202,10 +32602,16 @@ async def _proxy_to_external_provider(
                 branch = _request_branch,
                 tool_loop = run_studio_tool_loop and not _tool_calls_are_disabled(payload),
             )
+            if plan.record is not None:
+                _written_summaries.append(plan.record)
             if plan.force == "manual" and plan.summary_error and not _non_stream_custom_responses:
                 yield cloud_compaction.compaction_failed_sse_line(plan.summary_error)
         _refuse_what_ollama_would_cut(provider_type, truncation, payload.context_window)
         fitted = _date_a_fitted_system_turn(fitted, request, run_studio_tool_loop)
+        # Measured, not read off truncation: a replayed summary reports drops on every fit.
+        _overflow_shrunk = (
+            force == "overflow" and _external_token_counter(payload, tools)(fitted) < refused_tokens
+        )
         _last_fit = fitted
         if truncation and truncation.get("dropped_messages"):
             _external_truncation = truncation
@@ -32229,33 +32635,20 @@ async def _proxy_to_external_provider(
 
     async def _external_overflow_refit(messages, tools = _external_fit_tools):
         """The provider refused the prompt as too long: summarise everything before the newest
-        turn. ``(None, None, None)`` when that changes nothing, so the refusal stands."""
+        turn. ``(None, None, None)`` when the refit is no smaller, so the refusal stands."""
         nonlocal _external_truncation
         earlier, _external_truncation = _external_truncation, None
         async for step in _external_fit_steps(messages, tools, force = "overflow"):
             if isinstance(step, str):
                 yield step
                 continue
-            truncation = _external_truncation or {}
-            changed = truncation.get("checkpoint_started") or (
-                truncation.get("dropped_messages") and not truncation.get("summarized")
-            )
-            if not changed:
+            changed = _overflow_shrunk
+            if not changed or _external_truncation is None:
                 _external_truncation = earlier
             yield step if changed else (None, None, None)
 
     # Only with auto-compact on: a user who switched it off gets the provider's refusal as is.
     _overflow_recovery = managed is None and _rolling
-
-    if (
-        payload.compaction_threshold
-        and _rolling
-        and _provider_compacts
-        and (provider_type == "openai" or api_type == "responses")
-    ):
-
-        async def _compaction_fallback(messages):
-            return await _external_context_fitter(messages, auto = True)
 
     _deferred_fit_plan = None
     # An overflow refit starts from the transcript, not from a prompt that already holds a summary.
@@ -32335,9 +32728,6 @@ async def _proxy_to_external_provider(
             openai_code_exec_container_id = payload.openai_code_exec_container_id,
             anthropic_code_exec_container_id = payload.anthropic_code_exec_container_id,
             prompt_cache_ttl = payload.prompt_cache_ttl,
-            compaction_threshold = payload.compaction_threshold,
-            compaction_uncapped = _compaction_uncapped,
-            compaction_fallback = _compaction_fallback,
             fast_mode = payload.fast_mode,
             response_format = _extract_response_format(payload),
             thread_id = payload.thread_id,
@@ -32367,7 +32757,6 @@ async def _proxy_to_external_provider(
                     continue_final_message = _continue_final_message(payload),
                     message_fitter = _external_fit_steps if _fit_active else None,
                     overflow_refitter = _external_overflow_refit if _overflow_recovery else None,
-                    first_turn_overrides = _first_turn_overrides,
                     reply_limit = _reply_room,
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
@@ -32428,7 +32817,7 @@ async def _proxy_to_external_provider(
 
             async def _plain_turn():
                 nonlocal _sent_messages
-                overrides = dict(_first_turn_overrides)
+                overrides = {}
                 if _deferred_fit_plan is not None:
                     fit = None
                     async for step in _external_fit_steps(chat_messages, plan = _deferred_fit_plan):
@@ -32496,7 +32885,6 @@ async def _proxy_to_external_provider(
                 yield _context_truncated_sse_chunk(
                     f"chatcmpl-{uuid.uuid4().hex}", model, _external_truncation
                 )
-            provider_compaction_reported = False
             async for line in gen:
                 if _is_openai_sse_done(line) and _managed_cut_short():
                     # intercept [DONE] before the monitor records a cut-short reply as complete.
@@ -32533,25 +32921,6 @@ async def _proxy_to_external_provider(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                 yield f"{line}\n\n"
-                if (
-                    _provider_compacts
-                    and not provider_compaction_reported
-                    and _is_compaction_block_sse(line)
-                ):
-                    provider_compaction_reported = True
-                    yield _context_truncated_sse_chunk(
-                        f"chatcmpl-{uuid.uuid4().hex}",
-                        model,
-                        {
-                            **_provider_compaction_truncation(chat_messages),
-                            # /compact lowered the provider's trigger for this request.
-                            **(
-                                {"manual": True, "checkpoint_started": True}
-                                if _first_turn_overrides
-                                else {}
-                            ),
-                        },
-                    )
                 # inspect the line directly because a disabled monitor would duplicate [DONE].
                 if _is_openai_sse_done(line):
                     sent_done = True
@@ -34013,6 +34382,7 @@ async def produce_openai_chat_completions(
     _mcp_image = await _request_mcp_image(payload, _ui_events)
     # Local path only: the lift targets audio_base64, which the proxy never reads.
     _normalise_chat_content_parts(payload)
+    _replayed_audio = bool(_studio_audio_replay_parts(payload))
 
     # Reject malformed function tools here, or llama-server fails opaquely with "Failed to parse tools".
     if payload.tools:
@@ -34129,14 +34499,15 @@ async def produce_openai_chat_completions(
         )
         # Video needs the projector too; its /props gate runs only after load, so refuse before any eviction.
         _needs_video = _request_has_video(payload)
-        _needs_vision = _needs_image or bool(payload.audio_base64) or _needs_video
+        _needs_audio_input = bool(payload.audio_base64) or _replayed_audio
+        _needs_vision = _needs_image or _needs_audio_input or _needs_video
         # Name only the modalities actually attached, so a refusal never reports one the request lacks.
         _modality_label = (
             " or ".join(
                 name
                 for name, present in (
                     ("image", _needs_image),
-                    ("audio", bool(payload.audio_base64)),
+                    ("audio", _needs_audio_input),
                     ("video", _needs_video),
                 )
                 if present
@@ -34147,7 +34518,6 @@ async def produce_openai_chat_completions(
         _video_rejection = _request_video_rejection(payload)
         if _video_rejection is not None:
             raise HTTPException(status_code = _video_rejection[0], detail = _video_rejection[1])
-        _needs_audio_input = bool(payload.audio_base64)
 
     # the rest of the audio checks depend on the target's format, so the switch runs them.
     _audio_preflight = (
@@ -34186,8 +34556,14 @@ async def produce_openai_chat_completions(
         require_video = _needs_video,
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
+        gguf_only = _replayed_audio,
+        gguf_only_reason = (
+            "Audio history replay requires a local audio-capable GGUF model."
+            if _replayed_audio
+            else None
+        ),
         tool_images_only = _tool_images_only,
-        serves_npu = True,
+        serves_npu = not _replayed_audio,
         npu_request_check = _npu_switch_check,
     )
     if _audio_preflight is not None:
@@ -34221,6 +34597,11 @@ async def produce_openai_chat_completions(
 
     llama_backend = get_llama_cpp_backend()
     using_gguf = llama_backend.is_loaded
+    if _replayed_audio and not using_gguf:
+        raise HTTPException(
+            status_code = 400,
+            detail = "Audio history replay requires a local audio-capable GGUF model.",
+        )
 
     # Lift ``extra_body`` template controls before sampling and generation read them.
     _normalize_chat_reasoning_controls(payload)
@@ -34973,8 +35354,8 @@ async def produce_openai_chat_completions(
         if _wants_multiple_choices(payload):
             raise _reject_unsupported_n("GGUF tool, response_format or grammar passthrough")
         _reject_unresumable_thought(payload, llama_backend, _reject)
-        if payload.audio_base64:
-            # Passthrough forwards verbatim, so transcoded audio would never be injected.
+        if payload.audio_base64 or _replayed_audio:
+            # Passthrough forwards verbatim, so validated audio would not be prepared.
             raise _reject(
                 400,
                 "Audio input is not supported together with guided decoding or client-supplied tools yet.",
@@ -35092,7 +35473,7 @@ async def produce_openai_chat_completions(
     if using_gguf:
         # wav/mp3 pass through (llama-server decodes them); other containers are transcoded to WAV.
         prepared_audio: list[tuple[str, str]] = []
-        if payload.audio_base64:
+        if payload.audio_base64 or _replayed_audio:
             if not getattr(llama_backend, "_has_audio_input", False):
                 raise _reject(
                     400,
@@ -35119,8 +35500,16 @@ async def produce_openai_chat_completions(
                 logger.warning("Audio decode failed: %s", e, exc_info = True)
                 raise _reject(400, "Could not decode the provided audio file.")
             # Admission reads duration from wav/mp3 headers; other formats would be charged by bytes.
-            payload.audio_base64 = prepared_audio[0][0]
-            payload.extra_audio_base64 = [clip for clip, _ in prepared_audio[1:]] or None
+            if _replayed_audio:
+                for part, (clip, audio_format) in zip(
+                    _studio_audio_replay_parts(payload), prepared_audio, strict = True
+                ):
+                    part.input_audio.data = clip
+                    part.input_audio.format = audio_format
+                prepared_audio = []
+            else:
+                payload.audio_base64 = prepared_audio[0][0]
+                payload.extra_audio_base64 = [clip for clip, _ in prepared_audio[1:]] or None
 
         # llama-server samples frames but encodes each at the clip's resolution.
         video_b64 = None
@@ -35171,19 +35560,21 @@ async def produce_openai_chat_completions(
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        _gguf_inkling = _llama_inkling_channel(llama_backend)
         _gguf_think_prov: dict = {"wrapped": 0}
-        if _continue_final_message(payload) and getattr(
-            payload.messages[-1], "reasoning_content", None
+        if _gguf_inkling or (
+            _continue_final_message(payload)
+            and getattr(payload.messages[-1], "reasoning_content", None)
         ):
-            # Resuming the answer of a turn whose reasoning was split out: tags that follow are literal.
+            # The server splits the reasoning out (always, for Inkling): tags that follow are literal.
             _gguf_think_prov["split"] = True
+        _gguf_parse_think = _gguf_inkling or _responses_should_parse_think_markers(
+            payload, llama_backend
+        )
 
         def _new_chat_reasoning_extractor():
             return _ResponsesReasoningExtractor(
-                parse_think_markers = _responses_should_parse_think_markers(
-                    payload,
-                    llama_backend,
-                ),
+                parse_think_markers = _gguf_parse_think,
                 think_provenance = _gguf_think_prov,
             )
 
@@ -36215,9 +36606,7 @@ async def produce_openai_chat_completions(
                     await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
-                    parse_think_markers = _responses_should_parse_think_markers(
-                        payload, llama_backend
-                    ),
+                    parse_think_markers = _gguf_parse_think,
                     think_provenance = think_provenance,
                 )
                 message_kwargs = {"content": visible_text}
@@ -36876,10 +37265,7 @@ async def produce_openai_chat_completions(
 
                         reasoning_text, visible_text = _extract_responses_reasoning(
                             full_text,
-                            parse_think_markers = _responses_should_parse_think_markers(
-                                payload,
-                                llama_backend,
-                            ),
+                            parse_think_markers = _gguf_parse_think,
                             think_provenance = {**_gguf_think_prov, **_choice_mark},
                         )
                         message_kwargs = {"content": visible_text}
@@ -37258,10 +37644,14 @@ async def produce_openai_chat_completions(
                 body = _selected[0]
         except Exception:
             logger.debug("safetensors_prefill_template_selection_failed", exc_info = True)
+        from core.inference.chat_template_helpers import replays_reasoning_content
+
         parse_think = _sf_parse_think_markers(
             features,
             payload.enable_thinking,
             payload.reasoning_effort,
+            inkling_channel = body is not None
+            and replays_reasoning_content(None, template = body, tools = tools),
         )
         reasoning_prefilled = _sf_reasoning_prefill_mode(
             features,
@@ -37314,7 +37704,7 @@ async def produce_openai_chat_completions(
 
     _sf_single_block = _response_format_constrains_decoding(payload)
 
-    def _new_sf_reasoning_extractor():
+    def _new_sf_reasoning_extractor(think_provenance = None):
         prefilled = _sf_reasoning_prefilled
         if _sf_continued_turn[0]:
             _sf_continued_turn[0] = False
@@ -37323,6 +37713,7 @@ async def produce_openai_chat_completions(
             parse_think_markers = _sf_parse_think,
             reasoning_prefilled = prefilled,
             single_block = _sf_single_block,
+            think_provenance = think_provenance,
         )
 
     cancel_event = _chat_cancel_event(request)
@@ -37512,6 +37903,18 @@ async def produce_openai_chat_completions(
 
         # Request-scoped usage/timings receptacle (filled at gen_done).
         _sf_stats_holder: dict = {}
+        _sf_tool_progress = _PrefillProgressSignal(
+            None,
+            live = bool(
+                payload.stream
+                and _ui_events
+                and not _wants_multiple_choices(payload)
+                and _accepts_keyword(backend.generate_chat_completion_with_tools, "perf_callback")
+            ),
+        )
+        _sf_tool_progress_kwargs = (
+            {"perf_callback": _sf_tool_progress} if _sf_tool_progress.live else {}
+        )
 
         from core.inference.tools import mcp_match_exchange
 
@@ -37573,6 +37976,7 @@ async def produce_openai_chat_completions(
                 compaction_headroom_ratio = _request_compaction_headroom_ratio(payload),
                 compact_context = getattr(payload, "compact_context", None) is True,
                 **_sf_website_policy_kwargs,
+                **_sf_tool_progress_kwargs,
             )
 
         _sf_tool_sentinel = object()
@@ -37665,16 +38069,10 @@ async def produce_openai_chat_completions(
                         if approval_flush_pending
                         else _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
                     )
-                    while True:
-                        _sf_done, _ = await asyncio.wait(
-                            {_sf_next_task},
-                            timeout = wait_timeout,
-                        )
-                        if _sf_done:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
-                        approval_flush_pending = False
-                        wait_timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    async for stall_line in _stall_wait_frames(
+                        _sf_next_task, _sf_tool_progress, wait_timeout
+                    ):
+                        yield stall_line
                     event = _sf_next_task.result()
                     approval_flush_pending = False
                     # Done; drop the reference so the finally-block drain no-ops.
@@ -37734,6 +38132,8 @@ async def produce_openai_chat_completions(
                             yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if event["type"] in ("tool_start", "tool_end"):
+                        if event["type"] == "tool_end":
+                            _sf_tool_progress.round_ended()
                         if event["type"] == "tool_start":
                             # Gated with the card: the stamp is set once.
                             if _ui_events:
@@ -38226,6 +38626,16 @@ async def produce_openai_chat_completions(
         and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
         else {}
     )
+    _sf_progress = _PrefillProgressSignal(
+        None,
+        live = bool(
+            payload.stream
+            and _sf_ui_events
+            and not _wants_multiple_choices(payload)
+            and _accepts_keyword(backend.generate_chat_response, "perf_callback")
+        ),
+    )
+    _sf_progress_kwargs = {"perf_callback": _sf_progress} if _sf_progress.live else {}
 
     if payload.use_adapter is not None:
 
@@ -38235,6 +38645,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
     else:
@@ -38244,6 +38655,7 @@ async def produce_openai_chat_completions(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
                 **_sf_frame_kwargs,
+                **_sf_progress_kwargs,
                 **kw,
             )
 
@@ -38291,6 +38703,7 @@ async def produce_openai_chat_completions(
                 continue_final_message = bool(gen_kwargs.get("continue_final_message", False)),
                 recall_reachable = _sf_recall_reachable,
                 images = [image] if image is not None else None,
+                on_compacting = _sf_progress.compacting,
             )
             fitted_kwargs = {
                 **gen_kwargs,
@@ -38356,6 +38769,7 @@ async def produce_openai_chat_completions(
                 prev_text = ""
                 # Split prefilled <think> into reasoning_content deltas (GGUF parity); single turn, serves MLX.
                 reasoning_extractor = _new_sf_reasoning_extractor()
+                _sf_thoughts = None
                 # Worker thread: a blocking _gen_lock in compare mode would otherwise freeze the loop.
                 _DONE = object()  # sentinel for generator exhaustion
                 gen = generate()
@@ -38367,14 +38781,10 @@ async def produce_openai_chat_completions(
                         break
                     # next(gen, _DONE) avoids StopIteration, which can't cross asyncio futures.
                     _next_task = asyncio.create_task(gen_step(_DONE))
-                    while True:
-                        _done_tasks, _ = await asyncio.wait(
-                            {_next_task},
-                            timeout = _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S,
-                        )
-                        if _done_tasks:
-                            break
-                        yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
+                    async for stall_line in _stall_wait_frames(
+                        _next_task, _sf_progress, _LOCAL_TOOL_STREAM_STALL_KEEPALIVE_S
+                    ):
+                        yield stall_line
                     cumulative = _next_task.result()
                     # Done; drop the reference so the finally-block drain no-ops.
                     _next_task = None
@@ -38416,6 +38826,10 @@ async def produce_openai_chat_completions(
                         mark_current_response_failed()
                         api_monitor.finish(monitor_id, "cancelled")
                         return
+                    _ledger = _sf_thought_ledger(_sf_thoughts, cumulative, len(_sf_call_prefix))
+                    if _sf_thoughts is None and _ledger is not None and not prev_text:
+                        reasoning_extractor = _new_sf_reasoning_extractor(think_provenance = _ledger)
+                        _sf_thoughts = _ledger
                     if cumulative:
                         cumulative = _sf_call_prefix + cumulative
                     new_text = cumulative[len(prev_text) :]
@@ -38696,6 +39110,7 @@ async def produce_openai_chat_completions(
                             ),
                         )
                     raise HTTPException(status_code = 500, detail = _msg)
+                _thoughts = _sf_thought_ledger(None, full_text, len(_sf_call_prefix))
                 if full_text:
                     # The prefill alone is no call: an empty or cancelled reply stays empty.
                     full_text = _sf_call_prefix + full_text
@@ -38708,6 +39123,7 @@ async def produce_openai_chat_completions(
                         _sf_resumes_thought if _sf_continue else _sf_reasoning_prefilled
                     ),
                     single_block = _sf_single_block,
+                    think_provenance = _thoughts,
                 )
                 # Promotes text-form calls; an opt-in single nudge retry handles unparseable tool markup.
                 _msg = {"role": "assistant", "content": _visible_text}
@@ -38778,6 +39194,7 @@ async def produce_openai_chat_completions(
                                     retry_text,
                                     parse_think_markers = _sf_parse_think,
                                     reasoning_prefilled = _sf_reasoning_prefilled,
+                                    think_provenance = _sf_thought_ledger(None, retry_text),
                                 )
                                 retry_msg = {"role": "assistant", "content": _retry_visible}
                                 if _retry_reasoning:
@@ -45532,6 +45949,21 @@ async def _resident_model_reads_images() -> bool:
     return bool(entry.get("is_vision"))
 
 
+def _refuse_resident_count(entry: dict, *, messages_api: bool = False) -> None:
+    """A resident model a count cannot serve is named, never reported as unloaded."""
+    if entry.get("is_audio"):
+        detail = "Token counting is not available for speech or transcription models."
+    elif entry.get("is_mlx"):
+        return
+    elif entry.get("engine") in ("vllm", "sglang"):
+        if not messages_api:
+            return
+        detail = "Token counting on the Messages API is not available for this engine profile."
+    else:
+        detail = "Token counting is not available on the transformers backend."
+    raise HTTPException(status_code = 503, detail = detail)
+
+
 async def _mlx_count_chat_tokens(
     payload,
     request = None,
@@ -45554,10 +45986,10 @@ async def _mlx_count_chat_tokens(
     if not active:
         return None
     entry = getattr(backend, "models", {}).get(active) or {}
-    # Audio skips the chat render; vision does not, as it serves text turns through the same render.
-    managed = entry.get("engine") in ("vllm", "sglang")
-    if not (entry.get("is_mlx") or managed) or entry.get("is_audio"):
+    if not entry:
         return None
+    _refuse_resident_count(entry)
+    managed = entry.get("engine") in ("vllm", "sglang")
     if entry.get("engine") == "sglang":
         raise HTTPException(
             status_code = 503,
@@ -45835,6 +46267,9 @@ async def _mlx_count_chat_tokens(
         instructions = system_prompt if include_system else ""
         if instructions and _tools_to_use and not tools:
             instructions = _without_tool_nudge(instructions, _nudge)
+        # The completion refuses instructions alone, so price the next send minus the user's text.
+        if not any(m.get("role") not in ("system", "developer") for m in count_messages):
+            count_messages = [*count_messages, {"role": "user", "content": ""}]
         count, _counted = backend.count_chat_tokens(
             count_messages,
             instructions or "",
@@ -46094,7 +46529,7 @@ async def chat_count_tokens(
             detail = "Cannot count tokens for messages containing images.",
         )
     # Same for audio: the completion injects the recording, this cannot.
-    if getattr(payload, "audio_base64", None) or getattr(payload, "extra_audio_base64", None):
+    if _request_audio_clips(payload) or getattr(payload, "extra_audio_base64", None):
         raise HTTPException(
             status_code = 503,
             detail = "Cannot count tokens for messages containing audio.",
@@ -46394,6 +46829,7 @@ def _anthropic_chat_fields(
             # Kept for the template to decide, as for a chat caller replaying reasoning_content.
             preserve_thinking = payload.preserve_thinking is not False,
             tool_result_images = reads_images,
+            tools = payload.tools,
         )
     )
     studio_tools = _anthropic_requested_studio_tools(payload.tools)
@@ -46474,8 +46910,9 @@ async def _anthropic_in_process_count(
     backend = await asyncio.to_thread(get_inference_backend)
     active = getattr(backend, "active_model_name", None)
     entry = (getattr(backend, "models", {}) or {}).get(active) or {}
-    if not active or not entry.get("is_mlx"):
+    if not active or not entry:
         return None
+    _refuse_resident_count(entry, messages_api = True)
     fields = _anthropic_chat_fields(
         payload, reads_images = bool(entry.get("is_vision")), server_tools = server_tools
     )
@@ -46809,7 +47246,10 @@ async def _anthropic_messages_via_connection(
     # Keep every turn's thinking: _build_external_messages drops it for providers that must not get it,
     # and DeepSeek answers 400 when tools ride on a history without it.
     messages = anthropic_messages_to_openai(
-        [m.model_dump() for m in payload.messages], payload.system, preserve_thinking = True
+        [m.model_dump() for m in payload.messages],
+        payload.system,
+        preserve_thinking = True,
+        tools = payload.tools,
     )
     _restore_connection_tool_extras(current_subject, messages)
     fields = {
@@ -46967,6 +47407,7 @@ async def anthropic_count_tokens(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Named and judged BEFORE the sanitizer, in /v1/messages order: it folds role='tool' into user
@@ -47747,6 +48188,7 @@ async def anthropic_messages(
         payload.system,
         preserve_thinking = _anthropic_preserve_thinking(llama_backend, payload),
         tool_result_images = llama_backend.is_vision,
+        tools = payload.tools,
     )
     openai_messages = await _with_ollama_system(openai_messages, llama_backend)
     # Strip synthetic tool history or fake calls reach llama-server; name results before the sanitizer.
@@ -50308,6 +50750,15 @@ def _openai_messages_for_gguf_chat(
             )
         )
     )
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if part.get("type") == "input_audio" and part.pop("studio_replay", False):
+                part["studio_audio_tokens"] = _openai_llama_admission_audio_tokens(
+                    part["input_audio"]["data"]
+                )
     # Distinct, not absent: a legacy image the thread lacks is real; skip only the byte-equal echo.
     if _legacy_image_is_distinct(payload):
         # The normalizer detects the MIME type from the bytes.
@@ -50336,8 +50787,10 @@ async def _openai_messages_for_gguf_chat_async(
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
     # Restoring a tool result may parse its envelope or source map.
-    if _request_has_image(payload) or any(
-        getattr(message, "role", None) == "tool" for message in payload.messages
+    if (
+        _request_has_image(payload)
+        or _studio_audio_replay_parts(payload)
+        or any(getattr(message, "role", None) == "tool" for message in payload.messages)
     ):
         return await asyncio.to_thread(
             _openai_messages_for_gguf_chat, payload, is_vision, promoted_out
@@ -55185,7 +55638,10 @@ async def diffusion_load_progress(
 
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
-async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
+async def diffusion_generate_progress(
+    current_subject: str = Depends(get_current_subject), preview: bool = Query(False)
+):
+    """``preview``: a visible page shows the running render's live preview, so the denoise loop keeps producing it."""
     external = _external_image_run_active()
 
     def _hidden():
@@ -55210,6 +55666,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
         return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
+    if preview is True:  # a direct call gets the Query default object
+        from core.inference.diffusion_preview import note_preview_watch
+        note_preview_watch("image")
     log_media_generation_progress("image", progress)
     if not progress["active"]:
         from core.inference.flux3_prompt_upsampler import progress as upsampler_progress
@@ -56134,6 +56593,20 @@ async def openai_image_generations(
                 "Streaming image generation is not supported.", status = 400, param = "stream"
             ),
         )
+    if body.output_format != "png":
+        # data[].url serves the gallery PNG, so jpeg/webp is inline: url is refused, omitted means b64_json.
+        if "response_format" not in body.model_fields_set or body.response_format is None:
+            body.response_format = "b64_json"
+        elif body.response_format != "b64_json":
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "output_format 'jpeg' and 'webp' are returned as b64_json; "
+                    "response_format 'url' always links the gallery PNG.",
+                    status = 400,
+                    param = "output_format",
+                ),
+            )
     if body.response_format != "b64_json":
         from auth.authentication import request_admitted_without_credential
         if request_admitted_without_credential(request):
@@ -56251,6 +56724,15 @@ def _follow_up_pass():
 _COALESCE_KEY_IGNORED = frozenset({"live_preview"})
 
 
+def _callable_takes(fn: Any, name: str) -> bool:
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return name in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
 async def _coalesced_image_generate(
     backend: Any,
     status: Optional[dict],
@@ -56261,12 +56743,13 @@ async def _coalesced_image_generate(
     generate_kwargs: dict,
 ) -> Optional[dict]:
     """Join a batch while a render runs; None = render alone. ``generate_kwargs`` all go into the key."""
+    from core.inference import diffusion_batch_trace as batch_trace
     from core.inference import image_request_batching
     from core.inference.diffusion_engine_router import ENGINE_DIFFUSERS, active_engine_name
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-    from core.inference.diffusion_anima import ANIMA_FAMILY_NAME
+    from core.inference.diffusion_batch_adapters import admits_without_pipe
+    from core.inference.diffusion_cuda_graph import batch_rows
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_flux3 import FLUX3_FAMILY_NAMES
     from core.inference.generation_ticket import (
         GenerationTicket,
         TicketStopEvent,
@@ -56276,19 +56759,27 @@ async def _coalesced_image_generate(
     holder = getattr(backend, "generation_holder", None)
     if holder is None or active_engine_name() != ENGINE_DIFFUSERS:
         return None
+    batch_trace.count("admitted")
     if not image_request_batching.collecting():
         try:
             if holder() is None:
+                # Idle: dispatch now, before any key, policy, status read or timer.
+                batch_trace.count("idle_direct")
                 return None
         except Exception:  # noqa: BLE001 -- no busy signal; render individually
             return None
     if status is None:
         status = await asyncio.to_thread(backend.status)
     family = status.get("family")
-    if family in FLUX3_FAMILY_NAMES or family == ANIMA_FAMILY_NAME:
-        return None
-    if family and getattr(detect_family("", family), "layer_count", 0):
-        return None
+    if family:
+        try:
+            fused = admits_without_pipe(detect_family("", family))
+        except Exception:  # noqa: BLE001 -- an unknown family renders alone
+            fused = False
+        if not fused:
+            # FLUX.3, Anima, layered and the other families that loop one image per forward, unless they say so.
+            batch_trace.fallback("family renders one image per forward")
+            return None
     if generate_kwargs.get("expected_load") is None:
         # Pin to the model read here, so a swapped model is refused rather than rendering every member.
         from core.inference.diffusion_families import load_identity
@@ -56304,6 +56795,7 @@ async def _coalesced_image_generate(
     if plan is not None:
         decided = await asyncio.to_thread(plan, prompt, bool(loras))
         if decided is None:
+            batch_trace.fallback("engine policy or prompt layout")
             return None
         prompt_key, private = decided
     else:
@@ -56362,7 +56854,8 @@ async def _coalesced_image_generate(
             # Row 0 may be another account's image, so a cross-account batch shows no preview.
             call.update(_live_preview_kwarg(backend.generate, False))
         runner = _image_generate_on_reserved_turn if "turn" in lead else _image_generate_in_thread
-        with generation_ticket(ticket), _reserved_turn(lead.get("turn")):
+        # A user's call never records a batch-size graph (only an idle race does): an unrecorded size runs eager.
+        with generation_ticket(ticket), _reserved_turn(lead.get("turn")), batch_rows(len(seeds)):
             try:
                 return await runner(
                     backend.generate,
@@ -56418,15 +56911,61 @@ async def _coalesced_image_generate(
         }
 
     sizes_of = getattr(backend, "coalesce_batch_sizes", None)
+    shape_kwargs = {}
+    if sizes_of is not None and _callable_takes(sizes_of, "guidance"):
+        shape_kwargs["guidance"] = generate_kwargs.get("guidance")
+    if sizes_of is not None and _callable_takes(sizes_of, "steps"):
+        shape_kwargs["steps"] = generate_kwargs.get("steps")
+    if sizes_of is not None and _callable_takes(sizes_of, "layout"):
+        # A verdict won by graph replay holds only for the prompt layout it was raced at.
+        shape_kwargs["layout"] = prompt_key
 
     def fits(total: int) -> bool:
         if sizes_of is None:
             return True
         try:
-            sizes = sizes_of(generate_kwargs.get("width"), generate_kwargs.get("height"))
+            sizes = sizes_of(
+                generate_kwargs.get("width"), generate_kwargs.get("height"), **shape_kwargs
+            )
         except Exception:  # noqa: BLE001 -- unknown shapes: render alone
             return False
         return sizes is None or total in sizes
+
+    if sizes_of is not None:
+        try:
+            admitted = await asyncio.to_thread(
+                sizes_of,
+                generate_kwargs.get("width"),
+                generate_kwargs.get("height"),
+                **shape_kwargs,
+            )
+        except Exception:  # noqa: BLE001 -- unknown shapes: render alone
+            admitted = frozenset()
+        if admitted is not None and not any(size > n for size in admitted):
+            # No batch size this request could be part of at this shape: never wait to coalesce.
+            batch_trace.fallback("no admitted batch size at this shape")
+            return None
+
+    seeded_of = getattr(backend, "coalesce_seeded_ok", None)
+    seeded_steps = seeded_of is not None and _callable_takes(seeded_of, "steps")
+    seeded_layout = seeded_of is not None and _callable_takes(seeded_of, "layout")
+
+    def seeded_ok() -> bool:
+        if seeded_of is None:
+            return False
+        try:
+            return bool(
+                seeded_of(
+                    generate_kwargs.get("width"),
+                    generate_kwargs.get("height"),
+                    generate_kwargs.get("guidance"),
+                    n,
+                    **({"steps": generate_kwargs.get("steps")} if seeded_steps else {}),
+                    **({"layout": prompt_key} if seeded_layout else {}),
+                )
+            )
+        except Exception:  # noqa: BLE001 -- unknown: a seeded request renders alone
+            return False
 
     waiter = getattr(backend, "generation_waiter", None)
     rider = getattr(backend, "generation_rider", None)
@@ -56448,6 +56987,9 @@ async def _coalesced_image_generate(
             salvage = salvage,
             on_lead = on_lead,
             wait = wait,
+            seeded_ok = seeded_ok,
+            # Left out of a fired batch: coalesce again behind the generation running now.
+            on_rejoin = arrived_behind.clear,
         )
         # A Stop recorded while the batch ran is final: never fall back to rendering alone or retry.
         if result is None and stopped.is_set():
@@ -56471,6 +57013,65 @@ async def _coalesced_image_generate(
             lead["remove"]()
         if "turn" in lead:
             backend.release_slot_turn(lead["turn"])
+
+
+class ImageBatchRaceRequest(BaseModel):
+    width: Optional[int] = None
+    height: Optional[int] = None
+    steps: Optional[int] = None
+    guidance: Optional[float] = None
+    sizes: Optional[list[int]] = None
+    repeats: int = 5
+    accuracy: bool = True
+
+
+@studio_router.post("/images/batching/race")
+async def images_batching_race(
+    body: Optional[ImageBatchRaceRequest] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Explicit warm-up: on an idle engine, race serial against batched calls for the loaded model at this shape and
+    persist the verdicts that decide whether concurrent requests share a call. Owner only; 409 when a request holds
+    or waits for the slot (the race never runs on a user's request)."""
+    from core.inference.diffusion_batch_race import RACE_SIZES, RaceRefused, invalid_race_sizes
+    from core.inference.diffusion_engine_router import (
+        ENGINE_DIFFUSERS,
+        active_engine_name,
+        get_active_diffusion_engine,
+    )
+
+    if account_access.managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the owner can run the batching race.")
+    body = body or ImageBatchRaceRequest()
+    bad = invalid_race_sizes(body.sizes)
+    if bad:
+        raise HTTPException(status_code = 422, detail = bad)
+    backend = get_active_diffusion_engine()
+    race = getattr(backend, "batch_race", None)
+    if race is None or active_engine_name() != ENGINE_DIFFUSERS:
+        raise HTTPException(
+            status_code = 409, detail = "The active image engine does not batch requests."
+        )
+    status = await asyncio.to_thread(backend.status)
+    if not status.get("loaded"):
+        raise HTTPException(status_code = 409, detail = "No image model is loaded.")
+    steps, guidance = await asyncio.to_thread(_image_generation_defaults, status)
+    try:
+        report = await asyncio.to_thread(
+            functools.partial(
+                race,
+                width = int(body.width or 1024),
+                height = int(body.height or 1024),
+                steps = int(body.steps or steps),
+                guidance = float(guidance if body.guidance is None else body.guidance),
+                sizes = tuple(body.sizes or RACE_SIZES),
+                repeats = max(1, min(int(body.repeats), 20)),
+                accuracy = bool(body.accuracy),
+            )
+        )
+    except RaceRefused as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return {"race": report, "request_batching": backend.request_batching()}
 
 
 async def _batched_openai_images(
@@ -56700,8 +57301,7 @@ async def _generate_openai_images(
     }
     per_image_seeds = result.get("seeds")
 
-    def _persist() -> list[ImageGenerationData]:
-        items: list[ImageGenerationData] = []
+    def _gallery_saves() -> list:
         saves = []
         for index, image in enumerate(result["images"]):
             seed = (
@@ -56722,18 +57322,72 @@ async def _generate_openai_images(
                     },
                 )
             )
-        for record in image_gallery.save_many(saves):
-            if want_b64:
-                encoded = image_gallery.image_b64(record["id"])
-                if encoded is None:  # vanished between write and read — fail the call
-                    raise RuntimeError("generated image could not be read back for encoding")
-                items.append(ImageGenerationData(b64_json = encoded))
-            else:
-                items.append(ImageGenerationData(url = _absolute_image_url(request, record["id"])))
+        return saves
+
+    def _persist() -> list[ImageGenerationData]:
+        items: list[ImageGenerationData] = []
+        # Base64 the gallery bytes just written, not a re-read.
+        with image_gallery.keep_written_bytes() as written:
+            for record in image_gallery.save_many(_gallery_saves()):
+                if want_b64:
+                    png = written.pop(record["id"], None)
+                    encoded = (
+                        base64.b64encode(png).decode("ascii")
+                        if png is not None
+                        else image_gallery.image_b64(record["id"])
+                    )
+                    if encoded is None:  # vanished between write and read
+                        raise RuntimeError("generated image could not be read back for encoding")
+                    items.append(ImageGenerationData(b64_json = encoded))
+                else:
+                    items.append(
+                        ImageGenerationData(url = _absolute_image_url(request, record["id"]))
+                    )
         return items
 
-    # Same counter as /images/generate: liveness reads it until these records exist.
+    async def _write_gallery_after_response() -> None:
+        # jpeg/webp: the lossless gallery copy is written after the response, under the marker.
+        global _diffusion_persist_active
+        _diffusion_persist_active += 1
+        try:
+            with account_access.media_generation("diffusion"):
+                await asyncio.to_thread(lambda: list(image_gallery.save_many(_gallery_saves())))
+        except Exception as exc:  # noqa: BLE001 (the client already has its image)
+            logger.error("openai_images.persist_failed: %s", exc)
+        finally:
+            _diffusion_persist_active -= 1
+
     global _diffusion_persist_active
+    echo = {"output_format": body.output_format} if "output_format" in body.model_fields_set else {}
+    if body.output_format != "png":
+        quality = 100 if body.output_compression is None else body.output_compression
+        # Held from the end of generation through the hand-off to the gallery task, released on failure too.
+        _diffusion_persist_active += 1
+        try:
+            try:
+                data = await asyncio.to_thread(
+                    lambda: [
+                        ImageGenerationData(
+                            b64_json = base64.b64encode(
+                                image_gallery.encode_lossy(image, body.output_format, quality)
+                            ).decode("ascii")
+                        )
+                        for image in result["images"]
+                    ]
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("openai_images.encode_failed: %s", exc)
+                raise HTTPException(status_code = 500, detail = "Failed to encode the generated image.")
+            task = asyncio.get_running_loop().create_task(_write_gallery_after_response())
+            _background_gallery_persists.add(task)
+            task.add_done_callback(_background_gallery_persists.discard)
+            # One yield lets the task take its own hold before this one drops (ready callbacks run FIFO).
+            await asyncio.sleep(0)
+        finally:
+            _diffusion_persist_active -= 1
+        return ImageGenerationResponse(created = created, data = data, **echo)
+
+    # Same counter as /images/generate: liveness reads it until these records exist.
     _diffusion_persist_active += 1
     try:
         with account_access.media_generation("diffusion"):
@@ -56744,4 +57398,8 @@ async def _generate_openai_images(
     finally:
         _diffusion_persist_active -= 1
 
-    return ImageGenerationResponse(created = created, data = data)
+    return ImageGenerationResponse(created = created, data = data, **echo)
+
+
+# Gallery writes still running after their jpeg/webp response: strong references until each finishes.
+_background_gallery_persists: set[asyncio.Task] = set()

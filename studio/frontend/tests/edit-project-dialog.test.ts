@@ -31,10 +31,11 @@ test("the card ends in an Add folder row that says when it cannot", () => {
   );
   assert.ok(card.length > 0, "the card layout moved");
   assert.match(card, /<span>Add folder<\/span>/);
-  assert.match(card, /disabled=\{!manager\.desktopSupported \|\| manager\.mutating\}/);
-  assert.match(card, /onClick=\{\(\) => void manager\.link\(\)\}/);
+  assert.match(FOLDERS, /const canLink = manager\.desktopSupported \|\| manager\.serverFolders\.length > 0;/);
+  assert.match(card, /disabled=\{!canLink \|\| manager\.mutating\}/);
+  assert.match(card, /onClick=\{addFolder\}/);
   assert.match(card, /\{scope \? \(\n\s*<button/);
-  assert.match(card, /\{!manager\.desktopSupported \? \(/);
+  assert.match(card, /\{!canLink \? \(/);
 });
 
 test("a card row keeps every action the panel row has", () => {

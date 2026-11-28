@@ -898,3 +898,87 @@ def test_image_prefix_under_inference_mode(monkeypatch):
         assert torch.equal(a, b)
     stats = cb.status(model)
     assert (stats["prefix_misses"], stats["prefix_hits"]) == (3, 3)
+
+
+def _block_offloaded_resident(cls, keep_all = True):
+    """Block offload whose groups the placement then kept resident (a VRAM budget that fits the whole denoiser)."""
+    from core.inference import diffusion_memory as dm
+
+    model = _group_offloaded(cls)
+    groups = dm._offload_groups(model)
+    assert len(groups) > 1
+    dm._keep_groups_resident(model, 1 << 20, "cpu")
+    assert all(getattr(g, "_unsloth_resident", False) for g in groups)
+    if not keep_all:
+        dm._release_group(
+            groups[-1]
+        )  # the last block streams again (a tighter budget, or an encode's release)
+    return model, groups
+
+
+@pytest.mark.parametrize("keep_all", [True, False])
+def test_block_offloaded_but_fully_resident_shares_the_image_prefix(keep_all, monkeypatch):
+    """Every offload group resident: the image prefix is shared across the guidance branches as on a resident denoiser,
+    bitwise equal to the per-call path. One group still streaming keeps the prefix inside each call."""
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.OFFLOAD_COND_ENV, raising = False)
+    monkeypatch.delenv(cb.IMAGE_PREFIX_ENV, raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    monkeypatch.setattr(
+        cb, "_offload_device_ok", lambda t: True
+    )  # the CUDA gate, opened for this CPU proxy
+    model, _ = _block_offloaded_resident(cls, keep_all = keep_all)
+    cond = _inputs(False, seed = 5)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    with torch.no_grad():
+        stock = _guided_steps(model, cond, uncond)
+        assert cb.prepare(model)
+        assert cb.begin_render(model, guided = lambda: True)
+        try:
+            cached = _guided_steps(model, cond, uncond)
+        finally:
+            cb.end_render(model)
+    for a, b in zip(stock, cached):
+        assert torch.equal(a, b)
+    stats = cb.status(model)
+    if keep_all:
+        assert (stats.get("prefix_misses"), stats.get("prefix_hits")) == (3, 3)
+    else:
+        assert stats.get("prefix_hits", 0) == 0 and stats.get("prefix_misses", 0) == 0
+
+
+def test_residency_is_read_per_call_not_per_render(monkeypatch):
+    """The prompt encode streams denoiser groups out and pins them back before step 0, after begin_render: the
+    prefix follows the placement at each call, and a group released mid-render turns it off at the next call."""
+    from core.inference import diffusion_memory as dm
+
+    cls = _flux3()
+    monkeypatch.delenv(cb.COND_BLOCKS_ENV, raising = False)
+    monkeypatch.delenv(cb.OFFLOAD_COND_ENV, raising = False)
+    monkeypatch.delenv(cb.IMAGE_PREFIX_ENV, raising = False)
+    monkeypatch.setenv(cb.COMPACT_MOD_ENV, "0")
+    monkeypatch.setattr(cb, "_offload_device_ok", lambda t: True)
+    model, groups = _block_offloaded_resident(cls, keep_all = False)
+    cond = _inputs(False, seed = 6)
+    uncond = dict(cond, encoder_hidden_states = torch.randn(1, 7, 24), txt_ids = torch.zeros(7, 4))
+    with torch.no_grad():
+        stock = _guided_steps(model, cond, uncond, steps = 2)
+        assert cb.prepare(model)
+        assert cb.begin_render(model, guided = lambda: True)
+        try:
+            dm._keep_groups_resident(model, 1 << 20, "cpu")  # pinned again before step 0
+            first = _guided_steps(model, cond, uncond, steps = 1)
+            hits = cb.status(model).get("prefix_hits", 0)
+            dm._release_group(groups[-1])
+            rest = _guided_steps(model, cond, uncond, steps = 1)
+        finally:
+            cb.end_render(model)
+    assert hits == 1 and cb.status(model).get("prefix_hits", 0) == 1
+    for a, b in zip(stock[:2], first):
+        assert torch.equal(a, b)
+    rest_stock = []
+    with torch.no_grad():
+        rest_stock = _guided_steps(model, cond, uncond, steps = 1)
+    for a, b in zip(rest_stock, rest):
+        assert torch.equal(a, b)

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// With custom code AND an installable release, the backend answers forces_16bit for the
-// 4-bit fallback, so the card must separately disclose that Install switches to 16-bit.
+// Custom code + installable: 4-bit fallback gets forces_16bit, so card must disclose 16-bit.
 
 import assert from "node:assert/strict";
 import { register } from "node:module";

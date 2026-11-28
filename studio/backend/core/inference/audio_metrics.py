@@ -150,8 +150,7 @@ def _biquad_coefficients(rate: int) -> list[tuple[np.ndarray, np.ndarray]]:
 
 @functools.lru_cache(maxsize = 8)
 def _impulse_response(rate: int) -> np.ndarray:
-    """The K-weighting filter's impulse response, truncated where it has died out. Cached per rate:
-    the filter runs sample by sample in Python. Callers must not modify it."""
+    """Cached per rate (Python runs the filter sample by sample); callers must not modify it."""
     n = max(int(rate * _IR_SECONDS), 64)
     x = np.zeros(n)
     x[0] = 1.0
@@ -305,16 +304,14 @@ def true_peak(data: np.ndarray) -> float:
 
 
 def _steep_samples(x: np.ndarray, first: np.ndarray, length: np.ndarray, step: float) -> int:
-    """Samples in the runs (start ``first``, ``length`` samples) of ``x`` that are long enough and
-    that the waveform reaches or leaves more steeply than a smooth peak could."""
+    """Count samples in long runs of x reached or left more steeply than a smooth peak could."""
     keep = length >= _CLIP_RUN
     first, length = first[keep], length[keep]
     if not first.size:
         return 0
     last = first + length - 1
     top = x[first].astype(np.float64)
-    # The larger jump onto or off the run; -1 at an end of the audio, where there is none, and
-    # a run that fills the whole channel counts.
+    # Larger jump onto or off the run; -1 at an audio end; a full-channel run counts.
     into = np.where(first > 0, np.abs(top - x[np.maximum(first - 1, 0)]), -1.0)
     out = np.where(last < len(x) - 1, np.abs(top - x[np.minimum(last + 1, len(x) - 1)]), -1.0)
     edge = np.maximum(into, out)
@@ -451,7 +448,6 @@ def match_score(expected: str, heard: str) -> Optional[float]:
     hyp_ids = np.array([ids.setdefault(word, len(ids)) for word in hyp])
     steps = np.arange(len(hyp) + 1)
     previous = steps.copy()
-    # One row of the edit-distance table per expected word, a whole row at a time.
     for i, word in enumerate(ref_ids, 1):
         current = np.empty_like(previous)
         current[0] = i

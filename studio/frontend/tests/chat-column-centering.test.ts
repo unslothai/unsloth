@@ -43,9 +43,8 @@ test("nothing around the composer re-adds a one-sided inset", async () => {
   assert.doesNotMatch(thread, DOCK_ONE_SIDED);
 });
 
-// The gutter is a scrollbar, which the UI scale does not touch, so a scaled inset drifted the
-// composer off the message column. The thread keeps Chromium's thin standard scrollbar on
-// Windows too, so there is one gutter width everywhere.
+// The gutter is a scrollbar the UI scale does not touch, so a scaled inset drifted the composer off
+// the message column; Chromium's thin scrollbar on Windows too gives one gutter width.
 test("the overlays around the thread stop at its real scrollbar gutter", async () => {
   const css = await readSrcAsync("index.css");
   assert.match(css, /@property --thread-scrollbar-gutter \{\s*syntax: "<length>";\s*inherits: false;\s*initial-value: 10px;/);

@@ -20,8 +20,7 @@ from .diffusion_nvfp4_flag import nvfp4_blocked
 # torch.save dict layout tag; bump on an on-disk change so old/foreign artifacts are rejected
 PREQUANT_FORMAT = "unsloth_prequant_transformer_state_dict_v1"
 
-# v2 = rotated weights; old builds must refuse it (they would render wrong pixels).
-# v2 MUST declare a rotation and v1 must NOT.
+# v2 = rotated; old builds must refuse (wrong pixels); v2 MUST declare rotation, v1 must NOT.
 PREQUANT_FORMAT_ROTATED = "unsloth_prequant_transformer_state_dict_v2"
 
 # Own tag, else an older build reads it as whole-model nvfp4. v3 MUST declare a policy, v1/v2 must NOT.
@@ -107,7 +106,6 @@ def _prequant_safe_globals() -> list:
 
 _SAFE_GLOBALS_LOCK = _threading.Lock()
 _SAFE_GLOBALS_REGISTERED: Optional[bool] = None
-# Filled in by the registration: which of the names above this install actually resolved.
 _RESOLVED_SAFE_GLOBALS: set = set()
 
 # Globals each scheme's checkpoints name, read via pickletools; unused names are not required.
@@ -393,7 +391,6 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
-    # Studio's own pre-quant cache root only.
     try:
         from .diffusion_prequant_cache import path_in_cache
         if path_in_cache(path):
@@ -411,8 +408,7 @@ def _local_prequant_path_allowed(path: str) -> bool:
 
 
 def local_prequant_path_ready(path: str) -> bool:
-    """True only if the path is allowlisted and present, so planning never drops dense for a refused
-    file."""
+    """True only if allowlisted and present; planning never drops dense for a refused file."""
     import os
 
     if not _local_prequant_path_allowed(path):
@@ -532,8 +528,7 @@ COMFY_TWIN_LEADS = frozenset({"int8"})
 
 
 def with_comfy_twins(names: Sequence[str], *, lead: bool = True) -> list:
-    """Adds each name's ComfyUI-format twin; with lead the twin comes first, older names stay as
-    fallback."""
+    """Adds each name's ComfyUI-format twin, first when lead; older names stay as fallback."""
     names = [n for n in names if n]
     out: list = []
     for index, name in enumerate(names):
@@ -593,8 +588,7 @@ def explain_container_choice(
     readable: Any = None,
     logger: Any = None,
 ) -> Optional[str]:
-    """Log once per file why a ``.pt`` was resolved although the chain names its safetensors twin
-    (cached twin, twin not hosted yet, or safetensors unreadable here). Returns the reason. Never raises."""
+    """Logs once per file and returns why a .pt beat its safetensors twin; never raises."""
     try:
         if not repo_id or not chosen or not chosen.lower().endswith(_PICKLE_SUFFIXES):
             return None
@@ -641,9 +635,8 @@ def prefer_cached_pickle_twins(
     log: bool = True,
     roots: Optional[Sequence[Optional[str]]] = None,
 ) -> list:
-    """Safetensors stays first, except a same-stem cached .pt/.pth whose sha256 matches the Hub's record moves ahead of
-    its uncached safetensors twin (reused, not re-downloaded); the twin stays behind it as 404 fallback. An unverified
-    cached pickle (offline, no LFS record, mismatch) keeps its place behind the twin. PREFER_SAFETENSORS_ENV disables."""
+    """Safetensors first, except a sha256-verified cached .pt/.pth precedes its uncached twin (twin
+    stays 404 fallback); unverified pickles stay behind; PREFER_SAFETENSORS_ENV disables."""
     import os
 
     out = [n for n in names if n]
@@ -684,7 +677,6 @@ def prefer_cached_pickle_twins(
         def _reusable(name: str) -> bool:
             if not _ok(name) or not _cached(name):
                 return False
-            # same pickle trust rule as below
             if name.lower().endswith(_PICKLE_SUFFIXES):
                 return not prefer_safetensors and _verified(name)
             return True
@@ -905,8 +897,7 @@ class PrequantSource:
 
     @property
     def candidate_filenames(self) -> tuple[str, ...]:
-        """Every name this source may resolve, best first. The single place that ordering lives, so
-        the downloader, the cache probe and the planner cannot disagree about which file wins."""
+        """Names this source may resolve, best first; shared by downloader, probe and planner."""
         return tuple(n for n in (self.filename, *self.fallback_filenames) if n)
 
 
@@ -972,12 +963,8 @@ def resolve_prequant_source(
     base_repo: Optional[str] = None,
     task: Optional[str] = None,
 ) -> Optional[PrequantSource]:
-    """Resolve where the checkpoint for ``(fam, scheme)`` comes from: ``path_override``, else the
-    hosted repo (variant-specific per ``base_repo``), else None (quantise dense).
-
-    ``task`` only selects a more specific filename (MiniMax-H3 partitions); unset resolves as before.
-    Names are repo-ROOT: a nested checkpoint would 404 on both names and silently go dense.
-    """
+    """Path override, else hosted repo (variant per base_repo), else None to quantise dense; task
+    only selects a more specific filename; a nested name would 404 and silently go dense."""
     if nvfp4_blocked(scheme):
         return None
     override = (path_override or "").strip()
@@ -1100,10 +1087,9 @@ OFFLINE_LOCAL_BUILD_ENV = "UNSLOTH_DIFFUSION_PREQUANT_CACHE_OFFLINE"
 def _offline_local_build(
     fam: Any, scheme: str, base_repo: Optional[str], task: Optional[str], hosted: PrequantSource
 ) -> Optional[PrequantSource]:
-    """This machine's cached build when the load is offline and ``hosted`` is not on disk, else None. Never raises.
-
-    Offline, a hosted name that is not cached can never be fetched, so the load would quantise the dense shards at
-    runtime: the cache entry is that same runtime build of the same shards, written by an earlier load."""
+    """Returns this machine's cached build when offline and hosted is not on disk, else None, and
+    never raises; an uncached hosted name cannot be fetched offline, so the load would quantise
+    dense shards at runtime; the cache holds that same build from an earlier load."""
     if (os.environ.get(OFFLINE_LOCAL_BUILD_ENV) or "").strip().lower() in (
         "0",
         "off",
@@ -2268,8 +2254,7 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
 
 
 def _reports_rejected_cache_entry(fn: Any) -> Any:
-    """Report an unusable cache entry so the dense fallback build replaces it; a forced fp8 accumulate mismatch is
-    the request's choice, not a fault, and leaves the entry alone."""
+    """Flags a bad cache entry for rebuild; a forced fp8 accumulate mismatch leaves it alone."""
 
     @functools.wraps(fn)
     def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
@@ -2450,8 +2435,7 @@ def load_prequantized_transformer(
                 "comfy_format": True,
             }
         else:
-            # Pickles load only under the ALLOWLIST, never free-running: a mutated file must fail,
-            # not run.
+            # Pickles load only under ALLOWLIST, never free-running; a mutated file must fail.
             ckpt = _read_prequant_for(
                 path,
                 placement_device or device,
@@ -2478,8 +2462,7 @@ def load_prequantized_transformer(
             _repair_legacy_checkpoint(ckpt, scheme, logger)
             _pin_kernel_preference(state_dict, logger)
 
-            # Read from the root that supplied the checkpoint; a pinned root may be gone after a
-            # cache change.
+            # Read from the supplying root; a pinned root may be gone after a cache change.
             config = (
                 None
                 if into is not None
@@ -2510,8 +2493,7 @@ def load_prequantized_transformer(
                 # Non-persistent buffers (built in __init__, absent from the state dict) stay on meta. Rebuild on CPU so
                 # they hold real values, then re-assign the quantized weights; dense bf16 never reaches the GPU.
                 transformer = transformer_cls.from_config(config)
-                # The retry builds a new module, so prepare_model must run again or the state dict
-                # mismatches.
+                # Retry builds a new module: re-run prepare_model or the state dict mismatches.
                 if prepare_model is not None:
                     prepare_model(transformer, metadata)
                 _prepare_outlier_buffers(transformer, state_dict)
@@ -2765,8 +2747,7 @@ def _resolve_checkpoint_path(
                 )
                 return path
             except LocalEntryNotFoundError:
-                # Before its base class: online, this means the Hub is unreachable, not that the name
-                # is absent. Offline, treat it as a 404.
+                # Before its base class: online this means an unreachable Hub; offline it is a 404.
                 if not local_files_only or last:
                     cached = (
                         None
@@ -2898,8 +2879,7 @@ def _fp8_activation_floor_restorable(state_dict: Any) -> bool:
 
 
 def _restore_fp8_activation_floor(state_dict: Any, logger: Any = None) -> int:
-    """Write the runtime activation floor into every unfloored Float8Tensor; returns how many.
-    Fresh kwargs per tensor: a pickle may share one instance between tensors."""
+    """Floor each unfloored Float8Tensor; a pickle may share kwargs, so copy them per tensor."""
     import copy
     import dataclasses
 
@@ -3138,8 +3118,7 @@ def _validate_checkpoint(
                 ValueError(f"checkpoint min_features {ckpt_min!r} != runtime {min_features!r}"),
             )
             return False
-    # Reject quantised layers the runtime now excludes; a stale baked set would crash the first
-    # denoise.
+    # Reject quantised layers the runtime now excludes; a stale baked set crashes denoising.
     ckpt_excludes = meta.get("exclude_name_tokens")
     if ckpt_excludes is not None:
         from .diffusion_transformer_quant import exclude_tokens_for_scheme
@@ -3292,8 +3271,7 @@ def pin_prequantized_module(
     logger: Any = None,
     label: str = "pre-quantized denoiser",
 ) -> bool:
-    """Keeps a torchao module resident, since auto-offload's mid-forward move breaks its storage
-    aliasing."""
+    """Keep a torchao module resident; auto-offload's mid-forward move breaks storage aliasing."""
     pinned = _unhook_from_manager(manager, module, logger = logger, what = "pin:hook")
     module.to(device)
     if logger is not None:
@@ -3324,9 +3302,10 @@ def torchao_group_offload_supported() -> bool:
         from diffusers.hooks import group_offloading as go
     except Exception:  # noqa: BLE001 -- no group offloading at all
         return False
-    return callable(getattr(go, "_is_torchao_tensor", None)) and callable(
-        getattr(go, "_swap_torchao_tensor", None)
-    )
+    from . import diffusion_go_compat as go_compat
+
+    # torchao helpers on diffusers 0.40-0.42; any traceable wrapper subclass after huggingface/diffusers#15383
+    return go_compat.wrapper_swap_supported(go)
 
 
 def _weights_pinnable(module: Any) -> bool:

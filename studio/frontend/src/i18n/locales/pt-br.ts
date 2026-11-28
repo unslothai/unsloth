@@ -1720,6 +1720,7 @@ export const ptBR = {
       levelHigh: "Alto",
       levelLow: "Baixo",
       levelHighShort: "Python e Terminal também rodam na sandbox do sistema",
+      editorMcpWarning: "O MCP de {name} executa código com as permissões do app, fora da sandbox do Unsloth, mesmo com o nível Alto ativado. O código pode acessar arquivos fora do seu projeto.",
       levelLowShort: "Só sandbox de software. Código arriscado pergunta antes",
       levelFullAccessNote: "Acesso total desliga o sandbox. Esta configuração volta a valer quando você escolher outro nível.",
       learnMore: "Saiba mais",
@@ -2460,7 +2461,7 @@ export const ptBR = {
           auto:
             "Executa sozinho as chamadas comuns e só pergunta quando uma ação parece arriscada, como ler credenciais, elevar privilégios ou executar comandos destrutivos.",
           off:
-            "Executa todas as chamadas de ferramentas sem perguntar. O código de Python e terminal continua rodando no sandbox, que limita quais arquivos do seu computador ele pode acessar. Sem um sandbox do sistema funcionando, chamadas arriscadas perguntam antes.",
+            "As ferramentas MCP ativadas usam as permissões do servidor e podem ser executadas sem pedir aprovação. O Python e o Terminal usam o nível de sandbox selecionado. Chamadas arriscadas a essas ferramentas ainda pedem aprovação quando o isolamento do sistema operacional não está disponível ou o nível Baixo está selecionado.",
           full:
             "Executa todas as chamadas de ferramentas sem perguntar e desativa o sandbox de código, assim o código de Python e terminal pode ler e alterar qualquer arquivo que sua conta acessa.",
         },
@@ -4479,6 +4480,8 @@ export const ptBR = {
       unsupportedFileType: "Tipo de arquivo não suportado",
       uploadOneFileType: "Envie um arquivo do tipo {types}.",
       datasetUploaded: "Dataset enviado",
+      importPandasJson: "Importar .json como colunas do pandas",
+      importSemicolonCsv: "Usar ponto e vírgula como delimitador para .csv",
       evalDatasetUploaded: "Dataset de validação enviado",
       uploadOneFileAtATime: "Envie um arquivo por vez",
       uploadSingleFileDescription:

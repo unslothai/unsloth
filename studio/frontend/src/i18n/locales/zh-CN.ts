@@ -1716,6 +1716,7 @@ export const zhCN = {
       levelHigh: "高",
       levelLow: "低",
       levelHighShort: "Python 和终端还会在操作系统沙盒中运行",
+      editorMcpWarning: "即使沙盒级别设为高，{name} MCP 也会在 Unsloth 沙盒之外以该应用的权限运行代码。这些代码可以访问项目之外的文件。",
       levelLowShort: "仅软件沙盒。有风险的代码会先询问",
       levelFullAccessNote: "完全访问会关闭沙盒。选择其他级别后，此设置将重新生效。",
       learnMore: "了解详情",
@@ -2419,7 +2420,7 @@ export const zhCN = {
           auto:
             "常规工具调用会自动执行，只有在操作看起来有风险时才会询问，例如读取凭据、提升权限或执行破坏性命令。",
           off:
-            "所有工具调用都不再询问。Python 和终端代码仍在沙箱中运行，沙箱会限制它们能访问你电脑上的哪些文件。没有可用的操作系统沙盒时，有风险的调用会先询问。",
+            "已启用的 MCP 工具使用其服务器的权限，可能无需确认即可运行。Python 和终端使用所选的沙盒级别。操作系统隔离不可用或沙盒级别设为低时，这两种工具的高风险调用仍需确认。",
           full:
             "所有工具调用都不再询问，并关闭代码沙箱，Python 和终端代码可以读取和修改你的账户能访问的任何文件。",
         },
@@ -4378,6 +4379,8 @@ export const zhCN = {
       unsupportedFileType: "不支持的文件类型",
       uploadOneFileType: "上传一个 {types} 文件。",
       datasetUploaded: "数据集已上传",
+      importPandasJson: "将 .json 作为 pandas 列格式导入",
+      importSemicolonCsv: "对 .csv 使用分号作为分隔符",
       evalDatasetUploaded: "评估数据集已上传",
       uploadOneFileAtATime: "一次只能上传一个文件",
       uploadSingleFileDescription: "训练数据集上传只接受单个文件。",

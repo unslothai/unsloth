@@ -54,6 +54,7 @@ const loaded = {
   loadedGpuLayers: 12,
   loadedNCpuMoe: 0,
   loadedGpuIds: [0],
+  loadedSplitRatio: null,
   loadedLlamaExtraArgs: [],
   loadedCpuFallback: false,
   specFallbackReason: null,

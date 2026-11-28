@@ -441,7 +441,6 @@ test("a percent becomes that share of whichever window the model has", () => {
   );
   assert.equal(
     cloudCompactionTrigger({
-      providerType: "openrouter",
       contextLength: 200_000,
       autoCompactTokens: 30_000,
       autoCompactPercent: 90,

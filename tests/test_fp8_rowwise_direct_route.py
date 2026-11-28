@@ -8,6 +8,7 @@ import torch
 from torch._subclasses.fake_tensor import FakeTensorMode
 
 from unsloth.kernels import fp8 as F8
+from torch_version_tag import drop_rocm_tag  # noqa: E402
 
 
 @pytest.fixture
@@ -15,6 +16,7 @@ def spies(monkeypatch):
     calls = []
     # NVIDIA routing; ROCm runners report a HIP version and keep the compiled path (tested below).
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
+    drop_rocm_tag(monkeypatch, torch)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
     monkeypatch.setattr(

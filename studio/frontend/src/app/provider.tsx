@@ -68,9 +68,9 @@ import { refreshWindowChromeTop } from "@/lib/window-chrome";
 import {
   CHAT_SETTINGS_INSET_VAR,
   COMPOSER_CLEARANCE_VAR,
-  cornerInsetScope,
   getToastOffsets,
   insetPastChatSettings,
+  overlayRailScope,
 } from "@/lib/toast-offset";
 import { Z_LAYER } from "@/lib/z-layers";
 import { useRouterState } from "@tanstack/react-router";
@@ -98,6 +98,7 @@ import {
   type WindowSizeBounds,
   calculateCenteredPosition,
   calculateFirstAppWindowSize,
+  calculateOnScreenRect,
   constrainWindowSize,
   fitWindowSize,
 } from "./window-layout";
@@ -285,6 +286,52 @@ async function placeWindow(
   await win.setPosition(new PhysicalPosition(position.x, position.y));
 }
 
+async function keepWindowOnScreen(
+  win: TauriWindow,
+  { availableMonitors, PhysicalPosition, PhysicalSize }: WindowModule,
+  { monitor }: MeasuredWindowLayout<TauriMonitor>,
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  if (!monitor) return;
+  const [maximized, fullscreen, minimized] = await Promise.all([
+    win.isMaximized(),
+    win.isFullscreen(),
+    win.isMinimized(),
+  ]);
+  if (!isCurrent() || maximized || fullscreen || minimized) return;
+
+  const [position, outerSize, innerSize, monitors] = await Promise.all([
+    win.outerPosition(),
+    win.outerSize(),
+    win.innerSize(),
+    availableMonitors(),
+  ]);
+  if (!isCurrent()) return;
+  const screens = monitors.length > 0 ? monitors : [monitor];
+  const next = calculateOnScreenRect(
+    { position, size: outerSize },
+    screens.map((screen) => ({ position: screen.position, size: screen.size })),
+    monitor.workArea,
+    monitor.scaleFactor,
+  );
+  if (!next) return;
+
+  // Tauri sizes the inner rectangle but positions the outer one.
+  if (
+    next.size.width !== outerSize.width ||
+    next.size.height !== outerSize.height
+  ) {
+    await win.setSize(
+      new PhysicalSize(
+        Math.max(1, innerSize.width - (outerSize.width - next.size.width)),
+        Math.max(1, innerSize.height - (outerSize.height - next.size.height)),
+      ),
+    );
+    if (!isCurrent()) return;
+  }
+  await win.setPosition(new PhysicalPosition(next.position.x, next.position.y));
+}
+
 function windowPixelRatioSource(): PixelRatioSource | null {
   if (
     typeof window === "undefined" ||
@@ -466,6 +513,8 @@ async function applyAppWindowLayout(
           bounds,
           requestedSize,
         ),
+      keepOnScreen: (current) =>
+        keepWindowOnScreen(win, windowModule, current, isCurrent),
       isCurrent,
     });
 
@@ -555,7 +604,7 @@ function TauriUpdateLayer({
     />
   ) : (
     <div
-      ref={cornerInsetScope}
+      ref={overlayRailScope}
       // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
       className="pointer-events-none fixed bottom-0 right-0 flex max-h-[calc(100dvh-var(--studio-window-chrome-top,0px))] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
       data-testid="overlay-rail"
@@ -974,7 +1023,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         {/* Capped to the viewport: a long download list plus expanded notes would
             push the top of the stack off screen. */}
         <div
-          ref={cornerInsetScope}
+          ref={overlayRailScope}
           // Scrolls at the cap rather than spilling cards off screen; the gutter keeps the card shadows out of that clip.
           className="pointer-events-none fixed bottom-0 right-0 flex max-h-[100dvh] flex-col items-end gap-2 overflow-y-auto overflow-x-hidden overscroll-contain"
           data-testid="overlay-rail"

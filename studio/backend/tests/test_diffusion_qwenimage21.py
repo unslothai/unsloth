@@ -120,7 +120,9 @@ CASES = [
 
 @pytest.mark.parametrize("case", CASES)
 @pytest.mark.parametrize("cache", [True, False])
-def test_fast_step_is_bit_identical_to_the_stock_forward(case, cache):
+def test_fast_step_is_bit_identical_to_the_stock_forward(case, cache, monkeypatch):
+    # Stock lays padded rows out from row 0; the kill switch keeps that.
+    monkeypatch.setenv(q.ROW_LAYOUT_ENV, "0")
     m = _model()
     inp = _inputs(**case)
     ref = _render(m, inp, cache = cache)
@@ -427,7 +429,7 @@ def _rows(m, texts, latents):
 
 @pytest.mark.parametrize("fast", [False, True])
 def test_a_batch_row_matches_its_lone_render_only_at_equal_text_length(fast):
-    """If diffusers ever lays out each row on its own, the mixed case matches and text_length_runs can go."""
+    """Stock lays a batch out from row 0: a shorter row only matches its lone render with per-row layout (fast)."""
     if fast:
         assert q.install()
     m = _model()
@@ -439,4 +441,4 @@ def test_a_batch_row_matches_its_lone_render_only_at_equal_text_length(fast):
     long_alone = _rows(m, [long], lat[1:])[-1][0]
     mixed = _rows(m, [short, long], lat)[-1]
     assert torch.equal(mixed[1], long_alone)
-    assert not torch.allclose(mixed[0], alone, atol = 1e-3)
+    assert torch.allclose(mixed[0], alone, atol = 1e-5) is fast

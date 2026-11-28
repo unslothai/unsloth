@@ -447,8 +447,7 @@ def _splittable_keys(batch):
 
 
 def split_batch_by_token_budget(batch, budget):
-    """Splits a batch to at most budget tokens: padding-free [1, T] batches between whole sequences,
-    padded [B, L] by rows; other shapes are never split."""
+    """Splits to at most budget tokens: [1, T] between sequences, [B, L] by rows; else unsplit."""
     if not isinstance(batch, Mapping) or budget is None or budget <= 0:
         return [batch]
     input_ids = batch.get("input_ids")
@@ -651,8 +650,13 @@ def _exactness_blocker(trainer, step_loss = True):
     divides by the window's num_items_in_batch."""
     args = getattr(trainer, "args", None)
     optim = str(getattr(args, "optim", "")).lower()
-    # LOMO / AdaLomo and the *_layerwise optimizers update weights inside every backward.
-    if "lomo" in optim or "layerwise" in optim:
+    # LOMO / AdaLomo, the *_layerwise optimizers and the in-backward step (optimizers/auto_fit.py) update
+    # weights inside every backward.
+    if (
+        "lomo" in optim
+        or "layerwise" in optim
+        or getattr(trainer, "_unsloth_updates_in_backward", False)
+    ):
         return "this optimizer updates the weights on every backward"
     # NEFTune scales its noise by the forward's sequence length, which a split shortens.
     if getattr(args, "neftune_noise_alpha", None):
@@ -670,8 +674,7 @@ def _exactness_blocker(trainer, step_loss = True):
 
 
 def _length_dependent_rope(trainer):
-    """LongRoPE or dynamic RoPE anywhere in the text config (flat or per layer type): both pick
-    frequencies from each forward's length, which splitting or regrouping changes."""
+    """LongRoPE or dynamic RoPE: frequencies depend on forward length, which splitting changes."""
     config = getattr(getattr(trainer, "model", None), "config", None)
     config = getattr(config, "text_config", None) or config
 
@@ -819,8 +822,7 @@ def _same_count_on_every_rank(
     accelerator,
     flag = None,
 ):
-    """True when every rank has the same count. With flag, returns (same, flag on every rank) from
-    the same collective, so a later collective guarded by flag runs on every rank or on none."""
+    """True if all ranks match; flag rides the same collective, so guarded calls stay in step."""
     if accelerator is None or getattr(accelerator, "num_processes", 1) <= 1:
         return True if flag is None else (True, bool(flag))
     import torch.distributed as dist
@@ -875,8 +877,7 @@ def _metric_style(trainer):
 
 
 def _entropy_count(trainer, chunk):
-    """Tokens TRL averages entropy over: the label mask on fused-head TRL, else the attention mask or
-    every position when padding-free."""
+    """Entropy tokens: label mask (fused-head TRL), else attention mask (all if padding-free)."""
     if _metric_style(trainer) == "labels":
         return _label_count(chunk)
     if "attention_mask" in chunk:
@@ -908,10 +909,9 @@ def _is_multi_process(accelerator):
 
 
 def _can_merge_metrics(trainer, model, chunks, accelerator):
-    """Fold per-chunk entries only when token weighting provably reproduces TRL's unsplit value:
-    with several processes only under an initialized process group and without Liger (whose older
-    TRL paths average per-rank ratios), no prompt-learning PEFT (virtual token logits are counted
-    differently per version), one label source, and known TRL metric code."""
+    """Fold chunk entries only when token weighting reproduces TRL's unsplit value: no Liger (older
+    paths average per-rank ratios), no prompt-learning PEFT (logit counts vary by version), one
+    label source, known TRL metric code; multi-process needs an initialized process group."""
     if _is_multi_process(accelerator):
         import torch.distributed as dist
         if not (dist.is_available() and dist.is_initialized()):
@@ -939,8 +939,7 @@ def _metric_lengths(trainer):
 
 
 def _global_chunk_weights(trainer, chunks, accelerator):
-    """Multi-process weights sum token counts over ranks; older attention-style TRL averages
-    per-rank entropy ratios, which cannot be refolded, so entropy stays unfolded."""
+    """Ranks sum token counts; entropy stays unfolded since older TRL averages per-rank ratios."""
     weights = {
         key: [count(trainer, chunk) for chunk in chunks] for key, count in _RATIO_METRICS.items()
     }
@@ -964,8 +963,7 @@ def _merge_chunk_metrics(
     chunks,
     weights = None,
 ):
-    """Fold the per-chunk ratio entries back into one entry for the micro-batch, weighting each chunk by
-    the tokens TRL divided by, so the logged value matches an unsplit step."""
+    """Fold per-chunk ratios weighted by tokens TRL divides by, so logs match unsplit steps."""
     if weights is None:
         weights = {
             key: [count(trainer, chunk) for chunk in chunks]
@@ -1039,6 +1037,15 @@ def install_token_budget(trainer):
             *args,
             **kwargs,
         ):
+            if getattr(trainer, "__dict__", {}).get("_unsloth_pipeline_parallel") is not None:
+                # Pipeline parallel (models/pp_env.py) runs its own micro-batches and folds the gradient
+                # accumulation window: chunks of a batch would each flush or join that window as a short batch.
+                _note_once(
+                    trainer,
+                    "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting: pipeline parallel runs each batch as its own "
+                    "micro-batches (UNSLOTH_PP_MICROBATCHES).",
+                )
+                return original_training_step(model, inputs, num_items_in_batch, *args, **kwargs)
             accelerator = getattr(trainer, "accelerator", None)
             distributed_type = str(getattr(accelerator, "distributed_type", "NO")).upper()
             # Only None (loss would be a per-chunk mean), plain or DDP: DeepSpeed and FSDP count micro-steps themselves.
@@ -1063,8 +1070,7 @@ def install_token_budget(trainer):
             if not merge:
                 metrics, lengths = None, None
             if not same_count:
-                # Each chunk runs compute_loss (TRL gathers metrics there) and its own backward:
-                # ranks with different counts would issue mismatched collectives and hang.
+                # Different chunk counts per rank mean mismatched collectives and a hang.
                 _note_once(
                     trainer,
                     "Unsloth: UNSLOTH_TOKEN_BUDGET not splitting steps whose ranks need different chunk counts.",

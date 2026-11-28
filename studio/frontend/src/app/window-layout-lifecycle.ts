@@ -167,6 +167,7 @@ type FinalizeAppWindowLayoutOptions<Monitor extends WorkAreaMonitor> = {
   measure: () => Promise<MeasuredWindowLayout<Monitor> | null>;
   setMinimumConstraints: (minimum: LogicalWindowSize) => Promise<void>;
   enforceBounds: (bounds: WindowSizeBounds) => Promise<void>;
+  keepOnScreen?: (measured: MeasuredWindowLayout<Monitor>) => Promise<void>;
   isCurrent: WindowLayoutGuard;
 };
 
@@ -179,6 +180,7 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   measure,
   setMinimumConstraints,
   enforceBounds,
+  keepOnScreen,
   isCurrent,
 }: FinalizeAppWindowLayoutOptions<Monitor>): Promise<void> {
   if (!isCurrent()) return;
@@ -205,6 +207,8 @@ export async function finalizeAppWindowLayout<Monitor extends WorkAreaMonitor>({
   await enforceBounds(
     restored ? { minimum: measured.bounds.minimum } : measured.bounds,
   );
+  if (!restored || !isCurrent()) return;
+  await keepOnScreen?.(measured);
 }
 
 type MinimumSizeWindow = {

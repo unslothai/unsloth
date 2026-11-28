@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { stripTypeScriptTypes } from "node:module";
 import test from "node:test";
 
 import {
@@ -15,6 +16,7 @@ import {
 } from "../src/features/training/lib/native-dataset-drop.ts";
 
 import { readSrc, readText } from "./helpers/kit.ts";
+import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const BACKEND_DATASET_EXTENSIONS_PATTERN =
   /LOCAL_UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
@@ -214,3 +216,67 @@ test("Data Recipes document types match the backend and cover training redirects
     assert.ok(recipe.includes(extension), extension);
   }
 });
+
+for (const [extension, toggle, expected] of [
+  [".JSON", "pandasJson", { jsonColumns: true, csvDelimiter: "," }],
+  [".CSV", "semicolonCsv", { jsonColumns: false, csvDelimiter: ";" }],
+] as const) {
+  test(`native ${extension} import keeps its option when the display filename is cut`, async () => {
+    const source = readSrc("features/studio/sections/use-dataset-uploads.ts");
+    const start = source.indexOf("const uploadNativeFile = async");
+    const end = source.indexOf("const handleDatasetFile", start);
+    const helperStart = source.indexOf("function importOptions(");
+    const helperEnd = source.indexOf("const TRAINING_UPLOAD_EXTENSIONS", helperStart);
+    assert.ok(start >= 0 && end > start && helperStart >= 0 && helperEnd > helperStart);
+    const { getFileExtension } = loadWithStubs<{
+      getFileExtension: (filename: string) => string;
+    }>(
+      new URL(
+        "../src/features/studio/sections/dataset-panel-helpers.ts",
+        import.meta.url,
+      ),
+      { "@/features/training": {} },
+    );
+    const uploaded = new Array<unknown>();
+    const bind = new Function(
+      "bindings",
+      `
+        const {
+          acquireUploadLock, releaseUploadLock, getLatestUploadLimit,
+          registerNativeDatasetPath, consumeNativePathToken, uploadNativeTrainingDataset,
+          bumpInventoryVersion, selectLocalDataset, toast, t, getFileExtension,
+          pandasJson, semicolonCsv,
+        } = bindings;
+        ${stripTypeScriptTypes(source.slice(helperStart, helperEnd))}
+        ${stripTypeScriptTypes(source.slice(start, end))}
+        return uploadNativeFile;
+      `,
+    );
+    const upload = bind({
+      acquireUploadLock: () => true,
+      releaseUploadLock: () => undefined,
+      getLatestUploadLimit: async () => ({ maxUploadSizeBytes: 1024 }),
+      registerNativeDatasetPath: async () => ({ path: { token: "token" } }),
+      consumeNativePathToken: async () => ({ nativePathLease: "lease" }),
+      uploadNativeTrainingDataset: async (lease: string, options: unknown) => {
+        assert.equal(lease, "lease");
+        uploaded.push(options);
+        return { stored_path: `/uploads/train${extension}`, filename: `train${extension}` };
+      },
+      bumpInventoryVersion: () => undefined,
+      selectLocalDataset: () => undefined,
+      toast: { success: () => undefined, error: assert.fail },
+      t: (key: string) => key,
+      getFileExtension,
+      pandasJson: toggle === "pandasJson",
+      semicolonCsv: toggle === "semicolonCsv",
+    });
+    const drop = classifyNativeTrainingDatasetDrop([
+      `/data/${"a".repeat(170)}${extension}`,
+    ]);
+    assert.equal(drop.kind, "dataset");
+    assert.equal(drop.filename, "a".repeat(160));
+    await upload(drop.path, drop.filename);
+    assert.deepEqual(uploaded, [expected]);
+  });
+}

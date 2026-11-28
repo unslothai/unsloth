@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, ContextManager, Hashable, Optional
 
 from loggers import get_logger
 
+from . import diffusion_batch_trace as trace
 from .diffusion_batched import SEED_MASK
 
 logger = get_logger(__name__)
@@ -26,6 +27,12 @@ _PROMPT_DERIVED_FIELDS = ("embeddings", "embeddings_skipped")
 
 class _RunAlone(Exception):
     """Retry this request individually."""
+
+
+# A member a fired batch could not take (no admitted size): it may coalesce again, behind that batch.
+_LEFT_OUT_MSG = "left out"
+_LEFT_OUT = object()
+REJOIN_ROUNDS = 3
 
 
 @dataclass
@@ -136,8 +143,10 @@ async def _render_group(
     splittable: Optional[Callable[[BaseException], bool]],
     salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]],
     fits: Optional[Callable[[int], bool]] = None,
+    adapter: Any = None,
 ) -> dict[int, dict[str, Any]]:
-    """One call for ``group``; on failure keep finished images and split the rest by member. Sizes respect ``fits``."""
+    """One call for ``group``; on failure keep finished images and split the rest by member. Sizes respect ``fits``.
+    ``adapter`` (diffusion_batch_adapters.BatchAdapter) runs the call and splits it; None = the list call."""
     group = [member for member in group if not member.future.done()]
     if fits is not None:
         group = _fitting_prefix(group, fits)
@@ -145,9 +154,16 @@ async def _render_group(
         return {}
     prompts = [member.prompt for member in group for _ in member.seeds]
     seeds = [s for member in group for s in member.seeds]
+    owners = [member.owner for member in group]
     try:
-        result = await run_batch(prompts, seeds, owners = [member.owner for member in group])
-        return {id(m): part for m, part in zip(group, _split(result, group))}
+        if adapter is not None:
+            result = await adapter.denoise_batched(run_batch, prompts, seeds, owners)
+            parts = adapter.split(result, group)
+        else:
+            result = await run_batch(prompts, seeds, owners = owners)
+            parts = _split(result, group)
+        trace.coalesced_call(len(group), len(seeds))
+        return {id(m): part for m, part in zip(group, parts)}
     except Exception as exc:  # noqa: BLE001 -- keep what finished, split what can be split
         if shared_outcome(exc):
             raise
@@ -166,13 +182,28 @@ async def _render_group(
             len(done),
             len(group),
         )
-        if len(rest) > 1 and splittable is not None and splittable(exc):
-            middle = (len(rest) + 1) // 2
-            for half in (rest[:middle], rest[middle:]):
-                done.update(
-                    await _render_group(half, run_batch, shared_outcome, splittable, salvage, fits)
-                )
+        split = len(rest) > 1 and splittable is not None and splittable(exc)
+        # The traceback pins the failed call's frames and every tensor they hold (an OOM's activations): drop it
+        # before the halves run, or they start with that memory still allocated.
+        _drop_tracebacks(exc)
+        del exc
+    if not split:
         return done
+    middle = (len(rest) + 1) // 2
+    for half in (rest[:middle], rest[middle:]):
+        done.update(
+            await _render_group(half, run_batch, shared_outcome, splittable, salvage, fits, adapter)
+        )
+    return done
+
+
+def _drop_tracebacks(exc: BaseException) -> None:
+    seen: set = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        cur.__traceback__ = None
+        cur = cur.__cause__ or cur.__context__
 
 
 def _close(batch: _Batch) -> None:
@@ -212,6 +243,29 @@ async def generate(
     n: int,
     seed: Optional[int],
     *,
+    on_rejoin: Optional[Callable[[], None]] = None,
+    **kwargs: Any,
+) -> Optional[dict[str, Any]]:
+    """None = render alone. A member that a fired batch left out (its size was not admitted) coalesces again behind
+    that batch, at most ``REJOIN_ROUNDS`` times; ``on_rejoin`` runs first (the caller's busy signal then waits for the
+    generation running now). Keyword arguments as ``_generate_once``."""
+    for _ in range(REJOIN_ROUNDS + 1):
+        result = await _generate_once(key, prompt, n, seed, **kwargs)
+        if result is not _LEFT_OUT:
+            return result
+        trace.count("rejoined")
+        if on_rejoin is not None:
+            on_rejoin()
+    trace.fallback("left out of the call")
+    return None
+
+
+async def _generate_once(
+    key: Hashable,
+    prompt: str,
+    n: int,
+    seed: Optional[int],
+    *,
     busy: Callable[[], bool],
     run_batch: Callable[[list[str], list[int]], Awaitable[dict[str, Any]]],
     shared_outcome: Callable[[BaseException], bool] = lambda exc: False,
@@ -223,10 +277,21 @@ async def generate(
     salvage: Optional[Callable[[BaseException], Optional[dict[str, Any]]]] = None,
     on_lead: Optional[Callable[[], None]] = None,
     wait: Optional[Callable[[], Awaitable[None]]] = None,
+    seeded_ok: Optional[Callable[[], bool]] = None,
+    adapter: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """None = render alone. ``check`` raises when a joined member must leave."""
+    """None = render alone. ``check`` raises when a joined member must leave. ``seeded_ok``: an explicitly seeded
+    request may join (a measured neighbour-exact path); the env switch still opts every seeded request in."""
     cap = batch_max()
-    if cap <= 1 or n >= cap or (seed is not None and not seeded_join_enabled()):
+    if cap <= 1 or n >= cap:
+        trace.fallback("over the batch cap")
+        return None
+    if (
+        seed is not None
+        and not seeded_join_enabled()
+        and not (seeded_ok is not None and seeded_ok())
+    ):
+        trace.fallback("explicit seed")
         return None
     loop = asyncio.get_running_loop()
     batch = _OPEN.get(key)
@@ -235,20 +300,27 @@ async def generate(
             member = _Member(prompt, request_seeds(seed, n), loop.create_future(), owner)
             batch.members.append(member)
             batch.images += n
+            trace.count("joined")
             if batch.images >= cap:
                 _close(batch)
             try:
                 with ride() if ride is not None else nullcontext():
                     return await _await_member(batch, member, check)
-            except _RunAlone:
+            except _RunAlone as exc:
+                if exc.args == (_LEFT_OUT_MSG,):
+                    return _LEFT_OUT
+                trace.fallback("render failed, retried alone")
                 return None
         _close(batch)
     if not busy():
+        trace.fallback("slot free")
         return None
 
     batch = _OPEN[key] = _Batch(key)
     batch.members.append(_Member(prompt, request_seeds(seed, n), loop.create_future(), owner))
     batch.images = n
+    trace.count("led")
+    left_out: set = set()
     try:
         try:
             # Reserve the slot turn now so later arrivals cannot overtake the leader.
@@ -268,11 +340,23 @@ async def generate(
         leader = batch.members[0]
         # A blank prompt fails the whole call: render it alone.
         if not leader.prompt.strip():
+            trace.fallback("blank prompt")
             return None
         members = [member for member in batch.members if member.prompt.strip()]
         if fits is not None:
             members = _fitting_prefix(members, fits)
+        taken = {id(member) for member in members} if len(members) > 1 else set()
+        left_out = {
+            id(member)
+            for member in batch.members[1:]
+            if id(member) not in taken and member.prompt.strip()
+        }
+        # Told now, not after the call: they coalesce again behind it while it runs.
+        for member in batch.members[1:]:
+            if id(member) in left_out and not member.future.done():
+                member.future.set_exception(_RunAlone(_LEFT_OUT_MSG))
         if len(members) <= 1:
+            trace.fallback("no admitted batch size" if len(batch.members) > 1 else "nobody joined")
             return None
         logger.info(
             "images.batch: %d requests from %d accounts render as one call of %d images",
@@ -282,7 +366,7 @@ async def generate(
         )
         try:
             done = await _render_group(
-                members, run_batch, shared_outcome, splittable, salvage, fits
+                members, run_batch, shared_outcome, splittable, salvage, fits, adapter
             )
         except Exception as exc:
             _share(exc, members[1:], owner)
@@ -297,4 +381,6 @@ async def generate(
         batch.fired = True
         for member in batch.members[1:]:
             if not member.future.done():
-                member.future.set_exception(_RunAlone())
+                member.future.set_exception(
+                    _RunAlone(_LEFT_OUT_MSG) if id(member) in left_out else _RunAlone()
+                )

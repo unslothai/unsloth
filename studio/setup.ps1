@@ -403,8 +403,8 @@ $FrontendBuildMark = Join-Path $FrontendDir ".unsloth-build.local"
 $OxcValidatorDir = Join-Path $ScriptDir "backend\core\data_recipe\oxc-validator"
 $IsPipInstall = -not (Test-Path $FrontendDir)
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 function Refresh-Environment {
     foreach ($level in @('Machine', 'User')) {
         $vars = [System.Environment]::GetEnvironmentVariables($level)
@@ -455,7 +455,7 @@ function Refresh-Environment {
     $env:Path = $unique -join ";"
 }
 
-# ── Helper: is a conda environment ACTIVE in this session? ──
+# -- Helper: is a conda environment ACTIVE in this session? --
 function Test-ActiveCondaEnvironment {
     foreach ($condaVar in @($env:CONDA_PREFIX, $env:CONDA_DEFAULT_ENV)) {
         if (-not [string]::IsNullOrWhiteSpace($condaVar)) { return $true }
@@ -1910,7 +1910,7 @@ function New-StudioChildScriptDirectory {
     return $dir
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 # Full paths only: a bare name searches PATH, where ZLUDA's nvcuda.dll and nvml.dll pass for NVIDIA.
 function Get-NvidiaNvmlLibraryPath {
     $dirs = @()
@@ -2214,7 +2214,7 @@ function Get-NvidiaLibraryInventory {
     }
     return $script:NvidiaLibraryInventory
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaLibraryInventory) --
 
 # Must match install.ps1's Get-TorchIndexUrl ladder exactly (asserted by a test).
 # Below CUDA 11 gets "cpu".
@@ -3073,8 +3073,8 @@ function Ensure-VCRedist {
     }
 }
 
-# ─────────────────────────────────────────────
-# ─────────────────────────────────────────────
+# ---------------------------------------------
+# ---------------------------------------------
 $Rule = [string]::new([char]0x2500, 52)
 
 
@@ -3339,9 +3339,9 @@ function Show-NpmRegistryHint {
     substep "(min-release-age and save-exact stay enforced.)"
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Banner
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 Write-StudioLine ""
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  " + (Get-StudioAnsi Title) + [char]::ConvertFromUtf32(0x1F9A5) + " Unsloth Studio Setup" + (Get-StudioAnsi Reset))
@@ -3688,7 +3688,7 @@ function Invoke-NvidiaSmiBounded {
     }
 }
 
-# ── BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- BEGIN SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 # nvidia-smi dirs in preference order, filtered to ones holding the binary (SysNative/ProgramW6432 for
 # 32-bit processes, DriverStore). System32 before legacy NVSMI, which may hold an older binary.
 function Get-NvidiaSmiCandidatePaths {
@@ -3744,7 +3744,7 @@ function Get-NvidiaSmiCandidatePaths {
     }
     return $paths
 }
-# ── END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) ──
+# -- END SHARED WITH install.ps1 (Get-NvidiaSmiCandidatePaths) --
 
 # A driverless nvidia-smi exits 0 listing no GPU, so require a "GPU <n>:" row.
 # 124 means the bounded runner killed the probe; recorded so the banner skips a second query.
@@ -3894,16 +3894,13 @@ function Test-IntelXpuRuntimeProven {
 function Test-OtherVendorAdapterPresent {
     param($Scan = $null)
     if ($null -eq $Scan) { $Scan = Invoke-BoundedVideoControllerScan }
-    # AMD evidence the AMD route finds without WMI (override, the installer's forwarded arch, HIP SDK,
-    # opted-in amd-smi) vetoes too.
+    # AMD evidence found without WMI (override, forwarded arch, HIP SDK) vetoes too.
     if ("$env:UNSLOTH_ROCM_GFX_ARCH".Trim() -or "$env:_UNSLOTH_ROCM_GFX_ARCH_HANDOFF".Trim()) { return $true }
     try {
         if (Get-Command hipinfo -CommandType Application -ErrorAction SilentlyContinue) { return $true }
         foreach ($hipEnv in @($env:HIP_PATH, $env:HIP_PATH_57, $env:ROCM_PATH)) {
             if ($hipEnv -and (Test-Path -LiteralPath (Join-Path $hipEnv "bin\hipinfo.exe"))) { return $true }
         }
-        if ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$' -and
-            (Get-Command amd-smi -ErrorAction SilentlyContinue)) { return $true }
     } catch {}
     # Same classification as the Intel route, which ignores PNP ID and status.
     if ($Scan.Ok) {
@@ -4155,47 +4152,8 @@ if ($HasNvidiaSmi -and $NvidiaSmiExe -and -not $script:NvidiaSmiWedged -and -not
         }
     } catch {}
 }
-# amd-smi auto-elevates and pops a UAC prompt; RunAsInvoker stops it.
-function Invoke-AmdSmiNoElevate {
-    param(
-        [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
-        [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-        [int]$TimeoutSec = 30
-    )
-    $prevCompat = [Environment]::GetEnvironmentVariable('__COMPAT_LAYER', 'Process')
-    $env:__COMPAT_LAYER = 'RunAsInvoker'
-    try {
-        # [Process]::Start: Start-Process -PassThru leaves .ExitCode $null on PS 5.1.
-        $psi = New-Object System.Diagnostics.ProcessStartInfo
-        $psi.FileName = $Exe
-        $psi.Arguments = ($SmiArgs -join ' ')
-        $psi.UseShellExecute = $false
-        $psi.RedirectStandardOutput = $true
-        $psi.RedirectStandardError = $true
-        $psi.CreateNoWindow = $true
-        $proc = [System.Diagnostics.Process]::Start($psi)
-        $outTask = $proc.StandardOutput.ReadToEndAsync()
-        $errTask = $proc.StandardError.ReadToEndAsync()
-        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-            try { $proc.Kill() } catch {}
-            $global:LASTEXITCODE = 124
-            return ""
-        }
-        $global:LASTEXITCODE = $proc.ExitCode
-        return ($outTask.Result + "`n" + $errTask.Result)
-    } catch {
-        $global:LASTEXITCODE = 1
-        return ""
-    } finally {
-        if ($null -eq $prevCompat) {
-            Remove-Item Env:__COMPAT_LAYER -ErrorAction SilentlyContinue
-        } else {
-            $env:__COMPAT_LAYER = $prevCompat
-        }
-    }
-}
 
-# ── AMD ROCm detection (Windows): probe hipinfo/amd-smi for actual GPU ──
+# -- AMD ROCm detection (Windows): probe hipinfo for actual GPU --
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
@@ -4371,7 +4329,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         }
     }
     if ($hipinfoExe) {
-        $HipSdkInstalled = $true   # binary found → SDK is installed regardless of device state
+        $HipSdkInstalled = $true   # binary found -> SDK is installed regardless of device state
         try {
             $hipOut = & $hipinfoExe.Source 2>&1 | Out-String
             if ($hipOut -match "(?i)gcnArchName") {
@@ -4402,65 +4360,6 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
                 substep "       Ensure ROCm drivers are installed: https://rocm.docs.amd.com/en/latest/deploy/windows/index.html" "Yellow"
             }
         } catch {}
-    }
-    # amd-smi can pop an unsuppressable UAC prompt, so probe only with a HIP SDK or on opt-in.
-    $amdSmiOptOut = $env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(0|false|no|off)$'
-    $amdSmiAllowed = (-not $amdSmiOptOut) -and ($HipSdkInstalled -or ($env:UNSLOTH_ENABLE_AMD_SMI -match '^(?i)(1|true|yes|on)$'))
-    if (-not $HasROCm -and $amdSmiAllowed) {
-        $amdSmiExe = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-        if ($amdSmiExe) {
-            try {
-                $smiOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('list')
-                if ($LASTEXITCODE -eq 0 -and $smiOut -match "(?im)^GPU\s*[:\[]\s*\d") {
-                    $HasROCm = $true
-                    # All gfx tokens in output order, no dedup, so the mask index lines up.
-                    $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
-                        ForEach-Object { $_.Groups[1].Value.ToLower() })
-                    if ($allGfxArches.Count -gt 0) {
-                        # amd-smi lists every GPU regardless of masks, so resolve the index here.
-                        $_smiPickIdx = Resolve-VisibleGpuIndex $allGfxArches.Count
-                        $script:ROCmGfxArch = $allGfxArches[$_smiPickIdx]
-                        $_smiShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
-                        if ($_smiShadowPick -ne $script:ROCmGfxArch) {
-                            $script:ROCmGfxArch = $_smiShadowPick
-                            $_smiPickIdx = [array]::IndexOf($allGfxArches, $_smiShadowPick)
-                        }
-                        $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                        # Carry the index forward: IndexOf on duplicate arches always returns 0.
-                        $_smiNames = @([regex]::Matches($smiOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                        if ($_smiNames.Count -eq $allGfxArches.Count -and $_smiPickIdx -ge 0) {
-                            $ROCmGpuName = $_smiNames[$_smiPickIdx]
-                        }
-                    } else {
-                        # 'static --asic' exposes the GFX target on ROCm 6+.
-                        $smiAsicOut = ""
-                        try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                        # Every token, not just the first, or a leading iGPU is picked.
-                        $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
-                            ForEach-Object { $_.Groups[1].Value.ToLower() })
-                        if ($asicGfxArches.Count -gt 0) {
-                            $_asicPickIdx = Resolve-VisibleGpuIndex $asicGfxArches.Count
-                            $script:ROCmGfxArch = $asicGfxArches[$_asicPickIdx]
-                            $_asicShadowPick = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
-                            if ($_asicShadowPick -ne $script:ROCmGfxArch) {
-                                $script:ROCmGfxArch = $_asicShadowPick
-                                $_asicPickIdx = [array]::IndexOf($asicGfxArches, $_asicShadowPick)
-                            }
-                            $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                            $_asicNames = @([regex]::Matches($smiAsicOut, "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") | ForEach-Object { $_.Groups[1].Value.Trim() })
-                            if ($_asicNames.Count -eq $asicGfxArches.Count -and $_asicPickIdx -ge 0) {
-                                $ROCmGpuName = $_asicNames[$_asicPickIdx]
-                            }
-                        } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
-                            $ROCmGpuName  = $Matches[1].Trim()
-                            $ROCmGpuLabel = "AMD ROCm ($ROCmGpuName)"
-                        } else {
-                            $ROCmGpuLabel = "AMD ROCm"
-                        }
-                    }
-                }
-            } catch {}
-        }
     }
     # WMI gives a marketing name, never a gfx arch, so $HasROCm stays false.
     if (-not $HasROCm) {
@@ -4498,7 +4397,7 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
         @{ P = "RX 4[78]0(?!0)|RX 5[789]0(?!0)|Radeon Pro WX 7100|Radeon Pro WX 5100"; A = "gfx803"  }  # Polaris 10/20/30
     )
     $script:ROCmUnsupportedGfxArch = $null
-    # ── Arch resolution: env-var override → name inference ──────────────────
+    # -- Arch resolution: env-var override -> name inference ------------------
     # Runs even without a confirmed runtime: the Adrenalin driver alone runs the per-gfx llama.cpp
     # prebuilt, which only needs the arch. PyTorch ROCm wheels stay gated on $HasROCm.
     if (-not $script:ROCmGfxArch) {
@@ -4632,15 +4531,6 @@ if (-not $HasNvidiaSmi -or $script:ProbeAmdBesideNvidia) {
                 }
             } catch {}
         }
-        if (-not $script:ROCmVersion -and $amdSmiAllowed) {
-            $amdSmiVer = Get-Command "amd-smi" -ErrorAction SilentlyContinue
-            if ($amdSmiVer) {
-                try {
-                    $smiVerOut = Invoke-AmdSmiNoElevate $amdSmiVer.Source @('version')
-                    if ($LASTEXITCODE -eq 0 -and $smiVerOut -match 'ROCm version:\s*(\d+\.\d+)') { $script:ROCmVersion = $Matches[1] }
-                } catch {}
-            }
-        }
         # Last resort: the SDK root itself is versioned (...\AMD\ROCm\7.1).
         if (-not $script:ROCmVersion) {
             $hipVersionedRoot = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { $null }
@@ -4662,7 +4552,7 @@ $_rocmWheelArches = @(
 # "AMD gets GPU wheels", not "AMD GPU present": unmapped arches install CPU torch.
 $AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
 if ($script:ProbeAmdBesideNvidia) {
-    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo, amd-smi or WMI must see one.
+    # UNSLOTH_ROCM_GFX_ARCH names an arch, not a card: hipinfo or WMI must see one.
     if ($AmdHasGpuWheels -and ($HasROCm -or @($script:ROCmGpuLabels).Count -gt 0)) {
         # An AMD host from here on, so the stale check keeps ROCm torch rather than restoring CUDA.
         $HasNvidiaSmi = $false
@@ -4745,7 +4635,6 @@ if ($HasNvidiaSmi) {
     substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
     Write-StudioLine ""
 } elseif ($HasROCm -and -not $script:ROCmUnsupportedGfxArch) {
-    # amd-smi can set $HasROCm without an arch.
     step "gpu" $ROCmGpuDisplay
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
     substep "HIP SDK: $hipSdkPath"
@@ -5736,7 +5625,7 @@ if ($NeedFrontendBuild -and -not $IsPipInstall) {
         Pop-Location
         $ErrorActionPreference = $prevEAP_npm
 
-        # ── Restore hidden .gitignore files ──
+        # -- Restore hidden .gitignore files --
         foreach ($gi in $HiddenGitignores) {
             Rename-Item -Path "$gi._twbuild" -NewName (Split-Path $gi -Leaf) -Force -ErrorAction SilentlyContinue
         }
@@ -6024,42 +5913,6 @@ function Test-WoaWheelTagsUsableParity {
     return $false
 }
 
-# One bounded HTTP GET: -Offset/-Length is a byte range, -Suffix the last N bytes, neither the whole body. $null on any
-# failure, and on a server that ignores the range (a 200 for a range would download the whole wheel).
-function Invoke-WoaHttpBytesParity {
-    param([string]$Uri, [long]$Offset = -1, [long]$Length = 0, [long]$Suffix = 0, [long]$MaxBytes = 1048576)
-    if (-not $Uri) { return $null }
-    $response = $null
-    try {
-        $req = [System.Net.WebRequest]::Create($Uri)
-        $req.UserAgent = 'unsloth-installer'
-        $req.Timeout = 20000
-        $req.ReadWriteTimeout = 20000
-        $ranged = $false
-        if ($Suffix -gt 0) { $req.AddRange(-$Suffix); $ranged = $true }
-        elseif ($Offset -ge 0 -and $Length -gt 0) { $req.AddRange($Offset, $Offset + $Length - 1); $ranged = $true }
-        $response = $req.GetResponse()
-        $status = [int]$response.StatusCode
-        if ($ranged -and $status -ne 206) { return $null }
-        if (-not $ranged -and $status -ne 200) { return $null }
-        $total = -1
-        $contentRange = [string]$response.Headers['Content-Range']
-        if ($contentRange -match '/(\d+)\s*$') { $total = [long]$Matches[1] }
-        $stream = $response.GetResponseStream()
-        $buffer = New-Object System.IO.MemoryStream
-        $chunk = New-Object byte[] 65536
-        while (($read = $stream.Read($chunk, 0, $chunk.Length)) -gt 0) {
-            $buffer.Write($chunk, 0, $read)
-            if ($buffer.Length -gt $MaxBytes) { return $null }
-        }
-        return @{ Bytes = $buffer.ToArray(); Total = $total }
-    } catch {
-        return $null
-    } finally {
-        if ($response) { try { $response.Close() } catch {} }
-    }
-}
-
 # The torch specifier in a wheel's METADATA ("" when it names none, or only under a marker).
 function Get-WoaMetadataTorchRequirementParity {
     param([string]$Metadata)
@@ -6076,71 +5929,42 @@ function Get-WoaMetadataTorchRequirementParity {
     return ($clauses -join ',')
 }
 
-# The torch requirement a companion wheel declares, read from the index's PEP 658 metadata file when it serves one,
-# else from the wheel's own METADATA by ranged reads (a few KB, never the wheel). "" when it cannot be read; memoised.
+# Torch requirement a companion wheel declares (PEP 658 .metadata, else the wheel's METADATA); "" if unreadable.
 function Get-WoaWheelTorchRequirementParity {
     param([string]$WheelUrl, [bool]$HasCoreMetadata = $false)
     if (-not $WheelUrl) { return "" }
     if ($null -eq $script:WoaWheelTorchRequirementCacheParity) { $script:WoaWheelTorchRequirementCacheParity = @{} }
     if ($script:WoaWheelTorchRequirementCacheParity.ContainsKey($WheelUrl)) { return $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] }
     $answer = ""
+    $tmp = $null
     try {
+        $tmp = [System.IO.Path]::GetTempFileName()
         $metadata = $null
         if ($HasCoreMetadata) {
-            $got = Invoke-WoaHttpBytesParity -Uri "$WheelUrl.metadata"
-            if ($got) { $metadata = [System.Text.Encoding]::UTF8.GetString($got.Bytes) }
+            try {
+                Invoke-WebRequest -Uri "$WheelUrl.metadata" -OutFile $tmp -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+                if ((Get-Item -LiteralPath $tmp).Length -le 1048576) { $metadata = [System.IO.File]::ReadAllText($tmp, [System.Text.Encoding]::UTF8) }
+            } catch { $metadata = $null }
         }
         if ($null -eq $metadata) {
-            $u16 = { param($b, $o) [int]$b[$o] -bor ([int]$b[$o + 1] -shl 8) }
-            $u32 = { param($b, $o) [long]$b[$o] -bor ([long]$b[$o + 1] -shl 8) -bor ([long]$b[$o + 2] -shl 16) -bor ([long]$b[$o + 3] -shl 24) }
-            $tail = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Suffix 65558
-            if (-not $tail -or $tail.Total -lt 0) { throw "no tail" }
-            $t = $tail.Bytes
-            $eocd = -1
-            for ($i = $t.Length - 22; $i -ge 0; $i--) {
-                if ($t[$i] -eq 0x50 -and $t[$i + 1] -eq 0x4b -and $t[$i + 2] -eq 0x05 -and $t[$i + 3] -eq 0x06) { $eocd = $i; break }
-            }
-            if ($eocd -lt 0) { throw "no end of central directory" }
-            $cdSize = & $u32 $t ($eocd + 12)
-            $cdOffset = & $u32 $t ($eocd + 16)
-            # Zip64 or an implausible directory: not worth parsing for one line.
-            if ($cdOffset -eq 0xFFFFFFFF -or $cdSize -le 0 -or $cdSize -gt 4194304) { throw "unsupported directory" }
-            $tailStart = $tail.Total - $t.Length
-            if ($cdOffset -ge $tailStart) {
-                $cd = [byte[]]$t[($cdOffset - $tailStart)..($cdOffset - $tailStart + $cdSize - 1)]
-            } else {
-                $got = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $cdOffset -Length $cdSize -MaxBytes 4194304
-                if (-not $got) { throw "no directory" }
-                $cd = $got.Bytes
-            }
-            $entry = $null
-            $p = 0
-            while ($p + 46 -le $cd.Length -and (& $u32 $cd $p) -eq 0x02014b50) {
-                $nameLen = & $u16 $cd ($p + 28)
-                $name = [System.Text.Encoding]::UTF8.GetString($cd, $p + 46, $nameLen)
-                if ($name -match '^[^/]+\.dist-info/METADATA$') {
-                    $entry = @{ Method = (& $u16 $cd ($p + 10)); Size = (& $u32 $cd ($p + 20)); Offset = (& $u32 $cd ($p + 42)) }
-                    break
+            Invoke-WebRequest -Uri $WheelUrl -OutFile $tmp -UseBasicParsing -TimeoutSec 120 -ErrorAction Stop
+            Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($tmp)
+            try {
+                $entry = $null
+                foreach ($e in $zip.Entries) {
+                    if ($e.FullName -match '^[^/]+\.dist-info/METADATA$') { $entry = $e; break }
                 }
-                $p += 46 + $nameLen + (& $u16 $cd ($p + 30)) + (& $u16 $cd ($p + 32))
-            }
-            if (-not $entry -or $entry.Size -gt 1048576 -or $entry.Method -notin @(0, 8)) { throw "no METADATA" }
-            $head = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $entry.Offset -Length 30
-            if (-not $head -or $head.Bytes.Length -lt 30 -or (& $u32 $head.Bytes 0) -ne 0x04034b50) { throw "no local header" }
-            $start = $entry.Offset + 30 + (& $u16 $head.Bytes 26) + (& $u16 $head.Bytes 28)
-            $body = Invoke-WoaHttpBytesParity -Uri $WheelUrl -Offset $start -Length $entry.Size
-            if (-not $body -or $body.Bytes.Length -ne $entry.Size) { throw "short METADATA" }
-            if ($entry.Method -eq 0) {
-                $metadata = [System.Text.Encoding]::UTF8.GetString($body.Bytes)
-            } else {
-                $inflate = New-Object System.IO.Compression.DeflateStream((New-Object System.IO.MemoryStream(, $body.Bytes)), [System.IO.Compression.CompressionMode]::Decompress)
-                $reader = New-Object System.IO.StreamReader($inflate, [System.Text.Encoding]::UTF8)
+                if (-not $entry -or $entry.Length -gt 1048576) { throw "no METADATA" }
+                $reader = New-Object System.IO.StreamReader($entry.Open(), [System.Text.Encoding]::UTF8)
                 try { $metadata = $reader.ReadToEnd() } finally { $reader.Dispose() }
-            }
+            } finally { $zip.Dispose() }
         }
         $answer = Get-WoaMetadataTorchRequirementParity -Metadata $metadata
     } catch {
         $answer = ""
+    } finally {
+        if ($tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     }
     $script:WoaWheelTorchRequirementCacheParity[$WheelUrl] = $answer
     return $answer
@@ -7753,7 +7577,7 @@ function Fast-Download {
     }
 }
 
-# ── Check if Python deps need updating ──
+# -- Check if Python deps need updating --
 # One definition of a verified install for the incomplete-install guard and the offline rule.
 function Test-StudioInstallVerified {
     try {
@@ -8731,7 +8555,7 @@ if ($ROCmIndexUrl) {
     }
 }
 
-# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
+# -- Intel XPU (SYCL) ---------------------------------------------------------
 # Intel XPU has its own index leaf and must not fall into the CUDA branch.
 $XpuCpuFallback = $false
 if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
@@ -8993,7 +8817,7 @@ if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCp
 # No unsloth.exe rename needed: install.ps1 runs the CLI through python.exe and the base is not
 # reinstalled. Duplicate metadata repair is wrapped in the CLI launcher transaction.
 
-# ── Publish the torch flavor this run settled on ──
+# -- Publish the torch flavor this run settled on --
 # so install_python_stack.py can enforce it; PyPI's Windows torch wheel is +cpu.
 if (-not $NoTorchMode) {
     $_expectedLeaf = Get-TorchIndexLeaf $_effectiveTorchIndexUrl
@@ -9101,7 +8925,7 @@ if ($stackExit -eq 0 -and -not $NoTorchMode) {
     }
 }
 
-# ── Intel XPU: bitsandbytes must carry XPU kernels ──
+# -- Intel XPU: bitsandbytes must carry XPU kernels --
 # Only bitsandbytes' XPU library exports the 4-bit kernels; floor 0.50.0 (<=0.49.2 NaNs on AMD).
 # Never the unsloth[intel-gpu-torch*] extra. Must stay above the EAP restore below (5.1 needs Continue).
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -9120,7 +8944,7 @@ if ($stackExit -eq 0 -and $XpuIndexUrl) {
     }
 }
 
-# ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
+# -- Intel XPU: triton-windows must not shadow torch's XPU triton --
 # Both own the `triton` package. Run after the stack (it reinstalls triton-windows); always
 # pair the uninstall with a reinstall.
 if ($stackExit -eq 0 -and $XpuIndexUrl) {
@@ -9290,7 +9114,7 @@ if ($stackExit -ne 0) {
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
 
-# ── Finish with the setup script this update installed ──
+# -- Finish with the setup script this update installed --
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
 # run's variables from the new copy; it cannot see $PSDefaultParameterValues, so those are passed in.
 if (Test-SetupScriptReplaced) {
@@ -9371,7 +9195,7 @@ if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     }
 }
 
-# ── Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ ──
+# -- Pre-install transformers 5.x into .venv_t5_530/, .venv_t5_550/, and .venv_t5_510/ --
 # Runs outside the deps fast-path gate so that upgrades from the legacy
 # single .venv_t5 are always migrated to the tiered layout.
 # T5 sidecar venvs live under the resolved $StudioHome so custom installs are self-contained.
@@ -10873,7 +10697,7 @@ if (-not $llamaCppIsLink -and (
 
 Complete-FrontendBuildBackground
 
-# ── Precompile bytecode ── (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
+# -- Precompile bytecode -- (opt-in: a whole-venv compile per update cost more than lazy compile on import; never fatal)
 $_pycPython = Join-Path $VenvDir 'Scripts\python.exe'
 $_pycHelper = Join-Path $PSScriptRoot 'precompile_bytecode.py'
 $_pycSwitches = @(@($env:UV_COMPILE_BYTECODE, $env:UNSLOTH_STUDIO_COMPILE_BYTECODE) |
@@ -10891,9 +10715,9 @@ if (($script:SetupVenvChanged -or $env:UNSLOTH_SETUP_RERUN -eq '1') -and $_pycOp
     $global:LASTEXITCODE = $_pycPrevExit
 }
 
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 # Footer
-# ─────────────────────────────────────────────
+# ---------------------------------------------
 $DoneLabel = if ($env:SKIP_STUDIO_BASE -eq "1") { "Unsloth Studio Setup Complete" } else { "Unsloth Studio Updated" }
 if ($script:StudioVtOk -and -not $env:NO_COLOR) {
     Write-StudioLine ("  {0}{1}{2}" -f (Get-StudioAnsi Dim), $Rule, (Get-StudioAnsi Reset))

@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
+import dis
 import json
 import os
 import sys
@@ -241,6 +243,8 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         # Separately trained lm_head: these fixtures train no vocab layers.
         "_untied_trained_vocab",
         "_untie_merged_checkpoint",
+        # GGUF-packed dense write: _gguf_packed_stub reports no fixture as packed.
+        "_shard_bytes",
     }
 )
 
@@ -249,12 +253,27 @@ def _not_reached(*args, **kwargs):
     raise AssertionError("the routing harness does not reach this helper")
 
 
+def _gguf_packed_stub():
+    """unsloth.models.gguf_packed, imported lazily by the save: no fixture holds GGUF-packed weights, so the
+    merge resolves its base as it always has and the dense writer is never reached."""
+    module = types.ModuleType("unsloth.models.gguf_packed")
+    module.is_gguf_packed_model = lambda model: False
+    module.write_gguf_dense_base = _not_reached
+    module.gguf_dense_base_for_merge = (
+        lambda model, save_directory, **kwargs: contextlib.nullcontext()
+    )
+    return module
+
+
 def _routing_environment(monkeypatch, model, **overrides):
     calls = {"merge": [], "adapter": [], "prewarm": [], "convert": []}
 
     zoo = types.ModuleType("unsloth_zoo.saving_utils")
     zoo.merge_and_overwrite_lora = lambda *args, **kwargs: calls["merge"].append(kwargs)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.saving_utils", zoo)
+    monkeypatch.setitem(sys.modules, "unsloth.models.gguf_packed", _gguf_packed_stub())
+    # The Inkling 2 writer is reached only where a test reports an Inkling 2 config and passes its own.
+    overrides.setdefault("save_inkling2_merged_16bit", _not_reached)
 
     namespace = _load(
         *_GENERIC_SAVE_REAL_HELPERS,
@@ -290,6 +309,10 @@ def _routing_environment(monkeypatch, model, **overrides):
         _left_padding_side = lambda tokenizer: contextlib.nullcontext(),
         _restamp_index_total_size = _not_reached,
         _CastShardsOnWrite = _not_reached,
+        ExitStack = contextlib.ExitStack,
+        sys = sys,
+        _shard_bytes = _not_reached,
+        _GGUF_PACKED_STATE_DICT_REFUSAL = "fixture: GGUF-packed state_dict refusal",
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
@@ -1088,6 +1111,31 @@ def test_an_unreadable_signature_forwards_the_call_unchanged():
 
     _wrapped_model_save_pretrained(_NoSignature())("out_dir", None)
     assert seen["args"] == ("out_dir", None)
+
+
+def _global_loads(code):
+    for instruction in dis.get_instructions(code):
+        if instruction.opname in ("LOAD_GLOBAL", "LOAD_NAME"):
+            yield instruction.argval
+    for const in code.co_consts:
+        if isinstance(const, types.CodeType):
+            yield from _global_loads(const)
+
+
+def test_every_global_the_generic_save_reads_is_in_the_harness(monkeypatch):
+    """A module-level import or constant added to save.py (#20022's ExitStack) is a NameError in every routing
+    test at once; the helper check above sees only calls to save.py's own functions. Name it instead."""
+    save, _ = _routing_environment(monkeypatch, None)
+    missing = sorted(
+        {
+            name
+            for name in _global_loads(save.__code__)
+            if name not in save.__globals__ and not hasattr(builtins, name)
+        }
+    )
+    assert (
+        not missing
+    ), f"unsloth_generic_save reads {missing}, which the routing harness does not define"
 
 
 def test_every_helper_the_generic_save_calls_is_loaded_or_stubbed():

@@ -1879,6 +1879,7 @@ export const cs = {
       levelLow: "Nízká",
       levelHighShort:
         "Přidává izolaci operačního systému pro Python a Terminál",
+      editorMcpWarning: "{name} MCP spouští kód s oprávněními této aplikace mimo sandbox Unsloth, i když je úroveň sandboxu vysoká. Kód může přistupovat k souborům mimo váš projekt.",
       levelLowShort: "Pouze software. Rizikový kód se nejprve zeptá",
       levelFullAccessNote:
         "Úplný přístup vypíná sandbox. Toto nastavení začne znovu platit, když zvolíte jinou úroveň.",
@@ -2389,7 +2390,7 @@ export const cs = {
         details: {
           ask: "Ptá se před každým voláním nástroje, včetně kódu v terminálu a Pythonu, vyhledávání na webu, úprav souborů a nástrojů MCP. Nástroje spouštěné externím poskytovatelem se nepozastavují.",
           auto: "Běžná volání nástrojů provádí samo a ptá se jen tehdy, když akce vypadá riskantně, například čtení přihlašovacích údajů, zvyšování oprávnění nebo spouštění destruktivních příkazů.",
-          off: "Provádí každé volání nástroje bez ptaní. Kód v Pythonu a terminálu stále běží v sandboxu, který omezuje, ke kterým souborům ve vašem počítači má přístup. Bez funkčního sandboxu operačního systému se riskantní volání nejprve zeptají.",
+          off: "Povolené nástroje MCP používají oprávnění serveru a mohou se spustit bez potvrzení. Python a terminál používají zvolenou úroveň sandboxu. Riziková volání těchto nástrojů stále vyžadují potvrzení, pokud izolace na úrovni operačního systému není dostupná nebo je úroveň sandboxu nízká.",
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
       },
@@ -4784,6 +4785,8 @@ export const cs = {
       unsupportedFileType: "Nepodporovaný typ souboru",
       uploadOneFileType: "Nahrajte jeden soubor typu {types}.",
       datasetUploaded: "Datová sada byla nahrána",
+      importPandasJson: "Importovat .json jako sloupce pandas",
+      importSemicolonCsv: "Pro .csv použít jako oddělovač středník",
       evalDatasetUploaded: "Vyhodnocovací datová sada byla nahrána",
       uploadOneFileAtATime: "Nahrávejte vždy jen jeden soubor",
       uploadSingleFileDescription:

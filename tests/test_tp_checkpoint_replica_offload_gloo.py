@@ -17,6 +17,8 @@ if multiprocessing.parent_process() is not None or getattr(
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
+import ast  # noqa: E402
+import pathlib  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
 import types  # noqa: E402
@@ -109,6 +111,43 @@ class _Offloader:
 
     def finish(self, devices):
         self.calls.append("finish")
+
+    def load_on_host(self, load, state_dict):
+        # What offload_optimizer_state attaches (#20026): run the given loader, then put the state back on
+        # the host, as the real offloader's _load_on_host ends.
+        result = load(state_dict)
+        self.finish(self.offload())
+        return result
+
+
+def _offloader_reads(path):
+    """Attributes unsloth code reads off `optimizer._unsloth_state_offloader`, e.g. `load_on_host`."""
+    reads = set()
+    for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[0], ast.Call)
+            and isinstance(node.args[0].func, ast.Name)
+            and node.args[0].func.id == "getattr"
+            and len(node.args[0].args) >= 2
+            and isinstance(node.args[0].args[1], ast.Constant)
+            and node.args[0].args[1].value == "_unsloth_state_offloader"
+            and isinstance(node.args[1], ast.Constant)
+        ):
+            reads.add(node.args[1].value)
+    return reads
+
+
+def test_the_fake_offloader_has_what_portable_resume_reads():
+    """A fake missing an attribute portable_resume looks up turns the offload path into a silent no-op (the fake
+    lacked load_on_host after #20026, so the offload case saw no calls at all). Name the missing one instead."""
+    path = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "models" / "portable_resume.py"
+    reads = _offloader_reads(path)
+    assert "load_on_host" in reads, reads
+    assert [name for name in sorted(reads) if not callable(getattr(_Offloader(), name, None))] == []
 
 
 def _case_offload(rank, world, tmp):

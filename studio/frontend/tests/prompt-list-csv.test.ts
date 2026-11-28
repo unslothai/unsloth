@@ -119,10 +119,21 @@ test("a list_name,order,prompt_text CSV still imports one list per name, in orde
     row("Review", "2", "second"),
     row("Other", "1", "only"),
     row("Review", "1", "first"),
+    row("Review", "3", " \n "),
   ]);
 
   assert.deepEqual(lists(await importCsv(doc)), [
     { name: "Review", items: ["first", "second"] },
     { name: "Other", items: ["only"] },
   ]);
+});
+
+test("a prompt list CSV round trip preserves whitespace in prompt text", async () => {
+  const { exportCsv, importCsv } = listCsv();
+  const original: List[] = [
+    { id: "a", name: "Python", items: ["    print(42)\n", "\nuse this prefix "] },
+  ];
+
+  const imported = await importCsv(await exportCsv(original));
+  assert.deepEqual(lists(imported), lists(original));
 });

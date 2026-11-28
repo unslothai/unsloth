@@ -67,10 +67,8 @@ test("the confirm dialog carries the issue's warning text verbatim", () => {
   assert.match(section, /settings\.general\.developerMode\.confirmWarning/);
   assert.match(section, /settings\.general\.developerMode\.ramBelowMinimum/);
   assert.match(section, /settings\.general\.developerMode\.performanceEstimate/);
-  // Enabling goes through the dialog; only the confirm button saves true.
   assert.match(section, /videoCpuToggleNeedsConfirm\(next\)[\s\S]*setConfirmOpen\(true\)/);
   assert.match(section, /setConfirmOpen\(false\);\s*void save\(true\);/);
-  // Saving refreshes both cached gates.
   assert.match(section, /usePlatformStore\.setState\(\{ videoCpuOptIn: next\.videoCpu \}\)/);
   assert.match(section, /refreshHardwareInfo\(\)/);
   // An env override decides, so the switch is not offered against it.

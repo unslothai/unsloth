@@ -9,13 +9,17 @@ Same duck-typed surface as the other image engines; selected only by ``diffusion
 from __future__ import annotations
 
 import gc
+import importlib
+import inspect
 import json
 import os
 import random
 import subprocess
+import sys
 import threading
 import time
 from collections import OrderedDict
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
@@ -65,6 +69,10 @@ _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
 _ENCODING_CACHE_SIZE = 8
 _LOW_RAM_BYTES = 16 * 1024**3
+# Unset / 0: stock matmuls. auto: unsloth_zoo's int8-activation DiT route where it runs (M5); 1: auto, loud on failure.
+INT8_PREFILL_ENV = "UNSLOTH_DIFFUSION_MLX_INT8_PREFILL"
+# Rows for the eager first-use check: past the zoo's small-row route, inside its int8 range.
+_INT8_PREVERIFY_ROWS = 256
 
 
 class MlxCancelled(Exception):
@@ -443,6 +451,152 @@ def release_buffer_cache(mx: Any) -> None:
         logger.debug("mlx_diffusion.clear_cache_skipped: %s", exc)
 
 
+def int8_prefill_mode() -> tuple[str, Optional[str]]:
+    """(``auto`` | ``on`` | ``off``, the raw env value) for ``UNSLOTH_DIFFUSION_MLX_INT8_PREFILL``. Unset is off: int8
+    activations redraw fine detail (Z-Image on an M5 Max, 24 prompts: LPIPS 0.061, upper bound 0.080) for 1.09x."""
+    raw = os.environ.get(INT8_PREFILL_ENV)
+    value = (raw or "").strip().lower()
+    if value == "":
+        return "off", raw
+    if value == "auto":
+        return "auto", raw
+    if value in ("1", "on", "true", "yes"):
+        return "on", raw
+    if value in ("0", "off", "false", "no"):
+        return "off", raw
+    logger.warning(
+        "mlx_diffusion.int8_prefill: %s=%r is not auto|1|0; leaving it off", INT8_PREFILL_ENV, raw
+    )
+    return "off", raw
+
+
+def _int8_prefill_zoo() -> tuple[Any, str]:
+    """(unsloth_zoo's MLX inference module, "") when it can run int8 prefill, else (None, reason)."""
+    try:
+        zoo = importlib.import_module("unsloth_zoo.mlx.inference")
+    except Exception as exc:  # noqa: BLE001 -- no zoo, no mlx, or a broken install: stock path
+        return None, f"zoo_unavailable: {type(exc).__name__}: {exc}"
+    try:
+        takes_flag = "int8_prefill" in inspect.signature(zoo.nax_quantized_linear).parameters
+    except Exception:  # noqa: BLE001
+        takes_flag = False
+    if not takes_flag or not callable(getattr(zoo, "int8_prefill_available", None)):
+        return None, "unsupported_zoo"
+    return zoo, ""
+
+
+def resolve_int8_prefill(runtime: Any, model: Any) -> tuple[dict[str, Any], Optional[Callable]]:
+    """Decide Int8 Prefill for a freshly built model: (status dict, the zoo scope or None).
+
+    Engaging puts the DiT in eval mode (mflux leaves nn.Module's training=True, which the zoo's
+    route skips) and runs one eager call per projection shape inside the scope: mflux traces the
+    DiT under mx.compile, where the zoo cannot run its first-use check. Any failure leaves the
+    model exactly as built (stock path) with the reason recorded; it never fails the load.
+    """
+    mode, _raw = int8_prefill_mode()
+    info: dict[str, Any] = {
+        "mode": mode,
+        "requested": mode != "off",
+        "engaged": False,
+        "projections": 0,
+        "verified_shapes": 0,
+        "reason": "",
+    }
+    if mode == "off":
+        info["reason"] = "disabled"
+        return info, None
+    loud = logger.warning if mode == "on" else logger.info
+
+    def _off(reason: str) -> tuple[dict[str, Any], None]:
+        info["reason"] = reason
+        loud("mlx_diffusion.int8_prefill_off: %s", reason)
+        return info, None
+
+    transformer = getattr(model, "transformer", None)
+    preverify = getattr(runtime, "int8_prefill_preverify", None)
+    if transformer is None or not callable(preverify):
+        return _off("unsupported_runtime")
+    zoo, why = _int8_prefill_zoo()
+    if zoo is None:
+        return _off(why)
+    from utils.utils import is_metal_queue_dead
+
+    try:
+        verdict = zoo.int8_prefill_available(transformer)
+        available, reason, projections = (
+            bool(verdict[0]),
+            str(verdict[1] or ""),
+            int(verdict[2] or 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        if is_metal_queue_dead(exc):
+            raise
+        return _off(f"probe_failed: {type(exc).__name__}: {exc}")
+    info["projections"] = projections
+    if not available:
+        return _off(reason or "unavailable")
+    scope = zoo.nax_quantized_linear
+    was_training = getattr(transformer, "training", None)
+
+    def _restore() -> None:
+        if was_training is not None and hasattr(transformer, "train"):
+            try:
+                transformer.train(bool(was_training))
+            except Exception:  # noqa: BLE001
+                pass
+
+    try:
+        transformer.eval()
+        checked = preverify(model, scope) or {}
+    except Exception as exc:  # noqa: BLE001
+        if is_metal_queue_dead(exc):
+            raise
+        _restore()
+        info["reason"] = f"preverify_failed: {type(exc).__name__}: {exc}"
+        logger.warning("mlx_diffusion.int8_prefill_off: %s", info["reason"])
+        return info, None
+    info["verified_shapes"] = int(checked.get("verified") or 0)
+    info["shapes"] = int(checked.get("shapes") or 0)
+    if checked.get("projections"):
+        info["projections"] = int(checked["projections"])
+    if not info["verified_shapes"]:
+        _restore()
+        return _off("verify_failed")
+    info["engaged"] = True
+    logger.info(
+        "mlx_diffusion.int8_prefill_on: projections=%d shapes=%d/%d",
+        info["projections"],
+        info["verified_shapes"],
+        info["shapes"],
+    )
+    return info, scope
+
+
+def _int8_prefill_resolved(info: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """The status ``resolved`` entry (DiffusionResolvedControl shape) for Int8 Prefill."""
+    info = info or {}
+    mode = info.get("mode", "auto")
+    raw = os.environ.get(INT8_PREFILL_ENV)
+    engaged = bool(info.get("engaged"))
+    reason = info.get("reason") or ""
+    if mode == "on" and not engaged:
+        failed = reason.startswith(("preverify_failed", "verify_failed", "probe_failed"))
+        status = "fell_back" if failed else "unsupported"
+    else:
+        status = "applied"
+    return {
+        "value": engaged,
+        "requested": raw if raw not in (None, "") else None,
+        "source": "explicit" if raw not in (None, "") else "auto",
+        "status": status,
+        "reason": (
+            f"int8 activations on {info.get('projections', 0)} DiT projections"
+            if engaged
+            else reason
+        ),
+    }
+
+
 class MfluxRuntime:
     """The only code that imports mlx / mflux. Tests replace it with a fake (``backend.runtime_factory``)."""
 
@@ -486,6 +640,40 @@ class MfluxRuntime:
                 mx.eval(arrays[start : start + 32])
         mx.eval(model.parameters())
         return model
+
+    def int8_prefill_preverify(self, model: Any, scope: Callable) -> dict[str, int]:
+        """One eager call per (N, K, group, bits, dtype) of the DiT's int8-routed projections inside
+        ``scope``, so the zoo's first-use check runs outside mflux's mx.compile. Returns the shape
+        and projection counts and how many shapes the zoo verified."""
+        import mlx.core as mx
+        import mlx.nn as nn
+
+        transformer = model.transformer
+        seen: dict[tuple, tuple[Any, int, int, Any]] = {}
+        projections = 0
+        with scope(transformer, int8_prefill = True):
+            for _name, module in transformer.named_modules():
+                if not isinstance(module, nn.QuantizedLinear):
+                    continue
+                rows = int(getattr(module, "_unsloth_nax_int8_prefill_rows", 0) or 0)
+                if not rows:
+                    continue
+                projections += 1
+                weight, dtype = module.weight, module.scales.dtype
+                k_dim = weight.shape[-1] * 32 // module.bits
+                key = ("dense", weight.shape[0], k_dim, module.group_size, module.bits, dtype)
+                seen.setdefault(key, (module, max(rows, _INT8_PREVERIFY_ROWS), k_dim, dtype))
+            rng = mx.random.key(
+                0
+            )  # leaves the global generator, and with it the render seeds, alone
+            for module, rows, k_dim, dtype in seen.values():
+                mx.eval(module(mx.random.normal((1, rows, k_dim), key = rng).astype(dtype)))
+        verified = getattr(sys.modules.get(scope.__module__), "_NAX_INT8_QMM_VERIFIED", None)
+        if isinstance(verified, dict):
+            ok = sum(1 for key in seen if verified.get(key) is True)
+        else:  # a zoo that keeps its checks elsewhere: trust the scope
+            ok = len(seen)
+        return {"shapes": len(seen), "verified": ok, "projections": projections}
 
     def apply_loras(self, model: Any, loras: list[tuple[str, float]]) -> None:
         """Swap in ``loras`` ((path, scale) pairs) unbaked, since baking requantizes; [] restores the base layers."""
@@ -696,6 +884,8 @@ class _MlxState:
     gguf_path: Optional[str] = None
     hf_token: Optional[str] = None
     loras: tuple = ()
+    int8_prefill: dict = field(default_factory = dict)
+    int8_scope: Optional[Callable] = None
 
 
 @dataclass
@@ -1264,6 +1454,9 @@ class MlxDiffusionBackend:
             )
             runtime.cache_text_encodings(model)
             timings["build_s"] = round(time.perf_counter() - t2, 3)
+            t3 = time.perf_counter()
+            int8_info, int8_scope = resolve_int8_prefill(runtime, model)
+            timings["int8_prefill_s"] = round(time.perf_counter() - t3, 3)
             state = _MlxState(
                 repo_id = repo_id,
                 display_repo_id = display_repo_id,
@@ -1279,6 +1472,8 @@ class MlxDiffusionBackend:
                 timings = timings,
                 gguf_path = str(gguf_path),
                 hf_token = hf_token,
+                int8_prefill = int8_info,
+                int8_scope = int8_scope,
             )
             with self._lock:
                 if self._load_token != _load_token:
@@ -1294,13 +1489,14 @@ class MlxDiffusionBackend:
                 return
             logger.info(
                 "mlx_diffusion.loaded: repo=%s gguf=%s config=%s precision=%s te_bits=%s dense_bits=%s "
-                "timings=%s",
+                "int8_prefill=%s timings=%s",
                 repo_id,
                 gguf_filename,
                 model_config,
                 precision,
                 te_bits,
                 bits,
+                int8_info,
                 timings,
             )
         except Exception as exc:  # noqa: BLE001 -- surfaced via load_progress
@@ -1322,7 +1518,7 @@ class MlxDiffusionBackend:
                     self._loading.error = redact_native_paths(str(exc))
         finally:
             # A cached exception can retain this frame, keeping any model in its locals alive.
-            model = state = displaced = None
+            model = state = displaced = int8_scope = None
             if building and not published and self._runtime is not None:
                 self._runtime.free()
 
@@ -1509,19 +1705,20 @@ class MlxDiffusionBackend:
 
                     if cancel.is_set():
                         raise MlxCancelled("cancelled")
-                    image = runtime.generate(
-                        state.model,
-                        prompt = prompt,
-                        negative_prompt = negative_prompt,
-                        seed = image_seed,
-                        steps = steps,
-                        width = w,
-                        height = h,
-                        guidance = cfg,
-                        on_step = _on_step,
-                    )
+                    with _int8_prefill_scope(state) as int8_on:
+                        image = runtime.generate(
+                            state.model,
+                            prompt = prompt,
+                            negative_prompt = negative_prompt,
+                            seed = image_seed,
+                            steps = steps,
+                            width = w,
+                            height = h,
+                            guidance = cfg,
+                            on_step = _on_step,
+                        )
                     total = time.perf_counter() - started
-                    timing = {"total_s": round(total, 3)}
+                    timing = {"total_s": round(total, 3), "int8_prefill": int8_on}
                     vae_tiled = getattr(runtime, "vae_tiled", None)
                     if callable(vae_tiled):
                         timing["vae_tiled"] = bool(vae_tiled())
@@ -1774,12 +1971,12 @@ class MlxDiffusionBackend:
             "vae_tiling": bool(getattr(self._runtime, "last_vae_tiled", False)),
             "memory_mode": None,
             "speed_mode": None,
-            "speed_optims": [],
+            "speed_optims": ["mlx_int8_prefill"] if state.int8_prefill.get("engaged") else [],
             "text_encoder_quant": _te_quant_name(state.te_bits),
             "transformer_quant": _dense_quant_name(state.dense_bits),
             "attention_backend": None,
             "transformer_cache": None,
-            "resolved": None,
+            "resolved": {"mlx_int8_prefill": _int8_prefill_resolved(state.int8_prefill)},
             "engine": ENGINE_NAME,
             "native_mode": None,
             "mlx": {
@@ -1787,6 +1984,7 @@ class MlxDiffusionBackend:
                 "precision": state.precision,
                 "text_encoder_bits": state.te_bits,
                 "dense_bits": state.dense_bits,
+                "int8_prefill": dict(state.int8_prefill),
                 "timings": dict(state.timings),
             },
             "supports_lora": lora_reason is None,
@@ -1801,6 +1999,37 @@ class MlxDiffusionBackend:
             "workflows": ["txt2img"],
             "conditioning": conditioning,
         }
+
+
+@contextmanager
+def _int8_prefill_scope(state: _MlxState):
+    """Hold the zoo's Int8 Prefill scope on the DiT for one render (yields whether it is held).
+
+    The scope swaps the DiT's quantized linears, LoRA-wrapped bases included (the wrappers call
+    them), for the int8 route while mflux traces its compiled predict, and restores them after.
+    A scope that fails to open renders stock; the render's own errors propagate unchanged.
+    """
+    scope = state.int8_scope
+    transformer = getattr(state.model, "transformer", None)
+    if scope is None or transformer is None:
+        yield False
+        return
+    stack = ExitStack()
+    try:
+        # LoRA wrappers swapped in after the load start in training mode, which the route skips.
+        transformer.eval()
+        stack.enter_context(scope(transformer, int8_prefill = True))
+    except Exception as exc:  # noqa: BLE001
+        stack.close()
+        logger.warning(
+            "mlx_diffusion.int8_prefill_scope_failed: rendering stock: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        yield False
+        return
+    with stack:
+        yield True
 
 
 def _dense_quant_name(bits: Optional[int]) -> Optional[str]:

@@ -319,6 +319,23 @@ test("a boolean sent as the string 'false' is not read as true", async () => {
   assert.equal(estimate.kvOnGpu, true);
 });
 
+
+test("per-GPU placement preserves picker order, output placement, and unknown cache", async () => {
+  const first = { gpu_id: 3, layer_count: 4, output_layer: false, weights_bytes: 9000, cache_bytes: 0 };
+  const last = { gpu_id: 1, layer_count: 2, output_layer: true, weights_bytes: 5000, cache_bytes: null };
+  answer(() => json({ ...FULL, per_gpu: [first, last], per_gpu_basis: "tensor_split" }));
+  const estimate = await fetchMemoryEstimate(REQUEST);
+  assert.equal(estimate.perGpuBasis, "tensor_split");
+  assert.deepEqual(estimate.perGpu, [
+    { gpuId: 3, layerCount: 4, outputLayer: false, weightsBytes: 9000, cacheBytes: 0 },
+    { gpuId: 1, layerCount: 2, outputLayer: true, weightsBytes: 5000, cacheBytes: null },
+  ]);
+  for (const per_gpu of [undefined, null, [], [first, first], [first, { ...last, weights_bytes: -1 }]]) {
+    answer(() => json({ ...FULL, per_gpu }));
+    assert.deepEqual((await fetchMemoryEstimate(REQUEST)).perGpu, []);
+  }
+});
+
 test("the settings that move the answer are all on the wire", async () => {
   answer(() => json(FULL));
   await fetchMemoryEstimate({
@@ -326,7 +343,8 @@ test("the settings that move the answer are all on the wire", async () => {
     nCtx: 8192,
     cacheTypeKv: "q8_0",
     nParallel: 4,
-    selectedGpuIds: [0, 1],
+    selectedGpuIds: [1, 0],
+    tensorSplit: [3, 2],
     llamaExtraArgs: ["--foo"],
   });
   const body = requests[0]?.body as Record<string, unknown>;
@@ -336,7 +354,8 @@ test("the settings that move the answer are all on the wire", async () => {
   assert.equal(body.n_ctx, 8192);
   assert.equal(body.cache_type_kv, "q8_0");
   assert.equal(body.n_parallel, 4);
-  assert.deepEqual(body.selected_gpu_ids, [0, 1]);
+  assert.deepEqual(body.selected_gpu_ids, [1, 0]);
+  assert.deepEqual(body.tensor_split, [3, 2]);
   assert.deepEqual(body.llama_extra_args, ["--foo"]);
   assert.equal(body.hf_token, null);
 });

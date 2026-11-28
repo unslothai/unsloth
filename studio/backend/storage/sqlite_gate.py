@@ -31,8 +31,7 @@ class GatedConnection(sqlite3.Connection):
 
 
 def connect(database: str | os.PathLike[str], **kwargs: Any) -> sqlite3.Connection:
-    """sqlite3.connect with opens and closes serialized process-wide. A ``factory`` must subclass
-    GatedConnection so its close stays gated."""
+    """Opens and closes are serialized process-wide; a factory must subclass GatedConnection."""
     kwargs.setdefault("factory", GatedConnection)
     with _CONNECTION_GATE:
         return sqlite3.connect(str(database), **kwargs)

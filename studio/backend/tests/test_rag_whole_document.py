@@ -1319,3 +1319,144 @@ def test_real_ingestion_feeds_whole_document(rag_conn, stub_embeddings, tmp_path
     assert "Revenue rose" in injected
     assert "xyzzy-sentinel" in injected
     assert injected.count("<chunk id=") == doc["num_chunks"]
+
+
+@pytest.mark.parametrize(
+    "query, include_second",
+    [
+        ("Summarize both attached documents.", True),
+        ("Compare the attached documents.", True),
+        ("What are these documents about?", True),
+        ("Summarize these documents.", True),
+        ("Can you compare these PDFs?", True),
+        ("Summarize the attachments and list the risks.", True),
+        ("What does alpha say about both reports?", False),
+        ("Summarize the documents in the knowledge base.", False),
+        ("Summarize these documents that mention alpha.", False),
+    ],
+)
+def test_attachment_overviews_cover_both_files_without_discarding_project_hits(
+    rag_conn, monkeypatch, query, include_second
+):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a1", "documentId": "a", "text": "Strong alpha match"},
+        {"chunkId": "a2", "documentId": "a", "text": "Next alpha match"},
+        {"chunkId": "p", "documentId": "p", "text": "Related project match"},
+    ]
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
+
+    text = _injected_text(
+        inf_tools.build_rag_autoinject(
+            _convo(query), {"thread_id": "t1", "project_id": "p1", "default_top_k": 3}
+        )
+    )
+    assert "Strong alpha match" in text and "Related project match" in text
+    assert ("Bravo opening" in text) is include_second
+    assert ("Next alpha match" in text) is not include_second
+
+
+def test_an_opening_that_does_not_fit_preserves_existing_citation_ids(rag_conn, monkeypatch):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a1", "documentId": "a", "text": "Alpha item"},
+        {"chunkId": "a2", "documentId": "a", "text": "Another alpha item"},
+    ]
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
+    monkeypatch.setattr(
+        inf_tools, "_text_token_cost", lambda text, _: 2048 if "Bravo opening" in text else 100
+    )
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Summarize both attached documents."),
+        {"thread_id": "t1", "autoinject": False, "context_length": 2048},
+    )
+    event = next(event for event in result["events"] if event["type"] == "tool_end")
+    text, sources = event["result"].split(inf_tools.RAG_SOURCES_SENTINEL)
+    assert re.findall(r'<chunk id="(\d+)"', text) == ["1", "2"]
+    assert [source["citationId"] for source in json.loads(sources)] == [1, 2]
+    assert "Bravo opening" not in text
+
+
+@pytest.mark.parametrize("ranked_in_opening", [False, True])
+def test_budgeted_attachment_overview_keeps_the_ranked_lead(
+    rag_conn, monkeypatch, ranked_in_opening
+):
+    scope = store.thread_scope("t1")
+    _add_doc(rag_conn, scope, "a", "alpha.txt", "h1", ["Alpha opening"], tokens = [8000])
+    _add_doc(rag_conn, scope, "b", "bravo.txt", "h2", ["Bravo opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "a:1", "documentId": "a", "text": "Controlling terms"},
+        {"chunkId": "a:2", "documentId": "a", "text": "Secondary terms"},
+    ]
+    if ranked_in_opening:
+        hits.pop()
+        original_opening = tool.document_opening
+
+        def overlapping_opening(*, scope_thread_id, document_id):
+            opening = original_opening(scope_thread_id = scope_thread_id, document_id = document_id)
+            if document_id == "a":
+                opening.append(
+                    {"chunkId": "a:1", "documentId": "a", "text": "Terms after the trimmed overlap"}
+                )
+            return opening
+
+        monkeypatch.setattr(tool, "document_opening", overlapping_opening)
+    monkeypatch.setattr(
+        tool,
+        "search_for_autoinject",
+        lambda **scope: None
+        if scope["min_dense_score"] is not None
+        else (tool.render_sources(hits), hits),
+    )
+    monkeypatch.setattr(
+        inf_tools, "_text_token_cost", lambda text, _: 200 * text.count("<chunk id=")
+    )
+
+    result = inf_tools.build_rag_autoinject(
+        _convo("Compare the attached documents on their terms"),
+        {"thread_id": "t1", "autoinject": False, "context_length": 2048, "default_top_k": 2},
+    )
+    text = _injected_text(result)
+    assert "Controlling terms" in text
+    assert "Bravo opening" in text
+    assert "Alpha opening" not in text
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Compare the attached documents alpha.txt and bravo.txt. Ignore charlie.txt.",
+        "Compare the attached documents on their terms. Ignore charlie.txt.",
+    ],
+)
+def test_named_subset_does_not_force_every_attachment_into_the_overview(
+    rag_conn, monkeypatch, query
+):
+    scope = store.thread_scope("t1")
+    for doc in ("alpha", "bravo", "charlie"):
+        _add_doc(rag_conn, scope, doc, doc + ".txt", doc, [doc + " opening"], tokens = [8000])
+    hits = [
+        {"chunkId": "alpha:0", "documentId": "alpha", "text": "Alpha terms"},
+        {"chunkId": "bravo:0", "documentId": "bravo", "text": "Bravo terms"},
+        {"chunkId": "alpha:1", "documentId": "alpha", "text": "Liquidated damages clause"},
+    ]
+    monkeypatch.setattr(
+        tool, "search_for_autoinject", lambda **_: (tool.render_sources(hits), hits)
+    )
+
+    result = inf_tools.build_rag_autoinject(
+        _convo(query),
+        {"thread_id": "t1", "default_top_k": 3},
+    )
+    text = _injected_text(result)
+    assert "Liquidated damages clause" in text
+    assert "charlie opening" not in text

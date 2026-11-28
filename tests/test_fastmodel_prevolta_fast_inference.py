@@ -17,6 +17,34 @@ def loader_class(request):
     return request.param
 
 
+def _is_fast_inference_fallback(node):
+    """`if fast_inference and <condition>:` whose body only prints, sets fast_inference = False and drops the
+    vLLM kwargs."""
+    if not (
+        isinstance(node, ast.If)
+        and not node.orelse
+        and isinstance(node.test, ast.BoolOp)
+        and isinstance(node.test.op, ast.And)
+        and isinstance(node.test.values[0], ast.Name)
+        and node.test.values[0].id == "fast_inference"
+    ):
+        return False
+    for stmt in node.body:
+        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
+            name = getattr(stmt.value.func, "id", None)
+            if name in ("print", "_drop_vllm_engine_kwargs"):
+                continue
+        if (
+            isinstance(stmt, ast.Assign)
+            and [getattr(t, "id", None) for t in stmt.targets] == ["fast_inference"]
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is False
+        ):
+            continue
+        return False
+    return True
+
+
 def _fast_inference_blocks(cls_name):
     tree = ast.parse(LOADER_PATH.read_text(encoding = "utf-8"))
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == cls_name)
@@ -32,11 +60,17 @@ def _fast_inference_blocks(cls_name):
                 and node.test.id == "fast_inference"
                 and "GB10" in ast.unparse(node)
             ):
-                gate = body[i - 1]
-                assert isinstance(gate, ast.If) and "get_device_capability" in ast.unparse(
-                    gate.test
+                # The pre-Volta gate comes first among the `if fast_inference and ...:` fallbacks that run before
+                # vLLM is required (#20096 added the bitsandbytes stand-in one in between); those others only ever
+                # switch fast_inference off, so they are skipped here and must stay fallbacks of that shape.
+                j = i - 1
+                while j >= 0 and _is_fast_inference_fallback(body[j]):
+                    if "get_device_capability" in ast.unparse(body[j].test):
+                        return [body[j], node]
+                    j -= 1
+                raise AssertionError(
+                    f"{cls_name}.from_pretrained: no pre-Volta gate among the fallbacks before the GB10 block"
                 )
-                return [gate, node]
     raise AssertionError(f"{cls_name}.from_pretrained has no pre-Volta gate before the GB10 block")
 
 

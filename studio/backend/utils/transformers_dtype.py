@@ -1,17 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Picks the fp dtype kwarg the installed transformers accepts: torch_dtype before 4.56.0 (the
-4.51.3 floor needs it), dtype after. Avoids unsloth_zoo's HAS_TORCH_DTYPE, which breaks under
-python -OO and whose import runs a torch-importing __init__."""
+"""Picks the fp dtype kwarg transformers accepts: torch_dtype before 4.56.0 (4.51.3 floor needs it),
+dtype after; avoids unsloth_zoo HAS_TORCH_DTYPE (breaks under python -OO; imports torch)."""
 
 from functools import lru_cache
 
 
 @lru_cache(maxsize = 1)
 def _has_torch_dtype_kwarg() -> bool:
-    """True if the installed transformers still wants the legacy torch_dtype name; False for dtype,
-    and also when transformers is missing or broken (prefer the modern name)."""
+    """True if transformers wants legacy torch_dtype; False for dtype or if missing/broken."""
     try:
         import transformers
         from packaging.version import Version
@@ -23,6 +21,4 @@ def _has_torch_dtype_kwarg() -> bool:
 
 
 def dtype_kwargs(value) -> dict:
-    """Returns {"torch_dtype": value} on old transformers and {"dtype": value} on new; meant to be
-    splatted into a load call."""
     return {"torch_dtype" if _has_torch_dtype_kwarg() else "dtype": value}

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Subset of `public/Sloth emojis` that is square and low-whitespace, so each fills the round frame.
-// Resolve with `publicAssetUrl(...)` for spaces and subpath deploys.
+// Square, low-whitespace emojis fill the round frame; publicAssetUrl for spaces and subpaths.
 export const SLOTH_AVATARS: readonly string[] = [
   "Sloth emojis/large sloth yay.png",
   "Sloth emojis/large sloth heart.png",

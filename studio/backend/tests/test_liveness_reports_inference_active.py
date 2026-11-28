@@ -441,7 +441,7 @@ def test_the_persist_marker_check_catches_each_imbalance():
     source = inspect.getsource(importlib.import_module("routes.inference"))
     detailer_drop = "_diffusion_persist_active -= 2 if detailer is not None else 1"
     handoff_drop = "        except BaseException:\n            _diffusion_persist_active -= 1\n            raise\n"
-    openai_raise = '    global _diffusion_persist_active\n    _diffusion_persist_active += 1\n    try:\n        with account_access.media_generation("diffusion"):\n            data ='
+    openai_raise = '\n    _diffusion_persist_active += 1\n    try:\n        with account_access.media_generation("diffusion"):\n            data ='
     assert source.count(detailer_drop) == 1
     assert source.count(handoff_drop) == 1
     assert source.count(openai_raise) == 1

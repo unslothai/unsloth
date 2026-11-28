@@ -3787,6 +3787,7 @@ export function HubModelPicker({
   resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
+  browseHubHint,
   onConfigureConnection,
   onModelsChange,
   onConfigure: onConfigureProp,
@@ -3822,6 +3823,7 @@ export function HubModelPicker({
   resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   onBrowseHub?: () => void;
+  browseHubHint?: string;
   /** Opens the connection's settings for a Connected row's gear. */
   onConfigureConnection?: (providerId: string) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
@@ -7897,7 +7899,7 @@ export function HubModelPicker({
                   Search Hub
                 </button>
               </TooltipTrigger>
-              <TooltipContent>Search all models</TooltipContent>
+              <TooltipContent>{browseHubHint ?? "Search all models"}</TooltipContent>
             </Tooltip>
           ) : null}
         </div>

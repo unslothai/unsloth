@@ -1432,8 +1432,8 @@ async function importListsFromText(text: string, isCsv: boolean): Promise<{ coun
     for (const row of rows) {
       const cells = numbered ? row.slice(1) : row;
       const listName = cells[0]?.trim();
-      const promptText = cells[2]?.trim();
-      if (listName && promptText) {
+      const promptText = cells[2];
+      if (listName && promptText?.trim()) {
         const order = parseInt(cells[1] ?? "0", 10) || 0;
         const key = numbered ? row[0] : listName;
         if (!listMap.has(key)) listMap.set(key, { name: listName, items: [] });

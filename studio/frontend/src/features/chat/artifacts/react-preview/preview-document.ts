@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Loaded only when a React preview opens. It imports nothing the app shares, so the startup
-// chunks stay as they were.
+// Loaded only for React previews; imports nothing the app shares, so startup chunks stay put.
 
 import { type CompileDiagnostic, buildCompileErrorHtml, buildReactPreviewHtml, usesTailwind } from "./build-html";
 import { runtimeLoader } from "./runtime-manifest";

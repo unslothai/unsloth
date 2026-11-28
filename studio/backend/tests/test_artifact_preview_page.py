@@ -72,7 +72,6 @@ def test_one_account_cannot_evict_another_accounts_pages(monkeypatch):
     theirs = _stage("<p>theirs</p>", subject = "a")
     mine = [_stage(f"<p>{i}</p>", subject = "b") for i in range(inf_mod._ARTIFACT_PAGE_MAX_PAGES + 5)]
     assert _serve(theirs).status_code == 200
-    # The account's own oldest pages go first.
     assert _serve(mine[0]).status_code == 404
     assert _serve(mine[-1]).status_code == 200
     assert (

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Qwen-Image VAE single-frame untiled path, non-off tiers only; UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0"""
+"""Qwen-Image VAE single-frame untiled decode (encoder 3D); UNSLOTH_DIFFUSION_VAE_SINGLE_FRAME=0"""
 
 from __future__ import annotations
 
@@ -72,13 +72,23 @@ def _single_frame(vae: Any, z: Any) -> bool:
         return False
 
 
-def _tiles(vae: Any, z: Any, sample_space: bool) -> bool:
+def _tiles(vae: Any, z: Any) -> bool:
     if not getattr(vae, "use_tiling", False):
         return False
-    ratio = 1 if sample_space else getattr(vae, "spatial_compression_ratio", 8)
+    ratio = getattr(vae, "spatial_compression_ratio", 8)
     h = getattr(vae, "tile_sample_min_height", 1 << 30) // ratio
     w = getattr(vae, "tile_sample_min_width", 1 << 30) // ratio
     return z.shape[-1] > w or z.shape[-2] > h
+
+
+def _coalesced_call() -> bool:
+    """Inside a call carrying several requests (image_request_batching through diffusion_cuda_graph.batch_rows)."""
+    try:
+        from .diffusion_cuda_graph import current_batch_rows
+    except Exception:  # noqa: BLE001
+        return False
+    rows = current_batch_rows()
+    return rows is not None and rows[0] > 1
 
 
 def _fast_decode(
@@ -87,9 +97,19 @@ def _fast_decode(
     return_dict: bool = True,
 ) -> Any:
     stock = self._unsloth_stock_decode
-    if not _single_frame(self, z) or _tiles(self, z, False):
+    if not _single_frame(self, z) or _tiles(self, z):
         return stock(z, return_dict = return_dict)
     import torch
+
+    if getattr(z, "shape", (1,))[0] > 1 and _coalesced_call():
+        # Several requests' images: decode one at a time, like the strip decoder, so the peak is one feature map and
+        # each image decodes exactly as its own request would.
+        out = torch.cat([_fast_decode(self, part, return_dict = False)[0] for part in z.split(1)])
+        if not return_dict:
+            return (out,)
+        from diffusers.models.autoencoders.vae import DecoderOutput
+
+        return DecoderOutput(sample = out)
 
     gate = self._unsloth_sf_gate
     gate.on = True
@@ -103,18 +123,6 @@ def _fast_decode(
     from diffusers.models.autoencoders.vae import DecoderOutput
 
     return DecoderOutput(sample = out)
-
-
-def _fast_encode(self: Any, x: Any) -> Any:
-    stock = self._unsloth_stock_encode
-    if not _single_frame(self, x) or _tiles(self, x, True):
-        return stock(x)
-    gate = self._unsloth_sf_gate
-    gate.on = True
-    try:
-        return self.quant_conv(self.encoder(x))
-    finally:
-        gate.on = False
 
 
 def install(vae: Any, logger: Any = None) -> bool:
@@ -137,13 +145,7 @@ def install(vae: Any, logger: Any = None) -> bool:
         vae._unsloth_sf_gate = gate
         vae._unsloth_stock_decode = vae._decode
         vae._decode = types.MethodType(_fast_decode, vae)
-        if (
-            callable(getattr(vae, "_encode", None))
-            and hasattr(vae, "encoder")
-            and hasattr(vae, "quant_conv")
-        ):
-            vae._unsloth_stock_encode = vae._encode
-            vae._encode = types.MethodType(_fast_encode, vae)
+        # Encoder stays 3D: the 2D form's rounding moved Qwen-Image-Edit renders (up to 0.037 LPIPS).
         vae._unsloth_single_frame = True
     except Exception as exc:  # noqa: BLE001 - an optimisation: the stock VAE still decodes
         if logger is not None:

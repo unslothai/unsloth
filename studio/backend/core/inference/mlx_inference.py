@@ -41,6 +41,7 @@ from core.inference.chat_template_helpers import (
     count_structured_videos as _count_vlm_videos,
     detect_reasoning_channel_markers,
     make_reasoning_normalizer,
+    with_thought_spans,
     messages_have_tool_history as _vlm_messages_have_tool_history,
     messages_with_attached_image,
     neutralize_for_render,
@@ -1228,6 +1229,12 @@ class VLMPromptCacheSession:
         self._keeps_rows = None
         self._pending = []
 
+    @property
+    def resumed_tokens(self):
+        """Positions the first forward resumed from: unlike ``reused_tokens`` (the offer), 0 when
+        mlx-vlm declined it, and without media rows produced here."""
+        return max((self._forward.record.resume_offset or 0) - self.produced_tokens, 0)
+
     def __enter__(self):
         self._forward.__enter__()
         self._patched_hosts = [
@@ -2160,6 +2167,21 @@ def _iter_vlm_responses(responses):
         if close is not None:
             with _vlm_generation_context():
                 close()
+
+
+def _vlm_prefill_scope(live, session):
+    """Where mlx-vlm's prefill chunks are reported to ``live``, when unsloth-zoo can read them."""
+    if live is None:
+        return nullcontext()
+    try:
+        from unsloth_zoo.mlx.generate import vlm_prefill_progress
+    except ImportError:
+        return nullcontext()
+    return vlm_prefill_progress(
+        lambda processed, total: live.prefill(
+            processed, total, cached = None if session is None else session.resumed_tokens
+        )
+    )
 
 
 @contextmanager
@@ -3124,6 +3146,74 @@ def _build_generation_stats(
         # Latched at generation exit so a later cancel cannot rewrite the finish reason
         "finish_reason": finish_reason,
     }
+
+
+_LIVE_DECODE_SAMPLE_INTERVAL_S = 0.25
+
+
+class _LiveProgress:
+    """One reply's live progress as llama-server-shaped samples: a prefill sample per chunk,
+    counted past the ``cached`` prompt-cache prefix, and decode figures at most every
+    ``_LIVE_DECODE_SAMPLE_INTERVAL_S``, timed from the first token as llama-server times them."""
+
+    def __init__(
+        self,
+        sink,
+        cached = 0,
+    ):
+        self._sink = sink
+        self._cached = int(cached or 0)
+        self._started = None
+        self._first_token = None
+        self._decode_at = None
+
+    def prefill(
+        self,
+        processed,
+        total,
+        started = None,
+        cached = None,
+    ):
+        """``started``: when the first chunk began, else the rate is timed from the first report.
+        ``cached``: the reused prefix, where it is known only once the prefill has started."""
+        now = time.perf_counter()
+        if cached is not None:
+            self._cached = int(cached)
+        if self._started is None:
+            self._started = (now, int(processed)) if started is None else (started, 0)
+        sample = {
+            "prompt_progress": {
+                "total": self._cached + int(total),
+                "processed": self._cached + int(processed),
+                "cache": self._cached,
+            }
+        }
+        started_at, from_processed = self._started
+        elapsed = now - started_at
+        sample["prompt_progress"]["time_ms"] = elapsed * 1000.0
+        if processed > from_processed and elapsed > 0:
+            sample["prompt_per_second"] = (processed - from_processed) / elapsed
+        self._send(sample)
+
+    def decode(self, tokens):
+        now = time.perf_counter()
+        if self._first_token is None:
+            self._first_token = (now, tokens)
+            return
+        first_at, first_tokens = self._first_token
+        if self._decode_at is not None and now - self._decode_at < _LIVE_DECODE_SAMPLE_INTERVAL_S:
+            return
+        if now <= first_at or tokens <= first_tokens:
+            return
+        self._decode_at = now
+        rate = (tokens - first_tokens) / (now - first_at)
+        self._send({"predicted_n": int(tokens), "predicted_per_second": rate})
+
+    def _send(self, sample):
+        try:
+            self._sink(sample)
+        except Exception:
+            logger.debug("Ignoring a live progress sink failure", exc_info = True)
 
 
 PROMPT_CACHE_ENTRIES = 6
@@ -4805,10 +4895,18 @@ class _PrefillStopped(Exception):
     pass
 
 
-def _stream_until_cancelled(stream_generate, cancel_event, *args, **kwargs):
-    def check(*_):
+def _stream_until_cancelled(
+    stream_generate,
+    cancel_event,
+    *args,
+    prompt_progress_callback = None,
+    **kwargs,
+):
+    def check(*progress):
         if cancel_event is not None and cancel_event.is_set():
             raise _PrefillStopped
+        if prompt_progress_callback is not None:
+            prompt_progress_callback(*progress)
 
     try:
         yield from stream_generate(*args, prompt_progress_callback = check, **kwargs)
@@ -5037,6 +5135,56 @@ def _vlm_generate_kwargs(inputs):
     }
 
 
+@contextmanager
+def _spliced_columns(model):
+    """Yields ``[n]``: columns the widest prompt embedding filled past its ids (FastVLM)."""
+    spliced, widest = [0], [-1]
+    embed = getattr(model, "get_input_embeddings", None)
+    if embed is None:
+        yield spliced
+        return
+    own = vars(model).get("get_input_embeddings")
+
+    def counted(*args, **kwargs):
+        out = embed(*args, **kwargs)
+        ids = kwargs.get("input_ids", args[0] if args else None)
+        shape = getattr(ids, "shape", None)
+        columns = getattr(getattr(out, "inputs_embeds", None), "shape", None)
+        if shape and columns and len(columns) > 1 and shape[-1] > widest[0]:
+            widest[0], spliced[0] = shape[-1], int(columns[1]) - int(shape[-1])
+        return out
+
+    model.get_input_embeddings = counted
+    try:
+        yield spliced
+    finally:
+        if own is None:
+            del model.get_input_embeddings
+        else:
+            model.get_input_embeddings = own
+
+
+def _embedded_columns(model, inputs):
+    """Embedding width of prepared inputs, read off the unevaluated graph; None if unbuildable."""
+    rest = {
+        k: v for k, v in inputs.items() if k not in ("input_ids", "pixel_values", "attention_mask")
+    }
+    try:
+        out = model.get_input_embeddings(
+            inputs["input_ids"],
+            inputs.get("pixel_values"),
+            mask = inputs.get("attention_mask"),
+            **rest,
+        )
+        shape = getattr(getattr(out, "inputs_embeds", None), "shape", None)
+    except Exception as exc:
+        if is_metal_queue_dead(exc):
+            raise
+        logger.debug("MLX prompt embedding width unavailable: %s", exc)
+        return None
+    return int(shape[1]) if shape and len(shape) > 1 else None
+
+
 class _VLMMediaBlock:
     """A prompt's rows through its last vision token, prefilled by Studio: models whose vision
     tokens attend to each other prefill in one forward that lands off the grid, and this is that
@@ -5175,7 +5323,7 @@ class _RowStream:
         if not delta:
             return []
         self._output += delta
-        return [self._output]
+        return [with_thought_spans(self._output, self._normalizer, self._prefix)]
 
 
 def _messages_with_system_prompt(messages, system_prompt):
@@ -5325,9 +5473,21 @@ class _TextBatchRow:
         "processing_at",
         "ready_at",
         "failure",
+        "live",
+        "prefills_in_batch",
     )
 
-    def __init__(self, *, handle, plan, cache_key, all_tokens, prompt_len, cached):
+    def __init__(
+        self,
+        *,
+        handle,
+        plan,
+        cache_key,
+        all_tokens,
+        prompt_len,
+        cached,
+        prefills_in_batch = True,
+    ):
         self.handle = handle
         self.plan = plan
         self.uid = None
@@ -5340,6 +5500,8 @@ class _TextBatchRow:
         self.processing_at = None
         self.ready_at = None
         self.failure = None
+        self.live = None
+        self.prefills_in_batch = prefills_in_batch
 
 
 def _failing_alone(row, processors):
@@ -5423,6 +5585,7 @@ class _TextBatchSession:
         self._rows = {}
         self._by_uid = {}
         self._settled = {}
+        self._watching = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -5461,9 +5624,18 @@ class _TextBatchSession:
         """The usage a retired reply settled with, once."""
         return self._settled.pop(handle, None)
 
+    def watch_progress(self, handle, sink):
+        """Send a reply's live progress to ``sink``, as ``generation_progress_sink``; from its admission if not yet admitted."""
+        row = self._rows.get(handle)
+        if row is None:
+            self._watching[handle] = sink
+        else:
+            row.live = _LiveProgress(sink, row.cached)
+
     def admit(self, request, handle):
         """Take one reply in, answering with the text preceding its first token."""
         backend = self.backend
+        sink = self._watching.pop(handle, None)
         image = request.get("image") if backend._reads_vision_input() else None
         messages = request.get("messages") or []
         row_kwargs = _row_kwargs(request)
@@ -5488,6 +5660,11 @@ class _TextBatchSession:
 
             # mlx-lm batches token ids only: the image prefills here, and stays out of the token-keyed cache.
             cache = backend._make_row_cache()
+            live = None if sink is None else _LiveProgress(sink)
+            reports = (
+                live is not None
+                and "progress" in inspect.signature(prefill_image_prompt).parameters
+            )
             all_tokens = prefill_image_prompt(
                 backend._model,
                 backend._tokenizer,
@@ -5495,6 +5672,15 @@ class _TextBatchSession:
                 [image],
                 cache,
                 **backend._prefill_step_kwargs(prefill_image_prompt),
+                **(
+                    {
+                        "progress": lambda done, total, cached: live.prefill(
+                            done, total, began, cached
+                        )
+                    }
+                    if reports
+                    else {}
+                ),
             )
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
@@ -5508,9 +5694,13 @@ class _TextBatchSession:
             all_tokens = all_tokens,
             prompt_len = len(remainder) if image is None else len(all_tokens),
             cached = len(prefix) if image is None else 0,
+            # An image prompt is prefilled above; the batch sees only its last token.
+            prefills_in_batch = image is None,
         )
         if image is not None:
-            row.processing_at = began
+            row.processing_at, row.live = began, live
+        elif sink is not None:
+            row.live = _LiveProgress(sink, row.cached)
         uids = self.generator.insert(
             [remainder],
             max_tokens = [plan.max_tokens],
@@ -5545,8 +5735,13 @@ class _TextBatchSession:
         now = time.perf_counter() if (events or prompt_events) else None
         for event in prompt_events:
             row = self._by_uid.get(event.uid)
-            if row is not None and row.processing_at is None:
+            if row is None:
+                continue
+            if row.processing_at is None:
                 row.processing_at = began
+            if row.live is not None and row.prefills_in_batch:
+                # Each chunk is reported by the next() that runs it, so the pass began with that step.
+                row.live.prefill(*event.progress, started = row.processing_at)
         # A processor runs a step ahead, so the single path raises before yielding this token;
         # reported first, so a sibling ending in this step cannot answer the request as done.
         for row in [row for row in self._rows.values() if row.failure is not None]:
@@ -5571,6 +5766,8 @@ class _TextBatchSession:
         streamed = row.plan.streamed
         text = "" if streamed is None else streamed.feed_token(int(event.token))
         row.generated += 1
+        if row.live is not None:
+            row.live.decode(row.generated)
         yield from (
             (row.handle, snapshot) for snapshot in stream.feed(token = event.token, text = text)
         )
@@ -5702,6 +5899,7 @@ class _VisionBatchRow:
         "cancelled",
         "drafts",
         "failure",
+        "live",
     )
 
     def __init__(
@@ -5723,6 +5921,7 @@ class _VisionBatchRow:
         self.cancelled = False
         self.drafts = None
         self.failure = None
+        self.live = None
 
 
 def _vision_batch_reports_ids(engine, speculative):
@@ -5746,6 +5945,14 @@ def _row_retire_gap():
     except ImportError:
         return "the installed unsloth-zoo cannot hand a batched row's cache back"
     return row_retire_unavailable_reason()
+
+
+def _speculative_progress_gap():
+    try:
+        from unsloth_zoo.mlx.generate import speculative_prompt_progress_unavailable_reason
+    except ImportError:
+        return "the installed unsloth-zoo reports no prefill for a speculative row"
+    return speculative_prompt_progress_unavailable_reason()
 
 
 def _speculative_quantized_row_gap():
@@ -5783,6 +5990,7 @@ class _VisionBatchSession:
         self._leaving = set()
         self._by_row = {}
         self._settled = {}
+        self._watching = {}
         self._held = ExitStack()
         try:
             if owns_model:
@@ -5833,26 +6041,39 @@ class _VisionBatchSession:
         )
 
         backend = self.backend
+        sink = self._watching.pop(handle, None)
         plan = backend._plan_vlm_request(request, decodes_ids = self._decodes_ids)
         row = _VisionBatchRow(handle = handle, plan = plan)
+        if sink is not None:
+            row.live = _LiveProgress(sink)
         alone = self._alone(handle) if self._retires_rows else None
-        # A clip's row resumes nothing: token ids do not vary with the clip.
         state = (
-            backend._vlm_batch_row_cache(self._adapter_state, plan.images, alone = alone)
-            if self._resumes_rows and not plan.videos
+            backend._vlm_batch_row_cache(
+                self._adapter_state, plan.images, alone = alone, has_video = bool(plan.videos)
+            )
+            if self._resumes_rows
             else None
         )
         if state is None and backend._kv_quant_bits() is not None:
             # mlx-vlm's own batch cache would be float.
             raise RowRefused("this row cannot carry the load's quantized KV cache")
-        if state is None and (plan.images or plan.videos):
+        if plan.videos or (state is None and plan.images):
             backend._release_vlm_snapshots()
         elif state is None:
             backend._release_held_vlm_snapshots()
-        resume = {} if state is None else {"prompt_cache_state": state}
-        clips = _batch_clips(self._held, [plan], backend._processor)[0] if plan.videos else {}
-        admitted_at = time.perf_counter()
+        options = {} if state is None else {"prompt_cache_state": state}
+        # Only a reply that asked: a reporting row waits for each of its chunks to run.
+        if (
+            request.get("generation_progress")
+            and (self._speculative is None or _speculative_progress_gap() is None)
+            and "prompt_progress" in getattr(GenerationRequest, "__dataclass_fields__", ())
+        ):
+            options["prompt_progress"] = functools.partial(self._prefilled, row)
+        # add() decodes the frames, so the clip files go when it returns.
+        clip_files = ExitStack()
         try:
+            clips = _batch_clips(clip_files, [plan], backend._processor)[0] if plan.videos else {}
+            admitted_at = time.perf_counter()
             row_number = self.stream.add(
                 GenerationRequest(
                     **backend._vlm_batch_prompt(plan.prompt),
@@ -5861,11 +6082,13 @@ class _VisionBatchSession:
                     sampling = SamplingParams(**plan.sampling),
                     logits_processors = plan.processors and _failing_alone(row, plan.processors),
                     **clips,
-                    **resume,
+                    **options,
                 )
             )
         except BatchRowRefused as refusal:
             raise RowRefused(str(refusal)) from refusal
+        finally:
+            clip_files.close()
         row.row = row_number
         # A speculative batch prefills the row inside add(), so its clock starts before it.
         row.admitted_at = admitted_at if self._speculative is not None else time.perf_counter()
@@ -5884,6 +6107,20 @@ class _VisionBatchSession:
         """Alone means no other row decodes beside handle; leaving rows count until they end."""
         rows, leaving = self._rows, self._leaving
         return lambda: all(other == handle for other in (*rows, *leaving))
+
+    def watch_progress(self, handle, sink):
+        """Send a reply's live progress to ``sink``, as ``generation_progress_sink``; from its admission if not yet admitted."""
+        row = self._rows.get(handle)
+        if row is None:
+            self._watching[handle] = sink
+        else:
+            row.live = _LiveProgress(sink)
+
+    @staticmethod
+    def _prefilled(row, processed, total, cached):
+        # A speculative row prefills inside stream.add(), before it is registered.
+        if row.live is not None:
+            row.live.prefill(processed, total, cached = cached)
 
     def step(self, waiting = None):
         now, stopped = None, {}
@@ -5911,6 +6148,8 @@ class _VisionBatchSession:
                 now = time.perf_counter()
             if row.ready_at is None:
                 row.ready_at = now
+            if row.live is not None:
+                row.live.decode(event.generated_tokens)
             streamed = row.plan.streamed
             text = (
                 event.delta
@@ -6008,6 +6247,8 @@ class MLXInferenceBackend:
         # usage, timings and terminal reason of the latest generation, shipped on gen_done.
         self.last_generation_stats = None
         self.last_batch_generation_stats = []
+        # Set by the worker for one request only.
+        self.generation_progress_sink = None
 
         self._model = None
         self._model_fusion = ExitStack()
@@ -6026,6 +6267,7 @@ class MLXInferenceBackend:
         self._reasoning_budget = -1
         self._reasoning_budget_message = ""
         self._multi_image_marker = None
+        self._media_splices = False
         self._config = {}
         self._distributed_group = None
         self._distributed_rank = 0
@@ -6345,19 +6587,23 @@ class MLXInferenceBackend:
         )
         return language_model, key, make_cache
 
+    def _vlm_row_cache_available(self):
+        if _vlm_generation_is_diffusion(self._model):
+            return False
+        return self._vlm_prompt_cache_store() is not None or self._kv_quant_bits() is not None
+
     def _vlm_batch_row_cache(
         self,
         adapter_state,
         images = None,
         alone = None,
+        has_video = False,
     ):
         """A batched row's ``prompt_cache_state``, or None while the store is off on an unquantized
         load. Otherwise every row gets one, so all rows' caches share the factory's layout."""
-        store = self._vlm_prompt_cache_store()
-        if (store is None and self._kv_quant_bits() is None) or _vlm_generation_is_diffusion(
-            self._model
-        ):
+        if not self._vlm_row_cache_available():
             return None
+        store = self._vlm_prompt_cache_store()
         media_ids = self._vlm_media_token_ids(getattr(self._model, "config", None))
         try:
             _language_model, key, make_cache = self._vlm_snapshot_scope(adapter_state, images)
@@ -6366,6 +6612,9 @@ class MLXInferenceBackend:
             return None
         if store is None:
             pass
+        elif has_video:
+            # The store keys on token ids, which a clip does not vary: prefill cold on the same layout.
+            store = None
         elif images and (not media_ids or self._vlm_bidirectional_vision(self._model)):
             # Unplaceable, or prefilled by the single path as a media block: nothing serves it.
             store.clear()
@@ -6454,6 +6703,8 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX prompt count failed: %s", exc)
             return None
         window = self._served_context
@@ -6475,8 +6726,16 @@ class MLXInferenceBackend:
         if prompt_tokens is None and isinstance(prompt, list):
             prompt_tokens = prompt
         budget = getattr(self, "_kv_context_budget", None)
+        # Without a budget, media is prepared only where its placeholder count misses spliced columns.
+        splices = bool(images) and getattr(self, "_media_splices", False)
+        if prompt_tokens is None and (budget or splices):
+            try:
+                prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
+            except Exception as exc:
+                if is_metal_queue_dead(exc):
+                    raise
+                logger.debug("MLX prompt count for the context budget failed: %s", exc)
         if not budget:
-            # No budget: size from the placeholder count as before, never preparing the media.
             if max_new_tokens is None:
                 max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
                 if cap is not None:
@@ -6487,11 +6746,6 @@ class MLXInferenceBackend:
         # Max Tokens == window is the UI's "no cap"; admitting it as-is would refuse every prompt.
         if max_new_tokens is not None and int(max_new_tokens) == int(budget):
             max_new_tokens = None
-        if prompt_tokens is None:
-            try:
-                prompt_tokens = range(self._count_prompt_tokens(prompt, images, audio, videos))
-            except Exception as exc:
-                logger.debug("MLX prompt count for the context budget failed: %s", exc)
         if max_new_tokens is None:
             max_new_tokens = self._unset_generation_budget(prompt, prompt_tokens)
             if cap is not None:
@@ -6529,6 +6783,10 @@ class MLXInferenceBackend:
         if _fast_verify_zoo() is None:
             return None
         return (getattr(self, "_fast_verify", None) or {}).get("active", False)
+
+    def _live_progress(self, cached = 0):
+        sink = self.generation_progress_sink
+        return _LiveProgress(sink, cached) if sink is not None else None
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -6634,6 +6892,8 @@ class MLXInferenceBackend:
                 else self._count_prompt_tokens(prompt, images, audio, videos)
             )
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX prompt count for the context budget failed: %s", exc)
             return
         needed = prompt_n + max(0, int(max_new_tokens or 0))
@@ -6672,7 +6932,7 @@ class MLXInferenceBackend:
         audio = None,
         videos = None,
     ):
-        """Prompt length as the processor expands media (as mlx-vlm's server does), else None."""
+        """Prompt length with media expanded or images spliced, else None."""
         if not (images or audio or videos):
             return None
         try:
@@ -6701,10 +6961,34 @@ class MLXInferenceBackend:
                 **kwargs,
             )
             ids = inputs["input_ids"]
-            return int(getattr(ids, "size", 0)) or len(ids)
+            counted = int(getattr(ids, "size", 0)) or len(ids)
         except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
             logger.debug("MLX media prompt count failed: %s", exc)
             return None
+        splices = getattr(self, "_media_splices", False)
+        if not images or splices is False:
+            return counted
+        columns = _embedded_columns(self._model, inputs)
+        if splices is None:
+            self._media_splices = bool(columns) and columns > counted
+        # FastVLM truncates its embedding at tokenizer_model_max_length, below the ids.
+        return columns or counted
+
+    def _measure_media_splice(self):
+        """Whether images splice wider than their ids (FastVLM); probed once per load."""
+        from PIL import Image
+
+        self._media_splices = None
+        try:
+            blank = Image.new("RGB", (224, 224), "white")
+            self.count_chat_tokens([{"role": "user", "content": "."}], images = [blank])
+        except Exception as exc:
+            if is_metal_queue_dead(exc):
+                raise
+            logger.debug("MLX media splice probe failed: %s", exc)
+        return bool(self._media_splices)
 
     def _count_prompt_tokens(
         self,
@@ -7446,6 +7730,9 @@ class MLXInferenceBackend:
                     mlx_ane_prefill = self._ane_prefill["active"],
                     mlx_ane_prefill_reason = self._ane_prefill["reason"],
                 )
+        self._media_splices = bool(use_vlm and is_vision and not is_distributed) and (
+            self._measure_media_splice()
+        )
         logger.info("Model %s loaded successfully", model_name)
         return True
 
@@ -8358,6 +8645,9 @@ class MLXInferenceBackend:
                     gen_kwargs["input_embeddings"] = input_embeddings
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
+                live = self._live_progress(cached_n)
+                if live is not None:
+                    gen_kwargs["prompt_progress_callback"] = live.prefill
                 for response in _stream_until_cancelled(
                     stream_generate,
                     cancel_event,
@@ -8367,6 +8657,8 @@ class MLXInferenceBackend:
                 ):
                     final_response = response
                     token_ids.append(response.token)
+                    if live is not None:
+                        live.decode(len(token_ids))
                     if recorded:
                         token_logprobs.append(
                             _mlx_token_logprob(
@@ -8384,7 +8676,7 @@ class MLXInferenceBackend:
                         released = cut
                         if delta:
                             normalized_output += delta
-                            yield normalized_output
+                            yield with_thought_spans(normalized_output, normalizer, think_prefix)
                     else:
                         # Re-decoding every id rebuilds rather than extends, so an invalid byte sequence can revise
                         # characters already shown. Predates stop handling and affects plain replies too.
@@ -8455,14 +8747,14 @@ class MLXInferenceBackend:
                 delta = normalizer.feed(sampled[released:cut])
                 if delta:
                     normalized_output += delta
-                    yield normalized_output
+                    yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if normalizer is not None:
             # A sequence ends the turn like a stop token, so a reasoning block it cut inside is closed; only a cancelled turn drains, since more was coming
             cancelled = not stopped and cancel_event is not None and cancel_event.is_set()
             tail = normalizer.drain() if cancelled else normalizer.finish()
             if tail:
                 normalized_output += tail
-                yield normalized_output
+                yield with_thought_spans(normalized_output, normalizer, think_prefix)
         if stopped:
             self._mark_stopped()
 
@@ -9252,6 +9544,7 @@ class MLXInferenceBackend:
                     _vlm_prepared_inputs(self._model, self._processor, prompt, images)
                 )
             )
+        live = self._live_progress()
 
         def _stream_vlm_snapshots():
             nonlocal stopped
@@ -9273,6 +9566,7 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(
                     self._generation_scopes("vision", *(() if draft is None else ("speculative",)))
                 )
+                spliced = generation_scope.enter_context(_spliced_columns(self._model))
                 final_response = None
                 clip_paths = []
                 try:
@@ -9311,17 +9605,20 @@ class MLXInferenceBackend:
                     # Emit prefilled <think> first; inside the adapter so unsupported requests raise before any output.
                     if prefill:
                         yield prefill
-                    with closing(
-                        _iter_vlm_responses(
-                            vlm_stream(
-                                self._model,
-                                self._processor,
-                                prompt,
-                                images,
-                                **vlm_kwargs,
+                    with (
+                        closing(
+                            _iter_vlm_responses(
+                                vlm_stream(
+                                    self._model,
+                                    self._processor,
+                                    prompt,
+                                    images,
+                                    **vlm_kwargs,
+                                )
                             )
-                        )
-                    ) as responses:
+                        ) as responses,
+                        _vlm_prefill_scope(live, session),
+                    ):
                         raw_ids = [] if prompt_ids is not None else None
                         raw_text = (
                             _ReplyText(
@@ -9337,6 +9634,8 @@ class MLXInferenceBackend:
                                 getattr(response, "token", None) if raw_ids is not None else None
                             )
                             filled = getattr(response, "generation_tokens", None)
+                            if live is not None and filled is not None:
+                                live.decode(int(filled))
                             if raw_id is not None and (
                                 filled is None or int(filled) == len(raw_ids) + 1
                             ):
@@ -9417,10 +9716,12 @@ class MLXInferenceBackend:
                         stop_ids = _mlx_stop_token_ids(tokenizer, self._model)
                         # mlx-vlm rates the full prompt against its prefill, which omits rows the session produced first.
                         prompt_n = int(getattr(final_response, "prompt_tokens", 0) or 0)
-                        prefilled_n = max(prompt_n - cached_n, 0)
                         prompt_tps = float(getattr(final_response, "prompt_tps", 0.0) or 0.0)
-                        if prompt_tps and (cached_n or produced_s):
-                            prompt_tps = prefilled_n / (prompt_n / prompt_tps + produced_s)
+                        prompt_s = prompt_n / prompt_tps if prompt_tps else 0.0
+                        prompt_n += spliced[0]
+                        prefilled_n = max(prompt_n - cached_n, 0)
+                        if prompt_tps and (cached_n or produced_s or spliced[0]):
+                            prompt_tps = prefilled_n / (prompt_s + produced_s)
                         self.last_generation_stats = _build_generation_stats(
                             prefilled_n,
                             prompt_tps,
@@ -9453,6 +9754,7 @@ class MLXInferenceBackend:
                 prompt = prompt,
                 continued = vlm_continued,
                 ended = lambda: stopped,
+                prefix = prefill,
             )
         if stopped:
             self._mark_stopped()
@@ -9500,10 +9802,12 @@ class MLXInferenceBackend:
     def resident_unavailable_reason(self, request):
         if self._model is None:
             return "no model is loaded"
-        reason = _request_batch_gap(request)
-        if reason is None and _carries_video(request):
-            # Whether a clip's row fits the open batch is known only once its frames are decoded.
-            reason = "a reply carries a video clip"
+        # A clip that does not fit the open batch is refused on admission, once its frames are decoded.
+        reason = _request_batch_gap(request) or self._video_batch_gap([request])
+        if reason is None and _carries_video(request) and getattr(self, "_kv_cache_window", None):
+            # mlx-vlm's batch cache ignores the window, which only a row's own cache keeps.
+            if _row_prompt_cache_gap() is not None or not self._vlm_row_cache_available():
+                reason = "a clip's row would not keep the load's KV window"
         if reason is not None:
             return reason
         reason = self._kv_policy_batch_reason(resident = True)
@@ -9519,9 +9823,8 @@ class MLXInferenceBackend:
         # The one-at-a-time decode refuses these clips by name.
         if not self._is_vlm or not self._reads_vision_input() or not _mlx_vlm_decodes_video():
             return "a reply carries a video clip this load does not read"
-        if self._speculative_draft is not None and self._kv_quant_bits() is not None:
-            # A clip's row resumes no cache, and only a resumed row carries the quantization.
-            return "a quantized speculative batch does not decode a video clip"
+        if self._kv_quant_bits() is not None:
+            return "a quantized batch does not decode a video clip"
         try:
             from unsloth_zoo.mlx import generate as engine
         except ImportError:

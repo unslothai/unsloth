@@ -247,6 +247,76 @@ def _token_logps(
     return per_token_logps, mean_logits, lssp
 
 
+_STATS_KWARGS = frozenset(
+    (
+        "return_entropy",
+        "return_mean_logits",
+        "return_log_sum_sq_probs",
+        "return_is_top1",
+        "entropy_requires_grad",
+    )
+)
+
+
+def _zoo_stats_kernel():
+    """zoo's ``fused_linear_logprobs`` when it can return the metric statistics in the log-prob pass, plus whether
+    it takes ``is_top1_half_logits``; None on an older zoo."""
+    try:
+        from unsloth_zoo.fused_losses.fused_linear import fused_linear_logprobs
+        from unsloth_zoo.fused_losses.preference_loss import _use_fused_linear
+        params = inspect.signature(fused_linear_logprobs).parameters
+    except Exception:
+        return None
+    if not _STATS_KWARGS.issubset(params):
+        return None
+    return fused_linear_logprobs, _use_fused_linear, "is_top1_half_logits" in params
+
+
+def _token_logps_and_stats(
+    hidden_states,
+    is_hidden,
+    head,
+    transforms,
+    labels,
+    mask,
+    want_lssp = False,
+):
+    """``_token_logps`` plus the per-token entropy and argmax == label match, all from one pass over the
+    head's row chunks; None when this zoo or head cannot (the caller then projects the metrics on its own)."""
+    if not is_hidden:
+        return None
+    kernel = _zoo_stats_kernel()
+    if kernel is None:
+        return None
+    fused_linear_logprobs, use_fused_linear, has_top1_half = kernel
+    weight, bias = head
+    if not use_fused_linear(weight):
+        return None
+    out = fused_linear_logprobs(
+        hidden_states,
+        weight,
+        labels.to(hidden_states.device),
+        bias = bias,
+        mask = mask.to(device = hidden_states.device, dtype = torch.bool),
+        logit_scale_multiply = float(transforms[0]),
+        logit_scale_divide = float(transforms[1]),
+        logit_softcapping = float(transforms[2]),
+        return_entropy = True,
+        return_mean_logits = True,
+        return_log_sum_sq_probs = bool(want_lssp),
+        return_is_top1 = True,
+        entropy_requires_grad = False,
+        # A half head's argmax runs on its rounded logits, as the model's own logits are.
+        **({"is_top1_half_logits": True} if has_top1_half else {}),
+    )
+    if want_lssp:
+        per_token_logps, entropy, mean_logits, log_sum_sq_probs, is_top1 = out
+    else:
+        per_token_logps, entropy, mean_logits, is_top1 = out
+        log_sum_sq_probs = None
+    return per_token_logps, mean_logits, log_sum_sq_probs, entropy.detach(), is_top1.bool()
+
+
 def unsloth_fused_dpo_concatenated_forward(
     trainer,
     model,
@@ -697,7 +767,7 @@ def unsloth_fused_dpo_compute_loss_v1(
 
     hidden, is_hidden = _forward_hidden_states(model, unwrapped, head[0], (), model_kwargs)
     shift_hidden = hidden[..., :-1, :]
-    per_token_logps, mean_logits, log_sum_sq_probs = _token_logps(
+    stats = _token_logps_and_stats(
         shift_hidden,
         is_hidden,
         head,
@@ -706,10 +776,24 @@ def unsloth_fused_dpo_compute_loss_v1(
         score_mask,
         want_lssp = use_weighting,
     )
-    per_token_entropy, predictions = _entropy_and_argmax(
-        shift_hidden.detach(), is_hidden, head, transforms, score_mask
-    )
-    del hidden, shift_hidden
+    if stats is not None:
+        per_token_logps, mean_logits, log_sum_sq_probs, per_token_entropy, is_top1 = stats
+    else:
+        per_token_logps, mean_logits, log_sum_sq_probs = _token_logps(
+            shift_hidden,
+            is_hidden,
+            head,
+            transforms,
+            shift_labels,
+            score_mask,
+            want_lssp = use_weighting,
+        )
+        per_token_entropy, predictions = _entropy_and_argmax(
+            shift_hidden.detach(), is_hidden, head, transforms, score_mask
+        )
+        is_top1 = predictions == shift_labels.to(predictions.device)
+        del predictions
+    del stats, hidden, shift_hidden
 
     if self.ld_alpha is None:
         logps = per_token_logps.sum(dim = 1)
@@ -929,8 +1013,7 @@ def unsloth_fused_dpo_compute_loss_v1(
 
     half = len(shift_completion_mask) // 2
     chosen_bool = shift_completion_mask[:half].bool()
-    chosen_labels = shift_labels[:half]
-    correct_predictions = (predictions[:half] == chosen_labels) & chosen_bool
+    correct_predictions = is_top1[:half].to(chosen_bool.device) & chosen_bool
     total_tokens = chosen_bool.sum()
     correct_tokens = correct_predictions.sum()
     correct_tokens = self.accelerator.gather_for_metrics(correct_tokens)

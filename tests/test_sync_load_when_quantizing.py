@@ -6,9 +6,13 @@
 import ast
 import contextlib
 import os
+import sys
 import types
 
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "_shared"))
+from transformers5_loading import require_core_model_loading  # noqa: E402
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(HERE, "unsloth", "models")
@@ -129,7 +133,7 @@ def test_every_on_the_fly_quantizing_load_runs_inside_the_helper(module, callee)
 
 def test_transformers_reads_the_variable_where_it_picks_the_loader():
     # Pins the contract the helper leans on: the variable is what turns the thread pool off.
-    core = pytest.importorskip("transformers.core_model_loading")
+    core = require_core_model_loading()
     import inspect
 
     src = inspect.getsource(core.convert_and_load_state_dict_in_model)

@@ -5,10 +5,17 @@
 
 import json
 import threading
+import types
+from pathlib import Path
 
 import pytest
 
 from core.inference import diffusion_fast_load as fl
+
+
+def _posix(path):
+    """A path as the forward-slash string these assertions spell, on Windows too."""
+    return Path(path).as_posix()
 
 
 @pytest.fixture(autouse = True)
@@ -150,7 +157,7 @@ def _fake_snapshot(tmp_path):
 
 def test_component_files_are_the_weights_from_pretrained_reads_text_encoders_first(tmp_path):
     snap = _fake_snapshot(tmp_path)
-    rel = lambda paths: [p[len(str(snap)) + 1 :] for p in paths]  # noqa: E731
+    rel = lambda paths: [Path(p).relative_to(snap).as_posix() for p in paths]  # noqa: E731
     assert rel(fl.pipeline_component_files(str(snap), skip_denoiser = False)) == [
         "text_encoder/model.safetensors",
         "text_encoder_2/model-00001-of-00002.safetensors",
@@ -197,9 +204,9 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
     assert seen.pop("paths")[0] == str(ckpt)
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = "int8")
-    assert not any("transformer/" in p for p in seen.pop("paths"))
+    assert not any("transformer/" in _posix(p) for p in seen.pop("paths"))
     fl.start_load_prefetch(object(), str(snap), prequant_scheme = None)
-    assert seen["paths"][-1].endswith("transformer/diffusion_pytorch_model.safetensors")
+    assert _posix(seen["paths"][-1]).endswith("transformer/diffusion_pytorch_model.safetensors")
     monkeypatch.setattr(pq, "cached_checkpoint_path", lambda source, cache_dir = None: None)
     seen.clear()
     fl.start_load_prefetch(
@@ -208,7 +215,7 @@ def test_load_prefetch_puts_the_seeded_checkpoint_first_and_skips_the_dense_deno
         prequant_scheme = "int8",
         text_encoders_replaced = {"text_encoder", "text_encoder_2"},
     )
-    assert [p.split("/snap/")[-1] for p in seen["paths"]] == [
+    assert [_posix(p).split("/snap/")[-1] for p in seen["paths"]] == [
         "vae/diffusion_pytorch_model.safetensors",
         "transformer/diffusion_pytorch_model.safetensors",
     ]
@@ -304,6 +311,26 @@ def test_fast_upload_matches_a_plain_to_byte_for_byte(monkeypatch):
         assert have.requires_grad == want.requires_grad, name
         assert torch.equal(have, want), name
     assert {n: type(p) for n, p in got.named_parameters()} == names_before
+
+
+@torch_cuda
+def test_the_ring_waits_for_work_queued_on_the_current_stream(monkeypatch):
+    """A target block the allocator hands back while the current stream still has a queued write into it must not be
+    written by the side stream first: the queued write would land on top of the uploaded bytes."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(fl, "_UPLOAD_CHUNK_BYTES", 1 << 20)
+    src = torch.arange(1 << 20, dtype = torch.int32)  # 4 MiB, four ring chunks
+    torch.cuda.synchronize()
+    stale = torch.empty_like(src, device = "cuda")
+    torch.cuda._sleep(1 << 28)  # the current stream is busy well past the upload
+    stale.fill_(7)
+    ptr = stale.data_ptr()
+    del stale  # back to the current stream's pool, fill still queued
+    (got,) = fl._ring_copy([src], "cuda")
+    reused = got.data_ptr() == ptr
+    torch.cuda.synchronize()
+    assert reused, "the allocator did not reuse the block; the check would not exercise the hazard"
+    assert torch.equal(got.cpu(), src)
 
 
 @torch_cuda
@@ -449,6 +476,8 @@ def test_a_mostly_cached_file_reads_only_its_uncached_chunks(tmp_path, monkeypat
     path.write_bytes(b"q" * size)
     monkeypatch.setattr(fl, "_uncached_bytes", lambda p: 1 << 20)
     monkeypatch.setattr(fl, "_available_host_mib", lambda: 1 << 20)
+    # The residency probe is Linux-only (mincore); stand in a mapping so this case runs on every OS.
+    monkeypatch.setattr(fl, "_residency_map", lambda p: types.SimpleNamespace(close = lambda: None))
     # the first 7 MiB sit in the page cache, the last MiB does not
     monkeypatch.setattr(
         fl,

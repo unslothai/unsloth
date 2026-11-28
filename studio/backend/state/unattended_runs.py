@@ -69,8 +69,7 @@ def watch(
     cancel: Callable[[], Awaitable[None]],
     replace: bool = False,
 ) -> None:
-    """Stops attendance_id once it has gone _GRACE_S with no follower; re-arming keeps an existing
-    grace; replace gives a new attempt its own grace; thread-safe"""
+    """Stops it after _GRACE_S unattended; re-arm keeps grace, replace resets it; thread-safe."""
     if not attendance_id:
         return
     key = _key(account_id, attendance_id)
@@ -145,7 +144,6 @@ async def _run() -> None:
 
 
 def start() -> None:
-    """Start the watchdog on the running loop. Idempotent within one lifespan."""
     global _task
     if _task is not None and not _task.done():
         return

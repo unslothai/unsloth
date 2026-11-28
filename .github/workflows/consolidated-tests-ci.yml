@@ -2196,7 +2196,7 @@ jobs:
           # so exclude that family from xdist and run it separately below. The other
           # ignores either leak process state or use timing assertions that need a quiet
           # process.
-          python -m pytest -q -rs --tb=short -n 4 --dist loadfile tests/ --durations=50 \
+          python -m pytest -q -rs --tb=short -n 4 --max-worker-restart=0 --dist loadfile tests/ --durations=50 \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
             --ignore=tests/test_hf_xet_fallback.py \

@@ -1243,7 +1243,7 @@ def test_vllm_backend_rejects_adapter_rank_above_its_limit(vllm_env, tmp_path, c
     ],
 )
 def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, ok):
-    # vLLM applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
+    # vLLM before 0.32 applies lora_alpha / r to every module, so rank_pattern / alpha_pattern that change a module's scale score wrong
     result = _run(
         str(_rank_adapter(tmp_path, **config)),
         "--tasks",
@@ -1260,6 +1260,61 @@ def test_vllm_backend_rejects_per_module_lora_scale(vllm_env, tmp_path, config, 
         assert result.exit_code == 2, result.output
         assert "rank_pattern / alpha_pattern" in result.output and "--backend hf" in result.output
         assert "model" not in vllm_env
+
+
+@pytest.mark.parametrize(
+    "vllm_version, ok",
+    [
+        ("0.31.1", False),
+        ("0.32.0rc0", True),
+        ("0.32.0", True),
+        ("0.34.0", True),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_vllm_backend_scores_per_module_lora_scale_on_vllm_that_applies_it(
+    vllm_env, tmp_path, monkeypatch, vllm_version, ok
+):
+    def fake_version(name):
+        if name != "vllm":
+            return "0.4.13"
+        if vllm_version is None:
+            raise evalmod.PackageNotFoundError(name)
+        # dist-info without a Version field: importlib.metadata.version returns None
+        return vllm_version or None
+
+    monkeypatch.setattr(evalmod, "version", fake_version)
+    adapter = _rank_adapter(tmp_path, r = 16, lora_alpha = 32, rank_pattern = {"v_proj": 64})
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    if ok:
+        assert result.exit_code == 0, result.output
+        assert vllm_env["model_args"]["lora_local_path"] == str(adapter.resolve())
+        assert vllm_env["model_args"]["max_lora_rank"] == 64
+    else:
+        assert result.exit_code == 2, result.output
+        assert "0.32" in result.output and "model" not in vllm_env
+
+
+@pytest.mark.parametrize("vllm_version, expected", [("0.31.0", None), ("0.32.0", 64)])
+def test_vllm_backend_sizes_max_lora_rank_to_every_rank_pattern_on_vllm_that_validates_it(
+    vllm_env, tmp_path, monkeypatch, vllm_version, expected
+):
+    # gate_proj is not adapted, but vLLM 0.32+ still checks its rank against max_lora_rank
+    monkeypatch.setattr(
+        evalmod, "version", lambda name: vllm_version if name == "vllm" else "0.4.13"
+    )
+    adapter = _rank_adapter(
+        tmp_path,
+        r = 8,
+        lora_alpha = 16,
+        target_modules = ["q_proj", "v_proj"],
+        rank_pattern = {"gate_proj": 64},
+        alpha_pattern = {"gate_proj": 128},
+    )
+    result = _run(str(adapter), "--tasks", "gsm8k", "--backend", "vllm", "-o", str(tmp_path / "o"))
+    assert result.exit_code == 0, result.output
+    assert vllm_env["model_args"].get("max_lora_rank") == expected
 
 
 def _write_lora_header(

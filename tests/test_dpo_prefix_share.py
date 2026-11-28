@@ -8,6 +8,7 @@ CPU, fp64: a small causal transformer run on the padded rows and on the shared s
 mask taken from the kernel's own mask_mod. Per-sequence logps and parameter grads must agree to
 1e-10; each injected fault (leaky mask, shifted positions, wrong gather) must break that."""
 
+import contextlib
 import importlib.util
 import math
 import random
@@ -702,3 +703,149 @@ def test_collective_forwards_decline(monkeypatch, zero3):
     model._unsloth_dpo_prefix_share_eligible = True
     monkeypatch.setattr(pgk, "_COMPILE_FAILURE", None)
     assert dps._model_eligible(model, torch.device("cuda", 0)) is (not zero3)
+
+
+def _hooked_qwen_sized_backbone():
+    class Backbone(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed_tokens = torch.nn.Embedding(V, D)
+
+        def forward(
+            self,
+            *,
+            input_ids,
+            attention_mask = None,
+            position_ids = None,
+            prefix_seg_info = None,
+        ):
+            return (self.embed_tokens(input_ids),)
+
+    class CausalLM(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.model = Backbone()
+            self.config = _QWEN3_06B
+
+        def get_input_embeddings(self):
+            return self.model.embed_tokens
+
+    lm = CausalLM().eval()
+    setattr(lm.model, dps._STATE, dps._HookState(lm))
+    lm.model.register_forward_pre_hook(dps._pre_hook, with_kwargs = True)
+    lm.model.register_forward_hook(dps._post_hook, with_kwargs = True)
+    return lm
+
+
+def test_cost_probe_runs_only_for_a_batch_that_would_share(monkeypatch):
+    # The GEMM probe costs memory (and time) on the first batch: a batch the token gates already
+    # decline must never run it; a batch that passes them runs it once.
+    for name in ("MIN_SAVED", "LAYER_US", "TOKR"):
+        monkeypatch.delenv(f"UNSLOTH_DPO_PREFIX_SHARE_{name}", raising = False)
+    monkeypatch.setenv("UNSLOTH_DPO_PREFIX_SHARE_VERIFY", "0")
+    probes = []
+    monkeypatch.setattr(dps, "_matmul_flops", lambda device: probes.append(device) or 100e12)
+    lm = _hooked_qwen_sized_backbone()
+    rng = random.Random(5)
+    few_saved = _batch(  # 4 x 100 shared tokens: under the 2048 floor
+        [_rand_tokens(rng, 100) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+    )
+    low_tokr = _batch(  # 2600 shared tokens, but long completions: tok_r under 1.3
+        [_rand_tokens(rng, 650) for _ in range(4)],
+        [_rand_tokens(rng, 2000) for _ in range(4)],
+        [_rand_tokens(rng, 2000) for _ in range(4)],
+    )
+    engaged = dps.ENGAGED_COUNT
+    with torch.no_grad():
+        for ids, am, _ in (few_saved, low_tokr):
+            assert lm.model(input_ids = ids, attention_mask = am)[0].shape[:2] == ids.shape
+    assert probes == [] and dps.ENGAGED_COUNT == engaged
+    ids, am, _ = _batch(
+        [_rand_tokens(rng, 600) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+        [_rand_tokens(rng, 20) for _ in range(4)],
+    )
+    with torch.no_grad():
+        lm.model(input_ids = ids, attention_mask = am)
+        lm.model(input_ids = ids, attention_mask = am)
+    assert len(probes) == 1 and dps.ENGAGED_COUNT - engaged == 2
+
+
+class _FakeEvent:
+    def __init__(self, **kwargs):
+        pass
+
+    def record(self):
+        pass
+
+    def synchronize(self):
+        pass
+
+    def elapsed_time(self, other):
+        return 1.0  # ms
+
+
+def _fake_cuda_probe(monkeypatch, fail_first):
+    """Runs _matmul_flops on CPU: requested torch.full shapes are recorded, a 64 x 64 tensor is
+    built instead; the first ``fail_first`` allocations raise out of memory."""
+    requested, made = [], []
+    real_full = torch.full
+
+    def full(size, value, **kwargs):
+        requested.append((tuple(size), kwargs.get("dtype")))
+        if len(requested) <= fail_first:
+            raise torch.OutOfMemoryError("CUDA out of memory. Tried to allocate 32.00 MiB")
+        kwargs["device"] = "cpu"
+        t = real_full((64, 64), value, **kwargs)
+        made.append(t)
+        return t
+
+    monkeypatch.setattr(torch, "full", full)
+    monkeypatch.setattr(torch.cuda, "is_bf16_supported", lambda *a, **k: True)
+    monkeypatch.setattr(torch.cuda, "device", lambda device: contextlib.nullcontext())
+    monkeypatch.setattr(torch.cuda, "Event", _FakeEvent)
+    return requested, made
+
+
+def test_matmul_flops_out_of_memory_is_not_cached(monkeypatch):
+    device = torch.device("cuda", 7)
+    monkeypatch.setattr(dps, "_MATMUL_FLOPS", {})
+    requested, _ = _fake_cuda_probe(monkeypatch, fail_first = 1)
+    assert dps._matmul_flops(device) is None
+    assert dps._MATMUL_FLOPS == {}  # no answer kept
+    flops = dps._matmul_flops(device)  # probes again, succeeds
+    assert flops is not None and dps._MATMUL_FLOPS == {str(device): flops}
+    calls = len(requested)
+    assert dps._matmul_flops(device) == flops and len(requested) == calls  # measured once
+
+
+def test_cost_gate_out_of_memory_is_not_cached_on_the_model(monkeypatch):
+    for name in ("MIN_SAVED", "LAYER_US"):
+        monkeypatch.delenv(f"UNSLOTH_DPO_PREFIX_SHARE_{name}", raising = False)
+    device = torch.device("cuda", 7)
+    monkeypatch.setattr(dps, "_MATMUL_FLOPS", {})
+    requested, _ = _fake_cuda_probe(monkeypatch, fail_first = 1)
+    lm = torch.nn.Module()
+    lm.config = _QWEN3_06B
+    assert dps._effective_min_saved(lm, device) == 2048  # no cost answer: token gates only
+    assert getattr(lm, "_unsloth_dpo_prefix_share_cost_min", None) is None
+    calls = len(requested)
+    dps._effective_min_saved(lm, device)
+    assert len(requested) > calls  # probed again
+    assert lm._unsloth_dpo_prefix_share_cost_min[0] == str(device)
+
+
+def test_matmul_flops_probe_buffers_are_bounded_and_freed(monkeypatch):
+    import weakref
+
+    monkeypatch.setattr(dps, "_MATMUL_FLOPS", {})
+    requested, made = _fake_cuda_probe(monkeypatch, fail_first = 0)
+    assert dps._matmul_flops(torch.device("cuda", 7)) is not None
+    # Every operand torch.full asked for, at 2 bytes, plus one product per operand: at most 64 MiB.
+    operand_bytes = sum(math.prod(shape) * 2 for shape, _ in requested)
+    assert 2 * operand_bytes <= 64 * 2**20, requested
+    refs = [weakref.ref(t) for t in made]
+    made.clear()
+    assert all(r() is None for r in refs)  # nothing kept alive after returning

@@ -25,6 +25,27 @@ MAX_SIDE = 256
 MIN_INTERVAL_S = 0.25
 MAX_SNAPSHOTS = 24
 JPEG_QUALITY = 80
+# A progress poll that asked for the preview within this long counts as someone watching the render.
+WATCH_WINDOW_S = 5.0
+
+# kind ("image" / "video") -> monotonic time of the newest progress poll that asked for the preview.
+_last_watch: dict = {}
+
+
+def note_preview_watch(kind: str, now: Optional[float] = None) -> None:
+    """A client showing the running render's progress asked for its preview (a visible page)."""
+    _last_watch[kind] = time.monotonic() if now is None else float(now)
+
+
+def preview_watched(
+    kind: str,
+    since: float,
+    now: float,
+    window_s: float = WATCH_WINDOW_S,
+) -> bool:
+    """Watched: a preview poll landed after ``since`` (this render's start) and within ``window_s`` of ``now``."""
+    seen = _last_watch.get(kind)
+    return seen is not None and seen >= since and now - seen <= window_s
 
 
 @dataclass(frozen = True)
@@ -112,6 +133,9 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
     """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
     size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
+        if latents.ndim == 2 and latents.shape[-1] == spec.channels:
+            # One unbatched packed sequence (MiniMax-H3's modular loop steps its video rows as [N, D]): a view.
+            latents = latents.unsqueeze(0)
         if latents.ndim == 4 and latents.shape[1] == spec.channels:
             # The same packed channels kept spatial (MOSS-Image runs FLUX.2 latents as [B, 128, h, w]).
             return latents[0].permute(1, 2, 0)
@@ -253,10 +277,13 @@ class LatentPreviewer:
         max_snapshots: int = MAX_SNAPSHOTS,
         clock: Callable[[], float] = time.monotonic,
         tiny: Any = None,
+        watch: Optional[str] = None,
     ) -> None:
         import torch
 
         self.spec = spec
+        # None: always watched. A kind: steps run only while a preview poll of that kind is recent.
+        self._watch = watch
         # A tiny VAE decoder (Wan): decodes the x0 estimate of the first latent frame instead of the linear map.
         self.tiny = tiny
         self.tiny_decodes = 0
@@ -266,6 +293,8 @@ class LatentPreviewer:
         self.max_side = int(max_side)
         self.min_interval_s = float(min_interval_s)
         self._clock = clock
+        self._born = clock()
+        self.skipped_unwatched = 0
         self._publish = publish
         self._weight, self._bias = _device_map(spec, self.device) if tiny is None else (None, None)
         # Pre-sized (with a margin for pipelines that round the size up): nothing is allocated in the loop.
@@ -357,6 +386,12 @@ class LatentPreviewer:
         final: bool = False,
     ) -> None:
         if self.failed or latents is None:
+            return
+        if self._watch is not None and not preview_watched(self._watch, self._born, self._clock()):
+            # Nobody is looking: no GPU op, no copy. The stale partner goes, so a resumed preview waits for a fresh pair.
+            self._prev = None
+            self._prev_index = None
+            self.skipped_unwatched += 1
             return
         try:
             self._on_step(latents, scheduler, final)

@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Query-chunked VAE attention on ROCm/MPS (no fused SDPA takes head dim 384/512), exact; ROCm bf16
-keeps bf16 in math SDPA (UNSLOTH_VAE_ATTN_HALF_MATH=0 keeps fp32 upcast); fp16 always upcasts, as
-scores reach 5e7 past 65504"""
+"""Exact query-chunked VAE attention on ROCm/MPS (no fused SDPA takes head dim 384/512); fp16
+upcasts (scores reach 5e7 past 65504); ROCm bf16 stays bf16 unless UNSLOTH_VAE_ATTN_HALF_MATH=0."""
 
 from __future__ import annotations
 
@@ -54,8 +53,7 @@ def fp32_math_sdpa(
     v: Any,
     scale: Optional[float] = None,
 ) -> Any:
-    """Math SDPA with half inputs upcast to fp32 (as ROCm's math kernel does), returned in ``q``'s dtype; fp32 and
-    fp64 run in their own precision (fp64 through fp32 overflows where stock SDPA stays finite)."""
+    """Half inputs upcast to fp32, returned in q's dtype; fp32 and fp64 keep their precision."""
     import torch
 
     if q.dtype not in (torch.float16, torch.bfloat16):
@@ -76,8 +74,7 @@ def _autocast_dtype(device_type: str) -> Any:
 
 
 def _half_math_call(q: Any) -> bool:
-    # bf16 only: bf16 has fp32's range, fp16 overflows real VAE scores to inf and softmax turns the rows NaN (ROCm
-    # cards without native bf16, gfx103x and older, run the VAE in fp16).
+    # bf16 only: fp16 VAE scores overflow to inf (NaN softmax); gfx103x and older run fp16.
     import torch
     return (
         getattr(getattr(q, "device", None), "type", None) == "cuda"
@@ -133,8 +130,7 @@ def _attention_head_dim(module: Any) -> Optional[int]:
 
 
 def vae_has_untrusted_head(vae: Any) -> bool:
-    """Whether ``vae`` may run an attention head wider than the Windows ROCm fused kernels compute right; a VAE or
-    attention module it cannot inspect counts as yes."""
+    """True if a head is wider than Windows ROCm fused kernels handle; uninspectable is True."""
     named = getattr(vae, "named_modules", None)
     if not callable(named):
         return True
@@ -150,8 +146,7 @@ def vae_has_untrusted_head(vae: Any) -> bool:
 
 
 def fused_sdpa_available(q: Any, k: Any, v: Any) -> bool:
-    """Whether a fused SDPA kernel (CUDA, or MPS prefill) takes this call; other devices or query errors count as yes.
-    A Windows ROCm head wider than 256 counts as no: the kernels that take it there compute it wrong."""
+    """True on CUDA or MPS prefill; Windows ROCm heads over 256 no; other devices/errors yes."""
     import torch
 
     device_type = getattr(getattr(q, "device", None), "type", None)
@@ -267,8 +262,7 @@ def _mode_class() -> Any:
                 if call is not None:
                     q, k, v, scale = call
                     if not fused_sdpa_available(q, k, v):
-                        # Autocast casts SDPA's inputs before any kernel runs: gate on that dtype, not the caller's (a
-                        # bf16 query under fp16 autocast runs fp16 scores, which overflow).
+                        # Gate on the dtype autocast gives SDPA inputs (fp16 scores overflow).
                         cast = _autocast_dtype(q.device.type)
                         if cast is not None:
                             q, k, v = (t.to(cast) for t in (q, k, v))

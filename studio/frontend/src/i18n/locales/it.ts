@@ -1591,6 +1591,7 @@ export const it = {
       levelHigh: "Alto",
       levelLow: "Basso",
       levelHighShort: "Python e Terminale girano anche nella sandbox del sistema",
+      editorMcpWarning: "{name} MCP esegue codice con le autorizzazioni dell’app, fuori dalla sandbox di Unsloth, anche con il livello Alto attivo. Il codice può accedere a file esterni al progetto.",
       levelLowShort: "Solo sandbox software. Il codice rischioso chiede prima",
       levelFullAccessNote: "Accesso completo disattiva la sandbox. Questa impostazione torna valida quando scegli un altro livello.",
       learnMore: "Scopri di più",
@@ -2089,7 +2090,7 @@ export const it = {
           auto:
             "Esegue da solo le chiamate abituali e chiede conferma solo quando un'azione sembra rischiosa, come leggere credenziali, aumentare i privilegi o eseguire comandi distruttivi.",
           off:
-            "Esegue ogni chiamata agli strumenti senza chiedere. Il codice Python e da terminale viene comunque eseguito nella sandbox, che limita i file del tuo computer a cui può accedere. Senza una sandbox del sistema funzionante, le chiamate rischiose chiedono prima.",
+            "Gli strumenti MCP abilitati usano le autorizzazioni del server e possono essere eseguiti senza chiedere l’approvazione. Python e il terminale usano il livello di sandbox selezionato. Le chiamate rischiose a Python e al terminale richiedono comunque l’approvazione se l’isolamento del sistema operativo non è disponibile o si seleziona il livello Basso.",
           full:
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
@@ -4488,6 +4489,8 @@ export const it = {
       unsupportedFileType: "Tipo di file non supportato",
       uploadOneFileType: "Carica un file {types}.",
       datasetUploaded: "Dataset caricato",
+      importPandasJson: "Importa .json come colonne pandas",
+      importSemicolonCsv: "Usa il punto e virgola come delimitatore per .csv",
       evalDatasetUploaded: "Dataset di valutazione caricato",
       uploadOneFileAtATime: "Carica un file alla volta",
       uploadSingleFileDescription:

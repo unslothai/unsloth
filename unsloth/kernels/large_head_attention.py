@@ -47,12 +47,27 @@ def _rocm_arch_allowed(device):
 
 
 def _rocm_allowlisted_device():
-    if torch.version.hip is None:
+    if not _is_rocm_torch(torch):
         return False
     try:
         return any(_rocm_arch_allowed(i) for i in range(torch.cuda.device_count()))
     except Exception:
         return False
+
+
+def _is_rocm_torch(torch):
+    # Inlined, not imported: tests load this file standalone. The +rocm version tag backs up a build that leaves
+    # torch.version.hip unset (the AMD SDK gfx1151 wheels checked so far set it).
+    if getattr(torch.version, "hip", None):
+        return True
+    # Never str() a TorchVersion (torch.__version__): Dynamo cannot trace its C str() under fullgraph. A plain str
+    # there (set by a caller or test) wins, else the plain-str torch.version.__version__.
+    version = getattr(torch, "__version__", None)
+    if type(version) is not str:
+        version = getattr(getattr(torch, "version", None), "__version__", None)
+    if type(version) is not str:
+        version = str(version or "")
+    return "rocm" in version.lower()
 
 
 def _fwd_configs():
@@ -90,7 +105,7 @@ def _bwd_configs():
 
 
 @triton.autotune(configs = _fwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_fwd(
     Q,
     K,
@@ -171,7 +186,7 @@ def _lh_fwd(
     tl.store(LSE + off_bh.to(tl.int64) * S + offs_m, m_i + tl.log2(l_safe), mask = row_ok)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_pre(
     O,
     DO,
@@ -209,7 +224,7 @@ def _lh_bwd_pre(
 
 
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dq(
     Q,
     K,
@@ -291,7 +306,7 @@ def _lh_bwd_dq(
 
 
 @triton.autotune(configs = _bwd_configs(), key = ["HEAD_DIM", "G"])
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dkdv(
     Q,
     K,
@@ -425,7 +440,7 @@ def _tma_tile(
     return desc.load([b, h, row0, col0]).reshape(ROWS, HALF)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_fwd_tma(
     desc_q,
     desc_k,
@@ -493,7 +508,7 @@ def _lh_fwd_tma(
     tl.store(LSE + off_bh.to(tl.int64) * S + offs_m, m_i + tl.log2(l_safe), mask = row_ok)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dq_tma(
     desc_q,
     desc_k,
@@ -560,7 +575,7 @@ def _lh_bwd_dq_tma(
     tl.store(out + HALF, (dq1 * sm_scale).to(DQ.dtype.element_ty), mask = row_ok[:, None])
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ["S"])
 def _lh_bwd_dkdv_tma(
     desc_q,
     desc_k,
@@ -1330,7 +1345,7 @@ _SELF_CHECK = {}
 def _measured_faster_on(device):
     # Timed faster than SDPA on sm80+ only. Pre-Ampere (T4) also lacks the shared memory for the
     # larger tiles and has no bf16, so it keeps SDPA without compiling or autotuning anything.
-    if torch.version.hip is not None:
+    if _is_rocm_torch(torch):
         return _rocm_opted_in() and _rocm_arch_allowed(device)
     try:
         return torch.cuda.get_device_capability(device)[0] >= 8
@@ -1568,7 +1583,7 @@ def patch_large_head_attention(model = None):
     the previous sdpa; with a model, installs only if a module has head_dim > 256."""
     if not _enabled() or not torch.cuda.is_available():
         return False
-    if torch.version.hip is not None and not (_rocm_opted_in() and _rocm_allowlisted_device()):
+    if _is_rocm_torch(torch) and not (_rocm_opted_in() and _rocm_allowlisted_device()):
         return False
     if model is not None:
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())

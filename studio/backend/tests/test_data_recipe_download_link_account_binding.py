@@ -116,8 +116,7 @@ def test_the_account_lookup_is_offloaded_to_the_threadpool():
 
 
 def test_a_non_ascii_signature_is_rejected_rather_than_raising():
-    """compare_digest on two str raises TypeError for non-ASCII, a 500 on a route meant to answer
-    401; both token shapes reach it since the MAC is checked before the expiry is parsed."""
+    """compare_digest raises TypeError on non-ASCII; MAC runs before expiry, so 500 not 401."""
     for token in (f"{int(time.time()) + 60}.acct.ééé", "notanumber.acct.ééé"):
         assert jobs._download_link_account(token, **PARTS) is None
 

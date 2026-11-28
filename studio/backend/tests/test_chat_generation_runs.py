@@ -931,20 +931,86 @@ def _image_thread(*follow_up):
 
 
 def test_a_text_follow_up_to_an_inline_image_is_admitted_without_storing_the_blob():
-    from core.inference.chat_generation_runs import detach_embedded_images
+    from core.inference.chat_generation_runs import detach_embedded_media
 
     messages = _image_thread(
         {"role": "user", "content": [{"type": "text", "text": "and what colour was it again?"}]}
     )
     sanitized = _sanitize_request(_model(messages = messages))
-    images = detach_embedded_images(sanitized)
+    images = detach_embedded_media(sanitized)
     url = _INLINE_PNG_PART["image_url"]["url"]
     assert url not in json.dumps(sanitized)
     assert list(images.values()) == [url]
 
 
+def test_a_recording_on_an_earlier_turn_is_rehydrated_in_place():
+    from core.inference.chat_generation_runs import _attach_embedded_media, detach_embedded_media
+    from core.inference.context_window import (
+        estimate_message_tokens_with_priced_images,
+        messages_with_priced_images,
+    )
+    from models.inference import ChatCompletionRequest
+    from routes.inference import (
+        _normalise_chat_content_parts,
+        _openai_llama_admission_media_tokens,
+        _openai_messages_for_gguf_chat,
+    )
+
+    audio = "c2F2ZWQtcmVjb3JkaW5n"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Listen"},
+                {"type": "input_audio", "input_audio": {"data": audio}, "studio_replay": True},
+            ],
+        },
+        {"role": "assistant", "content": "I heard it."},
+        {"role": "user", "content": "What was said?"},
+    ]
+    sanitized = _sanitize_request(_model(messages = messages))
+    media = detach_embedded_media(sanitized)
+    assert list(media.values()) == [audio]
+    assert audio not in json.dumps(sanitized)
+
+    _attach_embedded_media(sanitized, media)
+    payload = ChatCompletionRequest.model_validate(sanitized)
+    _normalise_chat_content_parts(payload)
+    rendered, _ = _openai_messages_for_gguf_chat(payload, True)
+    part = rendered[0]["content"][-1]
+    assert part["input_audio"]["data"] == audio
+    assert "studio_replay" not in part
+    assert payload.audio_base64 is None
+    assert rendered[-1]["content"] == messages[-1]["content"]
+    tokens = part["studio_audio_tokens"]
+    assert tokens > 0
+    assert _openai_llama_admission_media_tokens(payload, fitted_messages = rendered) == tokens
+    assert _openai_llama_admission_media_tokens(payload, fitted_messages = rendered[1:]) == 0
+    priced = messages_with_priced_images(rendered, lambda _: 0)
+    assert priced[0]["content"][-1] == {"type": "text", "text": " the" * tokens}
+    assert estimate_message_tokens_with_priced_images(rendered[0], lambda _: 0) == (
+        estimate_message_tokens_with_priced_images(
+            {"role": "user", "content": rendered[0]["content"][:-1]}, lambda _: 0
+        )
+        + tokens
+    )
+
+
+def test_durable_audio_replay_cannot_mark_a_new_recording_as_history():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_audio", "input_audio": {"data": "YQ=="}, "studio_replay": True},
+            ],
+        },
+    ]
+    with pytest.raises(Exception, match = "one earlier user message"):
+        _sanitize_request(_model(messages = messages))
+
+
 def test_a_different_image_is_a_different_stored_request():
-    from core.inference.chat_generation_runs import detach_embedded_images
+    from core.inference.chat_generation_runs import detach_embedded_media
 
     follow_up = {"role": "user", "content": "again"}
     first = _sanitize_request(_model(messages = _image_thread(follow_up)))
@@ -954,8 +1020,8 @@ def test_a_different_image_is_a_different_stored_request():
         "image_url": {"url": "data:image/png;base64,AAAA"},
     }
     second = _sanitize_request(_model(messages = other))
-    detach_embedded_images(first)
-    detach_embedded_images(second)
+    detach_embedded_media(first)
+    detach_embedded_media(second)
     assert first != second
 
 

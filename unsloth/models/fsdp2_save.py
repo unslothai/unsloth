@@ -204,8 +204,7 @@ def _root_mesh(mesh):
 
 
 def _same_mesh(a, b):
-    """Same device type, dim names and rank layout. DTensor ops may hand back an equal mesh from an earlier
-    init_device_mesh of the same shape (torch caches specs by mesh equality), so identity is not enough."""
+    """Same device type, dim names and ranks; torch caches equal meshes, so compare by value."""
     if a is b:
         return True
     try:
@@ -440,8 +439,7 @@ def _writers_in_turn(
 
 
 def _gather_full(param, DTensor):
-    """All ranks: the full tensor of a sharded parameter. Packed 4-bit bytes travel as uint8, so no
-    float copy kernel can rewrite NaN bit patterns inside them."""
+    """Full tensor on all ranks; packed 4-bit bytes travel as uint8 so NaN patterns survive."""
     local = param.to_local()
     mesh_type = param.device_mesh.device_type
     if local.device.type == "cpu" and mesh_type != "cpu":
@@ -485,8 +483,7 @@ def _quant_state_on_cpu(quant_state, device = "cpu"):
 
 
 def _restage_4bit(weight, device):
-    """The packed Params4bit `weight` on `device`, with its own copy of the QuantState there. Every
-    other attribute is carried over as is, which is what PEFT's 4-bit merge rebuilds the weight from."""
+    """Params4bit weight on device, with QuantState copy; other attributes kept for PEFT merge."""
     from bitsandbytes.nn import Params4bit
 
     moved = torch.Tensor._make_subclass(Params4bit, weight.data.to(device), False)
@@ -1354,9 +1351,8 @@ _BYTE_CHECK_CHUNK = 64 << 20
 
 
 def _equal_bytes(a, b):
-    """torch.equal of two flat uint8 views without a second full copy on either device: on one
-    device they are compared in place, otherwise in bounded slices on the loaded tensor's device (a
-    checkpoint held on the host is never copied onto the accelerator next to the gathered weight)."""
+    """torch.equal of flat uint8 views, no second full copy: in place on one device, else bounded
+    slices on the loaded tensor's device so a host checkpoint never lands on the accelerator."""
     if a.numel() != b.numel():
         return False
     if a.device == b.device:
@@ -1369,12 +1365,9 @@ def _equal_bytes(a, b):
 
 
 def _same_packed_bytes(live, loaded, dist, broadcast):
-    """Whether the packed 4-bit bytes being loaded equal the live (possibly sharded) weight's. Every
-    rank gathers the live weight (a collective); only a rank holding the loaded data (rank 0 with
-    `broadcast`, every rank otherwise) compares, on the gathered weight's device, so a peer never
-    copies or reads its placeholder (an empty or meta state dict). One collective then agrees the
-    verdict, so every rank raises or keeps loading together: rank 0's broadcast, or a sum of
-    mismatches over the weight's mesh."""
+    """Whether loaded packed 4-bit bytes equal the live weight; all ranks gather it, only ranks
+    holding loaded data compare (rank 0 if broadcast) on the gathered weight's device so
+    placeholders are never read; one collective makes all ranks raise or keep loading together."""
     DTensor = _dtensor_class()
     mesh = None
     if DTensor is not None and isinstance(live, DTensor):
@@ -1383,8 +1376,7 @@ def _same_packed_bytes(live, loaded, dist, broadcast):
     same = False
     error = None
     if not broadcast or dist.get_rank() == 0:
-        # An error here (an OOM, a bad tensor) still reaches the verdict collective below as a
-        # mismatch, so the peers waiting in it fail with this rank instead of hanging.
+        # Errors here count as a mismatch in the verdict, so peers fail instead of hanging.
         try:
             if DTensor is not None and isinstance(loaded, DTensor):
                 loaded = loaded.full_tensor()
@@ -1423,8 +1415,7 @@ def _restore_quant_state(model, state_dict, options):
     if not isinstance(state_dict, dict):
         state_dict = {}
     if broadcast:
-        # An object broadcast, not a tensor one: a CPU tensor cannot go through an NCCL group, and
-        # broadcast_object_list stages on whatever device the group's backend needs.
+        # Object broadcast: CPU tensors cannot use NCCL; objects stage on the backend's device.
         has = [
             any(
                 k == prefix + "weight" or k.startswith(prefix + "weight.")
@@ -1450,8 +1441,7 @@ def _restore_quant_state(model, state_dict, options):
         }
         loads_weight = head[:-1] in state_dict
         if broadcast:
-            # Only rank 0 holds the entries: a peer's own dict is a placeholder (empty, or meta
-            # tensors) it must not copy to the host, as broadcast_object_list replaces it anyway.
+            # Only rank 0 holds entries; peer placeholders are replaced, never copied to host.
             payload = [None]
             if owns:
                 payload = [(loads_weight, {k: v.detach().cpu() for k, v in saved.items()})]
@@ -1459,8 +1449,7 @@ def _restore_quant_state(model, state_dict, options):
             loads_weight, saved = payload[0]
         if not saved:
             if loads_weight:
-                # Pre-QuantState checkpoints: live scales apply only when the saved packed bytes
-                # match the live ones.
+                # Pre-QuantState checkpoints: live scales apply only if the saved bytes match.
                 same = _same_packed_bytes(
                     module.weight, state_dict.get(head[:-1]) if owns else None, dist, broadcast
                 )
@@ -1600,8 +1589,7 @@ def _in_backward():
 
 
 def model_mesh(model):
-    """The device mesh `model` is sharded over: the one shard_model recorded, else its first DTensor
-    parameter's; None when neither exists (the default world group applies)."""
+    """Mesh shard_model recorded, else first DTensor param's; None means default world group."""
     mesh = model.__dict__.get("_unsloth_fsdp2_mesh", None)
     if mesh is not None:
         return mesh
@@ -1698,8 +1686,7 @@ def _like_param(p, local):
 
 
 def _fsdp_managed_param_ids(model):
-    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
-    A readable state managing no params (every trainable param ignored) gives an empty set."""
+    """FSDP2 param ids; None if state unreadable (all DTensors count); empty if none managed."""
     ids = set()
     found = False
     for unit in fsdp2_units(model):
@@ -1724,8 +1711,7 @@ def _fsdp_managed_param_ids(model):
 
 
 def _tp_shard_outside(param, mesh, dist):
-    """True when param's mesh meets the dp `mesh` only at this rank, so its local shard is replicated
-    over `mesh`; any other overlap would average different shards."""
+    """True if its mesh meets `mesh` only at this rank; other overlap averages unlike shards."""
     if mesh is None:
         return False
     try:
@@ -1739,7 +1725,11 @@ def _tp_shard_outside(param, mesh, dist):
 
 def _fsdp_grad_sync_deferred(model, cache):
     """True when every FSDP2 param group has set_requires_gradient_sync(False), i.e. a non-final
+    micro-batch, or inside fsdp2_native._no_grad_sync: auto GA re-enables the reduce-scatter of
+    mostly trainable units there, and the whole replicated gradients can still wait for the last
     micro-batch. False when no group is found (sync every backward)."""
+    if model.__dict__.get("_unsloth_ga_no_sync"):
+        return True
     states = cache.get("fsdp_states")
     if states is None:
         states = []

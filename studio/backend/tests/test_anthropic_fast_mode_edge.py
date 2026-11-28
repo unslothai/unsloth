@@ -85,7 +85,6 @@ def _capture(
             extra = {}
             for key in (
                 "enabled_tools",
-                "compaction_threshold",
                 "fast_mode",
             ):
                 if key in kwargs:
@@ -167,36 +166,6 @@ def test_fast_mode_merges_with_code_execution_beta(monkeypatch):
     parts = _beta_parts(cap["headers"])
     assert "fast-mode-2026-02-01" in parts, cap["headers"]
     assert any(p.startswith("code-execution-") for p in parts), cap["headers"]
-    assert len(parts) == len(set(parts)), parts
-
-
-def test_fast_mode_merges_with_compaction_beta(monkeypatch):
-    """fast_mode + compaction_threshold >= 50K -> both betas present."""
-    cap, _ = _capture(
-        monkeypatch,
-        fast_mode = True,
-        model = "claude-opus-4-8",
-        compaction_threshold = 100_000,
-    )
-    parts = _beta_parts(cap["headers"])
-    assert "fast-mode-2026-02-01" in parts, cap["headers"]
-    assert "compact-2026-01-12" in parts, cap["headers"]
-
-
-def test_fast_mode_merges_with_code_execution_and_compaction(monkeypatch):
-    """Three betas coexist in one comma-separated header, no duplicates."""
-    cap, _ = _capture(
-        monkeypatch,
-        fast_mode = True,
-        model = "claude-opus-4-8",
-        enabled_tools = ["code_execution"],
-        compaction_threshold = 100_000,
-    )
-    parts = _beta_parts(cap["headers"])
-    assert "fast-mode-2026-02-01" in parts
-    assert "compact-2026-01-12" in parts
-    assert any(p.startswith("code-execution-") for p in parts), parts
-    assert len(parts) >= 3
     assert len(parts) == len(set(parts)), parts
 
 

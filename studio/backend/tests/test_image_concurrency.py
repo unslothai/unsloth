@@ -605,3 +605,47 @@ def test_a_cancelled_waiter_leaves_the_queue_and_the_next_one_is_served():
     b.join(timeout = 5)
     assert outcome["second"] == "served"
     assert not engine._generate_lock.locked()
+
+
+@pytest.mark.parametrize(
+    "intervals, shared",
+    [((0.5, 0.75), False), ((0.5, None), False), ((0.5, 0.5), True)],
+)
+def test_a_fast_cfg_interval_is_part_of_the_batch_key(studio, intervals, shared):
+    """Fast CFG (``cfg_interval_end`` -> FLUX.3 ``guidance_stop``) is set per pipeline call: requests with different
+    intervals never share one, the same interval still does."""
+    app, backend, _saved = studio
+    plain = backend.generate
+
+    def generate(
+        *,
+        prompt,
+        cfg_interval_end = None,
+        **kwargs,
+    ):
+        if cfg_interval_end is not None:
+            kwargs["cfg_interval_end"] = cfg_interval_end
+        return plain(prompt = prompt, **kwargs)
+
+    backend.generate = generate
+    posts = [
+        (
+            "/api/inference/images/generate",
+            account,
+            _create(prompt, **({} if end is None else {"cfg_interval_end": end})),
+        )
+        for account, prompt, end in (
+            ("alice", "a fox", intervals[0]),
+            ("bob", "a cat", intervals[1]),
+        )
+    ]
+    responses = _post_while_rendering(app, backend, posts, waiting = 2)
+    assert all(r.status_code == 200 for r in responses), [r.text for r in responses]
+    batched = _batched_calls(backend)
+    if shared:
+        assert len(batched) == 1 and batched[0]["kwargs"].get("cfg_interval_end") == 0.5
+    else:
+        assert batched == [] and len(backend.calls) == 2
+        assert sorted(str(c["kwargs"].get("cfg_interval_end")) for c in backend.calls) == sorted(
+            str(end) for end in intervals
+        )

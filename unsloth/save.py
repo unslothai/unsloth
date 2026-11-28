@@ -13,7 +13,7 @@
 from unsloth_zoo.utils import Version
 from importlib.metadata import version as importlib_version
 from unsloth_zoo.hf_utils import dtype_from_config, HAS_TORCH_DTYPE
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from unsloth_zoo.llama_cpp import (
     convert_to_gguf,
     quantize_gguf,
@@ -82,7 +82,9 @@ from .models._utils import (
     _peft_merged_module_name,
     _peft_untied_lm_head,
     _strip_torchao_fake_quantization,
+    RESIDUAL_INIT_LORA_WEIGHTS,
     lora_relative_to_original_base,
+    lora_saved_relative_to_original_base,
 )
 from .models.mistral_format import raise_if_merging_mistral_format_view
 from .models.inkling2 import (
@@ -2798,6 +2800,16 @@ def _remove_empty_directory(directory):
         pass
 
 
+def _partial_gguf_path(final):
+    """Sibling to write `final` under before `_place_gguf_output` moves it in; a short name when `.tmp` would pass NAME_MAX or Windows MAX_PATH."""
+    head, name = os.path.split(final)
+    if len(os.fsencode(name)) + 4 <= 255 and not (
+        IS_WINDOWS and len(os.path.abspath(final)) + 4 > _WINDOWS_MAX_PATH_CHARS
+    ):
+        return final + ".tmp"
+    return os.path.join(head, f"~{os.urandom(4).hex()}.tmp")
+
+
 def _place_gguf_output(src, dst):
     """`os.replace` is a rename that also overwrites on Windows; anything it refuses (cross-device, directory at `dst`, held file) falls back to `shutil.move`."""
     if os.path.abspath(src) == os.path.abspath(dst):
@@ -3147,11 +3159,12 @@ def save_to_gguf(
             output_location = os.path.join(
                 gguf_directory, f"{model_name}.{quant_method.upper()}.gguf"
             )
+            partial_location = _partial_gguf_path(output_location)
             try:
                 if quant_method == "q2_k_l":
-                    return _quantize_q2_k_l(
+                    _quantize_q2_k_l(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quantizer_location = quantizer_location,
                         n_threads = n_threads if n_threads is not None else n_cpus,
                         print_output = print_output,
@@ -3161,7 +3174,7 @@ def save_to_gguf(
                     # Standard unsloth-zoo quantization for everything else. Pass imatrix only when set, so an older zoo still handles plain quants; an inapplicable imatrix was rejected above.
                     quant_kwargs = dict(
                         input_gguf = base_gguf,
-                        output_gguf = output_location,
+                        output_gguf = partial_location,
                         quant_type = quant_method,
                         quantizer_location = quantizer_location,
                         print_output = print_output,
@@ -3170,7 +3183,9 @@ def save_to_gguf(
                         quant_kwargs["imatrix"] = imatrix
                     if n_threads is not None:
                         quant_kwargs["n_threads"] = n_threads
-                    return quantize_gguf(**quant_kwargs)
+                    quantize_gguf(**quant_kwargs)
+                _place_gguf_output(partial_location, output_location)
+                return output_location
             except Exception as e:
                 # Judge "no room" against what this pass writes, not a constant. Priced as a lower bound, not the generous reclamation estimate: a high guess calls a disk full that had room.
                 try:
@@ -3199,7 +3214,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
@@ -3216,7 +3231,7 @@ def save_to_gguf(
                     e,
                     gguf_directory,
                     needed_bytes = _needed,
-                    partial_output = output_location,
+                    partial_output = partial_location,
                 ):
                     # Kaggle is not the only place a disk fills, and the rebuild advice below only fits a broken quantizer; on a full disk it is a long compile that fixes nothing.
                     try:
@@ -3255,6 +3270,8 @@ def save_to_gguf(
                         "Once that's done, redo the quantization.\n"
                         f"Error: {e}"
                     ) from e  # keep the cause: the OOM check walks it for the returncode
+            finally:
+                Path(partial_location).unlink(missing_ok = True)
 
         # Outputs already on disk pre-date this run; never delete them on a failure.
         preexisting_outputs = {
@@ -5321,6 +5338,19 @@ def _torchao_gather_options(model, arguments):
     return gather_on_accelerator_if_it_fits(model)
 
 
+def _shard_bytes(max_shard_size):
+    """`max_shard_size` ("5GB", "500MB" or bytes) as bytes for the GGUF dense writer."""
+    from transformers.utils.hub import convert_file_size_to_int
+    return convert_file_size_to_int(max_shard_size)
+
+
+# The dense writer reads the model's own (packed or merged) weights; a supplied state dict would be ignored.
+_GGUF_PACKED_STATE_DICT_REFUSAL = (
+    "Unsloth: this model still holds GGUF-packed weights, which are saved from the model itself, so a supplied "
+    "`state_dict` cannot be used. Load its weights into the model, or call without `state_dict`."
+)
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 @_fsdp2_export_on_rank0("save_pretrained_gguf", adapter_only = _gguf_lora_only)
 @_normalize_tied_weights_keys_for_save
@@ -5541,7 +5571,27 @@ def unsloth_save_pretrained_gguf(
             original_path = getattr(self, "_unsloth_modelscope_snapshot", None) or getattr(
                 self.config, "_name_or_path", None
             )
-            if _gguf_reuses_loaded_checkpoint(self, state_dict):
+            from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+            if is_gguf_packed_model(self):
+                # Packed GGUF linears are uint8 blocks to save_pretrained: the converter reads the dequantized
+                # (and any merged) weights instead.
+                if state_dict is not None:
+                    raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
+                print("Unsloth: Model is not a PEFT model. Saving its dequantized GGUF weights...")
+                try:
+                    write_gguf_dense_base(
+                        self, save_directory, max_shard_bytes = _shard_bytes(max_shard_size)
+                    )
+                    if getattr(self, "generation_config", None) is not None:
+                        self.generation_config.save_pretrained(save_directory)
+                    if tokenizer is not None:
+                        tokenizer.save_pretrained(save_directory)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Failed to save model: {_describe_exception(e)}"
+                        f"{_offloaded_parameter_hint(self)}"
+                    ) from e
+            elif _gguf_reuses_loaded_checkpoint(self, state_dict):
                 print(
                     f"Unsloth: Model is not a PEFT model. Using existing checkpoint at {original_path}"
                 )
@@ -6569,6 +6619,94 @@ def _lora_gguf_conversion_error(returncode, cause, expert_targets) -> Exception:
     )
 
 
+def _lora_gguf_converter_input(
+    model,
+    tokenizer,
+    lora_dir,
+    scratch_dir,
+    fold_scale = True,
+):
+    """The adapter folder the converter reads. llama.cpp adds `alpha / r * B @ A` to the original base, with one alpha
+    per file and r read off each tensor, ignoring use_rslora and alpha_pattern. PiSSA, OLoRA, ... train on a rewritten
+    base, so they are saved relative to the original one first; then each lora_B absorbs its PEFT scale over
+    llama.cpp's (unless `fold_scale` is False: Inkling 2's adapter folds it from the live model). Written to
+    `scratch_dir`, so `lora_dir` stays as PEFT reads it."""
+    import json
+    from peft.utils import load_peft_weights
+    from peft.utils.other import get_pattern_key
+    from safetensors.torch import save_file
+
+    if not getattr(model, "peft_config", None):
+        return lora_dir
+    source = lora_dir
+    with lora_saved_relative_to_original_base(model) as rewritten_base:
+        if rewritten_base:
+            save_lora_to_custom_dir(model, tokenizer, scratch_dir)
+            source = scratch_dir
+    with open(os.path.join(source, "adapter_config.json"), encoding = "utf-8") as f:
+        config = json.load(f)
+    init = config.get("init_lora_weights")
+    if isinstance(init, str) and init.split("_niter_")[0] in RESIDUAL_INIT_LORA_WEIGHTS:
+        # No initial factors recorded, or a form the conversion skips (DoRA, rsLoRA with patterns).
+        raise NotImplementedError(
+            f"Unsloth: this `init_lora_weights = {init!r}` adapter trained on a rewritten base and cannot be "
+            "written relative to the original one, which a GGUF LoRA needs. Export the merged model as GGUF instead."
+        )
+    if not fold_scale:
+        return source
+    from .models._utils import _residual_lora_rows
+
+    rslora, alpha = config.get("use_rslora"), config.get("lora_alpha")
+    ranks, alphas = config.get("rank_pattern") or {}, config.get("alpha_pattern") or {}
+    gguf_alpha = alpha or 1.0  # llama.cpp reads alpha = 0 as "no scaling"
+    # Saved factors run at the live scale (set_scale / scale_layer move it); converted ones carry it already.
+    # LoRA-GA saves in the converted form on its own (_unsloth_residual_save).
+    converted_save = rewritten_base or getattr(model, "_unsloth_residual_save", False)
+    converted = (
+        {n for _, _, n in _residual_lora_rows(model, {"default"})} if converted_save else set()
+    )
+    live = {
+        n: m.scaling["default"]
+        for n, m in model.named_modules()
+        if isinstance(getattr(m, "scaling", None), dict) and "default" in m.scaling
+    }
+    weights = load_peft_weights(source, device = "cpu")
+    factors = {}
+    for key in weights:
+        suffix = next((s for s in (".lora_B.weight", ".lora_embedding_B") if key.endswith(s)), None)
+        if suffix is None:
+            continue
+        prefix = key[: -len(suffix)]
+        name = prefix.removeprefix("base_model.model.")
+        r = ranks.get(get_pattern_key(ranks, name), config["r"])
+        if prefix in live and prefix not in converted:
+            scale = live[prefix]
+        else:
+            scale = alphas.get(get_pattern_key(alphas, name), alpha) / (r**0.5 if rslora else r)
+        factors[key] = scale * r / gguf_alpha
+    # As saved only if llama.cpp, now or once it reads use_rslora / alpha_pattern, applies exactly these factors.
+    if (
+        not (rewritten_base or rslora or alphas)
+        and alpha
+        and all(abs(f - 1) < 1e-9 for f in factors.values())
+    ):
+        return source
+    for key, factor in factors.items():
+        weights[key] = (weights[key].float() * factor).to(weights[key].dtype)
+    # A fresh folder: `source` may be scratch_dir, and Windows cannot replace a file it just read.
+    out = os.path.join(scratch_dir, "gguf")
+    os.makedirs(out, exist_ok = True)
+    save_file(
+        {k: v.contiguous() for k, v in weights.items()},
+        os.path.join(out, "adapter_model.safetensors"),
+        metadata = {"format": "pt"},
+    )
+    config.update(lora_alpha = gguf_alpha, use_rslora = False, alpha_pattern = {})
+    with open(os.path.join(out, "adapter_config.json"), "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2)
+    return out
+
+
 @_model_parallel_refuses_save("save_pretrained_gguf")
 def _unsloth_save_lora_gguf(
     model,
@@ -6621,6 +6759,8 @@ def _unsloth_save_lora_gguf(
 
     base_config_dir = None
     inkling2_dir = None
+    scratch_dir = None
+    partial_gguf = None
     # Save the adapter: an isolated temp dir for a hub push, else save_directory itself, wrapped so it is always cleaned up.
     if push_to_hub:
         lora_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-")
@@ -6648,16 +6788,27 @@ def _unsloth_save_lora_gguf(
             )
 
         out_gguf = os.path.join(lora_dir, f"{model_name}-lora-{outtype}.gguf")
-        converter_input = lora_dir
-        if is_inkling2_config(getattr(model, "config", None)):
+        partial_gguf = _partial_gguf_path(out_gguf)
+        scratch_dir = tempfile.mkdtemp(prefix = "unsloth-lora-gguf-adapter-")
+        inkling2 = is_inkling2_config(getattr(model, "config", None))
+        converter_input = _lora_gguf_converter_input(
+            model, tokenizer, lora_dir, scratch_dir, fold_scale = not inkling2
+        )
+        if inkling2:
             # The converter maps Inkling 2's original checkpoint names, PEFT saves transformers names.
-            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(model, lora_dir)
+            converted = ()
+            if converter_input != lora_dir or getattr(model, "_unsloth_residual_save", False):
+                from .models._utils import _residual_lora_rows
+                converted = {n for _, _, n in _residual_lora_rows(model, {"default"})}
+            converter_input = inkling2_dir = inkling2_lora_gguf_adapter(
+                model, converter_input, converted = converted
+            )
         cmd = [
             sys.executable,
             converter,
             converter_input,
             "--outfile",
-            out_gguf,
+            partial_gguf,
             "--outtype",
             outtype,
         ]
@@ -6712,11 +6863,12 @@ def _unsloth_save_lora_gguf(
                 e.returncode, _converter_error_line(output_tail), expert_targets
             )
 
-        if not os.path.isfile(out_gguf):
+        if not os.path.isfile(partial_gguf):
             raise RuntimeError(
                 f"Unsloth: LoRA GGUF conversion reported success but wrote no .gguf file to "
                 f"{out_gguf}. See the output above for details."
             )
+        _place_gguf_output(partial_gguf, out_gguf)
 
         if not push_to_hub:
             print(f"Unsloth: Done. Saved LoRA GGUF to '{out_gguf}'")
@@ -6761,12 +6913,16 @@ def _unsloth_save_lora_gguf(
         print(f"Unsloth: Done. Uploaded to {destination}")
         return save_directory
     finally:
+        if partial_gguf is not None:
+            Path(partial_gguf).unlink(missing_ok = True)
         if push_to_hub:
             shutil.rmtree(lora_dir, ignore_errors = True)
         if base_config_dir is not None:
             shutil.rmtree(base_config_dir, ignore_errors = True)
         if inkling2_dir is not None:
             shutil.rmtree(inkling2_dir, ignore_errors = True)
+        if scratch_dir is not None:
+            shutil.rmtree(scratch_dir, ignore_errors = True)
 
 
 @_model_parallel_refuses_save("push_to_hub_ggml")
@@ -7622,6 +7778,31 @@ def unsloth_generic_save(
     if not _is_peft:
         if _defer_to_main_process(is_main_process):
             return
+        from unsloth.models.gguf_packed import is_gguf_packed_model, write_gguf_dense_base
+
+        if is_gguf_packed_model(model):
+            # GGUF blocks are not a checkpoint transformers reads: write the dequantized (and any merged) weights.
+            if state_dict is not None:
+                raise ValueError(_GGUF_PACKED_STATE_DICT_REFUSAL)
+            if "16bit" not in save_method:
+                raise RuntimeError(
+                    "Unsloth: this model's base weights stay packed in their GGUF blocks, so it saves as "
+                    '`save_method = "merged_16bit"` (dequantized) or, before merging, as a LoRA adapter.'
+                )
+            print(f"Unsloth: Saving the dequantized GGUF model to '{save_directory}' ...")
+            write_gguf_dense_base(
+                model,
+                save_directory,
+                dtype = torch.float32 if _requests_float32(dtype) else None,
+                max_shard_bytes = _shard_bytes(max_shard_size),
+            )
+            if getattr(model, "generation_config", None) is not None:
+                model.generation_config.save_pretrained(save_directory)
+            if tokenizer is not None:
+                with _left_padding_side(tokenizer):
+                    tokenizer.save_pretrained(save_directory)
+            print(f"Unsloth: Model saved successfully to '{save_directory}'")
+            return
 
         _save_kwargs = dict(
             safe_serialization = safe_serialization,
@@ -7798,29 +7979,49 @@ def unsloth_generic_save(
                 "Update via `pip install --upgrade --no-cache-dir unsloth_zoo`, or save "
                 "locally with `save_pretrained_merged` and upload that folder."
             )
-        _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+        from unsloth.models.gguf_packed import gguf_dense_base_for_merge
 
-        # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
-        # its GPU first, so the merge below only unloads those layers.
-        streamed = []
-        if in_place and getattr(model.config, "quantization_config", None):
-            from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
-            streamed = merge_4bit_lora_layer_by_layer(model)
-        relative = nullcontext() if in_place else lora_relative_to_original_base(model)
-        with relative, _unmerge_flags_on_error(streamed):
-            merge_and_overwrite_lora(
-                _merge_base_resolver(in_place),
-                model = model,
-                tokenizer = tokenizer,
-                save_directory = save_directory,
-                push_to_hub = push_to_hub,
-                private = private,
-                token = token,
-                save_method = save_method,
-                output_dtype = dtype,
-                low_disk_space_usage = True,
-                use_temp_file = False,
+        # A packed GGUF base has no 16-bit checkpoint to read: merge onto its dequantized copy.
+        _merge_stack = ExitStack()
+        try:
+            _gguf_resolver = (
+                None
+                if in_place
+                else _merge_stack.enter_context(
+                    gguf_dense_base_for_merge(
+                        model,
+                        save_directory,
+                        # As the unwrapped export: a float32 merge decodes the blocks in float32, not via bf16.
+                        dtype = torch.float32 if _requests_float32(dtype) else None,
+                    )
+                )
             )
+            if _gguf_resolver is None:
+                _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
+
+            # Under FSDP2 the gathered packed 4-bit base waits on the CPU: merge it one layer at a time on
+            # its GPU first, so the merge below only unloads those layers.
+            streamed = []
+            if in_place and getattr(model.config, "quantization_config", None):
+                from .models.fsdp2_save import merge_4bit_lora_layer_by_layer
+                streamed = merge_4bit_lora_layer_by_layer(model)
+            relative = nullcontext() if in_place else lora_relative_to_original_base(model)
+            with relative, _unmerge_flags_on_error(streamed):
+                merge_and_overwrite_lora(
+                    _gguf_resolver or _merge_base_resolver(in_place),
+                    model = model,
+                    tokenizer = tokenizer,
+                    save_directory = save_directory,
+                    push_to_hub = push_to_hub,
+                    private = private,
+                    token = token,
+                    save_method = save_method,
+                    output_dtype = dtype,
+                    low_disk_space_usage = True,
+                    use_temp_file = False,
+                )
+        finally:
+            _merge_stack.close()
         # Pushes with an attached head were rerouted to a local save above.
         if not push_to_hub:
             if _trained_rope_factor is not None and _is_main_rank():

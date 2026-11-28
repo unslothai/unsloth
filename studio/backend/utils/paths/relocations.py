@@ -125,7 +125,6 @@ def _chosen_entry(key: str) -> Optional[dict]:
 
 
 def chosen(key: str) -> Optional[Path]:
-    """The folder the owner picked for `key`, or None for the default."""
     entry = _chosen_entry(key)
     return Path(entry["path"]) if entry else None
 
@@ -156,7 +155,6 @@ def _unavailable(entry: dict) -> bool:
 
 
 def _source_available(entry: dict) -> bool:
-    """Whether the drive of the folder a move is leaving is there."""
     mount = entry.get("moving_mount")
     if mount:
         return os.path.ismount(mount)
@@ -176,8 +174,7 @@ def _in_use(entry: dict) -> Optional[Path]:
 
 
 def location_dir(key: str, default: Path) -> Path:
-    """key's folder, ready to use; only the default is created, since a chosen folder that has gone
-    must not be remade, or files land on the disk beneath its mount point."""
+    """Creates only the default; remaking a gone chosen folder would put files under its mount."""
     from utils.paths.storage_roots import ensure_dir
 
     entry = _chosen_entry(key)
@@ -205,8 +202,7 @@ def chosen_available(key: str) -> bool:
 
 
 def wait_for_move(key: str) -> None:
-    """Marks key's cut-short move as waiting for its chosen drive, which keeps the folder it was
-    leaving in use until taken up again; this process only, as the next load retries it."""
+    """Keeps the leaving folder in use while waiting; in memory only, so the next load retries."""
     with _lock:
         entry = _cache.get(_db_key(), {}).get(key)
         if entry is not None and entry.get("moving_from"):
@@ -230,8 +226,7 @@ def set_chosen(
     path: Optional[Path],
     moving_from: Optional[Path] = None,
 ) -> None:
-    """Record `path` for `key`; None goes back to the default. `moving_from` marks a move under
-    way, to be finished on the next load if it never is. Owner context only."""
+    """Owner only. None reverts to default; a leftover moving_from is finished on next load."""
     if key not in MOVABLE:
         raise ValueError(f"{key} files cannot move")
     updated = dict(_load())

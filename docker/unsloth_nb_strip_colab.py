@@ -26,8 +26,7 @@ _WIDGET_VIEW_MIME = "application/vnd.jupyter.widget-view+json"
 
 
 def _is_intro_line(line):
-    """True for the Colab run announcement, bare or in a one-line HTML comment; only a comment that
-    opens and closes on one line matches, so no dangling <!-- can swallow the cell."""
+    """Matches the Colab intro, bare or in one-line HTML comments; never an unclosed opener."""
     stripped = line.strip()
     low = stripped.lower()
     if low.startswith(_INTRO_PREFIX):
@@ -83,9 +82,7 @@ def _strip_cell(cell):
 
 
 def _strip_intro(nb):
-    """Strip the Colab intro from the LEADING markdown block: cells[0] alone misses the
-    notebooks that put the badge there and the sentence in cells[1]. The scan stops at
-    the first non-markdown cell, so it never reaches prose between code cells."""
+    """Strips the Colab intro from leading markdown cells (badge and sentence may be split)."""
     cells = nb.get("cells")
     if not isinstance(cells, list):
         return False
@@ -131,9 +128,8 @@ def _unlink(path):
 
 
 def _stage_clean(path):
-    """Returns (tmp, hash_before, hash_after) for a cleaned copy staged beside the notebook but not
-    published, or None if nothing changed or the write failed; split out so migrate can record
-    the new hash first."""
+    """Returns (tmp, hash_before, hash_after) for a cleaned copy staged, not published, beside the
+    notebook, or None if unchanged or failed; split so migrate can record the hash first."""
     try:
         before = _sha256(path)
         with open(path, "r", encoding = "utf-8") as f:
@@ -173,8 +169,7 @@ def _publish(tmp, path, before):
 
 
 def _write_state(state_path, lines):
-    """Replaces the state file durably, returning False on failure; fsync runs before the rename,
-    since a crash between them would leave the rename visible with the content unwritten."""
+    """Returns False on failure; fsync before rename so no crash exposes unwritten content."""
     tmp = state_path + ".tmp"
     try:
         with open(tmp, "w", encoding = "utf-8") as f:
@@ -189,9 +184,8 @@ def _write_state(state_path, lines):
 
 
 def _resume(path, rec):
-    """Finishes a publish interrupted between the state and notebook renames, True if it did; that
-    stop would otherwise read as a user edit, and only that case reproduces the record byte for
-    byte."""
+    """Finishes a publish interrupted between the state and notebook renames, True if it did; else
+    that stop reads as a user edit, and only this case reproduces the record byte for byte."""
     st = _stage_clean(path)
     if st is None:
         return False
@@ -203,8 +197,7 @@ def _resume(path, rec):
 
 
 def strip_notebook(path, staged = None):
-    """True if the notebook was modified and written back. `staged`, when given, gets
-    {"sha256": ...} for the bytes THIS call wrote, so the caller need not re-read."""
+    """True if modified and written back; staged, when given, gets sha256 of the bytes written."""
     st = _stage_clean(path)
     if st is None:
         return False
@@ -265,7 +258,6 @@ def migrate(state_path, dest):
         if _publish(tmp, path, before):
             changed += 1
         else:
-            # nothing landed, so take the record back off
             out[i] = line
             _write_state(state_path, out)
 

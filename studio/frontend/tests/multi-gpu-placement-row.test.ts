@@ -46,6 +46,30 @@ test("the CFG replica verdict (placement {chosen, reason}) is shown when the sum
   assert.equal(armed.detail.match(/cfg replica on cuda:1/gi)?.length, 1);
 });
 
+test("a multi-card request that ran on one card names the reason (primary may be unknown)", () => {
+  const excluded = multiGpuPlacementRow({
+    decision: {
+      chosen: "one_card",
+      summary:
+        "placement: one card: everything on cuda:0 (cuda:1 (Tesla T4, sm 7.5) left out: bf16 compute needs sm 8.0 (this load runs bf16 on cuda:0, sm 8.0))",
+      primary: "cuda:0",
+      rejected: [],
+    },
+  });
+  assert.ok(excluded);
+  assert.equal(excluded.label, "One card");
+  assert.match(excluded.detail, /^One card: everything on cuda:0 \(cuda:1 \(Tesla T4, sm 7\.5\) left out: bf16 compute needs sm 8\.0/);
+  const kept = multiGpuPlacementRow({
+    decision: {
+      chosen: "one_card",
+      summary: "placement: one card: everything on the selected card (Keep multiple models loaded is Always: the residency arbiter prices and claims one card per image or video load, so a second card would hold memory it never accounted for)",
+      primary: null,
+    },
+  });
+  assert.ok(kept);
+  assert.match(kept.detail, /Keep multiple models loaded is Always/);
+});
+
 test("the batch-split note says only a batch split can differ from one card", () => {
   assert.match(MULTI_GPU_BATCH_NOTE, /identical to one card/);
   assert.match(MULTI_GPU_BATCH_NOTE, /batch split can differ slightly from one card/);
