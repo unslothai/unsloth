@@ -1712,15 +1712,22 @@ def apply_lora_o(self, X):
     return _apply(LoRA_W, X, OW, OW_quant, OA, OB, OS, dropout_p and dropout_p[0], bias)
 
 
-_FROZEN_BASE_FUSED = os.environ.get("UNSLOTH_FROZEN_BASE_FUSED", "1") != "0"
 FROZEN_BASE_FUSED_STATS = {"fused": 0}
+
+
+def frozen_base_fused_enabled():
+    # Read at attach time (enable_fp8_lora), not import: UNSLOTH_FROZEN_BASE_FUSED=0 installs nothing.
+    return os.environ.get("UNSLOTH_FROZEN_BASE_FUSED", "1") != "0"
 
 
 def frozen_base_lora_forward(proj, x, args, kwargs):
     """PEFT lora.Linear forward for a base on the fp8 / int8 frozen-base GEMMs: the same fused LoRA_W op
     FastLanguageModel's projections run (base GEMM with the LoRA term in its epilogue, fused input gradient).
     unsloth_zoo's compiled PEFT forward calls it first; None means it cannot run here and PEFT's forward runs."""
-    if not _FROZEN_BASE_FUSED or args or kwargs:
+    if args or kwargs:
+        return None
+    if not TRACE_LORA_FUNCTIONS and _is_compiling():
+        # Before torch 2.11 LoRA_W runs Dynamo-disabled (_apply): a graph break the unfused path does not have.
         return None
     if getattr(proj.base_layer, "_unsloth_fp8_lora", None) is None:
         return None

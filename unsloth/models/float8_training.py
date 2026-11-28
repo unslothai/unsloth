@@ -1081,8 +1081,8 @@ def restore_fp8_lora_for_inference(model):
 
 
 def _frozen_base_lora_forward():
-    from ..kernels.fast_lora import frozen_base_lora_forward
-    return frozen_base_lora_forward
+    from ..kernels import fast_lora
+    return fast_lora.frozen_base_lora_forward if fast_lora.frozen_base_fused_enabled() else None
 
 
 def _int8_tower_skips(model):
@@ -1193,8 +1193,12 @@ def enable_fp8_lora(
         reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
         attach = kernels.attach_int8_lora_base if int8 else kernels.attach_fp8_lora_base
         state = attach(base, offload = offload and not reads_raw)
-        # unsloth_zoo's compiled PEFT forward (FastModel) runs this fused op instead of base_layer(x) + LoRA.
-        base.__dict__["_unsloth_fused_lora_forward"] = _frozen_base_lora_forward()
+        fused = _frozen_base_lora_forward()
+        if fused is not None:
+            # unsloth_zoo's compiled PEFT forward (FastModel) runs this fused op instead of base_layer(x) + LoRA.
+            base.__dict__["_unsloth_fused_lora_forward"] = fused
+        else:
+            base.__dict__.pop("_unsloth_fused_lora_forward", None)
         offloaded += int(state.offloaded)
         _restore_master_before_merge(module)
         converted.append(name)

@@ -105,8 +105,22 @@ def test_falls_back_to_peft(monkeypatch):
     assert FL.frozen_base_lora_forward(layer, x[0], (), {}).shape == (2048, 1024)  # 2-D input
     assert FL.frozen_base_lora_forward(layer, x, (), {"adapter_names": ["default"]}) is None
     assert FL.frozen_base_lora_forward(layer, x.float(), (), {}) is None
-    monkeypatch.setattr(FL, "_FROZEN_BASE_FUSED", False)
+    monkeypatch.setattr(
+        FL, "TRACE_LORA_FUNCTIONS", False
+    )  # torch < 2.11 while compiling: no new graph break
+    monkeypatch.setattr(FL, "_is_compiling", lambda: True)
     assert FL.frozen_base_lora_forward(layer, x, (), {}) is None
-    monkeypatch.setattr(FL, "_FROZEN_BASE_FUSED", True)
+    monkeypatch.setattr(FL, "TRACE_LORA_FUNCTIONS", True)
+    monkeypatch.setattr(FL, "_is_compiling", lambda: False)
     del layer.base_layer.__dict__["_unsloth_fp8_lora"]  # restored for inference
     assert FL.frozen_base_lora_forward(layer, x, (), {}) is None
+
+
+def test_kill_switch_installs_nothing(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_FROZEN_BASE_FUSED", "0")
+    monkeypatch.setattr(f8t, "_prepare_fp8_lora_loss", lambda m: None)
+    monkeypatch.setattr(f8t, "_prepare_fp8_lora_operators", lambda m: None)
+    model = _Tiny(False).to("cuda", torch.bfloat16).requires_grad_(False)
+    model = peft.get_peft_model(model, peft.LoraConfig(r = 16, target_modules = ["proj"]))
+    assert f8t.enable_fp8_lora(model, f8t.INT8_LORA_RECIPE)
+    assert "_unsloth_fused_lora_forward" not in model.base_model.model.proj.base_layer.__dict__
