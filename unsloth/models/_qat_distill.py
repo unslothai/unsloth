@@ -141,6 +141,13 @@ def set_qat_distill(model, value):
     if config is None:
         return None
     _refuse_rounded(model)
+    for owner in (model, getattr(model, "base_model", None), getattr(model, "model", None)):
+        if getattr(getattr(owner, "config", None), "is_encoder_decoder", False):
+            # The loss shifts labels and drops them from the forward, which is the causal LM contract only.
+            raise ValueError(
+                "Unsloth: qat_distill supports decoder-only causal language models; this model is "
+                "encoder-decoder. Train it with qat_scheme alone."
+            )
     inner = model
     for _ in range(8):
         try:

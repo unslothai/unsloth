@@ -343,3 +343,12 @@ def test_dense_fallback_does_not_transform_logits_twice(monkeypatch):
     divisor = (shifted != -100).sum().float()
     ce, kd = qd.dense_qat_distill_losses(s_logits, t_logits, shifted, divisor, 0.0, 1.0)
     torch.testing.assert_close(dense.float(), (0.5 * ce + 0.5 * kd).float(), rtol = 1e-4, atol = 1e-5)
+
+
+def test_encoder_decoder_models_are_refused():
+    import types as _types
+
+    model = torch.nn.Linear(2, 2)
+    model.config = _types.SimpleNamespace(is_encoder_decoder = True)
+    with pytest.raises(ValueError, match = "encoder-decoder"):
+        qd.set_qat_distill(model, 0.5)
