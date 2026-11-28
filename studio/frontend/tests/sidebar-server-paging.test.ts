@@ -5,11 +5,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { setImmediate } from "node:timers/promises";
+import ts from "@typescript/typescript6";
 import * as React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as jsxRuntime from "react/jsx-runtime";
 import type * as ProgressiveRowsModule from "../src/components/progressive-rows.tsx";
 import type * as RowPagesModule from "../src/features/chat/hooks/use-sidebar-row-pages.ts";
+import type { SidebarDropPlace } from "../src/features/chat/lib/sidebar-drag.ts";
+import { applyManualOrder, discardUndoneSidebarPlacements, insertIdAt, useSidebarOrganizationStore } from "../src/features/chat/stores/sidebar-organization-store.ts";
 import {
   type RowPageResult,
   RowPager,
@@ -598,11 +602,128 @@ test("a drag in a partly loaded list shows its order at once and saves it once e
   assert.ok(
     partial.indexOf("setPendingManualOrder(") < partial.indexOf("readAllSidebarRowIds("),
   );
-  assert.equal(partial.slice(0, partial.indexOf("readAllSidebarRowIds(")).match(/setManualOrder\(scope/g)?.length ?? 0, 1);
+  assert.doesNotMatch(partial, /setManualOrder\(scope/);
   assert.doesNotMatch(partial, /settle\(shown\)/);
   assert.match(partial, /if \(attempt >= 2\) throw error;/);
   assert.match(partial, /setPendingManualOrder\(\(\{ \[scope\]: _dropped, \.\.\.rest \}\) => rest\);\n\s*toast\.error\("Couldn't save the new order"\);/);
   assert.match(src, /applyManualOrder\(items, displayManualOrder\[scope\]/);
+});
+
+for (const [fullyLoaded, undo, sortChange] of [
+  [false, false, null], [true, false, null], [false, true, null],
+  [false, false, "peer"], [false, false, "local"],
+] as const) {
+  test(`superseding paged drags preserve the other browser's order (fully loaded: ${fullyLoaded}, undo: ${undo}, sort change: ${sortChange})`, async () => {
+    const src = readSrc("components/app-sidebar.tsx");
+    const declaration = src.slice(
+      src.indexOf("const writeManualOrder = useCallback("),
+      src.indexOf("// Escape leaves a selection"),
+    );
+    const { outputText } = ts.transpileModule(declaration, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    });
+    const scope = "section:research";
+    const all = ["a", "b", "c", "d", "e", "f", "g"];
+    let current = all;
+    let sort: "manual" | "updated" = "manual";
+    let explicitSortChoice = 0;
+    const chatRowLists = { [scope]: { hasMore: true } };
+    const reads: ((ids: string[]) => void)[] = [];
+    const saved: { ids: string[]; placements: SidebarDropPlace[] }[] = [];
+    const deps = {
+      useCallback: (callback: unknown) => callback,
+      manualOrderWritesRef: { current: new Map() },
+      RECENTS_ORDER_SCOPE: "recents",
+      PINNED_ORDER_SCOPE: "pinned",
+      customSectionIdOf: () => "research",
+      chatRowSlots: { [scope]: { query: {} } },
+      chatRowLists,
+      mergeManualOrderTail: rowQuery.mergeManualOrderTail,
+      settledManualOrder: rowQuery.settledManualOrder,
+      useSidebarOrganizationStore: { getState: () => ({
+        manualOrder: { [scope]: current }, customSections: [{ id: "research", sort }],
+      }) },
+      customSectionUpdatedSortChoice: () => explicitSortChoice,
+      setCustomSectionSort: (_id: string, next: typeof sort) => { sort = next; },
+      applyManualOrder,
+      discardUndoneSidebarPlacements,
+      insertIdAt,
+      readAllSidebarRowIds: () => new Promise<string[]>((resolve) => reads.push(resolve)),
+      setPendingManualOrder: () => {},
+      setManualOrder: (_scope: string, ids: string[], placements: SidebarDropPlace[]) =>
+        saved.push({ ids, placements }),
+    };
+    const write: (scope: string, ids: string[], move: SidebarDropPlace) => void =
+      new Function(...Object.keys(deps), outputText + "\nreturn writeManualOrder;")(
+        ...Object.values(deps),
+      );
+    const first = { id: "b", targetId: "a", edge: "top" } as const;
+    const second = undo
+      ? { id: "b", targetId: "a", edge: "bottom" } as const
+      : { id: "d", targetId: "c", edge: "top" } as const;
+    write(scope, ["b", "a", "c", "d", "e", "f"], first);
+    current = undo ? ["a", "c", "b", "d", "e", "f", "g"] : ["a", "b", "g", "c", "d", "f", "e"];
+    chatRowLists[scope].hasMore = !fullyLoaded;
+    const latest = undo ? ["a", "b", "c", "d", "e", "f"] : ["b", "a", "d", "c", "e", "f"];
+    write(scope, [...latest, ...(fullyLoaded ? ["g"] : [])], second);
+    if (sortChange) sort = "updated";
+    if (sortChange === "local") explicitSortChoice++;
+    if (!fullyLoaded) reads[1](all);
+    await setImmediate();
+    reads[0](all);
+    await setImmediate();
+    assert.deepEqual(saved, undo ? [] : [{
+      ids: ["b", "a", "g", "d", "c", "f", "e"],
+      placements: [first, second],
+    }]);
+    assert.equal(sort, sortChange === "local" ? "updated" : "manual");
+  });
+}
+
+test("pending placements retain a position that depends on another drag", () => {
+  const base = [..."abcdefghi"];
+  const edited = [..."bacdefghi"];
+  for (const [targetId, edge] of [["a", "bottom"], ["d", "top"]] as const) {
+    const placements = [
+      { id: "a", targetId: "c", edge: "bottom" },
+      { id: "c", targetId, edge },
+    ] satisfies SidebarDropPlace[];
+    assert.deepEqual(discardUndoneSidebarPlacements(base, edited, placements), placements);
+    const withUndo = [
+      { id: "h", targetId: "g", edge: "top" }, placements[0],
+      { id: "h", targetId: "g", edge: "bottom" }, placements[1],
+    ] satisfies SidebarDropPlace[];
+    assert.deepEqual(discardUndoneSidebarPlacements(base, edited, withUndo), placements);
+  }
+});
+
+test("the sidebar filing menu records deliberate returns for both kinds of pinned row", () => {
+  const store = useSidebarOrganizationStore;
+  store.setState(store.getInitialState(), true);
+  const section = store.getState().createCustomSection("Research")!;
+  store.getState().setChatsSection(["chat"], section);
+  store.getState().setProjectsSection(["project"], section);
+  const source = readSrc("components/app-sidebar.tsx");
+  const handlers = source.slice(source.indexOf("function fileChatsInSection("), source.indexOf("function removeCustomSection("));
+  const { outputText } = ts.transpileModule(handlers, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  });
+  const dependencies = {
+    setChatsSection: store.getState().setChatsSection,
+    setProjectsSection: store.getState().setProjectsSection,
+    useSidebarOrganizationStore: store,
+    pinnedIdSet: new Set(["chat"]), pinnedProjectIdSet: new Set(["project"]),
+    setPinnedChats: () => {}, toggleProjectPin: () => {},
+    setSectionHidden: () => {}, setCustomSectionOpen: () => {},
+  };
+  new Function(...Object.keys(dependencies), "section", outputText +
+    'fileChatsInSection(["chat"], section); fileProjectsInSection(["project"], section);')(
+    ...Object.values(dependencies), section,
+  );
+  assert.deepEqual(store.getState().orderMoves, [
+    { sectionId: section, id: "chat", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "chat" },
+    { sectionId: section, id: "project", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "project" },
+  ]);
 });
 
 test("the full-list fallback finds a compare row through one of its pane threads", () => {
@@ -645,7 +766,7 @@ test("follow-ups that main got from the full list still happen with paged lists"
   assert.match(src, /if \(list\.rows\[list\.rows\.length - 1\]\?\.id === activeThreadId\) void list\.loadMore\(\);/);
   assert.match(src, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, probe\);/);
   const write = src.slice(src.indexOf("const writeManualOrder = useCallback("));
-  assert.ok(write.indexOf("writes.set(scope, generation);") < write.indexOf("const slot ="));
+  assert.ok(write.indexOf("writes.set(scope, write);") < write.indexOf("const slot ="));
   // project activity follows chat activity, not only project edits
   const projects = readSrc("features/chat/hooks/use-chat-projects.ts");
   assert.match(projects, /const onActivity = \(\) => onChatActivity\(\);/);
@@ -784,7 +905,7 @@ test("Pinned and manual sections hold rows past their last loaded chat, and a dr
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(rows, order, \(row\) => row\.id\),\n\s*order,\n\s*Boolean\(pinnedHasMore\),/);
   assert.match(src, /holdRowsPastLoadedChats\(\n\s*applyManualOrder\(list, order, \(row\) => row\.id\),\n\s*order,\n\s*sectionHasMore\.has\(section\.id\),/);
-  assert.match(src, /settle\(settledManualOrder\(ids, all, current\)\);/);
+  assert.match(src, /settle\(settledManualOrder\(ids, all, current\), current\);/);
 });
 
 test("a page asked for just before a history refresh is read by that refresh instead of dropped", async () => {

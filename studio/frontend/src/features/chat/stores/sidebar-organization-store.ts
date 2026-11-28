@@ -2,9 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 
 import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
+import {
+  readSidebarSyncBaseline,
+  sidebarOrganizationStorage,
+  sidebarOrganizationStorageChanged,
+} from "./sidebar-organization-storage.ts";
 
 export type SidebarOrganizeBy = "project" | "list";
 export type SidebarChatSort = "updated" | "manual";
@@ -106,7 +111,35 @@ function withoutSection(
   return next;
 }
 
+export interface SidebarOrderPlacement {
+  id: string;
+  targetId: string | null;
+  edge: "top" | "bottom";
+  afterUnpin?: true;
+  unpinKind?: "chat" | "project";
+}
+
+interface SidebarOrderMove extends SidebarOrderPlacement {
+  sectionId: string | null;
+}
+
+function readOrderMoves(value: unknown): SidebarOrderMove[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.filter((move): move is SidebarOrderMove =>
+    move !== null && typeof move === "object" &&
+    typeof move.id === "string" && (move.targetId === null || typeof move.targetId === "string") &&
+    (move.sectionId === null || typeof move.sectionId === "string") &&
+    (move.afterUnpin === undefined || move.afterUnpin === true) &&
+    (move.unpinKind === undefined || move.unpinKind === "chat" || move.unpinKind === "project") &&
+    (move.edge === "top" || move.edge === "bottom"),
+  );
+}
+
 export interface SidebarOrganizationState {
+  /** Last acknowledged shared layout, persisted with the view so offline edits survive reload. */
+  syncedLayout?: string;
+  pendingLayoutEdit?: { id: string; layout: string; orderMoves?: SidebarOrderMove[] };
+  orderMoves?: SidebarOrderMove[];
   organizeBy: SidebarOrganizeBy;
   chatSort: SidebarChatSort;
   pinnedSort: SidebarChatSort;
@@ -126,11 +159,12 @@ export interface SidebarOrganizationState {
   setChatSort: (value: SidebarChatSort) => void;
   setPinnedSort: (value: SidebarChatSort) => void;
   setProjectSort: (value: SidebarProjectSort) => void;
-  setManualOrder: (scope: string, ids: string[]) => void;
+  setManualOrder: (scope: string, ids: string[], placements?: SidebarOrderPlacement[]) => void;
   createCustomSection: (name: string) => string | null;
   renameCustomSection: (sectionId: string, name: string) => void;
   deleteCustomSection: (sectionId: string) => void;
   setCustomSectionSort: (sectionId: string, sort: SidebarChatSort) => void;
+  recordUnpinFilings: (kind: "chat" | "project", sectionId: string, ids: string[]) => void;
   setChatsSection: (chatIds: string[], sectionId: string | null) => void;
   setProjectsSection: (projectIds: string[], sectionId: string | null) => void;
   setPagesSection: (pageIds: string[], sectionId: string | null) => void;
@@ -160,13 +194,65 @@ export function normalizeSectionName(name: string): string {
 export function insertIdAt(
   ids: string[],
   draggedId: string,
-  targetId: string,
+  targetId: string | null,
   edge: "top" | "bottom",
 ): string[] {
-  if (draggedId === targetId) return ids;
+  if (targetId === null || draggedId === targetId) return ids;
   if (!ids.includes(draggedId) || !ids.includes(targetId)) return ids;
   const next = placeIdAt(ids, draggedId, targetId, edge);
   return next.every((id, index) => id === ids[index]) ? ids : next;
+}
+
+export function discardUndoneSidebarPlacements(
+  base: string[],
+  edited: string[],
+  placements: SidebarOrderPlacement[],
+): SidebarOrderPlacement[] {
+  const baseline = new Set(base);
+  const ranked = new Map(edited.filter((id) => baseline.has(id)).map((id, index) => [id, index]));
+  const unchanged = new Set<string>();
+  let expected = 0;
+  let furthest = -1;
+  for (const id of base) {
+    const rank = ranked.get(id);
+    if (rank === undefined) continue;
+    if (rank === expected && furthest < expected) unchanged.add(id);
+    furthest = Math.max(furthest, rank);
+    expected++;
+  }
+
+  const initial = applyManualOrder(edited, base, (id) => id);
+  let order = initial;
+  const kept: SidebarOrderPlacement[] = [];
+  const mustKeep = (move: SidebarOrderPlacement) => move.afterUnpin ||
+    move.targetId === null || !ranked.has(move.targetId);
+  for (let start = 0; start < placements.length;) {
+    const row = placements[start].id;
+    const previous = order;
+    let end = start;
+    while (end < placements.length && placements[end].id === row) {
+      const { id, targetId, edge } = placements[end++];
+      order = insertIdAt(order, id, targetId, edge);
+    }
+    const run = placements.slice(start, end);
+    if (run.length === 1 || !ranked.has(row) || run.some(mustKeep) ||
+      previous.indexOf(row) !== order.indexOf(row)) {
+      for (const move of run) kept.push(move);
+    }
+    start = end;
+  }
+  const essential = (move: SidebarOrderPlacement) => !unchanged.has(move.id) || mustKeep(move);
+  const candidates = kept.filter(essential);
+  if (candidates.length === kept.length) return kept;
+  const matches = (subset: SidebarOrderPlacement[]) => subset.reduce(
+    (rows, { id, targetId, edge }) => insertIdAt(rows, id, targetId, edge), initial,
+  ).every((id, index) => id === order[index]);
+  if (matches(candidates)) return candidates;
+
+  const counts = new Map<string, number>();
+  for (const { id } of kept) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const withSingleMoves = kept.filter((move) => essential(move) || counts.get(move.id) === 1);
+  return withSingleMoves.length < kept.length && matches(withSingleMoves) ? withSingleMoves : kept;
 }
 
 export function placeIdAt(
@@ -247,7 +333,7 @@ export function mergePersistedOrganization(
   current: SidebarOrganizationState,
 ): SidebarOrganizationState {
   const saved = persisted as
-    | Partial<SidebarOrganizationState>
+    | (Partial<SidebarOrganizationState> & { sidebarSyncVersion?: 1 })
     | undefined;
   const organizeBy: SidebarOrganizeBy =
     saved?.organizeBy === "list" ? "list" : "project";
@@ -321,8 +407,20 @@ export function mergePersistedOrganization(
         customSections,
       )
     : [];
+  const nativeBaseline = typeof saved?.syncedLayout === "string" ? saved.syncedLayout : undefined;
+  // Released tabs rewrite this key without sync fields. This exact account's base lives separately.
+  const recoveredBaseline = saved && saved.sidebarSyncVersion !== 1 && nativeBaseline === undefined
+    ? readSidebarSyncBaseline()
+    : undefined;
+  const keepPending = recoveredBaseline !== undefined && recoveredBaseline === current.syncedLayout;
   return {
     ...current,
+    pendingLayoutEdit: typeof saved?.pendingLayoutEdit?.id === "string" &&
+      typeof saved.pendingLayoutEdit.layout === "string"
+      ? { ...saved.pendingLayoutEdit, orderMoves: readOrderMoves(saved.pendingLayoutEdit.orderMoves) }
+      : keepPending ? current.pendingLayoutEdit : undefined,
+    orderMoves: readOrderMoves(saved?.orderMoves) ?? (keepPending ? current.orderMoves : undefined),
+    syncedLayout: nativeBaseline ?? recoveredBaseline,
     organizeBy,
     chatSort,
     pinnedSort,
@@ -335,6 +433,12 @@ export function mergePersistedOrganization(
     hiddenSections,
     sectionOrder,
   };
+}
+
+const updatedSortChoices = new Map<string, number>();
+
+export function customSectionUpdatedSortChoice(sectionId: string): number {
+  return updatedSortChoices.get(sectionId) ?? 0;
 }
 
 export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
@@ -356,10 +460,19 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
       setChatSort: (value) => set({ chatSort: value }),
       setPinnedSort: (value) => set({ pinnedSort: value }),
       setProjectSort: (value) => set({ projectSort: value }),
-      setManualOrder: (scope, ids) =>
-        set((state) => ({
-          manualOrder: { ...state.manualOrder, [scope]: ids },
-        })),
+      setManualOrder: (scope, ids, placements) =>
+        set((state) => {
+          const sectionId = customSectionIdOf(scope);
+          return {
+            manualOrder: { ...state.manualOrder, [scope]: ids },
+            ...(placements?.length && sectionId !== null && {
+              orderMoves: [
+                ...(state.orderMoves ?? []),
+                ...placements.map((place) => ({ ...place, sectionId })),
+              ],
+            }),
+          };
+        }),
       createCustomSection: (name) => {
         const clean = normalizeSectionName(name);
         if (!clean) return null;
@@ -414,15 +527,32 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
           return {
             sectionOrder: next,
             customSections: inSectionOrder(state.customSections, next),
+            orderMoves: [
+              ...(state.orderMoves ?? []), { sectionId: null, id: key, targetId: targetKey, edge },
+            ],
           };
         }),
       setPendingNewChatSection: (pending) => set({ pendingNewChatSection: pending }),
-      setCustomSectionSort: (sectionId, sort) =>
+      setCustomSectionSort: (sectionId, sort) => {
+        if (sort === "updated") {
+          updatedSortChoices.set(sectionId, customSectionUpdatedSortChoice(sectionId) + 1);
+        }
         set((state) => ({
           customSections: state.customSections.map((section) =>
             section.id === sectionId ? { ...section, sort } : section,
           ),
-        })),
+        }));
+      },
+      recordUnpinFilings: (kind, sectionId, ids) => {
+        if (ids.length === 0) return;
+        set((state) => {
+          const assignments = kind === "project" ? state.sectionByProjectId : state.sectionByChatId;
+          const filings = ids.filter((id) => assignments[id] === sectionId).map((id): SidebarOrderMove => ({
+            sectionId, id, targetId: null, edge: "bottom", afterUnpin: true, unpinKind: kind,
+          }));
+          return filings.length ? { orderMoves: [...(state.orderMoves ?? []), ...filings] } : state;
+        });
+      },
       setChatsSection: (chatIds, sectionId) =>
         set((state) => {
           if (sectionId && !state.customSections.some((s) => s.id === sectionId)) {
@@ -499,9 +629,12 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
     }),
     {
       name: SIDEBAR_ORGANIZATION_STORAGE_KEY,
+      storage: createJSONStorage(sidebarOrganizationStorage),
       merge: mergePersistedOrganization,
       partialize: (state) => {
-        const saved: Partial<SidebarOrganizationState> = { ...state };
+        const saved: Partial<SidebarOrganizationState> & { sidebarSyncVersion: 1 } = {
+          ...state, sidebarSyncVersion: 1,
+        };
         delete saved.pendingNewChatSection;
         return saved;
       },
@@ -510,3 +643,9 @@ export const useSidebarOrganizationStore = create<SidebarOrganizationState>()(
 );
 
 syncAcrossWindows(useSidebarOrganizationStore);
+
+export function reconcilePersistedSidebarOrganization(): void {
+  if (sidebarOrganizationStorageChanged(SIDEBAR_ORGANIZATION_STORAGE_KEY)) {
+    void useSidebarOrganizationStore.persist.rehydrate();
+  }
+}

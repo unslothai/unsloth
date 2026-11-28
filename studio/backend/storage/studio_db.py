@@ -805,6 +805,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # Sidebar IDs (incl. comparison pair IDs), so no foreign key to one thread row.
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_tombstones (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_deletions (id TEXT NOT NULL PRIMARY KEY)")
+    conn.execute("CREATE TABLE IF NOT EXISTS sidebar_section_edits (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute("CREATE TABLE IF NOT EXISTS chat_pin_operations (id TEXT NOT NULL PRIMARY KEY)")
     conn.execute(
         """

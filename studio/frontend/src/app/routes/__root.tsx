@@ -34,6 +34,7 @@ import {
 import { startLlamaCppAutoReload } from "@/features/chat/llama-cpp-auto-reload";
 import { StopRunningChatsDialog } from "@/features/chat/components/stop-running-chats-dialog";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { useSidebarSectionsSync } from "@/features/chat/hooks/use-sidebar-sections-sync";
 import { usePinnedChatsSync } from "@/features/chat/hooks/use-pinned-chats-sync";
 import { useExportRuntimeLifecycle } from "@/features/export";
 import { FIND_SCOPE_ATTRIBUTE, FindInPage } from "@/features/find-in-page";
@@ -293,6 +294,7 @@ function HubSourceNoticeMount() {
 
 function ChatSettingsHydrationMount() {
   usePinnedChatsSync();
+  useSidebarSectionsSync();
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );

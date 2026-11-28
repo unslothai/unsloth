@@ -222,7 +222,10 @@ import { usePromptQueueUI } from "@/features/chat/stores/prompt-queue-ui-store";
 import {
   useSidebarOrganizationStore,
   applyManualOrder,
+  customSectionUpdatedSortChoice,
+  discardUndoneSidebarPlacements,
   showsInRecents,
+  insertIdAt,
   moveIdBy,
   placeIdAt,
   projectOrderScope,
@@ -338,6 +341,7 @@ import {
   type SidebarDragItem,
   type SidebarDropContext,
   type SidebarDropEffects,
+  type SidebarDropPlace,
   type SidebarDropPlan,
   type SidebarSection,
 } from "@/features/chat/lib/sidebar-drag";
@@ -2754,12 +2758,49 @@ export function AppSidebar() {
     selectRenderedChats();
   }, [selectAllPending, selectRenderedChats]);
 
-  const manualOrderWritesRef = useRef(new Map<string, number>());
+  const manualOrderWritesRef = useRef(new Map<string, {
+    placements: SidebarDropPlace[];
+    baseOrder: string[];
+    wasManual: boolean;
+    updatedSortChoice: number | null;
+  }>());
   const writeManualOrder = useCallback(
-    (scope: string, ids: string[]) => {
+    (scope: string, ids: string[], place?: SidebarDropPlace, restoreManual = true) => {
       const writes = manualOrderWritesRef.current;
-      const generation = (writes.get(scope) ?? 0) + 1;
-      writes.set(scope, generation);
+      const previous = writes.get(scope);
+      const placements = [...(previous?.placements ?? [])];
+      if (place) placements.push(place);
+      const state = useSidebarOrganizationStore.getState();
+      const section = customSectionIdOf(scope);
+      const write = {
+        placements,
+        baseOrder: previous?.baseOrder ?? state.manualOrder[scope] ?? [],
+        wasManual: previous?.wasManual ?? state.customSections.some(({ id, sort }) => id === section && sort === "manual"),
+        updatedSortChoice: section !== null && restoreManual ? customSectionUpdatedSortChoice(section) : null,
+      };
+      writes.set(scope, write);
+      const settle = (order: string[], current: string[]) => {
+        if (writes.get(scope) !== write) return;
+        const effective = write.wasManual && place && placements.length > 1
+          ? discardUndoneSidebarPlacements(write.baseOrder, ids, placements)
+          : placements;
+        const changed = current.length !== write.baseOrder.length ||
+          current.some((id, index) => id !== write.baseOrder[index]);
+        if (changed && effective.length && section !== null) {
+          order = applyManualOrder(order, current, (id) => id);
+          for (const { id, targetId, edge } of effective) {
+            order = insertIdAt(order, id, targetId, edge);
+          }
+        }
+        if (effective.length > 0 || placements.length === 0) setManualOrder(scope, order, effective);
+        if (effective.length > 0 && section !== null &&
+          write.updatedSortChoice === customSectionUpdatedSortChoice(section) &&
+          useSidebarOrganizationStore.getState().customSections.some(({ id, sort }) => id === section && sort === "updated")) {
+          setCustomSectionSort(section, "manual");
+        }
+        writes.delete(scope);
+        setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
+      };
       const slot =
         scope === RECENTS_ORDER_SCOPE
           ? "recents"
@@ -2771,19 +2812,19 @@ export function AppSidebar() {
                 ? `folder:${scope.slice("project:".length)}`
                 : null;
       const query = slot ? chatRowSlots[slot]?.query : undefined;
+      const saved = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
       if (!slot || !query || !chatRowLists[slot]?.hasMore) {
-        setManualOrder(scope, ids);
-        setPendingManualOrder(({ [scope]: _superseded, ...rest }) => rest);
+        settle(ids, saved);
         return;
       }
-      const saved = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
+      if (section !== null && place?.unpinKind) {
+        const { unpinKind, ...placement } = place;
+        state.recordUnpinFilings(unpinKind, section, [place.id]);
+        // The delayed rank write must not file the row again after a newer edit.
+        placements[placements.length - 1] = placement;
+      }
       const shown = mergeManualOrderTail(ids, saved);
       setPendingManualOrder((pending) => ({ ...pending, [scope]: shown }));
-      const settle = (order: string[]) => {
-        if (writes.get(scope) !== generation) return;
-        setManualOrder(scope, order);
-        setPendingManualOrder(({ [scope]: _settled, ...rest }) => rest);
-      };
       // a partial order would rank every unloaded row ahead of the ones just arranged, so it is never
       // saved: a read that keeps failing leaves the saved order as it was
       const readAll = async () => {
@@ -2799,15 +2840,16 @@ export function AppSidebar() {
       void readAll()
         .then((all) => {
           const current = useSidebarOrganizationStore.getState().manualOrder[scope] ?? [];
-          settle(settledManualOrder(ids, all, current));
+          settle(settledManualOrder(ids, all, current), current);
         })
         .catch(() => {
-          if (writes.get(scope) !== generation) return;
+          if (writes.get(scope) !== write) return;
+          writes.delete(scope);
           setPendingManualOrder(({ [scope]: _dropped, ...rest }) => rest);
           toast.error("Couldn't save the new order");
         });
     },
-    [setManualOrder, chatRowSlots, chatRowLists],
+    [setManualOrder, setCustomSectionSort, chatRowSlots, chatRowLists],
   );
 
   // Escape leaves a selection via a passive listener: dictation's Escape reads defaultPrevented first
@@ -3101,6 +3143,8 @@ export function AppSidebar() {
         writeManualOrder(
           order.scope,
           before ? landedOrder(order, before[order.scope]) : order.ids,
+          order.place,
+          !superseded,
         );
       }
       if (superseded) return;
@@ -3198,7 +3242,12 @@ export function AppSidebar() {
     const next = moveIdBy(orderedIds, item.id, delta);
     if (next === orderedIds) return;
     const resorts = sort !== undefined && sort.value !== "manual";
-    writeManualOrder(item.scope, next);
+    const targetId = orderedIds[next.indexOf(item.id)];
+    writeManualOrder(item.scope, next, {
+      id: item.id,
+      targetId,
+      edge: delta < 0 ? "top" : "bottom",
+    });
     if (resorts) {
       sort.set("manual");
       toast.info(t("shell.organize.switchedToManual"));
@@ -4387,10 +4436,9 @@ export function AppSidebar() {
     if (chatIds.length === 0) return;
     setChatsSection(chatIds, sectionId);
     if (!sectionId) return;
-    setPinnedChats(
-      chatIds.filter((id) => pinnedIdSet.has(id)),
-      false,
-    );
+    const unpinned = chatIds.filter((id) => pinnedIdSet.has(id));
+    setPinnedChats(unpinned, false);
+    useSidebarOrganizationStore.getState().recordUnpinFilings("chat", sectionId, unpinned);
     setSectionHidden(sectionId, false);
     setCustomSectionOpen(sectionId, true);
   }
@@ -4399,9 +4447,9 @@ export function AppSidebar() {
     if (projectIds.length === 0) return;
     setProjectsSection(projectIds, sectionId);
     if (!sectionId) return;
-    for (const id of projectIds) {
-      if (pinnedProjectIdSet.has(id)) toggleProjectPin(id);
-    }
+    const unpinned = projectIds.filter((id) => pinnedProjectIdSet.has(id));
+    for (const id of unpinned) toggleProjectPin(id);
+    useSidebarOrganizationStore.getState().recordUnpinFilings("project", sectionId, unpinned);
     setSectionHidden(sectionId, false);
     setCustomSectionOpen(sectionId, true);
   }

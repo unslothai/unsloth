@@ -136,6 +136,7 @@ _QUIET_SUCCESS_PATHS = {
     "/api/settings/personalization",
     # Cross-device chat sync reads one revision number every 4s; a changed thread is then fetched and logged.
     "/api/chat/revision",
+    "/api/chat/sidebar-sections",
 }
 # After its first 2xx, chat list 401s are real failures, not the bootstrap race.
 _AUTH_REFRESH_PATH = "/api/auth/refresh"

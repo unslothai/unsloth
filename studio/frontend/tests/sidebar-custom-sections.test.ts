@@ -30,6 +30,7 @@ import {
   SIDEBAR_ORGANIZATION_STORAGE_KEY,
   useSidebarOrganizationStore,
 } from "../src/features/chat/stores/sidebar-organization-store.ts";
+import { applySidebarLayout, sidebarLayout } from "../src/features/chat/sidebar-layout.ts";
 import { readSrcAsync } from "./helpers/kit.ts";
 
 const APP_SIDEBAR = await readSrcAsync("components/app-sidebar.tsx");
@@ -355,7 +356,11 @@ test("a Recents chat dropped on a section is filed there, in the slot shown", ()
   );
   assert.deepEqual(plan.action, { kind: "section", sectionId: S });
   assert.deepEqual(plan.effects.fileInSection, { kind: "chat", id: "r1", sectionId: S });
-  assert.deepEqual(plan.effects.orders, [{ scope: SCOPE, ids: ["lab", "r1", "s1"] }]);
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "r1", "s1"],
+    place: { id: "r1", targetId: "s1", edge: "top" },
+  }]);
   assert.equal(plan.effects.unpinChat, undefined);
 });
 
@@ -371,6 +376,21 @@ test("a pinned chat dropped on a section loses its pin", () => {
   assert.equal(plan.effects.unpinChat, "p1");
   assert.deepEqual(plan.effects.fileInSection, { kind: "chat", id: "p1", sectionId: S });
   assert.deepEqual(plan.effects.orders[0].ids, ["lab", "s1", "p1"]);
+  assert.equal(plan.effects.orders[0].place?.afterUnpin, true);
+  assert.equal(plan.effects.orders[0].place?.unpinKind, "chat");
+});
+
+test("a pinned project dropped into its empty section retains its filing intent", () => {
+  const empty = context({ sectionByProjectId: { lab: S }, pinnedProjectIds: new Set(["lab"]) });
+  const plan = plannedDrop(planSidebarDrop(
+    { kind: "project", id: "lab", section: "pinned", scope: PINNED_ORDER_SCOPE, projectId: null },
+    { section: SCOPE }, "bottom", { ...empty, orders: { ...empty.orders, sections: () => [] } },
+  ));
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE, ids: ["lab"],
+    place: { id: "lab", targetId: null, edge: "bottom", afterUnpin: true, unpinKind: "project" },
+  }]);
+  assert.deepEqual(plan.effects.fileInSection, { kind: "project", id: "lab", sectionId: S });
 });
 
 test("an empty section takes a drop anywhere in it, and rings itself", () => {
@@ -413,7 +433,11 @@ test("a row already in the section reorders, switching a sorted section to Manua
   );
   assert.equal(plan.action.kind, "reorder");
   assert.equal(plan.effects.fileInSection, undefined);
-  assert.deepEqual(plan.effects.orders, [{ scope: SCOPE, ids: ["s1", "lab"] }]);
+  assert.deepEqual(plan.effects.orders, [{
+    scope: SCOPE,
+    ids: ["s1", "lab"],
+    place: { id: "s1", targetId: "lab", edge: "top" },
+  }]);
   assert.equal(plan.effects.switchSort, SCOPE);
 });
 
@@ -1003,7 +1027,11 @@ test("a pinned page files into a custom section and comes back to Pinned", () =>
   );
   assert.deepEqual(into.action, { kind: "section", sectionId: S });
   assert.deepEqual(into.effects.fileInSection, { kind: "page", id: "pg", sectionId: S });
-  assert.deepEqual(into.effects.orders, [{ scope: SCOPE, ids: ["lab", "s1", "pg"] }]);
+  assert.deepEqual(into.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "s1", "pg"],
+    place: { id: "pg", targetId: "s1", edge: "bottom" },
+  }]);
   assert.equal(into.effects.unpinChat, undefined);
 
   const filed = context({
@@ -1018,7 +1046,11 @@ test("a pinned page files into a custom section and comes back to Pinned", () =>
   assert.deepEqual(back.effects.orders, [{ scope: PINNED_ORDER_SCOPE, ids: ["pg", "p1"] }]);
   const reorder = plannedDrop(planSidebarDrop(page("pg", SCOPE, SCOPE), chatRow(SCOPE, SCOPE, "s1"), "top", filed));
   assert.deepEqual(reorder.action, { kind: "reorder" });
-  assert.deepEqual(reorder.effects.orders, [{ scope: SCOPE, ids: ["lab", "pg", "s1"] }]);
+  assert.deepEqual(reorder.effects.orders, [{
+    scope: SCOPE,
+    ids: ["lab", "pg", "s1"],
+    place: { id: "pg", targetId: "s1", edge: "top" },
+  }]);
 });
 
 test("a pinned page has no place in Recents, Projects or a folder", () => {
@@ -1075,4 +1107,28 @@ test("undoing a removed section files its pages back into it", async () => {
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, {});
   undo();
   assert.deepEqual({ ...useSidebarOrganizationStore.getState().sectionByPageId }, { pg: id });
+});
+
+test("a server layout round trips every section row kind and leaves local preferences intact", () => {
+  resetStore();
+  const actions = useSidebarOrganizationStore.getState();
+  const id = actions.createCustomSection("Research")!;
+  actions.setChatsSection(["chat", "pair"], id);
+  actions.setProjectsSection(["project"], id);
+  actions.setPagesSection(["page"], id);
+  actions.setManualOrder(customSectionScope(id), ["pair", "project", "page", "chat"]);
+  actions.setManualOrder("recents", ["only-in-first-browser"]);
+  actions.setSectionHidden(id, true);
+
+  const first = useSidebarOrganizationStore.getState();
+  const shared = sidebarLayout(first);
+  const second = { ...useSidebarOrganizationStore.getInitialState(), manualOrder: { recents: ["local"] } };
+  const received = { ...second, ...applySidebarLayout(second, shared) };
+  assert.deepEqual(sidebarLayout(received), shared);
+  assert.deepEqual(received.manualOrder.recents, ["local"]);
+  assert.deepEqual(received.hiddenSections, []);
+  assert.deepEqual(received.manualOrder[customSectionScope(id)], ["pair", "project", "page", "chat"]);
+  assert.equal(received.sectionByChatId.pair, id);
+  assert.equal(received.sectionByProjectId.project, id);
+  assert.equal(received.sectionByPageId.page, id);
 });

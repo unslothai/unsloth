@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { SIDEBAR_ORGANIZATION_STORAGE_KEY } from "../stores/sidebar-organization-keys.ts";
+import { unpackSidebarOrganization } from "../stores/sidebar-organization-storage.ts";
 import { isValidPinId } from "./pinned-chats-sync.ts";
 
 function ids(value: unknown): string[] {
@@ -23,9 +24,8 @@ export function readLegacyPinnedChatIds(
     }
     let order: string[] = [];
     try {
-      const organization = JSON.parse(
-        storage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY) ?? "null",
-      );
+      const layout = unpackSidebarOrganization(storage.getItem(SIDEBAR_ORGANIZATION_STORAGE_KEY));
+      const organization = JSON.parse(layout ?? "null");
       order = ids(organization?.state?.manualOrder?.pinned);
     } catch {
       // A damaged sidebar preference must not discard otherwise valid pins.

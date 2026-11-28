@@ -72,3 +72,23 @@ test("a sidebar section made in another window keeps its chats when this window 
   assert.equal(stored(key).pinnedSort, "updated");
   assert.equal(useSidebarOrganizationStore.getState().sectionByChatId["chat-1"], "work");
 });
+
+test("a peer's intermediate section creation is displayed without submitting it as a local edit", async () => {
+  const { observeSidebarLayout } = await import("../src/features/chat/sidebar-layout.ts");
+  const changes: boolean[] = [];
+  const stop = observeSidebarLayout((fromStorage) => changes.push(fromStorage));
+  try {
+    const key = "unsloth_sidebar_organization";
+    otherWindowWrites(key, (state) => ({
+      ...state, customSections: [{ id: "research", name: "Research", sort: "manual" }],
+    }));
+    otherWindowWrites(key, (state) => ({ ...state, sectionByChatId: { chat: "research" } }));
+    useSidebarOrganizationStore.getState().renameCustomSection("research", "Experiments");
+    // A peer echoing the identical view must not reclassify the originating edit.
+    otherWindowWrites(key, (state) => state);
+    assert.deepEqual(changes, [true, true, false]);
+    assert.equal(useSidebarOrganizationStore.getState().sectionByChatId.chat, "research");
+  } finally {
+    stop();
+  }
+});

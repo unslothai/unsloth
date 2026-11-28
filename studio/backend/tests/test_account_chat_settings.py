@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import threading
+from uuid import uuid4
 from types import SimpleNamespace
 
 import pytest
@@ -879,3 +880,732 @@ def test_every_ml_warmup_selection_round_trips_without_persisting_dependencies(
     assert client.get("/settings/ml-warmup").json() == expected
     assert run_as(OWNER, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY) == selected
     assert run_as(ALICE, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY, None) is None
+
+
+def test_sidebar_sections_merge_browser_imports_and_keep_account_isolation(client):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+
+    def save(
+        layout,
+        base = None,
+        operation_id = None,
+    ):
+        response = client.post(
+            path, json = {"operationId": operation_id or str(uuid4()), "base": base, "layout": layout}
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    a = {
+        "sections": {"research": {"name": "Research", "sort": "manual"}},
+        "sectionByChatId": {"chat": "research", "pair": "research"},
+        "sectionByProjectId": {"project": "research"},
+        "sectionByPageId": {"page": "research"},
+        "sectionOrder": ["projects", "research", "pinned"],
+        "rowOrder": {"research": ["project", "page", "pair", "chat"]},
+    }
+    assert save(a) == a
+    b = {
+        "sections": {**a["sections"], "notes": {"name": "Notes", "sort": "updated"}},
+        "sectionByChatId": {"chat": "notes", "other": "notes", "new": "research"},
+        "rowOrder": {"research": ["pair", "new", "project"]},
+        "sectionOrder": ["pinned", "notes", "research", "projects"],
+    }
+    merged = save(b)
+    assert merged["sectionOrder"] == ["projects", "notes", "research", "pinned"]
+    assert merged["sectionByChatId"] == {
+        **a["sectionByChatId"],
+        "other": "notes",
+        "new": "research",
+    }
+    assert merged["rowOrder"]["research"] == ["new", "project", "page", "pair", "chat"]
+    assert client.get(path).json() == merged
+    assert not client.get(path, headers = {"x-test-account": "bob"}).json()["sections"]
+
+    edited = deepcopy(merged)
+    edited["sections"]["research"]["name"] = "Lab"
+    edited["sections"]["research"]["sort"] = "updated"
+    del edited["sectionByChatId"]["pair"]
+    del edited["sectionByProjectId"]["project"]
+    edited["sectionByPageId"]["page"] = "notes"
+    edited["rowOrder"]["research"] = ["chat"]
+    edited["sectionOrder"] = ["research", "projects", "notes", "pinned"]
+    assert save(edited, merged, "edit-research") == edited
+    assert save(a) == edited
+    assert save(b) == edited
+
+    deleted = deepcopy(edited)
+    del deleted["sections"]["notes"]
+    del deleted["sectionByChatId"]["other"]
+    del deleted["sectionByPageId"]["page"]
+    deleted["sectionOrder"].remove("notes")
+    assert save(deleted, edited) == deleted
+    assert save(b) == deleted
+    # A client that lost the reply to its rename retries after a later rename and deletion.
+    final = deepcopy(deleted)
+    final["sections"]["research"]["name"] = "Final name"
+    assert save(final, deleted) == final
+    assert save(edited, merged, "edit-research") == final
+    assert client.get(path).json() == final
+
+
+def test_sidebar_sections_accept_ids_already_valid_in_chat_history(client):
+    thread_id = "imported-" + "0" * 1026
+    for chat_id in (thread_id, "existing"):
+        thread = client.post(
+            "/chat/threads",
+            json = {"id": chat_id, "title": "A chat", "modelType": "base", "createdAt": 100},
+        )
+        assert thread.is_success
+    response = client.post(
+        "/chat/sidebar-sections",
+        json = {
+            "operationId": "file-an-imported-chat",
+            "base": None,
+            "layout": {
+                "sections": {"research": {"name": "Research", "sort": "manual"}},
+                "sectionByChatId": {thread_id: "research", "existing": "research"},
+                "rowOrder": {"research": [thread_id, "existing"]},
+            },
+            "orderMoves": [
+                {"sectionId": "research", "id": thread_id, "targetId": "existing", "edge": "top"}
+            ],
+        },
+    )
+    assert response.status_code == 200, response.status_code
+    saved = client.get("/chat/sidebar-sections").json()
+    assert saved["sectionByChatId"][thread_id] == "research"
+    assert saved["rowOrder"]["research"] == [thread_id, "existing"]
+
+
+@pytest.mark.parametrize("case", ["concurrent-manual", "sort-switch", "unpin", "unranked-row"])
+def test_sidebar_sections_replay_placements_for_rows_with_stale_ranks(client, case):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+    sort = "updated" if case == "sort-switch" else "manual"
+    ranks = "ab" if case == "unranked-row" else "abc"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success
+        return response.json()
+
+    initial = save(
+        "initial",
+        {
+            "sections": {"research": {"name": "Research", "sort": sort}},
+            "sectionByChatId": dict.fromkeys(ranks, "research"),
+            "rowOrder": {"research": list(ranks)},
+        },
+    )
+    common = initial
+    if case != "unpin":
+        unfiled = deepcopy(initial)
+        del unfiled["sectionByChatId"]["b"]
+        if case == "unranked-row":
+            unfiled["sectionByChatId"]["c"] = "research"
+        common = save("unfile", unfiled, initial)
+    assert common["rowOrder"]["research"] == list(ranks)
+
+    if case in ("concurrent-manual", "unpin"):
+        reordered = deepcopy(common)
+        reordered["rowOrder"]["research"] = list("ca")
+        result = save(
+            "reorder",
+            reordered,
+            common,
+            [{"sectionId": "research", "id": "c", "targetId": "a", "edge": "top"}],
+        )
+        assert result["rowOrder"]["research"] == list("ca")
+
+    refiled = deepcopy(common)
+    refiled["sectionByChatId"]["b"] = "research"
+    expected = "cba" if case == "unranked-row" else "cab"
+    if sort == "updated":
+        refiled["sections"]["research"]["sort"] = "manual"
+    if case in ("sort-switch", "unranked-row"):
+        refiled["rowOrder"]["research"] = list(expected)
+    result = save(
+        "refile",
+        refiled,
+        common,
+        [
+            {
+                "sectionId": "research",
+                "id": "b",
+                "targetId": "a",
+                "edge": "top" if case == "unranked-row" else "bottom",
+                "afterUnpin": case == "unpin",
+            }
+        ],
+    )
+    assert result["rowOrder"]["research"] == list(expected)
+    assert result["sectionByChatId"]["b"] == "research"
+
+
+def test_sidebar_sections_return_and_accept_a_large_order_merged_from_two_edits(client):
+    path = "/chat/sidebar-sections"
+    rows = [f"row-{i}" for i in range(49_999)]
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial-order",
+            "base": None,
+            "layout": {
+                "sections": {"research": {"name": "Research", "sort": "manual"}},
+                "rowOrder": {"research": rows},
+            },
+        },
+    )
+    assert initial.is_success
+    common = initial.json()
+
+    for row in ("first", "second"):
+        response = client.post(
+            path,
+            json = {
+                "operationId": row,
+                "base": common,
+                "layout": {**common, "rowOrder": {"research": [*rows, row]}},
+            },
+        )
+        assert response.is_success
+    saved = client.get(path).json()
+    assert saved["rowOrder"]["research"] == [*rows, "first", "second"]
+
+    # A client must be able to use the combined order as the base for its next edit.
+    edited = {**saved, "sections": {"research": {"name": "Notes", "sort": "manual"}}}
+    response = client.post(
+        path,
+        json = {"operationId": "rename", "base": saved, "layout": edited},
+    )
+    assert response.is_success
+    assert response.json() == edited
+
+
+@pytest.mark.parametrize("delete_section", [True, False], ids = ["delete-section", "unfile-row"])
+def test_sidebar_sections_concurrent_clients_keep_unrelated_edits(client, delete_section):
+    from concurrent.futures import ThreadPoolExecutor
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial",
+            "base": None,
+            "layout": {
+                "sections": {
+                    "a": {"name": "A", "sort": "manual"},
+                    "b": {"name": "B", "sort": "manual"},
+                }
+            },
+        },
+    ).json()
+    rename = deepcopy(initial)
+    rename["sections"]["a"]["name"] = "Renamed"
+    file = deepcopy(initial)
+    file["sectionByChatId"]["comparison-pair"] = "a"
+    file["sections"]["a"]["modifiedAt"] = 12345
+    with ThreadPoolExecutor(max_workers = 2) as pool:
+        responses = list(
+            pool.map(
+                lambda layout: client.post(
+                    path,
+                    json = {
+                        "operationId": str(uuid4()),
+                        "base": initial,
+                        "layout": layout,
+                    },
+                ),
+                [rename, file],
+            )
+        )
+    assert all(response.status_code == 200 for response in responses)
+    current = client.get(path).json()
+    assert current["sections"]["a"] == {"name": "Renamed", "sort": "manual", "modifiedAt": 12345}
+    assert current["sectionByChatId"] == {"comparison-pair": "a"}
+
+    moved = deepcopy(current)
+    moved["sectionByChatId"]["comparison-pair"] = "b"
+    assert client.post(
+        path, json = {"operationId": "move", "base": current, "layout": moved}
+    ).is_success
+    edited = deepcopy(current)
+    del edited["sectionByChatId"]["comparison-pair"]
+    if delete_section:
+        del edited["sections"]["a"]
+    result = client.post(path, json = {"operationId": "unfile", "base": current, "layout": edited})
+    assert result.is_success
+    expected = {"comparison-pair": "b"} if delete_section else {}
+    assert result.json()["sectionByChatId"] == expected
+
+
+def test_sidebar_sections_cancelled_placements_keep_the_concurrent_order(client):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+    projects_top = {"sectionId": None, "id": "projects", "targetId": "pinned", "edge": "top"}
+    projects_bottom = {**projects_top, "edge": "bottom"}
+    initial = client.post(
+        path,
+        json = {
+            "operationId": "initial-order",
+            "base": None,
+            "layout": {
+                "sections": {"notes": {"name": "Notes", "sort": "manual"}},
+                "sectionOrder": ["pinned", "projects", "notes"],
+            },
+        },
+    )
+    assert initial.is_success
+    base = initial.json()
+
+    first = {**base, "sectionOrder": ["projects", "pinned", "notes"]}
+    result = client.post(
+        path,
+        json = {
+            "operationId": "remote-move",
+            "base": base,
+            "layout": first,
+            "orderMoves": [projects_top],
+        },
+    )
+    assert result.is_success
+    assert result.json()["sectionOrder"] == first["sectionOrder"]
+
+    second = deepcopy(base)
+    second["sections"]["research"] = {"name": "Research", "sort": "manual"}
+    second["sectionOrder"] = ["pinned", "projects", "research", "notes"]
+    result = client.post(
+        path,
+        json = {
+            "operationId": "cancel-and-create",
+            "base": base,
+            "layout": second,
+            "orderMoves": [projects_top, projects_bottom],
+        },
+    )
+    assert result.is_success
+    assert result.json()["sectionOrder"] == ["projects", "pinned", "research", "notes"]
+    assert result.json()["sections"]["research"]["name"] == "Research"
+
+
+@pytest.mark.parametrize(
+    ("local_order", "anchor", "merged_order"),
+    [("abdc", "c", "adcb"), ("adbc", "b", "acdb")],
+    ids = ["independent", "crosses-restored-row"],
+)
+def test_sidebar_sections_only_replays_drag_intent_that_survives_the_batch(
+    client, local_order, anchor, merged_order
+):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        order,
+        base = None,
+        placements = (),
+    ):
+        layout = {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys(order, "work"),
+            "rowOrder": {"work": list(order)},
+        }
+        moves = [
+            {"sectionId": "work", "id": row, "targetId": target, "edge": edge}
+            for row, target, edge in placements
+        ]
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = save("initial", "abcd")
+    peer = save("peer", "acbd", base, [("b", "c", "bottom")])
+    assert peer["rowOrder"]["work"] == list("acbd")
+    saved = save(
+        "batch", local_order, base, [("b", "a", "top"), ("b", "a", "bottom"), ("d", anchor, "top")]
+    )
+    assert saved["rowOrder"]["work"] == list(merged_order)
+
+
+def test_sidebar_sections_keeps_unranked_chats_before_a_drag_with_an_unseen_page(client):
+    path = "/chat/sidebar-sections"
+    initial = {
+        "sections": {"work": {"name": "Work", "sort": "manual"}},
+        "sectionByChatId": {"a": "work", "b": "work", "c": "work"},
+        "sectionByPageId": {"p": "work"},
+        "rowOrder": {"work": ["a", "p", "b"]},
+    }
+    response = client.post(path, json = {"operationId": "initial", "base": None, "layout": initial})
+    assert response.is_success, response.text
+    base = response.json()
+    response = client.post(
+        path,
+        json = {
+            "operationId": "drag",
+            "base": base,
+            "layout": {**base, "rowOrder": {"work": ["c", "b", "a"]}},
+            "orderMoves": [{"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}],
+        },
+    )
+    assert response.is_success, response.text
+    assert response.json()["rowOrder"]["work"] == ["c", "b", "a", "p"]
+
+
+@pytest.mark.parametrize(
+    ("unranked", "local_order", "placements", "merged_order"),
+    [
+        ("c", "cbade", [("b", "a", "top")], "cbaed"),
+        ("cfg", "cgfabde", [("c", "f", "bottom"), ("f", "g", "bottom")], "cgfabed"),
+        (
+            "cfg",
+            "cgfbade",
+            [("c", "f", "bottom"), ("b", "a", "top"), ("f", "g", "bottom")],
+            "cgfbaed",
+        ),
+        (
+            "cfg",
+            "cfagbde",
+            [("c", "f", "bottom"), ("f", "g", "bottom"), ("g", "a", "bottom")],
+            "cfagbed",
+        ),
+        ("cfg", "fagcbde", [("g", "a", "bottom"), ("c", "g", "bottom")], "fagcbed"),
+    ],
+    ids = [
+        "unranked-first",
+        "unranked-drags",
+        "disjoint-drags",
+        "mixed-anchors",
+        "dependent-anchors",
+    ],
+)
+def test_sidebar_sections_keeps_unranked_chats_during_concurrent_manual_reorders(
+    client, unranked, local_order, placements, merged_order
+):
+    path = "/chat/sidebar-sections"
+
+    def send(
+        operation,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    initial = send(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abde", "work"),
+            "rowOrder": {"work": list("abde")},
+        },
+    )
+    after_filing = send(
+        "file-chat",
+        {
+            **initial,
+            "sectionByChatId": {**initial["sectionByChatId"], **dict.fromkeys(unranked, "work")},
+        },
+        initial,
+    )
+    peer = send(
+        "peer",
+        {**initial, "rowOrder": {"work": list("abed")}},
+        initial,
+        [{"sectionId": "work", "id": "e", "targetId": "d", "edge": "top"}],
+    )
+    assert peer["rowOrder"]["work"] == list("abed")
+    assert peer["sectionByChatId"]["c"] == "work"
+    saved = send(
+        "local",
+        {**after_filing, "rowOrder": {"work": list(local_order)}},
+        after_filing,
+        [
+            {"sectionId": "work", "id": row, "targetId": anchor, "edge": edge}
+            for row, anchor, edge in placements
+        ],
+    )
+    assert saved["rowOrder"]["work"] == list(merged_order)
+
+
+@pytest.mark.parametrize(
+    ("target", "edge", "interleaved_undo"),
+    [("a", "bottom", False), ("d", "top", False), ("a", "bottom", True)],
+)
+def test_sidebar_sections_keeps_a_placement_dependent_on_a_previous_drag(
+    client, target, edge, interleaved_undo
+):
+    path = "/chat/sidebar-sections"
+
+    def send(
+        operation_id,
+        order,
+        base = None,
+        placements = (),
+    ):
+        response = client.post(
+            path,
+            json = {
+                "operationId": operation_id,
+                "base": base,
+                "layout": {
+                    "sections": {"work": {"name": "Work", "sort": "manual"}},
+                    "sectionByChatId": dict.fromkeys(order, "work"),
+                    "rowOrder": {"work": list(order)},
+                },
+                "orderMoves": [
+                    {"sectionId": "work", "id": row, "targetId": anchor, "edge": side}
+                    for row, anchor, side in placements
+                ],
+            },
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = send("initial", "abcdefghi")
+    peer = send("peer", "abcdefgih", base, [("h", "i", "bottom")])
+    assert peer["rowOrder"]["work"] == list("abcdefgih")
+    placements = [("a", "c", "bottom"), ("c", target, edge)]
+    if interleaved_undo:
+        placements[0:1] = [("h", "g", "top"), placements[0], ("h", "g", "bottom")]
+    saved = send("local", "bacdefghi", base, placements)
+    assert saved["rowOrder"]["work"] == list("bacdefgih")
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+def test_sidebar_sections_preserves_manual_intent_of_a_surviving_drag(client, cancelled):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    base = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys("abc", "work"),
+            "rowOrder": {"work": list("abc")},
+        },
+    )
+    peer = save(
+        "peer", {**base, "sections": {"work": {"name": "Research", "sort": "updated"}}}, base
+    )
+    assert peer["sections"]["work"]["sort"] == "updated"
+
+    moved = {"sectionId": "work", "id": "b", "targetId": "a", "edge": "top"}
+    moves = [moved, {**moved, "edge": "bottom"}] if cancelled else [moved]
+    rows = list("abc" if cancelled else "bac")
+    saved = save("local", {**base, "rowOrder": {"work": rows}}, base, moves)
+    assert saved["sections"]["work"] == {
+        "name": "Research",
+        "sort": "updated" if cancelled else "manual",
+    }
+    assert saved["rowOrder"]["work"] == rows
+
+
+@pytest.mark.parametrize("anchor", ["chat", None])
+def test_sidebar_sections_honors_an_unpin_drop_into_the_old_section(client, anchor):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    initial = save(
+        "initial",
+        {
+            "sections": {
+                "a": {"name": "Research", "sort": "manual"},
+                "b": {"name": "Inbox", "sort": "manual"},
+            },
+            "sectionByProjectId": {"project": "a"},
+            "sectionByChatId": {anchor: "a"} if anchor is not None else {},
+            "rowOrder": {"a": ["project", anchor] if anchor is not None else ["project"]},
+        },
+    )
+    peer = save("peer", {**initial, "sectionByProjectId": {"project": "b"}}, initial)
+    assert peer["sectionByProjectId"]["project"] == "b"
+    moved = {
+        "sectionId": "a",
+        "id": "project",
+        "targetId": anchor,
+        "edge": "top",
+        "afterUnpin": True,
+        "unpinKind": "project",
+    }
+    saved = save("local", initial, initial, [moved])
+    assert saved["sectionByProjectId"]["project"] == "a"
+    assert saved["rowOrder"]["a"] == initial["rowOrder"]["a"]
+
+
+@pytest.mark.parametrize(
+    ("initial", "peer_order", "peer_move", "placements", "merged_order"),
+    [
+        ("abcd", "cad", ("c", "a", "top"), [("b", "c", "bottom"), ("b", "a", "bottom")], "cabd"),
+        ("abcde", "aced", ("e", "d", "top"), [("b", "c", "bottom"), ("c", "b", "bottom")], "abced"),
+        (
+            "abcde",
+            "aced",
+            ("e", "d", "top"),
+            [("d", "a", "top"), ("b", "c", "bottom"), ("d", "b", "bottom"), ("c", "b", "bottom")],
+            "abced",
+        ),
+    ],
+    ids = ["unpinned-row", "dependent-row", "dependent-row-with-undone-drag"],
+)
+def test_sidebar_sections_replays_drag_order_after_unpinning_a_chat(
+    client, initial, peer_order, peer_move, placements, merged_order
+):
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.is_success, response.text
+        return response.json()
+
+    def placement(row, target, edge):
+        return {"sectionId": "work", "id": row, "targetId": target, "edge": edge}
+
+    base = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": "manual"}},
+            "sectionByChatId": dict.fromkeys(initial, "work"),
+            "rowOrder": {"work": list(initial)},
+        },
+    )
+    peer = save(
+        "peer",
+        {**base, "rowOrder": {"work": list(peer_order)}},
+        base,
+        [placement(*peer_move)],
+    )
+    assert peer["rowOrder"]["work"] == list(peer_order)
+    unpin = ("b", "c", "bottom")
+    moves = [placement(*move) for move in placements]
+    moves[placements.index(unpin)].update(afterUnpin = True, unpinKind = "chat")
+    saved = save("local", base, base, moves)
+    assert saved["rowOrder"]["work"] == list(merged_order)
+
+
+@pytest.mark.parametrize(
+    ("initial", "first", "second", "expected", "sort"),
+    [
+        ("abcd", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),
+        ("", ("bacd", "b", "a", "top"), ("abdc", "d", "c", "top"), "badc", "manual"),
+        ("abcde", ("abdce", "d", "c", "top"), ("bcade", "a", "c", "bottom"), "bdcae", "manual"),
+        ("apbc", ("bac", "b", "a", "top"), None, "bapc", "manual"),
+        ("ajbc", ("bac", "b", "a", "top"), None, "bajc", "manual"),
+        ("abcd", ("cdba", "d", "c", "bottom"), None, "cdba", "updated"),
+        ("axbc", ("bca", "b", "c", "top"), None, "bca", "updated"),
+        ("abcp", ("cba", "b", "a", "top"), None, "cbap", "updated"),
+        ("ba", ("ab", "a", "b", "top"), ("ba", "b", "a", "top"), "ba", "updated"),
+    ],
+    ids = [
+        "independent",
+        "first-manual-order",
+        "moved-anchor",
+        "unseen-page",
+        "locally-pinned-project",
+        "sort-switch",
+        "sort-switch-hidden-row",
+        "sort-switch-unseen-page",
+        "sort-switch-reuses-previous-manual-order",
+    ],
+)
+def test_sidebar_sections_merge_concurrent_row_placements(
+    client, initial, first, second, expected, sort
+):
+    from copy import deepcopy
+
+    path = "/chat/sidebar-sections"
+
+    def save(
+        operation_id,
+        layout,
+        base = None,
+        moves = (),
+    ):
+        response = client.post(
+            path,
+            json = {"operationId": operation_id, "base": base, "layout": layout, "orderMoves": moves},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    common = save(
+        "initial",
+        {
+            "sections": {"work": {"name": "Work", "sort": sort}},
+            "sectionByChatId": {key: "work" for key in set(initial + first[0]) - {"p", "j"}},
+            "sectionByPageId": {"p": "work"} if "p" in initial else {},
+            "sectionByProjectId": {"j": "work"} if "j" in initial else {},
+            "rowOrder": {"work": list(initial)} if initial else {},
+        },
+    )
+
+    def place(operation_id, order_and_move):
+        order, row, target, edge = order_and_move
+        edited = deepcopy(common)
+        edited["sections"]["work"]["sort"] = "manual"
+        edited["rowOrder"]["work"] = list(order)
+        return save(
+            operation_id,
+            edited,
+            common,
+            [{"sectionId": "work", "id": row, "targetId": target, "edge": edge}],
+        )
+
+    result = place("first", first)
+    if second is not None:
+        assert result["rowOrder"]["work"] == list(first[0])
+        result = place("second", second)
+    assert result["rowOrder"]["work"] == list(expected)
+    assert place("first", first)["rowOrder"]["work"] == list(expected)
