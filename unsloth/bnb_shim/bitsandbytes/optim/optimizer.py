@@ -277,10 +277,17 @@ def _multi_tensor_step(optimizer):
             if not torch.is_tensor(v) or v.device != device or not v.is_contiguous():
                 return False
         parts.setdefault((p.dtype, eight), []).append((gindex, p, st))
+    plans = optimizer.__dict__.setdefault(_PLANS, {})
+    if any(
+        plan.members_ids != _active_ids(parts.get(key, ())) for key, plan in plans.items()
+    ) or set(parts) - set(plans):
+        # (Re)building: one launch updates its weights concurrently, so no weight may appear twice
+        # or share memory with another (the per-tensor route steps them one after another).
+        if _overlapping([p for _, _, _, p in active]):
+            return False
     order = sorted(scalars)
     group_scalars = [scalars[g] for g in order]
     slot = {g: i for i, g in enumerate(order)}
-    plans = optimizer.__dict__.setdefault(_PLANS, {})
     launches = []
     for key, members in parts.items():
         plan = plans.get(key)
@@ -301,6 +308,7 @@ def _multi_tensor_step(optimizer):
                 [p, st, slot[g], _state_ids(st), int(st["step"]), p.data_ptr()]
                 for g, p, st in members
             ]
+            plan.members_ids = _active_ids(members)
             plans[key] = plan
         launches.append((plan, members))
     for plan, members in launches:
@@ -318,6 +326,20 @@ def _multi_tensor_step(optimizer):
             member[4] += 1
     optimizer.__dict__[_STEPS] = optimizer.__dict__.get(_STEPS, 0) + 1
     return True
+
+
+def _active_ids(members):
+    return tuple(id(p) for _, p, _ in members)
+
+
+def _overlapping(params):
+    """Any weight listed twice, or two weights whose memory overlaps."""
+    if len({id(p) for p in params}) != len(params):
+        return True
+    spans = sorted(
+        (p.data_ptr(), p.data_ptr() + p.numel() * p.element_size()) for p in params if p.numel()
+    )
+    return any(spans[i][0] < spans[i - 1][1] for i in range(1, len(spans)))
 
 
 def _state_ids(st):

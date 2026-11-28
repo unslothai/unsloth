@@ -379,11 +379,22 @@ for a, b in zip(pa, pb):
     for k, v in oa.state[a].items():
         w = ob.state[b][k]
         same = same and (torch.equal(v, w) if torch.is_tensor(v) else v == w)
+# a weight listed twice, and two weights sharing memory: the per-tensor route (sequential) steps them
+os.environ["UNSLOTH_BNB_SHIM_MULTI_TENSOR"] = "1"
+fallback = []
+buf = torch.zeros(10000, device = dev)
+for params in ([torch.nn.Parameter(torch.zeros(5000, device = dev))] * 2,
+               [torch.nn.Parameter(buf[:6000]), torch.nn.Parameter(buf[4000:])]):
+    o = bnb.optim.AdamW8bit([{"params": params}])
+    for q in params:
+        q.grad = torch.ones_like(q)
+    o.step()
+    fallback.append(o.__dict__.get("_unsloth_multi_tensor_steps", 0))
 variants = sum(len(c[0]) for c in K._adam8bit_multi_kernel.device_caches.values())
 variants32 = sum(len(c[0]) for c in K._adam32bit_multi_kernel.device_caches.values())
 print("OUT " + json.dumps({"same": same, "multi_steps": oa.__dict__.get("_unsloth_multi_tensor_steps", 0),
                            "single_steps": ob.__dict__.get("_unsloth_multi_tensor_steps", 0),
-                           "variants": variants, "variants32": variants32}))
+                           "variants": variants, "variants32": variants32, "fallback": fallback}))
 """
 
 
@@ -393,5 +404,6 @@ def test_multi_tensor_step_matches_per_tensor_step():
     # param groups, missing gradients and a state_dict reload.
     assert out["same"], out
     assert out["multi_steps"] == 12 and out["single_steps"] == 0, out
+    assert out["fallback"] == [0, 0], out
     # 8-bit: bf16 + fp16 + fp32 weights; 32-bit: small fp32 weights; at most 2 variants per dtype
     assert out["variants"] <= 6 and out["variants32"] <= 2, out
