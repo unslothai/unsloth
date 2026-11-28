@@ -695,11 +695,13 @@ def _executed_call_sites(messages: list[dict]) -> "dict[tuple[int, str], object]
 
 
 def _reply_may_have_failed(reply: object) -> bool:
-    """Unreadable replies count as failed, so a script the model may need to repair is kept."""
+    """Unreadable or tool-replaced replies count as failed, so arguments the model may need to repair are kept."""
     if isinstance(reply, list):
         parts = [part for part in reply if isinstance(part, dict) and part.get("type") == "text"]
         reply = " ".join(str(part.get("text") or "") for part in parts) if parts else None
     if not isinstance(reply, str):
+        return True
+    if any(marker in reply.lower() for marker in _INCONCLUSIVE_REPLY_MARKERS):
         return True
     head = reply[:200].strip().lower()
     # Tools prefix a nonzero exit but append a timeout after the partial output.

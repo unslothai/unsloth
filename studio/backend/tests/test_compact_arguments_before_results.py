@@ -64,6 +64,7 @@ def test_completed_code_is_compacted_before_findings_are_evicted():
         "Execution timed out after 20 seconds",
         [{"type": "text", "text": "Exit code 1: NameError: rows"}],
         pytest.param("row\n" * 100 + "Execution timed out after 20 seconds.", id = "late-timeout"),
+        pytest.param("(output omitted: 900 chars, no context room left)", id = "zero-room-stub"),
     ],
 )
 def test_failed_code_remains_available_for_repair(result):
