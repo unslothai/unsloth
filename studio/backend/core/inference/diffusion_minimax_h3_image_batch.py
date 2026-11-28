@@ -29,9 +29,7 @@ _SHARED_FIELDS = ("position_ids", "token_tags", "image_indices", "text_indices")
 
 
 MODE_ON, MODE_OFF, MODE_AUTO = "on", "off", "auto"
-# The race's arm (MODE_ON / MODE_OFF) for the context that runs it; it wins over the env and the measured verdicts. A
-# context variable, so it follows the render onto the CUDA render thread (diffusion_render_thread copies the context)
-# and never reaches a concurrent request's render.
+# The race's arm, overriding env and verdicts; a context variable so it follows the render thread only.
 _ARM: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
     "h3_image_batch_arm", default = None
 )
