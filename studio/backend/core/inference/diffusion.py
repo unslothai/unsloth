@@ -15268,12 +15268,13 @@ class DiffusionBackend:
         to_mib = (1000.0**3) / (1024.0 * 1024.0)
         total, available = host_ram_mib()
         storage, refuse, reason = ideogram4_host_plan(
-            dit_bf16_mib = int(table[0] * to_mib * width),
+            dit_bf16_mib = int(table[0] * to_mib),
             text_encoder_mib = 0 if text_encoder_ready else int(table[1] * to_mib * width),
             vae_mib = int(table[2] * to_mib * width),
             host_total_mib = total,
             host_available_mib = available,
             lora_active = lora_active,
+            compute_width = width,
         )
         logger.info("diffusion.ideogram4: fp8_storage=%s (%s)", storage, reason)
         if refuse:

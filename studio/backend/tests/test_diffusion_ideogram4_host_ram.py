@@ -57,6 +57,14 @@ def test_colab_l4_host_keeps_the_dits_stored_instead_of_widening():
     assert storage is True and refuse is None, reason
 
 
+def test_float32_target_sizes_the_stored_codes_at_one_byte():
+    # A float32 target (the CPU default) widens the encoder and the DiTs' norms to 4 bytes, but the stored fp8 codes
+    # stay 1 byte: ~49 GiB before reserve, which fits a 64 GiB host with 62 GiB free. Scaling the whole stored DiT
+    # by the compute width priced it at ~67 GiB and refused.
+    storage, refuse, reason = _plan(64.0, 62.0, te = 2 * _TE, compute_width = 2.0)
+    assert storage is True and refuse is None, reason
+
+
 @pytest.mark.parametrize("total_gib, available_gib", [(83.5, 80.0), (167.0, 160.0), (177.0, 170.0)])
 def test_hosts_that_load_today_keep_the_widened_load(total_gib, available_gib):
     # A100-40 (83 GB), A100-80 / H100 hosts, G4 (177 GB): unchanged.

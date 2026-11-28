@@ -60,8 +60,10 @@ _QKV_SPLIT = ("to_q", "to_k", "to_v")
 # "1" stores the vendor fp8 DiT codes even when the widened load fits host RAM, "0" always widens at load.
 FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_IDEOGRAM4_FP8_STORAGE"
 # Two ~9.3B DiTs per pipeline. The stored route keeps every fp8 Linear as its 1-byte codes (plus a float32 row
-# scale); norms, biases and embeddings still widen, about 2% of the DiT.
-_STORED_FRACTION = 0.52
+# scale): half the bf16 bytes whatever the compute dtype. Norms, biases and embeddings still widen, about 2% of the
+# bf16 DiT, scaled by the compute width.
+_STORED_CODES_FRACTION = 0.50
+_STORED_WIDENED_FRACTION = 0.02
 _MIB = 1024 * 1024
 
 
@@ -410,8 +412,12 @@ def ideogram4_host_plan(
     host_total_mib: Optional[int],
     host_available_mib: Optional[int],
     lora_active: bool = False,
+    compute_width: float = 1.0,
 ) -> tuple[bool, Optional[str], str]:
     """(fp8_storage, refusal, reason) for assembling an fp8 Ideogram 4 pipeline on this host.
+
+    ``dit_bf16_mib`` is the DiTs' bf16 size; ``compute_width`` is the compute dtype's bytes over bf16's (2.0 for
+    float32), applied only to what widens. ``text_encoder_mib`` / ``vae_mib`` are already at the compute dtype.
 
     The vendor DiTs are float8 on disk, so unlike a bf16 checkpoint (which stays memory-mapped, reclaimable page
     cache) the dense load widens both ~9.3B DiTs and the encoder into anonymous host memory: ~53 GB, which the
@@ -425,8 +431,10 @@ def ideogram4_host_plan(
         host_reserve_mib,
     )
 
-    dense = int(dit_bf16_mib) + int(text_encoder_mib) + int(vae_mib)
-    stored = int(dit_bf16_mib * _STORED_FRACTION) + int(text_encoder_mib) + int(vae_mib)
+    width = float(compute_width)
+    dense = int(dit_bf16_mib * width) + int(text_encoder_mib) + int(vae_mib)
+    stored_dit = dit_bf16_mib * (_STORED_CODES_FRACTION + _STORED_WIDENED_FRACTION * width)
+    stored = int(stored_dit) + int(text_encoder_mib) + int(vae_mib)
     reserve = host_reserve_mib(host_total_mib)
     forced = _fp8_storage_env()
     if forced is not None and not (forced and lora_active):
