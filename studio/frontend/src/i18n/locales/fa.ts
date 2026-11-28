@@ -5397,6 +5397,9 @@ export const fa = {
       saveHistoryDescription: "فقط در همین مرورگر نگهداری می‌شود.",
       showPrompt: "نمایش پرامپت",
       showPromptDescription: "دستورالعمل‌های دقیق ارسال‌شده به مدل را ببینید.",
+      keepNames: "حفظ نام‌های اصلی",
+      keepNamesDescription:
+        "املای اصلی هر نام را بعد از آن نشان می‌دهد، مانند डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "در تاریخچه ذخیره نشد: فضای ذخیره‌سازی مرورگر پر است.",

@@ -5151,6 +5151,9 @@ export const it = {
       saveHistoryDescription: "Conservata solo in questo browser.",
       showPrompt: "Mostra prompt",
       showPromptDescription: "Vedi le istruzioni esatte inviate al modello.",
+      keepNames: "Mantieni i nomi originali",
+      keepNamesDescription:
+        "Mostra l'ortografia originale di ogni nome dopo di esso, ad esempio डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Non salvata nella cronologia: lo spazio di archiviazione del browser è pieno.",

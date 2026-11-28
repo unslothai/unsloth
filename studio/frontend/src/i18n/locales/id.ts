@@ -5425,6 +5425,9 @@ export const id = {
       saveHistoryDescription: "Hanya disimpan di browser ini.",
       showPrompt: "Tampilkan prompt",
       showPromptDescription: "Lihat instruksi persis yang dikirim ke model.",
+      keepNames: "Pertahankan nama asli",
+      keepNamesDescription:
+        "Tampilkan ejaan asli setiap nama setelahnya, seperti डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Tidak disimpan ke Riwayat: penyimpanan browser penuh.",

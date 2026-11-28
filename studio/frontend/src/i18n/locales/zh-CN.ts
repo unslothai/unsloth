@@ -4982,6 +4982,9 @@ export const zhCN = {
       saveHistoryDescription: "仅保存在此浏览器中。",
       showPrompt: "显示提示词",
       showPromptDescription: "查看发送给模型的确切指令。",
+      keepNames: "保留原名",
+      keepNamesDescription:
+        "在每个名字后显示其原始拼写，例如 डेविन वे (Devin Way)。",
     },
     history: {
       notSaved: "未保存到历史记录：浏览器存储空间已满。",

@@ -1,6 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  type NameSpelling,
+  nameGuide,
+  referenceBlock,
+} from "./translate-names.ts";
+
 export const TRANSLATE_TONES = ["default", "formal", "casual"] as const;
 export type TranslateTone = (typeof TRANSLATE_TONES)[number];
 
@@ -13,6 +19,10 @@ export type TranslatePromptOptions = {
   mode: TranslateMode;
   tone: TranslateTone;
   custom?: string | null;
+  keepNames?: boolean;
+  /** The picked source language's code; null for automatic. */
+  sourceCode?: string | null;
+  names?: readonly NameSpelling[];
 };
 
 export const TARGET_PLACEHOLDER = "{target_language}";
@@ -93,7 +103,12 @@ export function hyMtMessages(
   text: string,
   options: TranslatePromptOptions,
 ): TranslateMessage[] {
-  return [{ role: "user", content: `${hyMtInstruction(options)}\n\n${text}` }];
+  return [
+    {
+      role: "user",
+      content: `${referenceBlock(options.names)}${hyMtInstruction(options)}\n\n${text}`,
+    },
+  ];
 }
 
 /** One user turn with the text in tags: a system prompt plus bare text reads as a request to acknowledge. */
@@ -104,7 +119,7 @@ export function generalMessages(
   return [
     {
       role: "user",
-      content: `${generalInstruction(options)}\n\n<source>\n${text}\n</source>`,
+      content: `${generalInstruction(options)}${nameGuide(options.names)}\n\n<source>\n${text}\n</source>`,
     },
   ];
 }

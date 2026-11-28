@@ -5093,6 +5093,9 @@ export const hi = {
       saveHistoryDescription: "सिर्फ़ इसी ब्राउज़र में रखी जाती है।",
       showPrompt: "प्रॉम्प्ट दिखाएँ",
       showPromptDescription: "मॉडल को भेजे गए सटीक निर्देश देखें।",
+      keepNames: "मूल नाम रखें",
+      keepNamesDescription:
+        "हर नाम के बाद उसकी मूल वर्तनी दिखाएँ, जैसे डेविन वे (Devin Way)।",
     },
     history: {
       notSaved: "इतिहास में सहेजा नहीं गया: ब्राउज़र का स्टोरेज भर गया है।",

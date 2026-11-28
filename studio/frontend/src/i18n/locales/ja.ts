@@ -5031,6 +5031,9 @@ export const ja = {
       saveHistoryDescription: "このブラウザにのみ保存されます。",
       showPrompt: "プロンプトを表示",
       showPromptDescription: "モデルに送られる正確な指示を表示します。",
+      keepNames: "元の名前を残す",
+      keepNamesDescription:
+        "各名前の後に元の綴りを表示します（例：डेविन वे (Devin Way)）。",
     },
     history: {
       notSaved: "履歴に保存されませんでした: ブラウザのストレージがいっぱいです。",

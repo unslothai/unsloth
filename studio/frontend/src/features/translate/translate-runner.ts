@@ -36,6 +36,7 @@ import {
   isTranslationHeldSlot,
   isTranslationOnlyRepo,
 } from "@/lib/translation-models";
+import { detectTranslateLanguage } from "./detect-language";
 import {
   CUSTOM_TRANSLATE_MODEL,
   type CustomTranslateModel,
@@ -49,6 +50,13 @@ import {
   translationSampling,
 } from "./models";
 import { quantOnDisk } from "./quant-on-disk";
+import {
+  type NameSpelling,
+  annotateNames,
+  findNames,
+  nameSpelling,
+  namesAreCapitalised,
+} from "./translate-names";
 import {
   parseSubtitles,
   translateSubtitles,
@@ -411,11 +419,14 @@ async function baseRequest(
 
 type TranslateSetup = Omit<TranslateRunOptions, "text" | "onOutput">;
 
+type Complete = (
+  source: string,
+  onText?: (text: string) => void,
+  names?: readonly NameSpelling[],
+) => Promise<string>;
+
 async function prepareTranslation(options: TranslateSetup): Promise<{
-  complete: (
-    source: string,
-    onText?: (text: string) => void,
-  ) => Promise<string>;
+  complete: Complete;
   model: string;
 }> {
   const { prompt, modelId, signal, onPhase } = options;
@@ -444,16 +455,13 @@ async function prepareTranslation(options: TranslateSetup): Promise<{
       : null);
   const base = await baseRequest(sampling, requestModel);
 
-  const complete = async (
-    source: string,
-    onText?: (text: string) => void,
-  ): Promise<string> => {
+  const complete: Complete = async (source, onText, names) => {
     let raw = "";
     let finishReason: string | null = null;
     const stream = streamChatCompletions(
       {
         ...base,
-        messages: translateMessages(promptModel, source, prompt),
+        messages: translateMessages(promptModel, source, { ...prompt, names }),
       },
       signal,
     );
@@ -478,6 +486,30 @@ async function prepareTranslation(options: TranslateSetup): Promise<{
   };
 }
 
+async function spellNames(
+  text: string,
+  complete: Complete,
+  known: Map<string, string | null>,
+  signal: AbortSignal,
+): Promise<NameSpelling[]> {
+  const names: NameSpelling[] = [];
+  for (const source of findNames(text)) {
+    if (!known.has(source)) {
+      let target: string | null = null;
+      try {
+        target = nameSpelling(source, await complete(source));
+      } catch (error) {
+        signal.throwIfAborted();
+        if (!(error instanceof TranslateRunError)) throw error;
+      }
+      known.set(source, target);
+    }
+    const target = known.get(source);
+    if (target) names.push({ source, target });
+  }
+  return names;
+}
+
 export async function runTranslation(
   options: TranslateRunOptions,
 ): Promise<{ output: string; model: string }> {
@@ -494,6 +526,13 @@ export async function runTranslation(
   } else {
     const chunks = splitForTranslation(text);
     const parts = chunks.filter((chunk) => chunk.text).length;
+    const keepNames =
+      options.prompt.keepNames === true &&
+      namesAreCapitalised(
+        options.prompt.sourceCode ?? detectTranslateLanguage(text),
+      );
+    const spellings = new Map<string, string | null>();
+    const annotated = new Set<string>();
     let part = 0;
     let previous: TranslateChunk | undefined;
     for (const chunk of chunks) {
@@ -505,8 +544,17 @@ export async function runTranslation(
       }
       part += 1;
       onPhase({ kind: "translating", part, parts });
-      const translated = await complete(chunk.text, (partial) =>
-        onOutput(joinPassage(output, partial, previous, chunk)),
+      const names = keepNames
+        ? await spellNames(chunk.text, complete, spellings, signal)
+        : [];
+      const translated = annotateNames(
+        await complete(
+          chunk.text,
+          (partial) => onOutput(joinPassage(output, partial, previous, chunk)),
+          names,
+        ),
+        names,
+        annotated,
       );
       output = joinPassage(
         output,

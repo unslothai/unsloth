@@ -5472,6 +5472,9 @@ export const nl = {
       saveHistoryDescription: "Wordt alleen in deze browser bewaard.",
       showPrompt: "Prompt tonen",
       showPromptDescription: "Bekijk de exacte instructies die naar het model gaan.",
+      keepNames: "Originele namen behouden",
+      keepNamesDescription:
+        "Toon na elke naam de oorspronkelijke spelling, zoals डेविन वे (Devin Way).",
     },
     history: {
       notSaved: "Niet opgeslagen in de geschiedenis: de opslag van de browser is vol.",
