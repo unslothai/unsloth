@@ -3,6 +3,7 @@
 """`gguf_packed = True`: quantized Linears keep their GGUF blocks, LoRA trains on top, and everything matches the
 same GGUF dequantized to dense (transformers' own load) bit for bit."""
 
+import contextlib
 import logging
 import os
 
@@ -45,6 +46,16 @@ def _blocks(
     return torch.from_numpy(raw.reshape(rows, ref.row_bytes(t, cols)).copy())
 
 
+def _install_fake_zoo_kernels(monkeypatch, fake):
+    # `import unsloth_zoo.gguf_kernels` reads the parent package's attribute once the real module was imported.
+    import sys
+
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.gguf_kernels", fake)
+    parent = sys.modules.get("unsloth_zoo")
+    if parent is not None:
+        monkeypatch.setattr(parent, "gguf_kernels", fake, raising = False)
+
+
 def _pair(
     name,
     rows = 64,
@@ -82,7 +93,98 @@ def test_packed_linear_forward_backward_match_dense(name):
     assert not module.weight_packed.requires_grad and module.weight_packed.grad is None
 
 
-def test_kernel_shim_defaults_to_the_reference(monkeypatch):
+def test_compiled_layers_of_mixed_types_see_constant_types_and_shapes():
+    # One compiled decoder-layer function runs layers whose packed Linears differ in ggml type and size (Q4_K_M puts
+    # Q6_K on some down_proj). Every graph must see the type and shape as constants: a SymInt there sends the zoo
+    # kernels' type lookup out of the graph (a graph break per Linear call) and the reference to generic code.
+    torch._dynamo.reset()
+    graphs = []
+
+    def backend(gm, example_inputs):
+        graphs.append(
+            [n.meta.get("example_value") for n in gm.graph.nodes if n.op == "placeholder"]
+        )
+        return gm.forward
+
+    @torch.compile(backend = backend, fullgraph = True)
+    def run(module, x):
+        return module(x) * module.ggml_type + module.shape[0] + module.shape[1]
+
+    modules = [
+        _pair("Q4_K", rows = 64, cols = 256)[0],
+        _pair("Q6_K", rows = 64, cols = 256)[0],
+        _pair("Q8_0", rows = 32, cols = 512)[0],
+        _pair("Q4_K", rows = 96, cols = 512)[0],
+    ]
+    for module in modules:
+        x = torch.randn(4, module.in_features)
+        expected = module(x) * module.ggml_type + module.out_features + module.in_features
+        assert torch.equal(run(module, x), expected)
+    symbolic = [
+        value
+        for placeholders in graphs
+        for value in placeholders
+        if isinstance(value, torch.SymInt)
+    ]
+    assert graphs and not symbolic
+    assert [m.ggml_type for m in modules] == [12, 14, 8, 12]
+    assert all(isinstance(m.ggml_type, int) for m in modules)
+    assert [m.shape for m in modules] == [(64, 256), (64, 256), (32, 512), (96, 512)]
+    torch._dynamo.reset()
+
+
+@pytest.mark.parametrize("permuted", (False, True))
+def test_checkpoint_recompute_keeps_its_decoded_weight_for_dx(monkeypatch, permuted):
+    # A gradient-checkpoint recompute is followed at once by its backward: the Linear keeps the weight it decoded for
+    # the forward and dX decodes nothing. Outside a recompute nothing 16-bit is saved. Same values either way.
+    zoo_gc = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
+    if not hasattr(zoo_gc, "_gradient_checkpoint_recompute_marker"):
+        pytest.skip("this unsloth_zoo has no recompute marker")
+    permutation = (
+        torch.randperm(256, generator = torch.Generator().manual_seed(1)) if permuted else None
+    )
+    module, dense = _pair("Q4_K", permutation = permutation)
+    assert gp._mirror_checkpoint_recompute()
+    ops = gp.gguf_ops()
+    calls = {"decode": 0, "dx": 0}
+    real_dequantize, real_dx = ops.dequantize, ops.linear_backward_input
+
+    def dequantize(*args, **kwargs):
+        calls["decode"] += 1
+        return real_dequantize(*args, **kwargs)
+
+    def dx(*args, **kwargs):
+        calls["dx"] += 1
+        return real_dx(*args, **kwargs)
+
+    monkeypatch.setattr(ops, "dequantize", dequantize)
+    monkeypatch.setattr(ops, "linear_backward_input", dx)
+    grads = {}
+    for recompute in (False, True):
+        x = torch.randn(3, 256, generator = torch.Generator().manual_seed(2)).requires_grad_(True)
+        marker = (
+            zoo_gc._gradient_checkpoint_recompute_marker(None)
+            if recompute
+            else contextlib.nullcontext()
+        )
+        with marker:
+            y = module(x)
+        assert gp._IN_CHECKPOINT_RECOMPUTE[0] is False
+        before = dict(calls)
+        y.backward(torch.ones_like(y))
+        grads[recompute] = x.grad
+        decoded_in_backward = calls["decode"] - before["decode"] + calls["dx"] - before["dx"]
+        assert decoded_in_backward == (0 if recompute else 1)
+    assert torch.equal(grads[False], grads[True])
+    x = torch.randn(3, 256, generator = torch.Generator().manual_seed(2)).requires_grad_(True)
+    dense(x).backward(torch.ones(3, 64))
+    assert torch.equal(grads[True], x.grad)
+    monkeypatch.setattr(gp, "_RECOMPUTE_REUSE", False)
+    with zoo_gc._gradient_checkpoint_recompute_marker(None):
+        assert gp._reuse_recompute_weight() is False
+
+
+def test_kernel_shim_default_follows_the_zoo(monkeypatch):
     import sys
     import types
 
@@ -97,11 +199,20 @@ def test_kernel_shim_defaults_to_the_reference(monkeypatch):
         lambda g, packed, t, shape: gp._reference_linear_backward_input(g, packed, t, shape)
     )
     fake.SUPPORTED_TYPES = frozenset({ref.GGML_TYPE_IDS["Q8_0"]})
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.gguf_kernels", fake)
+    _install_fake_zoo_kernels(monkeypatch, fake)
     monkeypatch.delenv("UNSLOTH_GGUF_KERNELS", raising = False)
+    # A zoo whose decodes are Python custom ops in compiled graphs (slower than the reference): opt-in only.
     assert gp._resolve_ops().name == "reference"
     monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", "zoo")
     assert gp._resolve_ops().name == "unsloth_zoo.gguf_kernels"
+    # A zoo that launches its dequantize kernel from the graph: the default.
+    fake.COMPILE_TRACED_DEQUANTIZE = True
+    monkeypatch.delenv("UNSLOTH_GGUF_KERNELS", raising = False)
+    assert gp._resolve_ops().name == "unsloth_zoo.gguf_kernels"
+    monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", "auto")
+    assert gp._resolve_ops().name == "unsloth_zoo.gguf_kernels"
+    monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", "reference")
+    assert gp._resolve_ops().name == "reference"
 
 
 @pytest.mark.parametrize("kernels", ("reference", "zoo"))
@@ -140,7 +251,7 @@ def test_gguf_expert_stack_grouped_mm_routing(monkeypatch, kernels):
     )
     fake.gguf_linear_backward_input = gp._reference_linear_backward_input
     fake.gguf_grouped_mm = fake_grouped
-    monkeypatch.setitem(sys.modules, "unsloth_zoo.gguf_kernels", fake)
+    _install_fake_zoo_kernels(monkeypatch, fake)
     monkeypatch.setenv("UNSLOTH_GGUF_KERNELS", kernels)
     monkeypatch.setattr(gp, "_OPS", [])
     cls = gp.gguf_expert_param_class()
