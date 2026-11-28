@@ -208,7 +208,7 @@ def test_mxfp4_decodes_exactly_in_the_nvfp4_layout(spread):
     w[5, :32] = 0
     if spread == "wide":
         w[7, 32:64] *= 2.0**-30  # 30 octaves below the rest: past e4m3's power-of-two range
-    packed, scale, g = fq.mxfp4_quantize_weight(w)
+    packed, scale, g = fq.mxfp4_quantize_weight(w, "rtn")
     assert scale.dtype == (torch.float8_e4m3fn if spread == "narrow" else torch.bfloat16)
     assert scale.shape == (64, 16)
     assert torch.equal(_decode(packed, scale, g), _mx_reference(w))
@@ -263,8 +263,12 @@ def tiny_dense(tmp_path_factory):
 
 
 @pytest.mark.parametrize("fmt", ["nvfp4", "mxfp4"])
-def test_linears_are_quantized_while_the_checkpoint_loads(cpu_hook, tiny_dense, fmt):
+def test_linears_are_quantized_while_the_checkpoint_loads(cpu_hook, tiny_dense, fmt, monkeypatch):
     from transformers import AutoModelForCausalLM
+
+    monkeypatch.setenv(
+        "UNSLOTH_MXFP4_WEIGHT_QUANT", "rtn"
+    )  # compared below against the OCP reference
 
     ref = AutoModelForCausalLM.from_pretrained(tiny_dense, dtype = torch.bfloat16)
     oq.onthefly_fp4_stats(reset = True)
