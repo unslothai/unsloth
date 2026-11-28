@@ -2847,7 +2847,8 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
         self._interrupt = False
         images = []
         done = 0
-        refusal = self._together_refusal(len(jobs))
+        refusal = self._together_refusal(len(jobs), (width, height, steps))
+        self._unsloth_h3_together_refusal = refusal
         if refusal is None:
             done, finished = self._render_together(
                 jobs,
@@ -3306,14 +3307,24 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             return "the stock forward runs each image"
         return None
 
-    def _together_refusal(self, images: int) -> Optional[str]:
-        """Why ``images`` images cannot denoise together; None = they can."""
+    def _together_refusal(
+        self,
+        images: int,
+        shape: Optional[tuple] = None,
+    ) -> Optional[str]:
+        """Why ``images`` images cannot denoise together; None = they can. ``shape``: the call's (width, height,
+        steps), which a resident DiT's Auto batched forward needs a race verdict for."""
         if images < 2 or self._placement() == PLACE_STREAM:
             return self._lockstep_refusal(images)
         if self._placement() == PLACE_SEQUENTIAL:
             return self._sequential_refusal()
-        if not h3_batch.batched_forward_enabled():
-            return f"{h3_batch.BATCHED_ENV} is not 1"
+        mode = h3_batch.batched_mode()
+        if mode == h3_batch.MODE_OFF:
+            return "the batched forward is off (forced by the env or a race arm)"
+        if mode == h3_batch.MODE_AUTO and (
+            shape is None or self._measured_size(images, *shape) is None
+        ):
+            return "no race on this card measured the batched forward faster at this size"
         if self._placement() not in (PLACE_RESIDENT, PLACE_DIT_RESIDENT):
             return "the DiT is offloaded"
         if not h3_image_forward_active(self.transformer):
@@ -3354,10 +3365,47 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             room = max(0.0, room - _module_gb_off(self.transformer, job["device"]))
         return room
 
+    def _measured_size(
+        self,
+        images: int,
+        width: Any,
+        height: Any,
+        steps: Any,
+        canvas: Any = None,
+    ) -> Optional[int]:
+        """Auto: ``images`` when a race on this load and card measured them faster as one batched call at this shape."""
+        from .diffusion_minimax_h3_image_batch_race import measured_size
+        try:
+            return measured_size(self, width, height, steps, images, canvas)
+        except Exception:  # noqa: BLE001 - no verdict: lockstep
+            return None
+
+    def _jobs_measured_size(self, jobs: list) -> Optional[int]:
+        """``_measured_size`` for set-up jobs: one output size, step count and canvas, else None."""
+        first = jobs[0]
+        keys = {
+            (
+                tuple(job.get("out_size") or ()),
+                int(job["steps"]),
+                tuple(job["stats"].get("canvas") or ()),
+            )
+            for job in jobs
+        }
+        if len(keys) != 1 or not first.get("out_size"):
+            return None
+        out_h, out_w = first["out_size"]
+        return self._measured_size(
+            len(jobs), out_w, out_h, int(first["steps"]), first["stats"].get("canvas")
+        )
+
     def _batch_cap(self, jobs: list, room: Optional[float]) -> int:
         if room is None or len(jobs) < 2 or self._compiled_blocks():
             return 1
-        if self._placement() == PLACE_SEQUENTIAL and not h3_batch.batched_forward_enabled():
+        mode = h3_batch.batched_mode()
+        if mode == h3_batch.MODE_OFF:
+            return 1
+        measured = self._jobs_measured_size(jobs) if mode == h3_batch.MODE_AUTO else None
+        if mode == h3_batch.MODE_AUTO and measured is None:
             return 1
         config = self.transformer.config
         hidden = int(getattr(config, "hidden_size", 5376))
@@ -3389,7 +3437,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
             )
             for job in jobs
         )
-        return h3_batch.batch_cap(len(jobs), room, state, row, max(int(job["seq"]) for job in jobs))
+        return h3_batch.batch_cap(
+            len(jobs), room, state, row, max(int(job["seq"]) for job in jobs), measured = measured
+        )
 
     def _lockstep_room(self, job: dict) -> Optional[float]:
         """GB the plan leaves for more images beside ``job`` (set up), None = not priced."""
@@ -3443,6 +3493,9 @@ class MiniMaxH3ImagePipeline(_pipeline_base()):
                 self._denoise_setup(job, transformer)
             if cap > 1:
                 batches = h3_batch.batch_groups(jobs, cap)
+                if h3_batch.batched_mode() == h3_batch.MODE_AUTO and len(batches) != 1:
+                    # Auto's verdict covers one call of every image; layout groups are sizes nobody raced
+                    batches = [[j] for j in range(len(jobs))]
             statics = None
             for i, t in enumerate(jobs[0]["timesteps"]):
                 if self.interrupt:

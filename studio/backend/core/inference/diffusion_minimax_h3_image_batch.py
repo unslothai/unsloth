@@ -8,14 +8,19 @@ tables and timesteps, and no block op mixes rows, so each row computes as its ow
 and output head run per row at batch-1 GEMM shape (the 6-step sampler amplifies 1e-7 roundings), so batched images
 are bit-identical to their own renders on CUDA.
 
-Opt-in ``UNSLOTH_H3_IMAGE_BATCHED=1``; ``UNSLOTH_H3_IMAGE_BATCH_TOKENS`` (4608) caps packed rows per call.
-Batch 4, int8: RTX PRO 6000 1024x1024 1.11x, 2048x2048 resident 0.88x; A100-80 1024x1024 resident 1.00x."""
+Auto by default: a batch runs as one call only where an idle race on this load, card and shape measured it faster
+than the lockstep / one-after-another render of the same images, with every row bit-identical (diffusion_minimax_h3_
+image_batch_race); elsewhere each image runs batch 1. ``UNSLOTH_H3_IMAGE_BATCHED=1`` forces it on (rows capped by
+``UNSLOTH_H3_IMAGE_BATCH_TOKENS``, 4608), ``=0`` off. Batch 4, int8: RTX PRO 6000 1024x1024 1.11x, 2048x2048 resident
+0.88x; A100-80 1024x1024 resident 1.00x, 2048x2048 0.92x: the win depends on card and size, hence measured."""
 
 from __future__ import annotations
 
+import contextvars
 import os
 import types
-from typing import Any, Optional, Sequence
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional, Sequence
 
 BATCHED_ENV = "UNSLOTH_H3_IMAGE_BATCHED"
 BATCH_TOKENS_ENV = "UNSLOTH_H3_IMAGE_BATCH_TOKENS"
@@ -23,8 +28,45 @@ BATCH_TOKENS = 4608
 _SHARED_FIELDS = ("position_ids", "token_tags", "image_indices", "text_indices")
 
 
+MODE_ON, MODE_OFF, MODE_AUTO = "on", "off", "auto"
+# The race's arm, overriding env and verdicts; a context variable so it follows the render thread only.
+_ARM: "contextvars.ContextVar[Optional[str]]" = contextvars.ContextVar(
+    "h3_image_batch_arm", default = None
+)
+
+
+def batched_mode() -> str:
+    """``on`` (forced by the env or a race arm), ``off`` (forced), or ``auto`` (a measured verdict decides)."""
+    arm = _ARM.get()
+    if arm is not None:
+        return arm
+    raw = (os.environ.get(BATCHED_ENV) or "").strip().lower()
+    if raw in ("1", "on", "true", "yes"):
+        return MODE_ON
+    if raw in ("0", "off", "false", "no"):
+        return MODE_OFF
+    return MODE_AUTO
+
+
 def batched_forward_enabled() -> bool:
-    return (os.environ.get(BATCHED_ENV) or "").strip().lower() in ("1", "on", "true", "yes")
+    """Forced on (env or race arm); Auto asks ``measured_size``."""
+    return batched_mode() == MODE_ON
+
+
+def race_arm_active() -> bool:
+    return _ARM.get() is not None
+
+
+@contextmanager
+def forced_arm(mode: str) -> Iterator[None]:
+    """Run this context's renders with the batched forward forced ``on`` or ``off`` (a race arm)."""
+    if mode not in (MODE_ON, MODE_OFF):
+        raise ValueError(f"arm must be {MODE_ON!r} or {MODE_OFF!r}")
+    token = _ARM.set(mode)
+    try:
+        yield
+    finally:
+        _ARM.reset(token)
 
 
 def layout_key(job: dict) -> tuple:
@@ -123,11 +165,13 @@ def batched_row_gb(
     return per / 1e9
 
 
-def batch_tokens() -> int:
+def batch_tokens(default: Optional[int] = BATCH_TOKENS) -> Optional[int]:
+    """The env's packed-row budget, else ``default`` (None = no budget)."""
     try:
-        return max(1, int(os.environ.get(BATCH_TOKENS_ENV) or BATCH_TOKENS))
+        raw = os.environ.get(BATCH_TOKENS_ENV)
+        return max(1, int(raw)) if raw else default
     except ValueError:
-        return BATCH_TOKENS
+        return default
 
 
 def batch_cap(
@@ -136,16 +180,27 @@ def batch_cap(
     state_gb: float,
     row_gb: float,
     seq: int = 0,
+    measured: Optional[int] = None,
 ) -> int:
-    """Rows per block call that fit ``room`` and ``batch_tokens()``; 1 = one call per image."""
-    if images < 2 or not batched_forward_enabled() or room is None:
+    """Rows per block call; 1 = one call per image. Forced on: what fits ``room`` and ``batch_tokens()``. Auto: the
+    race-measured size ``measured`` (all ``images`` in one call) when it fits ``room``, else 1; the measurement stands
+    in for the token budget, which a race arm skips too (only an explicit env budget applies there)."""
+    mode = batched_mode()
+    if images < 2 or room is None or mode == MODE_OFF:
         return 1
-    tokens = images if seq <= 0 else max(1, batch_tokens() // int(seq))
+    if mode == MODE_AUTO and (measured is None or int(measured) != images):
+        return 1
+    env_forced = mode == MODE_ON and not race_arm_active()
+    budget = batch_tokens(BATCH_TOKENS if env_forced else None)
+    tokens = images if seq <= 0 or budget is None else max(1, budget // int(seq))
     left = float(room) - (images - 1) * float(state_gb)
     if left <= 0:
         return 1
     fit = images if row_gb <= 0 else 1 + int(left // float(row_gb))
-    return max(1, min(images, tokens, fit))
+    cap = max(1, min(images, tokens, fit))
+    if mode == MODE_AUTO and cap != images:
+        return 1  # the raced batch does not fit now: lockstep, not a batch shape nobody measured
+    return cap
 
 
 def row_layout_key(

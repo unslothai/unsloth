@@ -5328,6 +5328,12 @@ class DiffusionBackend:
         self._unclaimed_turns: set = set()
         self._state: Optional[_LoadState] = None
         self._loading: Optional[_LoadingState] = None
+        try:
+            # MiniMax-H3-Image's Auto batched forward looks its race verdicts up through the loaded state.
+            from .diffusion_minimax_h3_image_batch_race import register_backend
+            register_backend(self)
+        except Exception:  # noqa: BLE001 - no verdicts: the batched forward stays off unless forced
+            pass
         # Bumped on begin_load/unload so a superseded worker neither commits nor stamps progress
         self._load_token = 0
         # Includes preflight and direct loads that have no background marker.
@@ -18618,7 +18624,12 @@ class DiffusionBackend:
 
         from .diffusion_batch_adapters import batched_forward
 
-        if not batched_forward(getattr(state, "family", None), getattr(state, "pipe", None)):
+        h3_image = (
+            getattr(getattr(state, "family", None), "name", None) == MINIMAX_H3_IMAGE_FAMILY_NAME
+        )
+        if not h3_image and not batched_forward(
+            getattr(state, "family", None), getattr(state, "pipe", None)
+        ):
             raise diffusion_batch_race.RaceRefused(
                 "this family's pipeline renders one image per forward"
             )
@@ -18634,6 +18645,23 @@ class DiffusionBackend:
             # baked under streamed graphs, refuse mid-race), and verdicts are not keyed by adapter set.
             raise diffusion_batch_race.RaceRefused(
                 "this load has active LoRA adapters; race an adapter-free load"
+            )
+        if h3_image:
+            # Its requests never share a call; the race decides whether ONE k-image call runs its rows as one
+            # batched forward or batch 1 each (diffusion_minimax_h3_image_batch_race).
+            from . import diffusion_minimax_h3_image_batch_race as h3_race
+            from .diffusion_minimax_h3_image import H3_IMAGE_STEPS
+            return h3_race.run_race(
+                self.generate,
+                state,
+                idle = idle,
+                width = width,
+                height = height,
+                steps = H3_IMAGE_STEPS if steps is None else int(steps),
+                guidance = guidance,
+                sizes = sizes,
+                repeats = repeats,
+                accuracy = accuracy,
             )
         if _step_cache_couples_rows(state, steps):
             raise diffusion_batch_race.RaceRefused(
