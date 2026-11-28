@@ -240,6 +240,13 @@ def _case(rank, world_size, shim):
             and torch.equal(live, whole_scales[rank * n : (rank + 1) * n])
         )
     out["absmax_between_steps"] = between
+    # This rank's slice offset: torch's private helper and the fallback agree.
+    offsets = []
+    for entry in q.absmax_shards(head):
+        holder = entry.holder()
+        local = holder.to_local().shape[0]
+        offsets.append(q._local_offset(holder) == q._even_local_offset(holder) == rank * local)
+    out["offsets_agree"] = offsets
     out["steps_changed_loss"] = not torch.equal(h_losses[0], h_losses[-1])
 
     # Sharded absmax without mixed precision against one process holding the whole model.
@@ -333,6 +340,33 @@ def _case(rank, world_size, shim):
         out["model_dcp_gathers"] = len(gathers)
     finally:
         q.ShardedAbsmax.gather = gather
+    # Resume: a sharded DCP checkpoint on disk (the Trainer's save_state / load_state) restores the
+    # scales a run rewrote after it was written.
+    import shutil
+    import tempfile
+
+    import torch.distributed.checkpoint as dcp_io
+
+    where = [tempfile.mkdtemp() if rank == 0 else None]
+    dist.broadcast_object_list(where, src = 0)
+    try:
+        dcp_io.save(dcp.get_model_state_dict(dcp_model), checkpoint_id = where[0])
+        with torch.no_grad():
+            with q.full_absmax(dcp_model):
+                for layer in dcp_model:
+                    layer.base.weight.quant_state.absmax.mul_(3)
+            rewritten = dcp_model(x).clone()
+        resumed = dcp.get_model_state_dict(dcp_model)
+        dcp_io.load(resumed, checkpoint_id = where[0])
+        dcp.set_model_state_dict(dcp_model, resumed)
+        with torch.no_grad():
+            out["dcp_resume_bitwise"] = not torch.equal(rewritten, before) and torch.equal(
+                dcp_model(x), before
+            )
+    finally:
+        dist.barrier()
+        if rank == 0:
+            shutil.rmtree(where[0], ignore_errors = True)
     out["dcp_rewrite_changed"] = not torch.equal(before, changed)
     out["dcp_restore_bitwise"] = torch.equal(before, after)
     dist.barrier()
@@ -454,6 +488,7 @@ def _check(results, world_size):
             assert r["absmax_sharded"] == (0, 0), r
             assert r["bytes_head"] == whole, r
         assert r["absmax_between_steps"] == [True, True, True], r
+        assert r["offsets_agree"] == [True] * r["absmax_sharded"][1], r
         assert r["steps_changed_loss"], r
         assert r["losses_bitwise"] and r["grads_bitwise"], r
         assert r["dequant_bitwise"] == [True] * len(_LAYERS), r
@@ -464,6 +499,7 @@ def _check(results, world_size):
         assert r["dcp_keys_equal"] and r["dcp_absmax_equal"], r
         assert r["dcp_rewrite_changed"] and r["dcp_restore_bitwise"], r
         assert r["optimizer_dcp_gathers"] == 0, r
+        assert r["dcp_resume_bitwise"], r
         assert r["dcp_offload_ok"], r
         assert r["save_scales_held"] == [rank == 0] * r["absmax_sharded"][1], r
         assert r["model_dcp_gathers"] == r["absmax_sharded"][1], r
@@ -516,6 +552,26 @@ def test_absmax_eligibility():
     )
     shared[1].base.weight.quant_state = shared[0].base.weight.quant_state
     assert q.register_absmax_shards(shared, 2) == []
+    # Engagement and kill switch: inside the wrap the holder exists only with sharding on; the
+    # switch installs nothing (no holder, no state-dict hook).
+    saved_env = os.environ.get("UNSLOTH_FSDP2_SHARD_ABSMAX")
+    for env, expected in (("1", True), ("0", False)):
+        os.environ["UNSLOTH_FSDP2_SHARD_ABSMAX"] = env
+        try:
+            m = torch.nn.Sequential(_Lora4bit(bnb, 0, 256, 256, True))
+            hooks = len(m[0].base._state_dict_hooks)
+            with q.fsdp2_qlora_wrap(m, native = True, world_size = 2) as info:
+                inside = "weight_unsloth_absmax" in m[0].base._parameters
+                hooked = len(m[0].base._state_dict_hooks) > hooks
+            assert (inside, hooked) == (expected, expected), (env, inside, hooked)
+            assert info["absmax_sharded"] == 0  # not taken by FSDP2 here: removed again
+            assert "weight_unsloth_absmax" not in m[0].base._parameters
+            assert len(m[0].base._state_dict_hooks) == hooks
+        finally:
+            if saved_env is None:
+                os.environ.pop("UNSLOTH_FSDP2_SHARD_ABSMAX", None)
+            else:
+                os.environ["UNSLOTH_FSDP2_SHARD_ABSMAX"] = saved_env
     # Not taken by FSDP2: back to the QuantState's own absmax, same bytes.
     assert q.finish_absmax_shards(entries) == 0
     assert "weight_unsloth_absmax" not in model[0].base._parameters

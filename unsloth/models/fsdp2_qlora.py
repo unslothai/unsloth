@@ -438,15 +438,41 @@ def _dtensor_cls():
 
 
 def _local_offset(dtensor):
-    """Global dim-0 offset of this rank's local shard of a 1-D DTensor."""
-    try:
-        from torch.distributed.tensor._utils import compute_local_shape_and_global_offset
-    except ImportError:
-        from torch.distributed._tensor._utils import compute_local_shape_and_global_offset
-    _, offset = compute_local_shape_and_global_offset(
-        dtensor.shape, dtensor.device_mesh, dtensor.placements
-    )
-    return int(offset[0]) if len(offset) else 0
+    """Global dim-0 offset of this rank's local shard of a 1-D DTensor (holders split evenly)."""
+    compute = None
+    for path in ("torch.distributed.tensor._utils", "torch.distributed._tensor._utils"):
+        try:
+            compute = getattr(
+                __import__(path, fromlist = ["compute_local_shape_and_global_offset"]),
+                "compute_local_shape_and_global_offset",
+                None,
+            )
+        except ImportError:
+            compute = None
+        if compute is not None:
+            break
+    if compute is not None:
+        try:
+            _, offset = compute(dtensor.shape, dtensor.device_mesh, dtensor.placements)
+            return int(offset[0]) if len(offset) else 0
+        except Exception:
+            pass
+    return _even_local_offset(dtensor)
+
+
+def _even_local_offset(dtensor):
+    """`_local_offset` without torch's private helper: even dim-0 shards, one per coordinate of each
+    mesh dim that shards dim 0."""
+    mesh = dtensor.device_mesh
+    coordinate = mesh.get_coordinate() or [0] * mesh.ndim
+    local = dtensor.to_local().shape[0]
+    offset, span = 0, local
+    for dim in reversed(range(len(dtensor.placements))):
+        placement = dtensor.placements[dim]
+        if getattr(placement, "dim", None) == 0 and placement.is_shard():
+            offset += coordinate[dim] * span
+            span *= mesh.size(dim)
+    return offset
 
 
 def absmax_shard_span(param, world_size):
