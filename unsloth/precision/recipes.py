@@ -666,7 +666,7 @@ _add(
                 "/ 8B (bs 2), bf16 A/A 0.1-0.2% over 3 runs; peak memory 8-21% lower. GEMMs alone (geomean): 1.5x "
                 "bf16 forward, 1.09x input gradient once Triton 3.8's prefetch split is skipped (forward 0.2x "
                 "before). Eval "
-                "loss after 100 steps at Qwen3-1.7B vs bf16 (A/A 0.03%): +0.12% with the int8 forward, +0.05% "
+                "loss after 100 steps at Qwen3-1.7B vs the bf16 mean (A/A 0.03%): +0.14% with the int8 forward, +0.05% "
                 "on the exact base. sm86 / sm87 (A10, RTX 30, Orin) share this gate untimed",
             ),
             "sm89": Gate(
