@@ -602,3 +602,23 @@ test("the Hub's pin rank matches pinCoversId for every pin, without rescanning t
     assert.equal(rank(id), expected, id);
   }
 });
+
+test("local path pins keep their case; Hub ids still fold case", () => {
+  setPinned(["/models/Llama", "Org/Repo::Q4_K_M"]);
+  const pinned = usePinnedModelsStore.getState().pinned;
+  assert.equal(pinCoversId(pinned, "/models/Llama"), true);
+  assert.equal(pinCoversId(pinned, "/models/llama"), false);
+  assert.equal(pinCoversId(pinned, "org/repo"), true);
+  const rank = makeRepoPinRank(pinned);
+  assert.equal(rank("/models/llama"), Number.MAX_SAFE_INTEGER);
+  assert.equal(rank("org/repo"), 1);
+
+  usePinnedModelsStore.getState().toggleRepoPinned("/models/llama");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, [
+    "/models/llama",
+    "/models/Llama",
+    "Org/Repo::Q4_K_M",
+  ]);
+  usePinnedModelsStore.getState().toggleRepoPinned("/models/llama");
+  assert.deepEqual(usePinnedModelsStore.getState().pinned, ["/models/Llama", "Org/Repo::Q4_K_M"]);
+});
