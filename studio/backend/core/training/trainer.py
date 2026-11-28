@@ -8,6 +8,7 @@ import gc
 import os
 import sys
 import types
+from itertools import islice
 
 # Off on Linux so forked map() workers cannot deadlock.
 os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
@@ -392,6 +393,28 @@ def _dataset_has_audio_column(dataset) -> Optional[bool]:
     return False if saw_a_usable_value else None
 
 
+def _s3_dataset_has_audio(dataset, audio_paths: frozenset[str], custom_format_mapping) -> bool:
+    from datasets import Audio
+
+    features = dataset.features or {}
+    if not audio_paths and not any(isinstance(feature, Audio) for feature in features.values()):
+        return False
+    columns = resolve_audio_columns(dataset, custom_format_mapping)
+    audio_col = columns["audio_col"]
+    if not audio_col or not columns["text_col"]:
+        return False
+    if isinstance(features.get(audio_col), Audio):
+        return True
+
+    # A filename in a metadata field is insufficient; the audio column must refer to a downloaded object.
+    for row in islice(dataset.select_columns([audio_col]), _AUDIO_SNIFF_ROWS):
+        value = row[audio_col]
+        path = value.get("path") if isinstance(value, dict) else value
+        if isinstance(path, str) and path in audio_paths:
+            return True
+    return False
+
+
 def _raise_if_empty_train_split(dataset, stage: str) -> None:
     # Format detection and SFTTrainer die with a bare StopIteration on an empty split.
     if hasattr(dataset, "__len__") and len(dataset) == 0:
@@ -556,6 +579,7 @@ class UnslothTrainer:
         self.is_vlm = False
         self.is_audio = False
         self.is_audio_vlm = False
+        self._model_accepts_audio_input = False
         self._audio_type = None
         self.diffusion_lm_profile = None
         self._use_gradient_checkpointing = "unsloth"
@@ -627,7 +651,8 @@ class UnslothTrainer:
             revision = model_revision,
         )
         self._is_dataset_audio = is_dataset_audio
-        if self._audio_type == "audio_vlm":
+        self._model_accepts_audio_input = self._audio_type == "audio_vlm"
+        if self._model_accepts_audio_input:
             self.is_audio = False
             self.is_audio_vlm = is_dataset_audio
             self._audio_type = None
@@ -711,8 +736,8 @@ class UnslothTrainer:
             if not retried_known:
                 return False
             self._audio_type, self._audio_type_known = retried_type, True
-            # audio_vlm is detected as an audio_type now; handle separately
-            if self._audio_type == "audio_vlm":
+            self._model_accepts_audio_input = self._audio_type == "audio_vlm"
+            if self._model_accepts_audio_input:
                 self.is_audio = False
                 self.is_audio_vlm = is_dataset_audio
                 self._audio_type = None
@@ -2368,6 +2393,8 @@ class UnslothTrainer:
         self,
         dataset,
         custom_format_mapping = None,
+        *,
+        temporary_audio_paths: frozenset[str] = frozenset(),
     ):
         from datasets import Audio
 
@@ -2396,6 +2423,21 @@ class UnslothTrainer:
                 f"Skipped {total - len(dataset):,} of {total:,} audio rows with a blank transcript."
             )
 
+        if temporary_audio_paths:
+            # Native torchcodec maps can retain the source path in Arrow. Keep the bytes available to the
+            # collator after the S3 download directory is cleaned up.
+            dataset = dataset.cast_column(audio_col, Audio(decode = False))
+
+            def embed_temporary_audio(audio):
+                path = audio.get("path") if audio else None
+                if path in temporary_audio_paths and audio["bytes"] is None:
+                    with open(path, "rb") as file:
+                        return {audio_col: {"path": os.path.basename(path), "bytes": file.read()}}
+                return {audio_col: audio}
+
+            dataset = dataset.map(
+                embed_temporary_audio, input_columns = [audio_col], writer_batch_size = 16
+            )
         dataset = dataset.cast_column(audio_col, Audio(sampling_rate = 16000))
         if image_col:
             dataset = prepare_audio_vlm_image_column(dataset, image_col)
@@ -3720,6 +3762,16 @@ class UnslothTrainer:
                 # No separate HF eval split - caller handles programmatic splitting
                 return None
 
+            if (
+                s3_download is not None
+                and not raw_text_mode
+                and _s3_dataset_has_audio(dataset, s3_download.audio_paths, custom_format_mapping)
+            ):
+                # The S3 picker has no local rows to inspect. Resolve modality from its loaded manifest.
+                self._is_dataset_audio = True
+                if self._model_accepts_audio_input:
+                    self.is_audio_vlm = True
+
             # An inconclusive probe must not read as "not an audio model": falling through lands on the text path,
             # which fails later with a column-mapping complaint. _dataset_has_audio_column is the tiebreaker because
             # _is_dataset_audio is true on a column-NAME match alone; raw/CPT is exempt.
@@ -3841,7 +3893,11 @@ class UnslothTrainer:
                 return (dataset_info, eval_dataset)
 
             elif self.is_audio_vlm:
-                formatted = self._format_audio_vlm_dataset(dataset, custom_format_mapping)
+                formatted = self._format_audio_vlm_dataset(
+                    dataset,
+                    custom_format_mapping,
+                    **({"temporary_audio_paths": s3_download.audio_paths} if s3_download else {}),
+                )
                 return (
                     formatted,
                     self._format_audio_vlm_eval_split(eval_dataset, custom_format_mapping),

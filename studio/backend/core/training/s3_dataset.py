@@ -49,9 +49,11 @@ class S3DatasetDownload:
         self,
         files: list[str],
         temp_dir: Optional[str] = None,
+        audio_paths: frozenset[str] = frozenset(),
     ):
         self.files = files
         self.temp_dir = temp_dir
+        self.audio_paths = audio_paths
 
     def cleanup(self) -> None:
         if not self.temp_dir:
@@ -466,6 +468,7 @@ def prepare_s3_dataset_download(
         os.makedirs(target_dir, exist_ok = True)
 
         local_files: list[str] = []
+        audio_local_by_key: dict[str, str] = {}
         if audio_keys:
             local_by_key = _structured_local_paths(prefix, keys + audio_keys, target_dir)
             manifest_local_by_key = {key: local_by_key[key] for key in keys}
@@ -498,6 +501,7 @@ def prepare_s3_dataset_download(
     return S3DatasetDownload(
         files = local_files,
         temp_dir = target_dir if owns_temp_dir else None,
+        audio_paths = frozenset(audio_local_by_key.values()),
     )
 
 

@@ -141,3 +141,65 @@ def test_an_inconclusive_vision_probe_keeps_the_default_load(load):
 def test_audio_without_a_multimodal_class_keeps_the_default_load(load):
     _, kwargs = load(vision = False, multimodal = False)  # AudioFlamingo3
     assert "auto_model" not in kwargs
+
+
+@pytest.mark.parametrize("with_audio", [True, False])
+def test_s3_manifest_selects_audio_input_for_the_downloaded_rows(monkeypatch, with_audio):
+    import io
+    import json
+    import wave
+
+    from core.training import s3_dataset
+    from .test_s3_audio_dataset import _FakeS3Client
+
+    repo = "LiquidAI/LFM3-Audio-2B"
+    row = {"text": "A spoken line.", "id": "episode-001.wav"}
+    objects = {}
+    if with_audio:
+        row["audio"] = "speech.wav"
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16_000)
+            wav.writeframes(bytes(800))
+        objects["training/speech.wav"] = buffer.getvalue()
+    objects["training/train.jsonl"] = json.dumps(row) + "\n"
+    client = _FakeS3Client(objects, objects)
+    monkeypatch.setattr(s3_dataset, "boto3_available", lambda: True)
+    monkeypatch.setattr(s3_dataset, "_build_s3_client", lambda config: client)
+    monkeypatch.setattr(
+        trainer_mod, "detect_audio_type_checked", lambda *a, **kw: ("audio_vlm", True)
+    )
+    monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **kw: False)
+    monkeypatch.setattr(trainer_mod, "should_use_mlx_training_backend", lambda: False)
+    monkeypatch.setattr(trainer_mod, "_load_adapter_aware_tokenizer", lambda *a, **kw: object())
+
+    trainer = trainer_mod.UnslothTrainer()
+    trainer._detect_diffusion_lm = lambda *a: None
+    trainer.pre_detect_and_load_tokenizer(repo, max_seq_length = 256, is_dataset_audio = False)
+    assert not trainer.is_audio_vlm
+
+    def format_text(dataset, **kwargs):
+        assert not with_audio
+        return {"success": True, "dataset": dataset}
+
+    monkeypatch.setattr(trainer_mod, "format_and_template_dataset", format_text)
+    formatted, evaluation = trainer.load_and_format_dataset(
+        None,
+        s3_config = {"bucket": "stub-bucket", "prefix": "training/", "use_iam_role": True},
+    )
+    assert evaluation is None
+    assert trainer._is_dataset_audio is with_audio
+    assert trainer.is_audio_vlm is with_audio
+    if with_audio:
+        from datasets import Audio
+
+        assert formatted.cast_column("audio", Audio(decode = False))[0]["audio"]["bytes"]
+        assert len(formatted[0]["audio"]["array"]) == 400
+        parts = [part for message in formatted[0]["messages"] for part in message["content"]]
+        assert any(part.get("text") == row["text"] for part in parts)
+        [audio] = [part for part in parts if part["type"] == "audio"]
+        assert len(audio["audio"]) == 400
+    else:
+        assert formatted["dataset"][0]["text"] == row["text"]

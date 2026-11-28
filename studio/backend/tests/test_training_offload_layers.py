@@ -186,6 +186,20 @@ def test_worker_routes_both_budgets_through_the_helper():
     assert "_apply_training_vram_budget(" in src
 
 
+def test_worker_defers_the_s3_budget_until_the_manifest_modality_is_known():
+    import inspect
+    from core.training import worker
+
+    src = inspect.getsource(worker.run_training_process)
+    assert (
+        'if not config.get("s3_config") or config.get("batch_members"):\n        _configure_training_vram_budget()'
+        in src
+    )
+    detected = src.index('config["is_dataset_audio"] = trainer._is_dataset_audio')
+    budget = src.index("_configure_training_vram_budget()", detected)
+    assert detected < budget < src.index('"Loading model..."', detected)
+
+
 def _trainer(
     offload_layers = 0,
     prefetch_depth = 2,
