@@ -497,6 +497,9 @@ export function ChatProvidersSettings({
     () => [...new Set([...selectedModelIds, ...parseManualModelIds(manualModelIds)])],
     [selectedModelIds, manualModelIds],
   );
+  // Read when a detection answers, so ticks made while it ran still count.
+  const configuredModelsRef = useRef(autoCompactModels);
+  configuredModelsRef.current = autoCompactModels;
   const autoCompactModel = autoCompactModels.includes(autoCompactScope)
     ? autoCompactScope
     : null;
@@ -1019,11 +1022,7 @@ export function ChatProvidersSettings({
   }
 
   /** Asks the endpoint for its effort levels: OpenRouter-shaped /models entries or llama-server /props. */
-  async function detectEffortLevels({
-    silent = false,
-    modelIds = selectedModelIds,
-  }: { silent?: boolean; modelIds?: readonly string[] } = {}): Promise<void> {
-    const configured = [...new Set([...modelIds, ...parseManualModelIds(manualModelIds)])];
+  async function detectEffortLevels({ silent = false }: { silent?: boolean } = {}): Promise<void> {
     if (!showCustomReasoning) return;
     if (
       editingProvider?.hasApiKey &&
@@ -1049,7 +1048,7 @@ export function ChatProvidersSettings({
         extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
       });
       if (request !== formCheckRequestRef.current) return;
-      const levels = detectedCustomEffortLevels(capabilities, configured);
+      const levels = detectedCustomEffortLevels(capabilities, configuredModelsRef.current);
       if (!levels) {
         if (!silent) {
           toast.info("This endpoint does not report its effort levels.", {
@@ -1247,10 +1246,7 @@ export function ChatProvidersSettings({
         customReasoningStyleTakesEffort(reasoningConfig.style) &&
         reasoningConfig.effort_levels === undefined
       ) {
-        void detectEffortLevels({
-          silent: true,
-          modelIds: ticked.length > 0 ? ticked : selectedModelIds,
-        });
+        void detectEffortLevels({ silent: true });
       }
       if (editingProviderId) {
         const record = providersRef.current.find(

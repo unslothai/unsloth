@@ -1440,7 +1440,8 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         )
     finally:
         await client.close()
-    if capabilities:
+    # A Custom server can swap models behind one URL (llama-swap, router mode), so it is re-read each time.
+    if capabilities and payload.provider_type != "custom":
         now = time.monotonic()
         for key in [
             key

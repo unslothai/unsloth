@@ -667,3 +667,33 @@ def test_llama_server_template_is_read_from_props_beside_v1(status, body, expect
         loop.close()
     assert got == expected
     assert seen == ["http://127.0.0.1:8080/props?model=my+model"]
+
+
+def test_custom_capabilities_are_reread_on_every_detection(monkeypatch):
+    providers_route._model_capability_cache.clear()
+    _TemplateClient.raw = [{"id": "served"}]
+    _TemplateClient.templates = {"served": _HARMONY_TEMPLATE}
+    _TemplateClient.probed = []
+    _TemplateClient.calls = 0
+    _TemplateClient.fail = False
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _TemplateClient)
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+    monkeypatch.setattr(providers_route, "validate_provider_base_url", lambda url: url)
+
+    def detect():
+        return asyncio.run(
+            providers_route.list_provider_model_capabilities(
+                ProviderModelsRequest(provider_type = "custom", base_url = "http://swap.test/v1"),
+                _current_subject = "tester",
+                via_api_key = False,
+            )
+        )
+
+    assert detect()[0]["reasoning"]["supported_efforts"] == ["low", "medium", "high"]
+    # The server swapped to a model with no effort levels behind the same URL.
+    _TemplateClient.templates = {"served": "{% if enable_thinking %}{% endif %}"}
+    assert detect() == []
+    assert _TemplateClient.calls == 2
+    providers_route._model_capability_cache.clear()
