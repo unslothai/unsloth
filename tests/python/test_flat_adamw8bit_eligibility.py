@@ -20,6 +20,8 @@ import pytest
 import torch
 
 bnb = pytest.importorskip("bitsandbytes")
+if getattr(bnb, "__unsloth_shim__", False):
+    pytest.skip("needs the native bitsandbytes, not Unsloth's stand-in", allow_module_level = True)
 
 _ROOT = pathlib.Path(__file__).resolve().parents[2]
 
