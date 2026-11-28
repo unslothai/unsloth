@@ -759,6 +759,8 @@ def test_planner_budgets_whole_fsdp2_weights_before_sharding(af):
     assert af._fsdp_gathered(trainer, model) == (root, 2 * block)
     trainer.accelerator.state.fsdp_plugin.reshard_after_forward = False
     assert af._fsdp_gathered(trainer, model) == (root + 2 * block, 0)
+    # Each group is one in-backward batch: the planner budgets the largest group, not the largest weight.
+    assert af._fsdp_group_bytes(model) == [block, block, root]
 
 
 def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):

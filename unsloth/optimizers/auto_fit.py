@@ -1180,6 +1180,12 @@ def plan_auto_fit(
     if world > 1:
         resident, transient = _fsdp_gathered(trainer, model)
         activations += transient
+        # Each FSDP2 group is one batch (never split by size): its local gradient shards are alive together, and
+        # a multi-tensor update spans the whole group.
+        group = max(_fsdp_group_bytes(model), default = 0) // world
+        group_numel = max(_fsdp_group_bytes(model, numel = True), default = 0) // world
+        live = max(live, group * 2 + (0 if per_weight else group))
+        live_lomo = max(live_lomo, group * 2 + group_numel * 8)
     # Gradient accumulation under FSDP2: the hooks step on the synchronized micro-batch only, so the earlier
     # micro-batches' gradients are held in every tier: as shards when every micro-batch is reduce-scattered, else
     # (no_sync) as FSDP2's whole, unsharded accumulators.
@@ -1228,6 +1234,27 @@ def _fsdp_reduces_every_micro_batch(trainer, model):
     state = getattr(getattr(trainer, "accelerator", None), "gradient_state", None)
     kwargs = getattr(state, "plugin_kwargs", None) or {}
     return bool(kwargs.get("sync_each_batch", False))
+
+
+def _fsdp_group_bytes(model, numel = False):
+    """Full size of each FSDP2 group's trainable weights in their storage dtype (or element counts): the shard
+    groups are FSDP2's own once sharded, else the decoder blocks plus the root group (everything else)."""
+    size = (lambda p: p.numel()) if numel else (lambda p: p.numel() * p.element_size())
+    if any(_is_dtensor(p) for p in model.parameters()):
+        try:
+            groups, _ = _fsdp_layout(model)
+        except RuntimeError:
+            return []
+        return [sum(size(p) for p in g if p.requires_grad) for g in groups]
+    names = _fsdp_blocks(model)
+    inside, out = set(), []
+    for name, module in model.named_modules():
+        if name in names:
+            params = [p for p in module.parameters() if p.requires_grad]
+            inside.update(id(p) for p in params)
+            out.append(sum(size(p) for p in params))
+    out.append(sum(size(p) for p in model.parameters() if p.requires_grad and id(p) not in inside))
+    return out
 
 
 def _fsdp_gathered(trainer, model):
