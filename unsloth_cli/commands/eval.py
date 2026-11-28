@@ -888,7 +888,11 @@ def evaluate(
     try:
         try:
             task_names, include_paths = resolve_tasks(tasks, input_key, target_key, tmp_dir)
-            task_manager = TaskManager(include_path = include_paths or None)
+            tm_kwargs = {}
+            # dataset tasks never use built-ins: skips the ~15k-yaml index, and a same-name built-in winning on lm-eval 0.4.4-0.4.9
+            if all(is_dataset) and "include_defaults" in inspect.signature(TaskManager).parameters:
+                tm_kwargs["include_defaults"] = False
+            task_manager = TaskManager(include_path = include_paths or None, **tm_kwargs)
             task_names = _expand_tasks(task_manager, task_names)
         except (FileNotFoundError, ValueError) as e:
             _fail(str(e))

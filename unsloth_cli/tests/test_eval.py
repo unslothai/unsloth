@@ -550,10 +550,15 @@ def env(monkeypatch):
             self.tokenizer = tokenizer
 
     class _FakeTaskManager:
-        def __init__(self, include_path = None):
+        def __init__(
+            self,
+            include_path = None,
+            include_defaults = True,
+        ):
             calls["task_managers"] += 1
             calls["include_path"] = include_path
-            self.all_tasks = ["gsm8k", "mmlu", "mmlu_a", "mmlu_b"]
+            calls["include_defaults"] = include_defaults
+            self.all_tasks = ["gsm8k", "mmlu", "mmlu_a", "mmlu_b"] if include_defaults else []
             for directory in include_path or []:
                 self.all_tasks += [_indexed_task_name(p) for p in Path(directory).glob("**/*.yaml")]
 
@@ -907,6 +912,42 @@ def test_custom_dataset_builds_one_task_manager(env, tmp_path):
     assert result.exit_code == 0, result.output
     assert env["tasks"] == ["gsm8k", "qa"]
     assert env["task_managers"] == 1 and len(env["include_path"]) == 1
+
+
+@pytest.mark.parametrize(
+    "tasks, expected",
+    [
+        ("qa.jsonl", False),
+        ("qa.jsonl,qa.csv", False),
+        ("gsm8k", True),
+        ("gsm8k,qa.jsonl", True),
+        ("qa.jsonl,custom.yaml", True),
+    ],
+)
+def test_dataset_only_runs_skip_the_builtin_task_index(env, tmp_path, tasks, expected):
+    (tmp_path / "qa.jsonl").write_text('{"question": "q", "answer": "a"}\n')
+    (tmp_path / "qa.csv").write_text("question,answer\nq,a\n")
+    (tmp_path / "custom.yaml").write_text("task: custom\ndataset_path: json\n")
+    tasks = ",".join(t if "." not in t else str(tmp_path / t) for t in tasks.split(","))
+    result = _run("fake/model", "--tasks", tasks, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["include_defaults"] is expected and env["task_managers"] == 1
+
+
+def test_lm_eval_without_include_defaults_keeps_the_full_index(env, tmp_path):
+    class _OldTaskManager:
+        def __init__(self, include_path = None):
+            env["old_include_path"] = include_path
+            self.all_tasks = ["gsm8k"] + [
+                _indexed_task_name(p) for d in include_path for p in Path(d).glob("*.yaml")
+            ]
+
+    sys.modules["lm_eval.tasks"].TaskManager = _OldTaskManager
+    data = tmp_path / "qa.jsonl"
+    data.write_text('{"question": "q", "answer": "a"}\n')
+    result = _run("fake/model", "--tasks", str(data), "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert len(env["old_include_path"]) == 1 and env["tasks"] == ["qa"]
 
 
 def test_glob_expands_and_unknown_task_errors(env, tmp_path):
