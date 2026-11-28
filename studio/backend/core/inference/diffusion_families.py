@@ -1484,8 +1484,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "HiDreamImageTransformer2DModel",
         base_repo = "HiDream-ai/HiDream-I1-Full",
         aliases = ("hidream", "hidream-i1-full", "hidream-i1-dev", "hidream-i1-fast"),
-        # Serial until a like-for-like G2c passes: on an L4 (int8, streamed, compiled) Fast's batched rows moved
-        # 0.29 LPIPS from their solo renders, paired upper bound +0.0109 at n=24. A user's own batch_size still batches.
+        # Serial until a like-for-like G2c passes (L4 int8 streamed: paired upper bound +0.0109 at n=24).
         batched_forward = False,
         fp16_incompatible = True,
     ),

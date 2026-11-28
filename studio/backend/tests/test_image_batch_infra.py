@@ -1374,7 +1374,6 @@ def test_the_race_labels_its_batched_calls_and_verdicts_with_its_canvas(monkeypa
 
 
 def test_hidream_requests_stay_serial_but_its_own_batch_size_still_batches():
-    # HiDream failed G2c across requests (L4, int8 streamed, compiled): no cross-request batching, no race.
     from core.inference import diffusion_families as families
     from core.inference.diffusion import _generation_chunks
 
