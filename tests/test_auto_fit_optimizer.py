@@ -695,9 +695,15 @@ def test_distributed_training_is_refused_except_fsdp2(af, monkeypatch):
     for name in ("UNSLOTH_TP_SIZE", "UNSLOTH_PP_SIZE", "UNSLOTH_CP_SIZE"):
         monkeypatch.delenv(name, raising = False)
 
-    def trainer(plugin = None, config = None, **kw):
+    def trainer(
+        plugin = None,
+        config = None,
+        **kw,
+    ):
         t = _Trainer(world_size = 2, **kw)
-        t.accelerator = SimpleNamespace(state = SimpleNamespace(fsdp_plugin = plugin), parallelism_config = config)
+        t.accelerator = SimpleNamespace(
+            state = SimpleNamespace(fsdp_plugin = plugin), parallelism_config = config
+        )
         t.is_fsdp_enabled = plugin is not None
         return t
 
@@ -705,7 +711,9 @@ def test_distributed_training_is_refused_except_fsdp2(af, monkeypatch):
     fsdp2 = SimpleNamespace(fsdp_version = 2, cpu_offload = None)
     assert af._distributed(trainer(fsdp2), model) == ("fsdp2", None)
     assert af._blocker(trainer(fsdp2, gradient_accumulation_steps = 4), model, False) is None
-    assert "gradient_accumulation" in af._blocker(_Trainer(gradient_accumulation_steps = 4), model, False)
+    assert "gradient_accumulation" in af._blocker(
+        _Trainer(gradient_accumulation_steps = 4), model, False
+    )
 
     class CPUOffloadPolicy:
         pass
@@ -739,7 +747,9 @@ def test_planner_is_per_rank_under_fsdp2(af, monkeypatch):
     single = af.plan_auto_fit(_Trainer(), model, usable_bytes = 0)
     monkeypatch.setattr(af, "_distributed", lambda trainer, model: ("fsdp2", None))
     monkeypatch.setattr(af, "_world_size", lambda: 4)
-    sharded = af.plan_auto_fit(SimpleNamespace(args = _Args(), optimizer_cls_and_kwargs = None), model, usable_bytes = 0)
+    sharded = af.plan_auto_fit(
+        SimpleNamespace(args = _Args(), optimizer_cls_and_kwargs = None), model, usable_bytes = 0
+    )
     assert sharded["grads"] == single["grads"] // 4 and sharded["states"] == single["states"] // 4
     assert sharded["in_backward"] < sharded["standard"] < single["standard"]
 
@@ -1288,7 +1298,10 @@ def test_measuring_pass_does_not_recompile_the_real_pass(af, sr, monkeypatch, tm
     from torch._dynamo.utils import counters
     from transformers import Trainer, TrainingArguments
 
-    monkeypatch.setitem(sys.modules, af.__name__, af)  # dynamo imports the module of code it traces
+    # A module of its own name: dynamo imports the module of code it traces by name, and torch 2.6 keeps the module
+    # an earlier test registered under the fixture's name.
+    af = _load("_test_auto_fit_recompile", "unsloth/optimizers/auto_fit.py")
+    monkeypatch.setitem(sys.modules, af.__name__, af)
     g = torch.Generator().manual_seed(2)
     rows = [{"x": torch.randn(6, generator = g).tolist(), "labels": float(i % 3)} for i in range(16)]
     graphs = {}

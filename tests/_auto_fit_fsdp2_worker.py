@@ -17,7 +17,9 @@ LAYERS = 3
 
 
 def load_auto_fit():
-    spec = importlib.util.spec_from_file_location("_fsdp2_auto_fit", ROOT / "unsloth/optimizers/auto_fit.py")
+    spec = importlib.util.spec_from_file_location(
+        "_fsdp2_auto_fit", ROOT / "unsloth/optimizers/auto_fit.py"
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -72,8 +74,9 @@ def shard(model, mp = False):
     kwargs = {}
     if mp:
         from torch.distributed.fsdp import MixedPrecisionPolicy
-
-        kwargs["mp_policy"] = MixedPrecisionPolicy(param_dtype = torch.bfloat16, reduce_dtype = torch.float32)
+        kwargs["mp_policy"] = MixedPrecisionPolicy(
+            param_dtype = torch.bfloat16, reduce_dtype = torch.float32
+        )
     for layer in model.model.layers:
         fully_shard(layer, **kwargs)
     fully_shard(model, **kwargs)  # root group: embeddings, final norm, lm_head
@@ -147,7 +150,16 @@ def reference(data, ga, clip, calibrate):
     return full_state(model), norms, losses
 
 
-def fsdp_arm(af, data, rank, mode, ga = 1, clip = None, sync = "no_sync", mp = False):
+def fsdp_arm(
+    af,
+    data,
+    rank,
+    mode,
+    ga = 1,
+    clip = None,
+    sync = "no_sync",
+    mp = False,
+):
     """mode 'standard' (FSDP2 + optimizer.step(), exact global clip), 'in_backward', 'in_backward_unarmed' (hooks
     inactive, as when FSDP2 skips them under compiled autograd) or 'in_backward_swap' (the optimizer is built over the
     unsharded model and its parameters swapped for the shards afterwards, as accelerate's FSDP2 prepare does). sync
@@ -167,10 +179,16 @@ def fsdp_arm(af, data, rank, mode, ga = 1, clip = None, sync = "no_sync", mp = F
     if mode.startswith("in_backward"):
         kwargs = dict(sync_gate = lambda: flag["sync"]) if sync == "every" else {}
         opt = af.InBackwardOptimizer(
-            base, max_grad_norm = MAX_NORM if clip else 0.0, model = model, clip = clip or "estimate", **kwargs
+            base,
+            max_grad_norm = MAX_NORM if clip else 0.0,
+            model = model,
+            clip = clip or "estimate",
+            **kwargs,
         )
         if ga > 1:
-            opt.calibrate = False  # as the trainer path: a multi-micro-batch step cannot be measured twice
+            opt.calibrate = (
+                False  # as the trainer path: a multi-micro-batch step cannot be measured twice
+            )
         if mode == "in_backward_swap":
             names = {id(p): n for n, p in model.named_parameters()}
             groups = [[names[id(p)] for p in g["params"]] for g in base.param_groups]
@@ -198,7 +216,9 @@ def fsdp_arm(af, data, rank, mode, ga = 1, clip = None, sync = "no_sync", mp = F
         if mode.startswith("in_backward") and not hooked and mode != "in_backward_unarmed":
             opt._refresh()  # the swapped parameters get their hooks (armed() does this too)
             params = list(model.parameters())
-            for p in params:  # registered after the optimizer's hooks: sees the state after each flush
+            for (
+                p
+            ) in params:  # registered after the optimizer's hooks: sees the state after each flush
                 p.register_post_accumulate_grad_hook(observe)
             hooked = True
         total = 0.0
@@ -213,7 +233,9 @@ def fsdp_arm(af, data, rank, mode, ga = 1, clip = None, sync = "no_sync", mp = F
                 total += run(m, _null())
         stats["live_after_backward"].append(sum(1 for q in params if q.grad is not None))
         if mode == "standard":
-            local = torch.stack([q.grad._local_tensor.double().square().sum() for q in params]).sum()
+            local = torch.stack(
+                [q.grad._local_tensor.double().square().sum() for q in params]
+            ).sum()
             torch.distributed.all_reduce(local)
             norm = local.sqrt()
             if clip:
@@ -267,12 +289,18 @@ def run_rank(rank, port, queue, cases):
         try:
             data = batches(2, ga)
             calibrate = ga == 1
-            std, std_stats = fsdp_arm(af, data, rank, "standard", ga, clip if clip == "exact" else None, sync, mp)
+            std, std_stats = fsdp_arm(
+                af, data, rank, "standard", ga, clip if clip == "exact" else None, sync, mp
+            )
             inb, inb_stats = fsdp_arm(af, data, rank, arm, ga, clip, sync, mp)
             result = dict(
                 inb_vs_std = max_diff(inb, std),
-                loss_vs_std = max(abs(a - b) for a, b in zip(inb_stats["losses"], std_stats["losses"])),
-                norm_vs_std = max(abs(a - b) / b for a, b in zip(inb_stats["norms"], std_stats["norms"])),
+                loss_vs_std = max(
+                    abs(a - b) for a, b in zip(inb_stats["losses"], std_stats["losses"])
+                ),
+                norm_vs_std = max(
+                    abs(a - b) / b for a, b in zip(inb_stats["norms"], std_stats["norms"])
+                ),
                 std_stats = {k: v for k, v in std_stats.items() if k != "norms"},
                 inb_stats = inb_stats,
             )
@@ -288,8 +316,17 @@ def run_rank(rank, port, queue, cases):
                     result["std_vs_ref"] = max_diff(std, ref)
             if name == "adamw":
                 late, late_stats = fsdp_arm(af, data, rank, "in_backward_unarmed", ga, clip, sync)
-                result.update(unarmed_vs_ref = max_diff(late, ref), unarmed_late_steps = late_stats["late_steps"])
+                result.update(
+                    unarmed_vs_ref = max_diff(late, ref), unarmed_late_steps = late_stats["late_steps"]
+                )
             out[name] = result
+        except AttributeError as exc:
+            if "record_event" not in str(exc):
+                out[name] = {"error": traceback.format_exc()}
+                continue
+            # Older torch's FSDP2 needs accelerator streams (no CPU support): the standard arm fails alike.
+            out = {"skip": f"FSDP2 on CPU unsupported by torch {torch.__version__}"}
+            break
         except Exception:
             out[name] = {"error": traceback.format_exc()}
     queue.put((rank, out))

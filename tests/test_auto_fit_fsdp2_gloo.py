@@ -63,6 +63,9 @@ def results():
         out[rank] = result
     for p in procs:
         p.join(timeout = 60)
+    skip = next((r["skip"] for r in out.values() if "skip" in r), None)
+    if skip:
+        pytest.skip(skip)
     return out
 
 
@@ -87,19 +90,27 @@ def test_weights_match_standard_fsdp2_and_single_process(results, case):
             continue
         assert r["moved"] > 1e-3, r  # the weights trained, so equality is not trivial
         if clip in (None, "exact"):
-            assert r["std_vs_ref"] < TOL, r  # the harness: FSDP2's own step (exact global clip) equals the reference
+            assert (
+                r["std_vs_ref"] < TOL
+            ), r  # the harness: FSDP2's own step (exact global clip) equals the reference
             assert r["inb_vs_std"] < TOL, r
         assert r["inb_vs_ref"] < TOL, r
-        assert r["norm_diff"] < 1e-5, r  # total_norm() = the full model's gradient norm on every rank
+        assert (
+            r["norm_diff"] < 1e-5
+        ), r  # total_norm() = the full model's gradient norm on every rank
         assert r["loss_diff"] < 1e-5, r
-        want = STEPS if clip == "exact" else (1 if clip in ("estimate", "lagged") and ga == 1 else 0)
+        want = (
+            STEPS if clip == "exact" else (1 if clip in ("estimate", "lagged") and ga == 1 else 0)
+        )
         assert r["inb_stats"]["measured_steps"] == want, r
 
 
 def test_clip_modes_differ(results):
     """The clip modes really clip differently here (so matching the per-mode reference is not trivial)."""
     for rank in (0, 1):
-        ref = {c: _case(results, rank, c)["inb_vs_std"] for c in ("estimate", "lagged", "per_tensor")}
+        ref = {
+            c: _case(results, rank, c)["inb_vs_std"] for c in ("estimate", "lagged", "per_tensor")
+        }
         assert min(ref.values()) > 1e-4, ref  # each differs from exact global clipping
 
 
