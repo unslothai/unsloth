@@ -7555,8 +7555,8 @@ class ExternalProviderClient:
         """llama-server's /props sits beside /v1; a router picks the model by ?model=, others ignore it."""
         try:
             response = await _client().get(
-                re.sub(r"/v1/?$", "", self.base_url) + "/props",
-                params = {"model": model_id},
+                # httpx `params` would replace the base URL's own query.
+                _native_server_path(self.base_url, f"/props?model={quote(model_id, safe = '')}"),
                 headers = self._auth_headers(),
                 timeout = self._timeout,
             )

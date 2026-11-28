@@ -64,7 +64,7 @@ function canonicalEffortLevels(
   return customReasoningEffortScale().filter((level) => levels.includes(level));
 }
 
-/** Rungs every configured model reports; with none configured, every reporting model. Else undefined. */
+/** Rungs every configured model reports (each must report); with none configured, every reporting model. */
 export function detectedCustomEffortLevels(
   capabilities: readonly {
     id: string;
@@ -75,14 +75,15 @@ export function detectedCustomEffortLevels(
   const reported = capabilities.filter(
     (entry) => (entry.reasoning?.supported_efforts?.length ?? 0) > 0,
   );
-  // Another model's levels are never applied to a configured one that did not report.
+  // The ladder applies to every configured model, so one that did not report leaves it unchanged.
   const pool =
     selectedModelIds.length > 0
-      ? reported.filter((entry) => selectedModelIds.includes(entry.id))
+      ? selectedModelIds.map((id) => reported.find((entry) => entry.id === id))
       : reported;
+  if (pool.some((entry) => entry === undefined)) return undefined;
   if (pool.length === 0) return undefined;
   const shared = customReasoningEffortScale().filter((level) =>
-    pool.every((entry) => entry.reasoning?.supported_efforts?.includes(level)),
+    pool.every((entry) => entry?.reasoning?.supported_efforts?.includes(level)),
   );
   return shared.length > 0 ? shared : undefined;
 }

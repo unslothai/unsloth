@@ -676,7 +676,33 @@ def test_llama_server_template_is_read_from_props_beside_v1(status, body, expect
         ep_mod._http_client = previous
         loop.close()
     assert got == expected
-    assert seen == ["http://127.0.0.1:8080/props?model=my+model"]
+    assert seen == ["http://127.0.0.1:8080/props?model=my%20model"]
+
+
+def test_props_keeps_the_base_url_query():
+    seen: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json = {"chat_template": "tpl"})
+
+    mock_client = httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    client = ExternalProviderClient(
+        provider_type = "custom",
+        base_url = "http://127.0.0.1:8080/v1?tenant=a",
+        api_key = "",
+        managed_loopback = True,
+    )
+    previous = ep_mod._http_client
+    ep_mod._http_client = mock_client
+    loop = asyncio.new_event_loop()
+    try:
+        loop.run_until_complete(client.llama_server_props("m"))
+        loop.run_until_complete(mock_client.aclose())
+    finally:
+        ep_mod._http_client = previous
+        loop.close()
+    assert seen == ["http://127.0.0.1:8080/props?tenant=a&model=m"]
 
 
 def test_custom_capabilities_are_reread_on_every_detection(monkeypatch):

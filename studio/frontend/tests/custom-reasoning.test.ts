@@ -347,6 +347,8 @@ test("detected effort levels are the rungs every reporting model shares", () => 
   ];
   assert.deepEqual(detect(listed, ["b"]), ["high", "xhigh", "max"]);
   assert.deepEqual(detect(listed, ["a", "b"]), ["high", "xhigh"]);
+  // Every configured model must report: B alone reporting does not speak for "plain".
+  assert.equal(detect(listed, ["b", "plain"]), undefined);
   // A configured model that did not report never takes another model's levels.
   assert.equal(detect(listed, ["plain"]), undefined);
   assert.equal(detect(listed, ["ninth-unprobed"]), undefined);
