@@ -19,6 +19,12 @@ REAL_ROPE_ENV = "UNSLOTH_DIFFUSION_Q21_REAL_ROPE"
 
 _MODULE = "diffusers.models.transformers.transformer_qwenimage21"
 
+
+def _transformer_module() -> Any:
+    import importlib
+    return importlib.import_module(_MODULE)
+
+
 _FINGERPRINTS: dict[str, frozenset] = {
     "apply_rotary_emb_qwen": frozenset({"ba81dd3fc907c23a"}),
     # 0.41.0 splits heads by ``attn.heads``; main d42ebf9c by ``attn.inner_dim // attn.heads`` (tensor parallel),
@@ -217,8 +223,7 @@ def install(logger: Any = None, device: Any = None) -> bool:
             logger.info("diffusion.qwenimage21: complex RoPE kept: probe failed: %s", exc)
         return False
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _transformer_module()
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     with _LOCK:
@@ -281,8 +286,7 @@ def uninstall() -> None:
 def install_rows(logger: Any = None) -> bool:
     """Make ``apply_rotary_emb_qwen`` accept per-row tables; 2-D tables keep their current path. Idempotent."""
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _transformer_module()
     except Exception:  # noqa: BLE001 - diffusers without Qwen-Image 2.1
         return False
     with _LOCK:
@@ -310,8 +314,7 @@ def uninstall_rows() -> None:
 
 def rows_ready() -> bool:
     try:
-        import importlib
-        mod = importlib.import_module(_MODULE)
+        mod = _transformer_module()
     except Exception:  # noqa: BLE001
         return False
     return bool(
