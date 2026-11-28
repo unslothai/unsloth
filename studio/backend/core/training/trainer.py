@@ -1063,6 +1063,7 @@ class UnslothTrainer:
             self.trainer,
             training_args.get("early_stopping_patience"),
             user_stopped = lambda: self.should_stop,
+            resume_from_checkpoint = training_args.get("resume_from_checkpoint"),
         )
 
     def _early_stopping_summary(self) -> str:
@@ -1152,6 +1153,8 @@ class UnslothTrainer:
             )
         if self.should_stop and self.save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
+            if self._early_stopping is not None:
+                self._early_stopping.save_checkpoint(self.trainer.args, self.trainer.state)
             self.trainer.save_model()
             if main_rank:
                 self.tokenizer.save_pretrained(output_dir)

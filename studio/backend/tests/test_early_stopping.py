@@ -4,6 +4,7 @@
 """Early stopping on eval loss, driven through a real transformers Trainer on CPU."""
 
 import math
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -339,6 +340,143 @@ def test_mlx_early_stop_is_named_in_the_final_status():
     assert finish(True)[1]["status_message"] == (
         "Training completed (stopped early: eval loss stopped improving)"
     )
+
+
+@pytest.mark.parametrize("legacy_sidecar", [False, True])
+def test_manual_checkpoint_resume_keeps_patience_and_restores_best_weights(
+    tmp_path, legacy_sidecar
+):
+    from transformers import TrainerCallback
+
+    stopped = False
+
+    class StopAfterSecondSave(TrainerCallback):
+        def on_evaluate(self, args, state, control, **kwargs):
+            nonlocal stopped
+            if state.global_step == 2:
+                stopped = True
+                control.should_training_stop = True
+
+    original = _trainer(tmp_path)
+    callback = attach_early_stopping(original, 2, user_stopped = lambda: stopped)
+    original.add_callback(StopAfterSecondSave())
+    original.train()
+    assert original.state.global_step == 2
+    original._save_checkpoint(original.model, trial = None)
+    callback.save_checkpoint(original.args, original.state)
+    checkpoint = tmp_path / "checkpoint-2"
+    assert [path.name for path in checkpoint.glob("*.safetensors")] == ["model.safetensors"]
+    if legacy_sidecar:
+        filename = es._EARLY_STOPPING_STATE
+        (checkpoint / es._EARLY_STOPPING_DIR / filename).rename(checkpoint / filename)
+    assert original.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 2))
+
+    resumed = _trainer(tmp_path)
+    restored = attach_early_stopping(resumed, 2, resume_from_checkpoint = checkpoint)
+    resumed.train(resume_from_checkpoint = str(checkpoint))
+    assert resumed.state.global_step == 3
+    assert restored.best_step == 1
+    assert resumed.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 1))
+
+
+def test_pipeline_checkpoint_restores_each_stages_own_weights(tmp_path):
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    for rank in range(2):
+        args = SimpleNamespace(
+            output_dir = str(tmp_path), process_index = rank, world_size = 2, eval_strategy = "steps"
+        )
+        state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = rank == 0)
+        model = nn.ParameterDict({f"stage{rank}": nn.Parameter(torch.tensor([rank + 1.0]))})
+
+        trainer = SimpleNamespace(
+            args = args,
+            eval_dataset = [0],
+            add_callback = lambda _: None,
+            _unsloth_pipeline_parallel = object(),
+        )
+        callback = attach_early_stopping(trainer, 2)
+        callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+
+        state.global_step = 2
+        callback.on_save(args, state, None)
+        with torch.no_grad():
+            for param in model.parameters():
+                param.zero_()
+
+        resumed = attach_early_stopping(trainer, 2, resume_from_checkpoint = checkpoint)
+        resumed.on_train_begin(args, state, None, model = model)
+        state.global_step = 3
+        resumed.on_train_end(args, state, None, model = model)
+        assert resumed.restored
+        assert model[f"stage{rank}"].item() == rank + 1.0
+
+
+def test_checkpoint_keeps_patience_when_weights_cannot_be_serialized(tmp_path):
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    args = SimpleNamespace(output_dir = str(tmp_path))
+    state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = True)
+    weights = torch.sparse_coo_tensor([[0]], [1.0], (2,))
+    model = nn.ParameterDict({"weight": nn.Parameter(weights)})
+    callback = es.create_early_stopping_callback(2)
+    callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+    state.global_step = 2
+    callback.on_evaluate(args, state, None, metrics = {"eval_loss": 2.0}, model = model)
+    callback.on_save(args, state, None)
+
+    resumed = es.create_early_stopping_callback(2, resume_from_checkpoint = checkpoint)
+    resumed.on_train_begin(args, state, None, model = model)
+    assert resumed.best_step == 1
+    assert resumed.bad_evals == 1
+    assert resumed._best_weights is None
+
+
+def test_fsdp2_resume_restores_shards_after_evaluation(tmp_path):
+    import torch.distributed as dist
+
+    if not dist.is_available() or not dist.is_gloo_available():
+        pytest.skip("needs a gloo-enabled PyTorch build")
+    from torch.distributed.device_mesh import init_device_mesh
+    from torch.distributed.tensor import DTensor
+    from unsloth.models.fsdp2_native import _fsdp_api
+
+    checkpoint = tmp_path / "checkpoint-2"
+    checkpoint.mkdir()
+    args = SimpleNamespace(output_dir = str(tmp_path), process_index = 0, world_size = 1)
+    state = SimpleNamespace(global_step = 1, max_steps = 3, is_world_process_zero = True)
+    dist.init_process_group("gloo", init_method = (tmp_path / "store").as_uri(), rank = 0, world_size = 1)
+    try:
+        model = nn.Linear(2, 2, bias = False).eval()
+        with torch.no_grad():
+            model.weight.fill_(2.0)
+        _, _, fully_shard = _fsdp_api()
+        fully_shard(model, mesh = init_device_mesh("cpu", (1,)), reshard_after_forward = False)
+
+        callback = es.create_early_stopping_callback(2, sharded = True)
+        with torch.no_grad():
+            model(torch.ones(1, 2))
+        assert not isinstance(model.weight, DTensor)
+        callback.on_evaluate(args, state, None, metrics = {"eval_loss": 1.0}, model = model)
+        state.global_step = 2
+        callback.on_save(args, state, None)
+
+        model.reshard()
+        with torch.no_grad():
+            model.weight.to_local().fill_(7.0)
+        resumed = es.create_early_stopping_callback(
+            2, resume_from_checkpoint = checkpoint, sharded = True
+        )
+        resumed.on_train_begin(args, state, None, model = model)
+        with torch.no_grad():
+            model(torch.ones(1, 2))
+        assert not isinstance(model.weight, DTensor)
+        state.global_step = 3
+        resumed.on_train_end(args, state, None, model = model)
+        assert resumed.restored
+        assert torch.all(model.weight.to_local() == 2.0)
+    finally:
+        dist.destroy_process_group()
 
 
 def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):
