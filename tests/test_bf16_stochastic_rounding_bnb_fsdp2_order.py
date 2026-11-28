@@ -48,6 +48,8 @@ def test_sr_wrap_before_fsdp2_localize_steps_the_dtensor(mesh, monkeypatch):
     monkeypatch.setenv("UNSLOTH_BF16_STOCHASTIC_ROUNDING", "1")
     sr = _load("unsloth/optimizers/bf16_stochastic_rounding.py", "_test_sr_fsdp2_order_sr")
     local = _load("unsloth/models/fsdp2_bnb_optim.py", "_test_sr_fsdp2_order_local")
+    if not local.bnb_steps_cpu_tensors():
+        pytest.skip("this bitsandbytes cannot step CPU tensors")
 
     weight = torch.nn.Parameter(torch.ones(64, 128, dtype = torch.bfloat16))
     opt = bnb.optim.AdamW8bit([weight], lr = 1e-2)
