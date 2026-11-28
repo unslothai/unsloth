@@ -118,7 +118,11 @@ def derive_repo_name(source_path: Path, explicit_name: Optional[str]) -> str:
         return name if "/" in name else f"local/{name}"
     parent_slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", source_path.parent.name).strip("-") or "model"
     stem_slug = re.sub(r"[^a-zA-Z0-9._-]+", "-", source_path.stem).strip("-")
-    slug = parent_slug if parent_slug.lower() not in ("exports", "downloads", "models", ".") else stem_slug
+    slug = (
+        parent_slug
+        if parent_slug.lower() not in ("exports", "downloads", "models", ".")
+        else stem_slug
+    )
     digest = hashlib.sha1(os.path.normcase(str(source_path.parent)).encode("utf-8")).hexdigest()[:6]
     return f"local/{slug[:48]}-{digest}"
 
@@ -131,7 +135,7 @@ def download_hf_file(
     max_retries: int = 12,
 ) -> Path:
     """Download a GGUF from Hugging Face using resumable HTTP Range transfers."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest_dir.mkdir(parents = True, exist_ok = True)
     final_path = dest_dir / Path(filename).name
     part_path = dest_dir / f"{final_path.name}.part"
     if final_path.is_file() and final_path.stat().st_size > 0 and not part_path.exists():
@@ -150,8 +154,10 @@ def download_hf_file(
         if downloaded > 0:
             req_headers["Range"] = f"bytes={downloaded}-"
         try:
-            with httpx.Client(follow_redirects=True, timeout=httpx.Timeout(60.0, connect=20.0)) as client:
-                with client.stream("GET", url, headers=req_headers) as resp:
+            with httpx.Client(
+                follow_redirects = True, timeout = httpx.Timeout(60.0, connect = 20.0)
+            ) as client:
+                with client.stream("GET", url, headers = req_headers) as resp:
                     if resp.status_code == 416 and part_path.is_file() and downloaded > 0:
                         os.replace(part_path, final_path)
                         print(f"[HF] Completed: {final_path}")
@@ -163,8 +169,10 @@ def download_hf_file(
                     elif resp.status_code == 206:
                         mode = "ab"
                         cr = resp.headers.get("Content-Range", "")
-                        total = int(cr.rsplit("/", 1)[-1]) if "/" in cr and cr.rsplit("/", 1)[-1].isdigit() else (
-                            downloaded + int(resp.headers.get("Content-Length") or 0)
+                        total = (
+                            int(cr.rsplit("/", 1)[-1])
+                            if "/" in cr and cr.rsplit("/", 1)[-1].isdigit()
+                            else (downloaded + int(resp.headers.get("Content-Length") or 0))
                         )
                     else:
                         resp.raise_for_status()
@@ -173,7 +181,7 @@ def download_hf_file(
                     last_pct = -5
                     t0 = time.monotonic()
                     with open(part_path, mode) as fh:
-                        for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                        for chunk in resp.iter_bytes(chunk_size = 1 << 20):
                             if not chunk:
                                 continue
                             fh.write(chunk)
@@ -187,15 +195,20 @@ def download_hf_file(
                                     print(
                                         f"[HF] {final_path.name}: {pct}% "
                                         f"({downloaded / 1e9:.2f}/{total / 1e9:.2f} GB, {mb_s:.1f} MB/s)",
-                                        flush=True,
+                                        flush = True,
                                     )
                     if total == 0 or downloaded >= total:
                         os.replace(part_path, final_path)
-                        print(f"[HF] Download complete: {final_path} ({final_path.stat().st_size / 1e9:.2f} GB)")
+                        print(
+                            f"[HF] Download complete: {final_path} ({final_path.stat().st_size / 1e9:.2f} GB)"
+                        )
                         return final_path
         except Exception as exc:  # noqa: BLE001
             wait_s = min(30, 2 * attempt)
-            print(f"[HF] Attempt {attempt}/{max_retries} interrupted ({exc}); resuming in {wait_s}s...", flush=True)
+            print(
+                f"[HF] Attempt {attempt}/{max_retries} interrupted ({exc}); resuming in {wait_s}s...",
+                flush = True,
+            )
             time.sleep(wait_s)
 
     raise RuntimeError(f"Failed to download {repo_id}/{filename} after {max_retries} attempts.")
@@ -215,7 +228,7 @@ def quantize_gguf(
         raise FileNotFoundError(
             "llama-quantize.exe was not found. Install or build llama.cpp in Unsloth Studio first."
         )
-    dst_gguf.parent.mkdir(parents=True, exist_ok=True)
+    dst_gguf.parent.mkdir(parents = True, exist_ok = True)
     tmp_dst = dst_gguf.with_name(f".quantizing-{dst_gguf.name}")
 
     src_quant = detect_quant_from_gguf(src_gguf)
@@ -229,16 +242,18 @@ def quantize_gguf(
     elif target_quant.upper() == "Q4_0":
         # Both Q4_0 and Q8_0 have native 32x2/tiled HVX kernels in libggml-htp-v73.so;
         # keeping output.weight & token_embd at Q8_0 preserves accuracy while staying on HTP0.
-        attempts.append([
-            *base_cmd,
-            "--output-tensor-type",
-            "Q8_0",
-            "--token-embedding-type",
-            "Q8_0",
-            str(src_gguf),
-            str(tmp_dst),
-            target_quant.upper(),
-        ])
+        attempts.append(
+            [
+                *base_cmd,
+                "--output-tensor-type",
+                "Q8_0",
+                "--token-embedding-type",
+                "Q8_0",
+                str(src_gguf),
+                str(tmp_dst),
+                target_quant.upper(),
+            ]
+        )
         # Fallback if a model architecture rejects mixed head/embedding overrides.
         attempts.append([*base_cmd, str(src_gguf), str(tmp_dst), target_quant.upper()])
     else:
@@ -250,12 +265,16 @@ def quantize_gguf(
             cmd = [*cmd, str(threads)]
         if tmp_dst.exists():
             tmp_dst.unlink()
-        print(f"[QUANTIZE] Running (attempt {idx + 1}/{len(attempts)}): {' '.join(cmd)}", flush=True)
-        proc = subprocess.run(cmd, check=False)
+        print(
+            f"[QUANTIZE] Running (attempt {idx + 1}/{len(attempts)}): {' '.join(cmd)}", flush = True
+        )
+        proc = subprocess.run(cmd, check = False)
         last_code = proc.returncode
         if last_code == 0 and tmp_dst.is_file() and tmp_dst.stat().st_size > 0:
             os.replace(tmp_dst, dst_gguf)
-            print(f"[QUANTIZE] Wrote {dst_gguf} ({dst_gguf.stat().st_size / 1e9:.2f} GB)", flush=True)
+            print(
+                f"[QUANTIZE] Wrote {dst_gguf} ({dst_gguf.stat().st_size / 1e9:.2f} GB)", flush = True
+            )
             return dst_gguf
         if tmp_dst.exists():
             tmp_dst.unlink()
@@ -264,7 +283,7 @@ def quantize_gguf(
 
 
 def _link_or_copy(src: Path, dst: Path) -> None:
-    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.parent.mkdir(parents = True, exist_ok = True)
     if src.resolve() == dst.resolve():
         return
     if dst.exists():
@@ -298,7 +317,7 @@ def register_in_geniex(
     if len(parts) == 1:
         parts = ["local", parts[0]]
     model_dir = geniex_cache / "models" / Path(*parts)
-    model_dir.mkdir(parents=True, exist_ok=True)
+    model_dir.mkdir(parents = True, exist_ok = True)
 
     dest_gguf = model_dir / gguf_path.name
     _link_or_copy(gguf_path, dest_gguf)
@@ -309,7 +328,7 @@ def register_in_geniex(
     manifest: dict[str, Any] = {}
     if manifest_path.is_file():
         try:
-            loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
+            loaded = json.loads(manifest_path.read_text(encoding = "utf-8"))
             if isinstance(loaded, dict):
                 manifest = loaded
         except (OSError, ValueError):
@@ -325,7 +344,9 @@ def register_in_geniex(
     }
 
     manifest["Name"] = "/".join(parts)
-    manifest["ModelName"] = display_name or manifest.get("ModelName") or parts[-1].removesuffix("-GGUF")
+    manifest["ModelName"] = (
+        display_name or manifest.get("ModelName") or parts[-1].removesuffix("-GGUF")
+    )
     manifest["ModelType"] = manifest.get("ModelType") or "llm"
     manifest["PluginId"] = "llama_cpp"
     manifest["ModelFile"] = model_file
@@ -341,14 +362,16 @@ def register_in_geniex(
         mtp_size = dest_mtp.stat().st_size
         mtp_entry = {"Name": dest_mtp.name, "Downloaded": True, "Size": mtp_size}
         manifest["MtpFile"] = mtp_entry
-        extra_files = [e for e in extra_files if not (isinstance(e, dict) and e.get("Name") == dest_mtp.name)]
+        extra_files = [
+            e for e in extra_files if not (isinstance(e, dict) and e.get("Name") == dest_mtp.name)
+        ]
         extra_files.append(mtp_entry)
         print(f"[MTP] Registered draft head: {dest_mtp} ({mtp_size / 1e9:.2f} GB)")
 
     manifest["ExtraFiles"] = extra_files
 
     tmp = manifest_path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest), encoding="utf-8")
+    tmp.write_text(json.dumps(manifest), encoding = "utf-8")
     os.replace(tmp, manifest_path)
     print(f"[REGISTER] {manifest['Name']}:{prec_key} -> {manifest_path}")
     return manifest_path
@@ -384,12 +407,12 @@ def scan_studio_exports(
                 register_in_geniex(src, repo_name, quant, geniex_cache)
                 count += 1
             elif auto_quantize:
-                base_stem = re.sub(r"[-_.]?(BF16|F16|F32)$", "", src.stem, flags=re.IGNORECASE)
+                base_stem = re.sub(r"[-_.]?(BF16|F16|F32)$", "", src.stem, flags = re.IGNORECASE)
                 out_name = f"{base_stem}-{target_quant.upper()}.gguf"
                 parts = repo_name.split("/")
                 out_path = geniex_cache / "models" / Path(*parts) / out_name
                 if not out_path.is_file():
-                    quantize_gguf(src, out_path, target_quant, pure=pure)
+                    quantize_gguf(src, out_path, target_quant, pure = pure)
                 register_in_geniex(out_path, repo_name, target_quant, geniex_cache)
                 count += 1
             else:
@@ -405,34 +428,66 @@ def _quant_output_name(src_path: Path, src_quant: Optional[str], target_quant: s
     stem = src_path.stem
     tq = target_quant.upper()
     if src_quant and re.search(rf"[-_.]{re.escape(src_quant)}$", stem, re.IGNORECASE):
-        new_stem = re.sub(rf"([-_.]){re.escape(src_quant)}$", rf"\1{tq}", stem, flags=re.IGNORECASE)
+        new_stem = re.sub(rf"([-_.]){re.escape(src_quant)}$", rf"\1{tq}", stem, flags = re.IGNORECASE)
     else:
         new_stem = f"{stem}-{tq}"
     return f"{new_stem}.gguf"
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("gguf", nargs="?", type=Path, help="Local GGUF file path")
-    parser.add_argument("--hf-repo", help="Hugging Face repo ID (e.g. tablinum/Moon-Beam-8B-A1B-GGUF)")
-    parser.add_argument("--hf-file", help="GGUF filename in --hf-repo (e.g. Moon-Beam-8B-A1B-Q4_K_M.gguf)")
-    parser.add_argument("--hf-mtp-file", help="Optional MTP draft head GGUF path in --hf-repo")
-    parser.add_argument("--hf-rev", default="main", help="Hugging Face revision (default: main)")
-    parser.add_argument("--mtp-gguf", type=Path, help="Optional local MTP draft head GGUF path")
-    parser.add_argument("--name", help="GenieX repo name (<org>/<repo>, default derived)")
-    parser.add_argument("--quant", default="Q4_0", help="Target Hexagon quantization (default: Q4_0)")
-    parser.add_argument("--pure", action="store_true", help="Use pure --pure quantization without Q8_0 head/embed")
-    parser.add_argument("--no-convert", "--skip-quantize", action="store_true", dest="no_convert", help="Register input GGUF without re-quantizing")
-    parser.add_argument("--also-register-source", action="store_true", help="Also register the downloaded/source GGUF alongside converted target")
+    parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
+    parser.add_argument("gguf", nargs = "?", type = Path, help = "Local GGUF file path")
+    parser.add_argument(
+        "--hf-repo", help = "Hugging Face repo ID (e.g. tablinum/Moon-Beam-8B-A1B-GGUF)"
+    )
+    parser.add_argument(
+        "--hf-file", help = "GGUF filename in --hf-repo (e.g. Moon-Beam-8B-A1B-Q4_K_M.gguf)"
+    )
+    parser.add_argument("--hf-mtp-file", help = "Optional MTP draft head GGUF path in --hf-repo")
+    parser.add_argument("--hf-rev", default = "main", help = "Hugging Face revision (default: main)")
+    parser.add_argument("--mtp-gguf", type = Path, help = "Optional local MTP draft head GGUF path")
+    parser.add_argument("--name", help = "GenieX repo name (<org>/<repo>, default derived)")
+    parser.add_argument(
+        "--quant", default = "Q4_0", help = "Target Hexagon quantization (default: Q4_0)"
+    )
+    parser.add_argument(
+        "--pure", action = "store_true", help = "Use pure --pure quantization without Q8_0 head/embed"
+    )
+    parser.add_argument(
+        "--no-convert",
+        "--skip-quantize",
+        action = "store_true",
+        dest = "no_convert",
+        help = "Register input GGUF without re-quantizing",
+    )
+    parser.add_argument(
+        "--also-register-source",
+        action = "store_true",
+        help = "Also register the downloaded/source GGUF alongside converted target",
+    )
     parser.add_argument(
         "--delete-source-after-quantize",
-        action="store_true",
-        help="Remove temporary source GGUF after conversion succeeds (useful on tight NVMe drives)",
+        action = "store_true",
+        help = "Remove temporary source GGUF after conversion succeeds (useful on tight NVMe drives)",
     )
-    parser.add_argument("--scan-exports", action="store_true", help="Scan Unsloth Studio exports/ and register Hexagon models")
-    parser.add_argument("--auto-quantize", action="store_true", help="With --scan-exports, quantize F16/BF16/non-Hexagon GGUFs to --quant")
-    parser.add_argument("--geniex-cache", type=Path, help="Override GenieX cache root (default: GENIEX_DATADIR or ~/.cache/geniex)")
-    parser.add_argument("--threads", type=int, default=0, help="Worker thread count for llama-quantize")
+    parser.add_argument(
+        "--scan-exports",
+        action = "store_true",
+        help = "Scan Unsloth Studio exports/ and register Hexagon models",
+    )
+    parser.add_argument(
+        "--auto-quantize",
+        action = "store_true",
+        help = "With --scan-exports, quantize F16/BF16/non-Hexagon GGUFs to --quant",
+    )
+    parser.add_argument(
+        "--geniex-cache",
+        type = Path,
+        help = "Override GenieX cache root (default: GENIEX_DATADIR or ~/.cache/geniex)",
+    )
+    parser.add_argument(
+        "--threads", type = int, default = 0, help = "Worker thread count for llama-quantize"
+    )
     args = parser.parse_args(argv)
 
     geniex_cache = resolve_geniex_cache(args.geniex_cache)
@@ -440,9 +495,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.scan_exports:
         return scan_studio_exports(
             geniex_cache,
-            auto_quantize=args.auto_quantize,
-            target_quant=args.quant.upper(),
-            pure=args.pure,
+            auto_quantize = args.auto_quantize,
+            target_quant = args.quant.upper(),
+            pure = args.pure,
         )
 
     src_gguf: Optional[Path] = args.gguf
@@ -456,9 +511,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         if len(parts) == 1:
             parts = ["hf", parts[0]]
         dl_dir = geniex_cache / "models" / Path(*parts)
-        src_gguf = download_hf_file(args.hf_repo, args.hf_file, dl_dir, revision=args.hf_rev)
+        src_gguf = download_hf_file(args.hf_repo, args.hf_file, dl_dir, revision = args.hf_rev)
         if args.hf_mtp_file:
-            mtp_gguf = download_hf_file(args.hf_repo, args.hf_mtp_file, dl_dir, revision=args.hf_rev)
+            mtp_gguf = download_hf_file(
+                args.hf_repo, args.hf_mtp_file, dl_dir, revision = args.hf_rev
+            )
     elif src_gguf is None:
         parser.error("Provide a local GGUF path, --hf-repo + --hf-file, or --scan-exports.")
 
@@ -472,11 +529,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     target_quant = args.quant.upper()
 
     if args.no_convert or (src_quant and src_quant == target_quant):
-        register_in_geniex(src_gguf, repo_name, src_quant or target_quant, geniex_cache, mtp_path=mtp_gguf)
+        register_in_geniex(
+            src_gguf, repo_name, src_quant or target_quant, geniex_cache, mtp_path = mtp_gguf
+        )
         return 0
 
     if args.also_register_source and src_quant in HEXAGON_NATIVE_QUANTS:
-        register_in_geniex(src_gguf, repo_name, src_quant, geniex_cache, mtp_path=mtp_gguf)
+        register_in_geniex(src_gguf, repo_name, src_quant, geniex_cache, mtp_path = mtp_gguf)
 
     parts = [p for p in repo_name.split("/") if p]
     if len(parts) == 1:
@@ -484,13 +543,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     out_name = _quant_output_name(src_gguf, src_quant, target_quant)
     out_path = geniex_cache / "models" / Path(*parts) / out_name
     if not out_path.is_file() or out_path.stat().st_size == 0:
-        quantize_gguf(src_gguf, out_path, target_quant, pure=args.pure, threads=args.threads)
+        quantize_gguf(src_gguf, out_path, target_quant, pure = args.pure, threads = args.threads)
     else:
-        print(f"[QUANTIZE] Using existing converted file: {out_path} ({out_path.stat().st_size / 1e9:.2f} GB)")
+        print(
+            f"[QUANTIZE] Using existing converted file: {out_path} ({out_path.stat().st_size / 1e9:.2f} GB)"
+        )
 
-    register_in_geniex(out_path, repo_name, target_quant, geniex_cache, mtp_path=mtp_gguf)
+    register_in_geniex(out_path, repo_name, target_quant, geniex_cache, mtp_path = mtp_gguf)
 
-    if args.delete_source_after_quantize and not args.also_register_source and src_gguf.resolve() != out_path.resolve():
+    if (
+        args.delete_source_after_quantize
+        and not args.also_register_source
+        and src_gguf.resolve() != out_path.resolve()
+    ):
         try:
             src_size_gb = src_gguf.stat().st_size / 1e9
             src_gguf.unlink()

@@ -304,7 +304,10 @@ _QUALCOMM_GENIEX_VERSION_CACHE: Optional[tuple[float, str]] = None
 def _qualcomm_geniex_version() -> str:
     global _QUALCOMM_GENIEX_VERSION_CACHE
     now = time.monotonic()
-    if _QUALCOMM_GENIEX_VERSION_CACHE is not None and (now - _QUALCOMM_GENIEX_VERSION_CACHE[0]) < 60.0:
+    if (
+        _QUALCOMM_GENIEX_VERSION_CACHE is not None
+        and (now - _QUALCOMM_GENIEX_VERSION_CACHE[0]) < 60.0
+    ):
         return _QUALCOMM_GENIEX_VERSION_CACHE[1]
     label = "GenieX"
     local_app = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
@@ -323,14 +326,16 @@ def _qualcomm_geniex_version() -> str:
     binary = next((c for c in candidates if c is not None and c.is_file()), None)
     if binary is not None:
         try:
-            kwargs: dict[str, Any] = {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            kwargs: dict[str, Any] = (
+                {"creationflags": 0x08000000} if sys.platform == "win32" else {}
+            )
             done = subprocess.run(
                 [str(binary), "--version", "--skip-update"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=5.0,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = 5.0,
                 **kwargs,
             )
             for line in ((done.stdout or "") + (done.stderr or "")).splitlines():

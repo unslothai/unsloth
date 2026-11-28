@@ -4136,13 +4136,20 @@ def npu_load_percent() -> Optional[float]:
                                     0x60B193CB,
                                     0x5276,
                                     0x4D0F,
-                                    (ctypes.c_ubyte * 8)(0x96, 0xFC, 0xF1, 0x73, 0xAB, 0xAD, 0x3E, 0xC6),
+                                    (ctypes.c_ubyte * 8)(
+                                        0x96, 0xFC, 0xF1, 0x73, 0xAB, 0xAD, 0x3E, 0xC6
+                                    ),
                                 ),
                                 2,
                             )
                             _cfg = ctypes.WinDLL("cfgmgr32")
                             _devinst = wintypes.DWORD()
-                            if _cfg.CM_Locate_DevNodeW(ctypes.byref(_devinst), ctypes.c_wchar_p(_qinst), 0) == 0:
+                            if (
+                                _cfg.CM_Locate_DevNodeW(
+                                    ctypes.byref(_devinst), ctypes.c_wchar_p(_qinst), 0
+                                )
+                                == 0
+                            ):
                                 _ptype = wintypes.ULONG()
                                 _qluid = ctypes.c_uint64()
                                 _qsize = wintypes.ULONG(ctypes.sizeof(_qluid))
@@ -4173,7 +4180,9 @@ def npu_load_percent() -> Optional[float]:
                             if _engine_instance_luid(_inst) == _npu_luid and _val >= 0:
                                 _m = re.search(r"_eng_(\d+)", _inst)
                                 if _m:
-                                    _by_eng[_m.group(1)] = _by_eng.get(_m.group(1), 0.0) + float(_val)
+                                    _by_eng[_m.group(1)] = _by_eng.get(_m.group(1), 0.0) + float(
+                                        _val
+                                    )
                         load = round(min(max(_by_eng.values()), 100.0), 1) if _by_eng else 0.0
                     else:
                         load = 0.0

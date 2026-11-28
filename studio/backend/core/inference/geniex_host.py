@@ -75,7 +75,7 @@ def log(message: str, tag: str = "GenieXHost") -> None:
     """Format log lines in lemond's timestamped format so LemonadeServer captures them."""
     stamp = time.strftime("%Y-%m-%d %H:%M:%S") + f".{int(time.time() * 1000) % 1000:03d}"
     try:
-        print(f"{stamp} [Info] ({tag}) {message}", flush=True)
+        print(f"{stamp} [Info] ({tag}) {message}", flush = True)
     except (OSError, ValueError):
         pass
 
@@ -106,9 +106,7 @@ def find_geniex_binary() -> Optional[Path]:
     which_bin = shutil.which("geniex")
     if which_bin and Path(which_bin).is_file():
         return Path(which_bin)
-    local_app_data = Path(
-        os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local")
-    )
+    local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
     prog_files = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
     candidates: list[Path] = [
         local_app_data / "GenieX" / "geniex.exe",
@@ -122,7 +120,6 @@ def find_geniex_binary() -> Optional[Path]:
     if sys.platform == "win32":
         try:
             import winreg
-
             for root in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
                 try:
                     with winreg.OpenKey(
@@ -148,15 +145,15 @@ def _kill_process_tree(proc: subprocess.Popen) -> None:
         try:
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                capture_output=True,
-                timeout=10.0,
+                capture_output = True,
+                timeout = 10.0,
                 **_HIDDEN,
             )
         except Exception:
             pass
     try:
         proc.kill()
-        proc.wait(timeout=5.0)
+        proc.wait(timeout = 5.0)
     except Exception:
         pass
 
@@ -192,24 +189,26 @@ class GenieX:
         try:
             done = subprocess.run(
                 cmd,
-                input=stdin,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
+                input = stdin,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = timeout,
                 **_HIDDEN,
             )
         except OSError as exc:
             return 1, f"[ERROR] {exc}"
         output = (done.stdout or "") + (done.stderr or "")
-        if done.returncode and (not output.strip() or (done.returncode & 0xFFFFFFFF) == _SAC_EXIT_CODE):
+        if done.returncode and (
+            not output.strip() or (done.returncode & 0xFFFFFFFF) == _SAC_EXIT_CODE
+        ):
             detail = _format_exit_code(done.returncode)
             output = f"[ERROR] {detail}" + (f"\n{output}" if output.strip() else "")
         return done.returncode, output
 
     def version_info(self) -> tuple[int, str, Optional[str]]:
-        code, output = self.run("--version", timeout=15.0)
+        code, output = self.run("--version", timeout = 15.0)
         version = None
         for line in output.splitlines():
             if "GenieX CLI Version:" in line:
@@ -226,13 +225,15 @@ class GenieX:
                 and (now - self._cached_models_cache[0]) < max_age
             ):
                 return list(self._cached_models_cache[1])
-            code, output = self.run("list", "--format", "json", timeout=60.0)
+            code, output = self.run("list", "--format", "json", timeout = 60.0)
             start = output.find("[")
             if code or start < 0:
                 return []
             try:
                 data = json.loads(output[start:])
-                rows = [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+                rows = (
+                    [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+                )
             except ValueError:
                 return []
             self._cached_models_cache = (time.monotonic(), rows)
@@ -240,7 +241,7 @@ class GenieX:
 
     def curated_presets(self) -> list[dict[str, Any]]:
         try:
-            raw = json.loads(_MODELS_JSON.read_text(encoding="utf-8"))
+            raw = json.loads(_MODELS_JSON.read_text(encoding = "utf-8"))
             models = raw.get("models") if isinstance(raw, dict) else None
             return [m for m in models if isinstance(m, dict)] if isinstance(models, list) else []
         except (OSError, ValueError):
@@ -263,7 +264,7 @@ class GenieX:
                 if not manifest.is_file():
                     continue
                 try:
-                    data = json.loads(manifest.read_text(encoding="utf-8"))
+                    data = json.loads(manifest.read_text(encoding = "utf-8"))
                     if precision and size_gb is None:
                         mfile = (data.get("ModelFile") or {}).get(precision) or {}
                         p_size = mfile.get("Size")
@@ -286,7 +287,9 @@ class GenieX:
             size_gb = round(float(fallback_bytes) / 1e9, 2)
         return size_gb, mtp_path
 
-    def _precision_size_gb(self, name: str, precision: Optional[str], fallback_bytes: Any) -> Optional[float]:
+    def _precision_size_gb(
+        self, name: str, precision: Optional[str], fallback_bytes: Any
+    ) -> Optional[float]:
         size_gb, _mtp_path = self._precision_meta(name, precision, fallback_bytes)
         return size_gb
 
@@ -307,7 +310,7 @@ class GenieX:
             except ImportError:
                 from backend.core.inference import convert_to_hexagon  # type: ignore[no-redef]
 
-            convert_to_hexagon.scan_studio_exports(self._geniex_data_dir(), auto_quantize=False)
+            convert_to_hexagon.scan_studio_exports(self._geniex_data_dir(), auto_quantize = False)
         except Exception:
             pass
 
@@ -336,7 +339,9 @@ class GenieX:
         seen_checkpoints: set[str] = set()
 
         def _attach_plan_fields(row: dict[str, Any]) -> dict[str, Any]:
-            plan = plan_model_execution(row, profile, requested_ctx=row.get("max_context_window") or 8192)
+            plan = plan_model_execution(
+                row, profile, requested_ctx = row.get("max_context_window") or 8192
+            )
             row["tier"] = plan["tier"]
             row["ssd_offload"] = plan["ssd_offload"]
             row["mtp_enabled"] = bool(plan["mtp_path"])
@@ -511,9 +516,7 @@ def plan_model_execution(
     total_ram_gb = max(4.0, float(prof.get("total_ram_gb") or 16.0))
     raw_avail = prof.get("avail_ram_gb")
     avail_ram_gb = (
-        max(0.0, float(raw_avail))
-        if isinstance(raw_avail, (int, float))
-        else (total_ram_gb * 0.72)
+        max(0.0, float(raw_avail)) if isinstance(raw_avail, (int, float)) else (total_ram_gb * 0.72)
     )
     usable_npu_ram_gb = max(2.0, total_ram_gb * 0.65)
     size_gb = float(row.get("size") or 0.0)
@@ -521,7 +524,11 @@ def plan_model_execution(
     headroom_gb = avail_ram_gb - size_gb - 1.2
 
     disable_mtp = os.environ.get("UNSLOTH_DISABLE_MTP", "").strip().lower() in ("1", "true", "yes")
-    disable_htp_tuning = os.environ.get("UNSLOTH_DISABLE_HEXAGON_TUNING", "").strip().lower() in ("1", "true", "yes")
+    disable_htp_tuning = os.environ.get("UNSLOTH_DISABLE_HEXAGON_TUNING", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
     mtp_path = None if disable_mtp else (row.get("mtp_path") or None)
 
     ssd_offload = size_gb > usable_npu_ram_gb
@@ -541,7 +548,11 @@ def plan_model_execution(
     else:
         max_ctx = 16384 if (not ssd_offload and headroom_gb < 1.5) else 65536
 
-    req_ctx = int(requested_ctx) if isinstance(requested_ctx, (int, float)) and int(requested_ctx) > 0 else 8192
+    req_ctx = (
+        int(requested_ctx)
+        if isinstance(requested_ctx, (int, float)) and int(requested_ctx) > 0
+        else 8192
+    )
     ctx = min(req_ctx, max_ctx)
 
     attempts: list[dict[str, Any]] = []
@@ -549,16 +560,28 @@ def plan_model_execution(
         tier = "in_ram_npu"
         # GenieX v0.12.0+ (QAIRT 2.51): DMA64 + OPFUSION trimmed Moon-Beam warm-load 2.26s & lifted prefill
         env_overrides = (
-            {}
-            if disable_htp_tuning
-            else {"GGML_HEXAGON_DMA64": "1", "GGML_HEXAGON_OPFUSION": "1"}
+            {} if disable_htp_tuning else {"GGML_HEXAGON_DMA64": "1", "GGML_HEXAGON_OPFUSION": "1"}
         )
-        attempts.append({"compute": "npu", "ngl": -1, "use_mtp": bool(mtp_path), "ctx": ctx, "warm_timeout": 240.0})
+        attempts.append(
+            {
+                "compute": "npu",
+                "ngl": -1,
+                "use_mtp": bool(mtp_path),
+                "ctx": ctx,
+                "warm_timeout": 240.0,
+            }
+        )
         if mtp_path:
-            attempts.append({"compute": "npu", "ngl": -1, "use_mtp": False, "ctx": ctx, "warm_timeout": 180.0})
+            attempts.append(
+                {"compute": "npu", "ngl": -1, "use_mtp": False, "ctx": ctx, "warm_timeout": 180.0}
+            )
         if ctx > 4096:
-            attempts.append({"compute": "npu", "ngl": -1, "use_mtp": False, "ctx": 4096, "warm_timeout": 180.0})
-        attempts.append({"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 180.0})
+            attempts.append(
+                {"compute": "npu", "ngl": -1, "use_mtp": False, "ctx": 4096, "warm_timeout": 180.0}
+            )
+        attempts.append(
+            {"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 180.0}
+        )
     else:
         tier = "hybrid_npu_ssd"
         # Stream remaining weight rows directly from read-only mmap NVMe without anonymous repacking
@@ -569,20 +592,62 @@ def plan_model_execution(
         tight_live_ram = avail_ram_gb < min(10.5, total_ram_gb * 0.68)
         if tight_live_ram:
             # Skip doomed high-ngl / MTP pinning probes so /v1/load hits working ngl=0 well within Studio's 900s budget
-            attempts.append({"compute": "npu", "ngl": 0, "use_mtp": False, "ctx": ctx, "warm_timeout": 540.0})
-            attempts.append({"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 240.0})
+            attempts.append(
+                {"compute": "npu", "ngl": 0, "use_mtp": False, "ctx": ctx, "warm_timeout": 540.0}
+            )
+            attempts.append(
+                {"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 240.0}
+            )
         else:
-            ngl = max(4, min(total_layers - 2, int((usable_npu_ram_gb * 0.72 / size_gb) * total_layers)))
+            ngl = max(
+                4, min(total_layers - 2, int((usable_npu_ram_gb * 0.72 / size_gb) * total_layers))
+            )
             half_ngl = max(4, ngl // 2)
             if mtp_path:
-                attempts.append({"compute": "npu", "ngl": ngl, "use_mtp": True, "ctx": ctx, "warm_timeout": 90.0})
-                attempts.append({"compute": "npu", "ngl": ngl, "use_mtp": False, "ctx": ctx, "warm_timeout": 90.0})
+                attempts.append(
+                    {
+                        "compute": "npu",
+                        "ngl": ngl,
+                        "use_mtp": True,
+                        "ctx": ctx,
+                        "warm_timeout": 90.0,
+                    }
+                )
+                attempts.append(
+                    {
+                        "compute": "npu",
+                        "ngl": ngl,
+                        "use_mtp": False,
+                        "ctx": ctx,
+                        "warm_timeout": 90.0,
+                    }
+                )
             else:
-                attempts.append({"compute": "npu", "ngl": ngl, "use_mtp": False, "ctx": ctx, "warm_timeout": 100.0})
+                attempts.append(
+                    {
+                        "compute": "npu",
+                        "ngl": ngl,
+                        "use_mtp": False,
+                        "ctx": ctx,
+                        "warm_timeout": 100.0,
+                    }
+                )
                 if half_ngl < ngl:
-                    attempts.append({"compute": "npu", "ngl": half_ngl, "use_mtp": False, "ctx": ctx, "warm_timeout": 90.0})
-            attempts.append({"compute": "npu", "ngl": 0, "use_mtp": False, "ctx": ctx, "warm_timeout": 480.0})
-            attempts.append({"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 160.0})
+                    attempts.append(
+                        {
+                            "compute": "npu",
+                            "ngl": half_ngl,
+                            "use_mtp": False,
+                            "ctx": ctx,
+                            "warm_timeout": 90.0,
+                        }
+                    )
+            attempts.append(
+                {"compute": "npu", "ngl": 0, "use_mtp": False, "ctx": ctx, "warm_timeout": 480.0}
+            )
+            attempts.append(
+                {"compute": "cpu", "ngl": None, "use_mtp": False, "ctx": ctx, "warm_timeout": 160.0}
+            )
 
     return {
         "tier": tier,
@@ -631,7 +696,13 @@ def _translate_flm_args(flm_args: Optional[str]) -> list[str]:
                 out.extend(["--power-mode", mapped])
             i += 2
             continue
-        if tok in ("--spec-type", "--draft-model", "--draft-tokens", "--draft-min", "--draft-p-min") and i + 1 < len(tokens):
+        if tok in (
+            "--spec-type",
+            "--draft-model",
+            "--draft-tokens",
+            "--draft-min",
+            "--draft-p-min",
+        ) and i + 1 < len(tokens):
             out.extend([tok, tokens[i + 1]])
             i += 2
             continue
@@ -643,15 +714,11 @@ def _translate_flm_args(flm_args: Optional[str]) -> list[str]:
     return out
 
 
-def make_handler(
-    geniex: GenieX,
-    serving: Serving,
-    api_key: str,
-):
+def make_handler(geniex: GenieX, serving: Serving, api_key: str):
     client = httpx.Client(
-        trust_env=False,
-        timeout=httpx.Timeout(600.0, connect=10.0),
-        limits=httpx.Limits(max_keepalive_connections=0),
+        trust_env = False,
+        timeout = httpx.Timeout(600.0, connect = 10.0),
+        limits = httpx.Limits(max_keepalive_connections = 0),
     )
 
     def find(model_name: str) -> dict[str, Any]:
@@ -777,9 +844,9 @@ def make_handler(
             try:
                 proc = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    stdin=subprocess.DEVNULL,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    stdin = subprocess.DEVNULL,
                     **_HIDDEN,
                 )
             except OSError as exc:
@@ -805,7 +872,7 @@ def make_handler(
                         if idx_r < 0 and idx_n < 0:
                             break
                         cut = idx_r if (idx_n < 0 or (0 <= idx_r < idx_n)) else idx_n
-                        raw_line = bytes(buf[:cut]).decode("utf-8", errors="replace")
+                        raw_line = bytes(buf[:cut]).decode("utf-8", errors = "replace")
                         del buf[: cut + 1]
                         clean = _ANSI_RE.sub("", raw_line).strip()
                         if not clean:
@@ -824,7 +891,7 @@ def make_handler(
                             tail.append(clean)
                             del tail[:-30]
                             log(clean, "Process")
-                code = proc.wait(timeout=30.0)
+                code = proc.wait(timeout = 30.0)
             except (BrokenPipeError, ConnectionResetError):
                 _kill_process_tree(proc)
                 self.close_connection = True
@@ -863,17 +930,23 @@ def make_handler(
             serving.stop()
             eff_req_ctx = int(requested_ctx)
             if step_down_ctx:
-                base_ctx = int(prev_ctx) if isinstance(prev_ctx, int) and prev_ctx > 0 else eff_req_ctx
+                base_ctx = (
+                    int(prev_ctx) if isinstance(prev_ctx, int) and prev_ctx > 0 else eff_req_ctx
+                )
                 eff_req_ctx = max(4096, min(eff_req_ctx, base_ctx) // 2)
 
             profile = detect_system_profile(geniex._geniex_data_dir())
-            plan = plan_model_execution(row, profile, requested_ctx=eff_req_ctx)
+            plan = plan_model_execution(row, profile, requested_ctx = eff_req_ctx)
             plan_ctx = int(plan["ctx"])
             # Explicit user env vars always take precedence over default plan tuning overrides
             child_env = {**plan["env_overrides"], **os.environ}
             warm_timeout = 420.0 if plan["ssd_offload"] else 300.0
             flm_extra = _translate_flm_args(flm_args)
-            disable_spec = os.environ.get("UNSLOTH_DISABLE_SPEC", "").strip().lower() in ("1", "true", "yes")
+            disable_spec = os.environ.get("UNSLOTH_DISABLE_SPEC", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             env_spec_type = "" if disable_spec else os.environ.get("UNSLOTH_SPEC_TYPE", "").strip()
             env_draft_model = os.environ.get("UNSLOTH_DRAFT_MODEL", "").strip()
             env_draft_tokens = os.environ.get("UNSLOTH_DRAFT_TOKENS", "").strip()
@@ -899,13 +972,19 @@ def make_handler(
                     "--skip-update",
                     *flm_extra,
                 ]
-                if plan["ssd_offload"] and attempt["compute"] in ("npu", "hybrid") and "--power-mode" not in flm_extra:
+                if (
+                    plan["ssd_offload"]
+                    and attempt["compute"] in ("npu", "hybrid")
+                    and "--power-mode" not in flm_extra
+                ):
                     cmd.extend(["--power-mode", "burst"])
                 if attempt.get("ngl") is not None:
                     cmd.extend(["--ngl", str(attempt["ngl"])])
                 if attempt.get("use_mtp") and plan.get("mtp_path"):
                     cmd.extend(["--spec-type", "draft-mtp", "--draft-model", str(plan["mtp_path"])])
-                elif env_spec_type and "--spec-type" not in flm_extra and attempt["compute"] == "npu":
+                elif (
+                    env_spec_type and "--spec-type" not in flm_extra and attempt["compute"] == "npu"
+                ):
                     cmd.extend(["--spec-type", env_spec_type])
                     if env_draft_model and "--draft-model" not in flm_extra:
                         cmd.extend(["--draft-model", env_draft_model])
@@ -920,13 +999,13 @@ def make_handler(
                 try:
                     process = subprocess.Popen(
                         cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        stdin=subprocess.DEVNULL,
-                        text=True,
-                        encoding="utf-8",
-                        errors="replace",
-                        env=child_env,
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.STDOUT,
+                        stdin = subprocess.DEVNULL,
+                        text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
+                        env = child_env,
                         **_HIDDEN,
                     )
                 except OSError as exc:
@@ -934,7 +1013,7 @@ def make_handler(
                     continue
 
                 tail: list[str] = []
-                threading.Thread(target=_relay, args=(process, tail), daemon=True).start()
+                threading.Thread(target = _relay, args = (process, tail), daemon = True).start()
                 deadline = time.monotonic() + 60.0
                 http_ready = False
                 early_err: Optional[str] = None
@@ -952,7 +1031,7 @@ def make_handler(
                         early_err = f"GenieX exited early: {reason}"
                         break
                     try:
-                        resp = client.get(f"http://127.0.0.1:{port}/v1/models", timeout=2.0)
+                        resp = client.get(f"http://127.0.0.1:{port}/v1/models", timeout = 2.0)
                         if resp.status_code == 200:
                             http_ready = True
                             break
@@ -970,20 +1049,22 @@ def make_handler(
                 try:
                     warm = client.post(
                         f"http://127.0.0.1:{port}/v1/chat/completions",
-                        json={
+                        json = {
                             "model": row["checkpoint"],
                             "messages": [{"role": "user", "content": "hi"}],
                             "max_tokens": 1,
                             "stream": False,
                             "enable_think": False,
                         },
-                        timeout=attempt_warm_timeout,
+                        timeout = attempt_warm_timeout,
                     )
                     if warm.status_code != 200:
                         _kill_process_tree(process)
                         reason = warm.text.strip()[:300] or f"HTTP {warm.status_code}"
                         last_error = f"Warm-load failed: {reason}"
-                        log(f"Attempt {idx + 1} failed ({last_error}); trying fallback if available...")
+                        log(
+                            f"Attempt {idx + 1} failed ({last_error}); trying fallback if available..."
+                        )
                         continue
                 except Exception as exc:  # noqa: BLE001
                     _kill_process_tree(process)
@@ -1042,8 +1123,8 @@ def make_handler(
                     desired["row"],
                     int(desired["requested_ctx"]),
                     desired.get("flm_args"),
-                    step_down_ctx=step_down_ctx,
-                    prev_ctx=desired.get("last_ctx"),
+                    step_down_ctx = step_down_ctx,
+                    prev_ctx = desired.get("last_ctx"),
                 )
                 if result is not None:
                     with serving.lock:
@@ -1068,7 +1149,7 @@ def make_handler(
                 row,
                 int(requested_ctx),
                 body.get("flm_args"),
-                step_down_ctx=False,
+                step_down_ctx = False,
             )
             if result is not None:
                 self._json(200, result)
@@ -1099,10 +1180,10 @@ def make_handler(
                     serving.desired_load = None
             if serving.model_id == row["id"]:
                 serving.stop()
-            code, output = geniex.run("remove", row["checkpoint"], "-y", timeout=120.0)
+            code, output = geniex.run("remove", row["checkpoint"], "-y", timeout = 120.0)
             if code and ":" in row["checkpoint"]:
                 code, output = geniex.run(
-                    "remove", row["checkpoint"].split(":", 1)[0], "-y", timeout=120.0
+                    "remove", row["checkpoint"].split(":", 1)[0], "-y", timeout = 120.0
                 )
             geniex.invalidate_cache()
             if code:
@@ -1115,7 +1196,7 @@ def make_handler(
                 port, tag = (serving.port, serving.tag) if serving.alive() else (None, None)
             if port is None:
                 if method == "POST" and serving.desired_load is not None:
-                    port, tag, respawn_err = self._ensure_alive_or_respawn(step_down_ctx=True)
+                    port, tag, respawn_err = self._ensure_alive_or_respawn(step_down_ctx = True)
                     if port is None:
                         self._error(
                             503,
@@ -1163,8 +1244,8 @@ def make_handler(
                     with client.stream(
                         method,
                         f"http://127.0.0.1:{port}{self.path}",
-                        content=raw or None,
-                        headers=headers,
+                        content = raw or None,
+                        headers = headers,
                     ) as upstream:
                         self.send_response(upstream.status_code)
                         for key, value in upstream.headers.items():
@@ -1184,7 +1265,11 @@ def make_handler(
                                     self.wfile.write(b"\n")
                                     self.wfile.flush()
                                     continue
-                                if line.startswith("data:") and line != "data:[DONE]" and line != "data: [DONE]":
+                                if (
+                                    line.startswith("data:")
+                                    and line != "data:[DONE]"
+                                    and line != "data: [DONE]"
+                                ):
                                     now = time.monotonic()
                                     try:
                                         obj = json.loads(line[5:].strip())
@@ -1192,13 +1277,24 @@ def make_handler(
                                         obj = None
                                     if isinstance(obj, dict):
                                         choices = obj.get("choices") or []
-                                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                                        first_choice = (
+                                            choices[0]
+                                            if choices and isinstance(choices[0], dict)
+                                            else {}
+                                        )
                                         delta = first_choice.get("delta") or {}
-                                        if delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"):
+                                        if (
+                                            delta.get("content")
+                                            or delta.get("reasoning_content")
+                                            or delta.get("tool_calls")
+                                        ):
                                             if t_first is None:
                                                 t_first = now
                                             token_chunks += 1
-                                        if first_choice.get("finish_reason") is not None and "timings" not in obj:
+                                        if (
+                                            first_choice.get("finish_reason") is not None
+                                            and "timings" not in obj
+                                        ):
                                             if t_first is None:
                                                 t_first = now
                                             prompt_ms = max(1.0, (t_first - t_start) * 1000.0)
@@ -1208,7 +1304,9 @@ def make_handler(
                                                 "prompt_ms": round(prompt_ms, 2),
                                                 "predicted_n": n_pred,
                                                 "predicted_ms": round(pred_ms, 2),
-                                                "predicted_per_second": round(n_pred / (pred_ms / 1000.0), 2),
+                                                "predicted_per_second": round(
+                                                    n_pred / (pred_ms / 1000.0), 2
+                                                ),
                                             }
                                             line = "data: " + json.dumps(obj)
                                 self.wfile.write((line + "\n").encode("utf-8"))
@@ -1222,7 +1320,7 @@ def make_handler(
                         and serving.desired_load is not None
                     ):
                         new_port, new_tag, respawn_err = self._ensure_alive_or_respawn(
-                            step_down_ctx=True, force=True, expected_port=port
+                            step_down_ctx = True, force = True, expected_port = port
                         )
                         if new_port is not None:
                             port, tag = new_port, new_tag
@@ -1233,7 +1331,9 @@ def make_handler(
                             t_first = None
                             token_chunks = 0
                             continue
-                        self._error(503, f"Qualcomm GenieX did not answer and respawn failed: {respawn_err}")
+                        self._error(
+                            503, f"Qualcomm GenieX did not answer and respawn failed: {respawn_err}"
+                        )
                     break
                 except (httpx.HTTPError, OSError) as exc:
                     if (
@@ -1245,14 +1345,16 @@ def make_handler(
                         child_healthy = serving.alive()
                         if child_healthy:
                             try:
-                                probe = client.get(f"http://127.0.0.1:{port}/v1/models", timeout=1.0)
+                                probe = client.get(
+                                    f"http://127.0.0.1:{port}/v1/models", timeout = 1.0
+                                )
                                 child_healthy = probe.status_code == 200
                             except (httpx.HTTPError, OSError):
                                 child_healthy = False
                         new_port, new_tag, respawn_err = self._ensure_alive_or_respawn(
-                            step_down_ctx=True,
-                            force=not child_healthy,
-                            expected_port=port,
+                            step_down_ctx = True,
+                            force = not child_healthy,
+                            expected_port = port,
                         )
                         if new_port is not None:
                             port, tag = new_port, new_tag
@@ -1263,7 +1365,9 @@ def make_handler(
                             t_first = None
                             token_chunks = 0
                             continue
-                        self._error(503, f"Qualcomm GenieX did not answer and respawn failed: {respawn_err}")
+                        self._error(
+                            503, f"Qualcomm GenieX did not answer and respawn failed: {respawn_err}"
+                        )
                         break
                     if not headers_sent:
                         self._error(502, f"Qualcomm GenieX did not answer: {exc}")
@@ -1288,17 +1392,17 @@ def exit_with_parent(parent_pid: int, serving: Serving) -> None:
         serving.stop()
         os._exit(0)
 
-    threading.Thread(target=wait, daemon=True, name="parent-watch").start()
+    threading.Thread(target = wait, daemon = True, name = "parent-watch").start()
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("cache_dir", type=Path)
-    parser.add_argument("config_dir", type=Path)
-    parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--host", default="127.0.0.1")
+    parser = argparse.ArgumentParser(description = __doc__.splitlines()[0])
+    parser.add_argument("cache_dir", type = Path)
+    parser.add_argument("config_dir", type = Path)
+    parser.add_argument("--port", type = int, required = True)
+    parser.add_argument("--host", default = "127.0.0.1")
     args, _ = parser.parse_known_args(argv)
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stdout.reconfigure(encoding = "utf-8", errors = "replace")
     geniex = GenieX(args.cache_dir)
     serving = Serving()
     exit_with_parent(os.getppid(), serving)

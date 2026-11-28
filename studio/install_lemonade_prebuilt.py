@@ -152,7 +152,9 @@ def _qualcomm_geniex_host() -> Optional[Path]:
         return None
     local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
     candidates = [
-        Path(os.environ.get("UNSLOTH_GENIEX_BIN", "")) if os.environ.get("UNSLOTH_GENIEX_BIN") else None,
+        Path(os.environ.get("UNSLOTH_GENIEX_BIN", ""))
+        if os.environ.get("UNSLOTH_GENIEX_BIN")
+        else None,
         Path(shutil.which("geniex")) if shutil.which("geniex") else None,
         local_app_data / "GenieX" / "geniex.exe",
         local_app_data / "Programs" / "GenieX" / "geniex.exe",
