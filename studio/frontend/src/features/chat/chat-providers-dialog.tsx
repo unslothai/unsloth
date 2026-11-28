@@ -141,6 +141,7 @@ import {
   supportsRemoteModelCatalog,
   toExternalBackendProviderType,
 } from "./external-providers";
+import { clearDeletedProviderSelection } from "./stores/chat-runtime-store";
 import { useConnectionChecksStore } from "./stores/connection-checks-store";
 import {
   providerSavesInFlight,
@@ -1986,6 +1987,7 @@ export function ChatProvidersSettings({
       } else {
         onProvidersChange(store.providers.filter((provider) => provider.id !== providerId));
       }
+      clearDeletedProviderSelection(providerId);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
       toast.error(`Failed to delete connection: ${message}`);

@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
+import "sonner"; // Load before installing the storage test’s partial DOM.
 import { createServer } from "vite";
 import type { ExternalProviderConfig } from "../src/features/chat/external-providers.ts";
 import { installLocalStorageFake } from "./helpers/kit.ts";
@@ -253,6 +254,41 @@ test("switching same-model connections never leaks the contract and server sync 
     const synced = await sync.syncExternalProvidersFromBackend([a, c]);
     assert.equal(synced[0].reasoningConfig, undefined);
     assert.deepEqual(synced[1].reasoningConfig, c.reasoningConfig);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a confirmed server list clears the saved pick only when its connection is gone", async () => {
+  const { useChatRuntimeStore } = await vite.ssrLoadModule(
+    "/src/features/chat/stores/chat-runtime-store.ts",
+  );
+  const runtime = useChatRuntimeStore.getState();
+  const checkpoint = "external::anthropic-connection::claude-haiku-4-5";
+  const rememberedKey = "unsloth_chat_last_external_checkpoint";
+  const disabledAnthropic = {
+    id: "anthropic-connection",
+    provider_type: "anthropic",
+    display_name: "Anthropic",
+    base_url: "https://api.anthropic.com",
+    is_enabled: false,
+    models: ["claude-haiku-4-5"],
+    available_models: ["claude-haiku-4-5"],
+  };
+  let rows = [disabledAnthropic];
+  const original = globalThis.fetch;
+  globalThis.fetch = (async (url) =>
+    Response.json(String(url).endsWith("/api/providers/") ? rows : [])) as typeof fetch;
+  try {
+    runtime.setCheckpoint(checkpoint, null);
+    assert.deepEqual(await sync.syncExternalProvidersFromBackend([]), []);
+    assert.equal(useChatRuntimeStore.getState().params.checkpoint, checkpoint);
+    assert.equal(window.localStorage.getItem(rememberedKey), checkpoint);
+
+    rows = [];
+    assert.deepEqual(await sync.syncExternalProvidersFromBackend([]), []);
+    assert.equal(useChatRuntimeStore.getState().params.checkpoint, "");
+    assert.equal(window.localStorage.getItem(rememberedKey), null);
   } finally {
     globalThis.fetch = original;
   }

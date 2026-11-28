@@ -477,3 +477,52 @@ test("eject restores the active thread's effort without persisting the pin", asy
   assert.equal(threadRows.rows.get(THREAD)?.reasoningEffort, "low");
   assert.equal(settingsHttp.puts.some((patch) => "reasoningEffort" in patch), false);
 });
+
+test("deleting a connection clears its selected model without changing the chat", async () => {
+  const runtime = await boot("deleted-provider");
+  const store = runtime.useChatRuntimeStore;
+  const key = "unsloth_chat_last_external_checkpoint";
+  const deletedModel = "external::removed-connection::claude-haiku-4-5";
+
+  store.getState().setCheckpoint(deletedModel, null);
+  runtime.clearDeletedProviderSelection("removed-connection");
+  assert.equal(store.getState().params.checkpoint, "");
+  assert.equal(storageData.has(key), false);
+  assert.equal(store.getState().activeThreadId, THREAD);
+
+  store.getState().setCheckpoint(MODEL, null);
+  runtime.clearDeletedProviderSelection("removed-connection");
+  assert.equal(store.getState().params.checkpoint, MODEL);
+  assert.equal(storageData.get(key), MODEL);
+
+  // This tab still shows the removed model while another tab remembers a different one.
+  store.getState().setCheckpoint(deletedModel, null);
+  storageData.set(key, MODEL);
+  runtime.clearDeletedProviderSelection("removed-connection");
+  assert.equal(store.getState().params.checkpoint, "");
+  assert.equal(storageData.get(key), MODEL);
+});
+
+test("deleting the selected connection preserves another chat's tool run", async () => {
+  const runtime = await boot("deleted-provider-with-active-tool");
+  const store = runtime.useChatRuntimeStore;
+  const otherChat = "other-chat";
+  const tool = "terminal-call";
+  const owner = () => {};
+  const state = store.getState();
+
+  state.setCheckpoint("external::removed-connection::claude-haiku-4-5", null);
+  state.setToolStatus(otherChat, "terminal", owner);
+  state.appendToolLiveOutput(tool, "in progress");
+  state.setToolFullOutput("earlier-call", "completed output");
+  state.setLiveCompacting(otherChat, true);
+
+  runtime.clearDeletedProviderSelection("removed-connection");
+
+  const after = store.getState();
+  assert.equal(after.params.checkpoint, "");
+  assert.equal(after.toolStatusByThreadId[otherChat]?.[0]?.owner, owner);
+  assert.equal(after.toolLiveOutput[tool], "in progress");
+  assert.equal(after.toolFullOutput["earlier-call"], "completed output");
+  assert.equal(after.liveGenerationByThreadId[otherChat]?.compacting, true);
+});
