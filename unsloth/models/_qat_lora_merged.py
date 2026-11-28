@@ -172,10 +172,10 @@ class MergedLoRAWeightFakeQuantizer(torch.nn.Module):
         with torch.no_grad():
             merged = _merged_fp32(W, A, B, scale)
             quantized = inner(merged.to(W.dtype))
-            # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype.
-            residual = (quantized.to(torch.float32) - (merged - W.to(torch.float32))).to(
-                quantized.dtype
-            )
+            # R = Q(W + s B A) - s B A, in fp32 before the one rounding to the weight dtype (in place: one
+            # fp32 weight-sized buffer).
+            residual = merged.sub_(W).neg_().add_(quantized).to(quantized.dtype)
+            del merged, quantized
         if caching:
             self.__dict__["_cache"] = (key, residual)
         elif self.__dict__["_cache"] is not None:

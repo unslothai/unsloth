@@ -280,3 +280,33 @@ def test_compiles_without_graph_breaks(monkeypatch):
     assert explanation.graph_break_count == 0, explanation.break_reasons
     compiled = torch.compile(model, backend = "aot_eager", fullgraph = True)
     torch.testing.assert_close(compiled(x), model(x), rtol = 1e-5, atol = 1e-5)
+
+
+def _sm100():
+    return torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 10
+
+
+@pytest.mark.skipif(not _sm100(), reason = "NVFP4 / MXFP8 QAT matmuls need compute capability 10.0+")
+@pytest.mark.parametrize("scheme", ["nvfp4", "mxfp8"])
+def test_microscaling_forward_is_the_merged_low_precision_matmul(scheme, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_QAT_WEIGHT_MEMO", "0")
+    model = _prepare_model_for_qat(_peft(torch.bfloat16).cuda(), scheme, lora_merged = True)
+    x = _x(torch.bfloat16).cuda().requires_grad_(True)
+    up = _lora_layers(model)[0]
+    base = up.get_base_layer()
+    weight_forward = base.__dict__["_unsloth_qat_lora_weight_forward"]
+    A, B = up.lora_A["default"].weight, up.lora_B["default"].weight
+    s = up.scaling["default"]
+    out = up(x)
+    merged = qlm.qat_lora_merged_weight(base.weight, A, B, s)
+    ref = weight_forward(base, x, weight = merged)
+    torch.testing.assert_close(out, ref, rtol = 2e-2, atol = 2e-2)
+    grad = torch.randn_like(out)
+    gx, gA, gB = torch.autograd.grad(out, [x, A, B], grad)
+    x2 = x.detach().clone().requires_grad_(True)
+    (rx,) = torch.autograd.grad(weight_forward(base, x2, weight = merged), [x2], grad)
+    torch.testing.assert_close(gx, rx, rtol = 2e-2, atol = 2e-2)
+    # Straight-through LoRA gradients on the (unquantized) LoRA input.
+    xf, gf = x.detach().float(), grad.float()
+    torch.testing.assert_close(gB.float(), s * gf.t() @ (xf @ A.float().t()), rtol = 3e-2, atol = 3e-2)
+    torch.testing.assert_close(gA.float(), s * (gf @ B.float()).t() @ xf, rtol = 3e-2, atol = 3e-2)
