@@ -2434,11 +2434,9 @@ def test_a_zoo_without_the_api_or_a_failed_import_is_off_with_a_reason(env, monk
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", old)
     zoo, reason = mb._int8_prefill_zoo()
     assert zoo is None and reason == "unsupported_zoo"
-    # A zoo whose import fails.
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", None)
     zoo, reason = mb._int8_prefill_zoo()
     assert zoo is None and reason.startswith("zoo_unavailable")
-    # The load still succeeds, stock.
     assert _load(backend)["phase"] == "ready"
     info, _st = _int8_status(backend)
     assert info["engaged"] is False
@@ -2508,7 +2506,6 @@ def test_int8_prefill_keeps_routing_with_loras(int8_env, monkeypatch):
     assert seen["loras"], "the LoRA was applied"
     # The LoRA wrappers came in training mode; the render still runs in eval mode inside the scope.
     assert seen["active"] == 1 and seen["training"] is False
-    # Removing the LoRA keeps the route.
     backend.generate(prompt = "p", steps = 1, seed = 1, loras = [])
     assert runtime.seen_in_generate[-1]["active"] == 1
 

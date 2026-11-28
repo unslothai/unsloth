@@ -69,8 +69,7 @@ _LINKED_SUBDIRS = ("text_encoder", "tokenizer", "vae")
 _TE_GROUP_SIZE = 64
 _ENCODING_CACHE_SIZE = 8
 _LOW_RAM_BYTES = 16 * 1024**3
-# auto (default): unsloth_zoo's int8-activation route on the DiT where the zoo says it runs (M5 GPUs);
-# 1: the same, logged loudly when it cannot; 0: the stock quantized matmuls.
+# Unset / 0: stock matmuls. auto: unsloth_zoo's int8-activation DiT route where it runs (M5); 1: auto, loud on failure.
 INT8_PREFILL_ENV = "UNSLOTH_DIFFUSION_MLX_INT8_PREFILL"
 # Rows for the eager first-use check: past the zoo's small-row route, inside its int8 range.
 _INT8_PREVERIFY_ROWS = 256
