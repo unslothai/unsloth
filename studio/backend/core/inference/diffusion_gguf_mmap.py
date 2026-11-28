@@ -47,9 +47,8 @@ def _mapped_load_gguf_checkpoint(gguf_checkpoint_path, return_tensors = False):
     # "c" = MAP_PRIVATE: writable views, the file is never written.
     reader = GGUFReader(gguf_checkpoint_path, "c")
     unquantized = (gguf.GGMLQuantizationType.F32, gguf.GGMLQuantizationType.F16)
-    # numpy has no bf16, so gguf-py hands BF16 back as raw bytes ([..., 2 * D] uint8). Stock wraps those in a
-    # GGUFParameter that only GGUFLinear decodes, so a BF16 norm (Qwen-Image-2.1 txt_in.text_norm) breaks with
-    # 4096 vs 8192. A bfloat16 view of the same mapped bytes loads like F16 (cast to torch_dtype by diffusers).
+    # gguf-py returns BF16 as raw uint8 [..., 2 * D] only GGUFLinear decodes (BF16 norms break, diffusers#15406);
+    # a bfloat16 view of the mapped bytes loads like F16.
     bf16 = getattr(gguf.GGMLQuantizationType, "BF16", None)
     parsed_parameters = {}
     nbytes = 0

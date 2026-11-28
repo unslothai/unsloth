@@ -63,7 +63,6 @@ def _write(path, seed = 0):
 
 
 def _as_mapped(value):
-    # The mapped loader returns BF16 as a bfloat16 view of the stock loader's raw bytes
     if getattr(value, "quant_type", None) == T.BF16:
         return value.as_subclass(torch.Tensor).view(torch.bfloat16)
     return value
@@ -249,7 +248,6 @@ def test_bf16_tensors_load_as_plain_bfloat16_views(tmp_path):
         assert torch.equal(
             got.view(torch.int16), want.view(torch.int16)
         ), name  # bit-exact, incl. -0.0 / inf
-        # The stock copy's raw bytes, reinterpreted: same values, read zero-copy from the file
         raw = stock[name].as_subclass(torch.Tensor)
         assert torch.equal(got.view(torch.uint8), raw), name
     if sys.platform.startswith("linux"):
@@ -258,7 +256,6 @@ def test_bf16_tensors_load_as_plain_bfloat16_views(tmp_path):
     # A non-linear BF16 weight now multiplies as [D], not as [2D] raw bytes
     hidden = torch.ones(2, 512, dtype = torch.bfloat16)
     assert (hidden * mapped["txt_in.text_norm.weight"]).shape == (2, 512)
-    # Every other type is exactly the stock loader's result
     for name in ("blocks.0.attn.to_q.weight", "norm.weight", "proj.bias"):
         a, b = stock[name], mapped[name]
         assert type(a) is type(b) and a.dtype == b.dtype and a.shape == b.shape, name
