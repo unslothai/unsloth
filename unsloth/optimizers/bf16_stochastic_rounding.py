@@ -112,6 +112,53 @@ if triton is not None:
         tl.store(V + i, _round_bf16(v, r2), valid)
 
     @triton.jit
+    def _adamw_multi_kernel(
+        META,  # int64 [T, 7]: weight, grad, exp_avg, exp_avg_sq addresses, numel, Philox seed, then 2 float32:
+        SCALE,  # META as float32 [T, 14]: NEG_STEP, BC2_SQRT per weight at columns 12, 13 (each its own step)
+        CHUNKS,  # int32 [C, 2]: (weight row, chunk index) per program
+        DECAY,
+        W1,
+        B2,
+        W2,
+        EPS,
+        G_DTYPE: tl.constexpr,  # the bucket's gradient dtype
+        BLOCK: tl.constexpr,  # _BLOCK, so element indices (and Philox offsets) match _adamw_kernel
+        SUB: tl.constexpr,  # blocks per chunk
+    ):
+        # _adamw_kernel over many weights in one launch, through an address table (never a base pointer plus an
+        # offset, which ROCm buffer ops cannot follow into another allocation). Same element index, seed and
+        # float32 ops per weight, so the bits are the same as one launch per weight.
+        c = tl.program_id(0).to(tl.int64)
+        t = tl.load(CHUNKS + 2 * c).to(tl.int64)
+        k = tl.load(CHUNKS + 2 * c + 1).to(tl.int64)
+        row = META + 7 * t
+        P = tl.load(row).to(tl.pointer_type(tl.bfloat16))
+        G = tl.load(row + 1).to(tl.pointer_type(G_DTYPE))
+        M = tl.load(row + 2).to(tl.pointer_type(tl.bfloat16))
+        V = tl.load(row + 3).to(tl.pointer_type(tl.bfloat16))
+        N = tl.load(row + 4)
+        SEED = tl.load(row + 5)
+        NEG_STEP = tl.load(SCALE + 14 * t + 12)
+        BC2_SQRT = tl.load(SCALE + 14 * t + 13)
+        for s in range(SUB):
+            i = (k * SUB + s) * BLOCK + tl.arange(0, BLOCK)
+            valid = i < N
+            p = tl.load(P + i, valid, 0).to(tl.float32)
+            g = tl.load(G + i, valid, 0).to(tl.float32)
+            m = tl.load(M + i, valid, 0).to(tl.float32)
+            v = tl.load(V + i, valid, 0).to(tl.float32)
+            p = p * DECAY
+            m = tl.where(W1 < 0.5, m + W1 * (g - m), g - (g - m) * (1.0 - W1))
+            v = v * B2
+            v = v + W2 * g * g
+            denom = tl.div_rn(tl.sqrt_rn(v), BC2_SQRT) + EPS
+            p = p + NEG_STEP * tl.div_rn(m, denom)
+            r0, r1, r2, _ = tl.randint4x(SEED, i)
+            tl.store(P + i, _round_bf16(p, r0), valid)
+            tl.store(M + i, _round_bf16(m, r1), valid)
+            tl.store(V + i, _round_bf16(v, r2), valid)
+
+    @triton.jit
     def _bnb_quantize(
         Q,
         x,
@@ -928,6 +975,174 @@ def _scalar_dtype():
         return torch.float32
 
 
+def _multi_tensor_enabled():
+    """UNSLOTH_BF16_SR_MULTI_TENSOR=0 launches the one-pass kernel once per weight instead of once per bucket."""
+    value = os.environ.get("UNSLOTH_BF16_SR_MULTI_TENSOR", "1").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+_SUB = 16  # _BLOCK-element blocks per program in the multi-tensor kernel: 16384 elements
+_MULTI_OK = {}
+_G_DTYPES = {}
+if triton is not None:
+    _G_DTYPES = {torch.bfloat16: tl.bfloat16, torch.float16: tl.float16, torch.float32: tl.float32}
+
+
+def _adamw_scalars(lr, beta1, beta2, t):
+    """NEG_STEP and BC2_SQRT exactly as _fused_adamw_step passes them to _adamw_kernel (Python floats)."""
+    return (lr / (1 - beta1**t)) * -1, (1 - beta2**t) ** 0.5
+
+
+def _chunk_table(optimizer, device, numels):
+    """(weight row, chunk index) per program, cached per device and weight sizes (grads move, sizes do not)."""
+    cache = optimizer.__dict__.setdefault("_unsloth_sr_chunk_tables", {})
+    key = (str(device), tuple(numels))
+    table = cache.get(key)
+    if table is None:
+        span = _BLOCK * _SUB
+        counts = (torch.tensor(numels, dtype = torch.int64) + span - 1) // span
+        row = torch.repeat_interleave(torch.arange(len(numels)), counts)
+        first = torch.repeat_interleave(torch.cumsum(counts, 0) - counts, counts)
+        chunk = torch.arange(row.numel()) - first
+        table = torch.stack((row, chunk), 1).to(torch.int32).to(device)
+        if len(cache) > 8:  # e.g. a model whose trainable set keeps changing
+            cache.clear()
+        cache[key] = table
+    return table
+
+
+def _multi_launch(device, g_dtype, tensors, scalars, chunks, group_scalars):
+    """One _adamw_multi_kernel launch. tensors: (weight, grad, exp_avg, exp_avg_sq, seed) per weight, all local;
+    scalars: (NEG_STEP, BC2_SQRT) per weight. The table goes over in one copy: 6 int64 columns, then the two
+    float32 scalars packed into a 7th."""
+    rows = len(tensors)
+    table = torch.empty((rows, 7), dtype = torch.int64, pin_memory = True)
+    table[:, :6] = torch.tensor(
+        [
+            [p.data_ptr(), g.data_ptr(), m.data_ptr(), v.data_ptr(), p.numel(), s]
+            for p, g, m, v, s in tensors
+        ],
+        dtype = torch.int64,
+    )
+    table[:, 6:].view(torch.float32).copy_(torch.tensor(scalars, dtype = torch.float32))
+    table = table.to(device, non_blocking = True)
+    decay, w1, b2, w2, eps = group_scalars
+    with torch.cuda.device(device):
+        _adamw_multi_kernel[(chunks.shape[0],)](
+            table, table.view(torch.float32), chunks, decay, w1, b2, w2, eps,
+            G_DTYPE = _G_DTYPES[g_dtype], BLOCK = _BLOCK, SUB = _SUB, enable_fp_fusion = False,
+        )  # fmt: skip
+
+
+def _multi_ok(device):
+    """Run the multi-tensor kernel once per device against _adamw_kernel on weights with tails and mixed steps;
+    any failure or bit difference keeps the per-weight launches there."""
+    key = str(device)
+    if key not in _MULTI_OK:
+        try:
+            gen = torch.Generator(device = "cpu").manual_seed(0)
+            sizes = (3, 1025, _BLOCK * _SUB + 7)
+            make = (
+                lambda n, s = 1.0: (torch.randn(n, generator = gen) * s).to(torch.bfloat16).to(device)
+            )
+            weights = [
+                [make(n, 0.05), make(n, 1e-3), make(n, 1e-3), make(n, 1e-6).abs()] for n in sizes
+            ]
+            single = [[x.clone() for x in w] for w in weights]
+            seeds = [(1 << 40) + 977 * j for j in range(len(sizes))]
+            scalars = [_adamw_scalars(1e-3, 0.9, 0.999, t) for t in (1, 7, 300)]
+            group_scalars = (1 - 1e-5, 0.1, 0.999, 0.001, 1e-8)
+            with torch.cuda.device(device):
+                for (p, g, m, v), seed, (neg, bc2) in zip(single, seeds, scalars):
+                    _adamw_kernel[_grid(p.numel())](
+                        p, g, m, v, p.numel(), seed, *group_scalars[:4], neg, bc2, group_scalars[4],
+                        BLOCK = _BLOCK, enable_fp_fusion = False,
+                    )  # fmt: skip
+                chunks = _chunk_table(_PROBE, device, sizes)
+                _multi_launch(
+                    device, torch.bfloat16,
+                    [(p, g, m, v, s) for (p, g, m, v), s in zip(weights, seeds)],
+                    scalars, chunks, group_scalars,
+                )  # fmt: skip
+                torch.cuda.synchronize(device)
+            _MULTI_OK[key] = all(
+                torch.equal(a.view(torch.int16), b.view(torch.int16))
+                for w, sw in zip(weights, single)
+                for a, b in zip(w, sw)
+            )
+            if not _MULTI_OK[key]:
+                print(
+                    f"Unsloth: multi-tensor bfloat16 stochastic rounding differs on {device}; one launch per weight."
+                )
+        except torch.cuda.OutOfMemoryError:
+            return False
+        except Exception as exc:
+            print(
+                f"Unsloth: multi-tensor bfloat16 stochastic rounding is unavailable on {device} ({exc})."
+            )
+            _MULTI_OK[key] = False
+    return _MULTI_OK[key]
+
+
+class _Probe:
+    pass
+
+
+_PROBE = _Probe()
+
+
+def _multi_adamw_step(optimizer, group, params, states, ts, seed, group_scalars):
+    """Step params (fused-eligible, state created, step counted) in one _adamw_multi_kernel launch per
+    (device, gradient dtype). Returns the ids it stepped; the rest take one launch per weight."""
+    if len(params) < 2 or not _multi_tensor_enabled():
+        return set()
+    try:
+        if torch.cuda.is_current_stream_capturing():
+            return set()  # host-side tables would replay stale: keep the per-weight launches
+    except Exception:
+        pass
+    lr = _float(group["lr"])
+    beta1, beta2 = (_float(b) for b in group["betas"])
+    buckets = {}
+    for p, state, t in zip(params, states, ts):
+        local = _local(p)
+        if local.numel() == 0:
+            continue
+        g = _local(p.grad)
+        buckets.setdefault((local.device, g.dtype), []).append((p, state, t))
+    done = set()
+    for (device, g_dtype), items in buckets.items():
+        if len(items) < 2 or g_dtype not in _G_DTYPES or not _multi_ok(device):
+            continue
+        tensors, scalars = [], []
+        for p, state, t in items:
+            tensors.append(
+                (
+                    _local(p.data),
+                    _local(p.grad),
+                    _local(state["exp_avg"]),
+                    _local(state["exp_avg_sq"]),
+                    _seed_for(optimizer, p, seed, int(t)),
+                )
+            )
+            scalars.append(_adamw_scalars(lr, beta1, beta2, t))
+        try:
+            chunks = _chunk_table(optimizer, device, [x[0].numel() for x in tensors])
+            _multi_launch(device, g_dtype, tensors, scalars, chunks, group_scalars)
+        except torch.cuda.OutOfMemoryError:
+            raise
+        except Exception as exc:
+            _MULTI_OK[str(device)] = False
+            print(
+                f"Unsloth: multi-tensor bfloat16 stochastic rounding failed on {device} ({exc}); "
+                "one launch per weight there."
+            )
+            continue
+        done.update(id(p) for p, _, _ in items)
+        _count(optimizer, "_unsloth_sr_multi_tensor_launches")
+    return done
+
+
 def _fused_adamw_step(optimizer, group, params, seed):
     """One kernel per weight: AdamW in float32 registers, weight and both bfloat16 moments rounded stochastically.
     Returns the weights it could not step (a failed launch), for the float32 route."""
@@ -960,8 +1175,15 @@ def _fused_adamw_step(optimizer, group, params, seed):
         values.update(zip(map(id, here), torch.stack([s.float() for s in here]).tolist()))
     decay = 1 - lr * weight_decay
     stepped, left = [], []
+    ts = [step.item() if step.device.type == "cpu" else values[id(step)] for step in steps]
+    multi = _multi_adamw_step(
+        optimizer, group, params, states, ts, seed, (decay, 1 - beta1, beta2, 1 - beta2, eps)
+    )
     for i, (p, state, step) in enumerate(zip(params, states, steps)):
-        t = step.item() if step.device.type == "cpu" else values[id(step)]
+        t = ts[i]
+        if id(p) in multi:
+            stepped.append(p)
+            continue
         bc1 = 1 - beta1**t
         bc2 = 1 - beta2**t
         # A DTensor (FSDP2 / TP) steps its local shard: every op in the kernel is elementwise.
@@ -997,9 +1219,10 @@ def _fused_adamw_step(optimizer, group, params, seed):
                     f"Unsloth: one-pass bfloat16 stochastic rounding failed on {p.device} ({exc}); "
                     "using the float32 route there."
                 )
-                for s in steps[i:]:
-                    s.sub_(1)
-                left = params[i:]
+                for q, s in zip(params[i:], steps[i:]):
+                    if id(q) not in multi:
+                        s.sub_(1)
+                left = [q for q in params[i:] if id(q) not in multi]
                 break
         stepped.append(p)
     # The kernel writes the storage directly: bump the parameters' own version counters (not a .data alias, which
