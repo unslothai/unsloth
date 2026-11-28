@@ -500,6 +500,8 @@ export function ChatProvidersSettings({
   // Read when a detection answers, so ticks made while it ran still count.
   const configuredModelsRef = useRef(autoCompactModels);
   configuredModelsRef.current = autoCompactModels;
+  const endpointDraftRef = useRef("");
+  endpointDraftRef.current = `${baseUrlDraft}\n${extraHeadersDraft}`;
   const autoCompactModel = autoCompactModels.includes(autoCompactScope)
     ? autoCompactScope
     : null;
@@ -1033,6 +1035,7 @@ export function ChatProvidersSettings({
       return;
     }
     const request = formCheckRequestRef.current;
+    const endpoint = `${baseUrlDraft}\n${extraHeadersDraft}`;
     setEffortDetecting(true);
     try {
       const capabilities = await listProviderModelCapabilities({
@@ -1047,7 +1050,7 @@ export function ChatProvidersSettings({
         apiType: "chat_completions",
         extraHeaders: parseExtraHeadersDraft(extraHeadersDraft),
       });
-      if (request !== formCheckRequestRef.current) return;
+      if (request !== formCheckRequestRef.current || endpoint !== endpointDraftRef.current) return;
       const levels = detectedCustomEffortLevels(capabilities, configuredModelsRef.current);
       if (!levels) {
         if (!silent) {

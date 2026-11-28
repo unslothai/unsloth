@@ -347,8 +347,10 @@ test("detected effort levels are the rungs every reporting model shares", () => 
   ];
   assert.deepEqual(detect(listed, ["b"]), ["high", "xhigh", "max"]);
   assert.deepEqual(detect(listed, ["a", "b"]), ["high", "xhigh"]);
-  // Nothing ticked reports, so every reporting model counts.
-  assert.deepEqual(detect(listed, ["plain"]), ["high", "xhigh"]);
+  // A configured model that did not report never takes another model's levels.
+  assert.equal(detect(listed, ["plain"]), undefined);
+  assert.equal(detect(listed, ["ninth-unprobed"]), undefined);
+  assert.deepEqual(detect(listed, []), ["high", "xhigh"]);
   assert.equal(detect([entry("plain", null), entry("e", [])], []), undefined);
   assert.equal(detect([entry("a", ["low"]), entry("b", ["max"])], []), undefined);
 });
