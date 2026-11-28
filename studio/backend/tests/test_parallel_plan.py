@@ -540,9 +540,36 @@ def test_gpt_oss_qlora_plans_ep_like_16bit():
     assert rows["ep"]["available"], rows["ep"]
 
 
-def test_bare_flag_in_a_custom_layout_reads_as_one():
+def test_bare_switch_in_a_custom_layout_reads_as_one():
     plan = pp.plan({"parallel_mode": "custom", "parallel_spec": "fsdp, cp=2"}, _host(2), _model())
     assert plan["spec"] == "fsdp=1,cp=2"
+    # A bare size is not a switch: "tp" must not quietly mean tp=1 (two data-parallel replicas).
+    with pytest.raises(pp.ParallelPlanError) as err:
+        pp.plan({"parallel_mode": "custom", "parallel_spec": "tp"}, _host(2), _model())
+    assert err.value.payload["code"] == "parallel_bad_spec"
+
+
+@pytest.mark.parametrize(
+    "spec, shards",
+    [
+        ("fsdp=2", True),
+        ("fsdp2=1", True),
+        ("fsdp_size=2", True),
+        ("dp_shard=2", True),
+        ("fsdp", True),
+        ("dp=2,fsdp=1", True),
+        ("tp=2", True),
+        ("tp_size=2", True),
+        ("cp=2,fsdp=1", True),
+        ("dp=2", False),
+        ("cp=2", False),
+        ("pp=2", False),
+        ("ep=2", False),
+        ("fsdp=0,dp=2", False),
+    ],
+)
+def test_layout_shards_weights_reads_cores_parse(spec, shards):
+    assert pp.layout_shards_weights(spec, 2) is shards
 
 
 def test_custom_expert_parallel_needs_a_moe_model():
@@ -573,7 +600,9 @@ def test_context_parallel_checks_the_cell_of_the_backend_auto_picks():
     with pytest.raises(pp.ParallelPlanError) as err:
         pp.plan({"parallel_mode": "cp"}, _host(2), olmoe)
     message = err.value.payload["message"]
-    assert message.startswith("Unsloth has not verified this multi-GPU layout for olmoe models")
+    assert message.startswith(
+        "Unsloth has not verified context parallel for olmoe (LoRA, gradient checkpointing) yet"
+    ), message
     assert "CELLS" not in message and "parity" not in message
     rows = {r["mode"]: r for r in pp.plan({"parallel_mode": "auto"}, _host(2), olmoe)["modes"]}
     assert not rows["cp"]["available"]
@@ -587,8 +616,9 @@ def test_plain_training_error_rewrites_only_the_cell_gate():
         "'MoE gpt_oss x qlora x aux off x cp' lacks parity, engagement, compile evidence. Instead: a "
         "supported cell (see unsloth.parallel_capabilities.CELLS), or drop an axis."
     )
+    raw += " (layout cp 2 x cp_backend ulysses, trainer sft, model gpt_oss)"
     assert pp.plain_training_error(raw) == (
-        "Unsloth has not verified this multi-GPU layout for gpt_oss models yet, so it refuses to train it. "
+        "Unsloth has not verified context parallel for gpt_oss yet, so it refuses to train it. "
         "Use DDP or FSDP2."
     )
     assert pp.plain_training_error("CUDA out of memory") == "CUDA out of memory"
@@ -604,3 +634,26 @@ def test_sharded_full_finetune_notes_the_optimizer_and_moe_fsdp2_warns():
     assert not any("adamw_torch" in n for n in notes("fsdp2", _model()))
     moe = pp.plan({"parallel_mode": "fsdp2"}, _host(2), _model(moe = True, family = "qwen3_moe"))
     assert any("mixture-of-experts" in w for w in moe["warnings"])
+
+
+def test_context_parallel_keeps_a_cell_core_measured():
+    # Core has full evidence for OLMoE full finetuning x Ulysses cp with the router aux loss on and no
+    # gradient checkpointing; the load-time fields (attention, compile) are the load's to check.
+    olmoe = {
+        **_model(moe = True, family = "olmoe", mode = "full"),
+        "attention_heads": (16, 16),
+        "router_aux_loss": True,
+    }
+    host = {**_host(2), "torch": (2, 15)}
+    plan = pp.plan({"parallel_mode": "cp", "gradient_checkpointing": "none"}, host, olmoe)
+    assert plan["spec"] == "cp=2"
+    with pytest.raises(pp.ParallelPlanError):
+        pp.plan({"parallel_mode": "cp", "gradient_checkpointing": "unsloth"}, host, olmoe)
+
+
+def test_layer_split_estimate_keeps_the_selected_optimizer():
+    # A full finetune under FSDP2 steps with torch AdamW, a layer split keeps 8-bit AdamW.
+    model = {**_model(need = 6.0, mode = "full"), "fsdp2_per_gpu_gb": {2: 4.2}}
+    model["per_gpu_gb"][2] = 3.7
+    row = pp.plan({"parallel_mode": "auto"}, _host(2), model)["estimate"]["per_gpu_gb"]
+    assert (row["fsdp2"], row["layer_split"]) == (4.2, 3.7)

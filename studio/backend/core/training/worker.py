@@ -112,21 +112,22 @@ def _studio_main_rank() -> bool:
 
 def _optimizer_for_run(config: dict, event_queue: Any = None) -> str:
     """torch AdamW for a full finetune whose weights are FSDP2 / tensor parallel shards. bfloat16 stochastic
-    rounding steps DTensor weights only on the torch AdamW route, so bitsandbytes there rounds every update to
-    nearest and most of them vanish (Qwen3-0.6B, 60 steps: 6% of weights changed vs 49% under DDP)."""
+    rounding steps DTensor weights only on the torch AdamW route, so bitsandbytes AdamW there rounds every update
+    to nearest and most of them vanish (Qwen3-0.6B, 60 steps: 6% of weights changed vs 49% under DDP)."""
     optim = config.get("optim", "adamw_8bit")
     from core.training import parallel_launch
-    from core.training.parallel_plan import bitsandbytes_optimizer
+    from core.training.parallel_plan import bnb_adamw, layout_shards_weights
 
     if not (
         config.get("training_type") == "Full Finetuning"
-        and bitsandbytes_optimizer(optim)
-        and parallel_launch.shards_weights()
+        and bnb_adamw(optim)
+        and parallel_launch.is_multi_process()
+        and layout_shards_weights(os.environ.get("UNSLOTH_PARALLEL"), parallel_launch.world_size())
     ):
         return optim
     message = (
         f"Full finetuning with sharded weights (FSDP2 / tensor parallel) uses adamw_torch instead of {optim}: "
-        "8-bit AdamW loses most bfloat16 updates on sharded weights."
+        "bitsandbytes AdamW loses most bfloat16 updates on sharded weights."
     )
     logger.warning(message)
     if event_queue is not None and parallel_launch.is_main_rank():
