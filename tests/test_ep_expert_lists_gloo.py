@@ -665,6 +665,21 @@ def test_list_exchange_hint_only_when_the_whole_model_fits_one_gpu(monkeypatch):
     assert epn._list_exchange_hint(model, 2, 2) is None
 
 
+def test_list_exchange_hint_survives_an_unreadable_current_device(monkeypatch):
+    # gfx1151 Windows: a CPU-mesh rank whose current device is not a real card raised "Invalid device id" out of
+    # apply_expert_parallel; the advisory hint must give none instead.
+    _, _, epn = _modules()
+
+    def _invalid(*args, **kwargs):
+        raise AssertionError("Invalid device id")
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    monkeypatch.setattr(torch.cuda, "get_device_properties", _invalid)
+    assert epn._device_total_bytes() is None
+    assert epn._list_exchange_hint(torch.nn.Linear(4, 4), 2, 2) is None
+
+
 @pytest.mark.parametrize("family", ("mixtral", "qwen2_moe"))
 def test_ep_expert_lists_with_checkpointing_match_one_process(family):
     _check(_spawn("_case_list_family", gc = True, **_spec(family)), 2)

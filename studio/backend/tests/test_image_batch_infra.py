@@ -191,7 +191,11 @@ def test_a_flux3_load_without_the_capability_renders_alone_and_says_why(studio):
     assert all(r.status_code == 200 for r in responses)
     assert _alone(backend) == ["a fox", "a cat"]
     assert _batched_calls(backend) == []
-    assert trace.snapshot()["fallbacks"].get("family renders one image per forward") == 2
+    # The route admits FLUX.3; this load's family (no batched_forward) is refused by the engine plan.
+    from core.inference.diffusion_families import detect_family
+
+    assert adapters.batched_forward(detect_family("", name))
+    assert trace.snapshot()["fallbacks"].get("engine policy or prompt layout") == 2
 
 
 # ------------------------------------------------------------------------------------------- policy

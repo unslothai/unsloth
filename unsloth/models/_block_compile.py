@@ -268,6 +268,7 @@ def _new_cudagraph_state():
         "managers": {},
         "notes": set(),
         "auto": _new_auto_state(),
+        "kept": weakref.WeakSet(),
     }
 
 
@@ -386,6 +387,44 @@ def _graphed_call(compiled, device, *args, **kwargs):
 
 
 _BLOCK_NODE = "_unsloth_graphed_block"
+
+
+def _note_kept_backward(out):
+    """Track a grad-mode graphed call outside backward (a layer that keeps its activations) until its
+    backward starts: its saved tensors live in the pool until then."""
+    import torch.utils._pytree as pytree
+
+    for x in pytree.tree_leaves(out):
+        node = x.grad_fn if torch.is_tensor(x) else None
+        if node is None:
+            continue
+        kept = _CUDAGRAPH_STATE["kept"]
+        try:
+            kept.add(node)
+        except TypeError:
+            return out
+        ref = weakref.ref(node)
+
+        def started(grad_outputs):
+            n = ref()
+            if n is not None:
+                kept.discard(n)
+
+        node.register_prehook(started)
+        return out
+    return out
+
+
+def _kept_backward_manager(hidden_states):
+    """Manager to hold during a checkpoint recompute while kept layers await backward: every backward
+    graph clears the tree's one pending flag, so the recompute would free their saved activations."""
+    if not _CUDAGRAPH_STATE["kept"] or torch._C._current_graph_task_id() == -1:
+        return None
+    device = hidden_states.device.index if hidden_states.is_cuda else None
+    manager = _CUDAGRAPH_STATE["managers"].get(device)
+    if manager is None or not hasattr(manager, "running_forwards_with_pending_backwards"):
+        return None
+    return manager
 
 
 def _mark_block_outputs(out):
@@ -2894,7 +2933,13 @@ def _wrap(
         if skip_down:
             # Call scoped: only this call's tagged layer forward and fused MLP see it (no global, no thread).
             kwargs = {**kwargs, "_unsloth_skip_down": True}
+        held = _kept_backward_manager(hidden_states)
+        if held is not None:
+            held.running_forwards_with_pending_backwards = True
         out = _run(self, hidden_states, args, kwargs, mode)
+        if held is not None and hasattr(held, "update_generation"):
+            # A call outside the tree still started a dynamo generation.
+            held.update_generation()
         if skip_down and not trial:
             _fast_lora().MLP_DOWN_SKIP_STATS["skipped"] += 1
         if shared is not None:
@@ -2997,7 +3042,9 @@ def _wrap(
             if _input_grad_must_leave_pool(hidden_states):
                 # Leaf .grad outlives the generation; checkpoint backward recomputes first.
                 hidden_states = _CloneGrad.apply(hidden_states)
-            return _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+            return _note_kept_backward(
+                _graphed_call(graphed(), device, self, hidden_states, *args, **kwargs)
+            )
         if hidden_states.requires_grad and torch.is_grad_enabled():
             hidden_states = _CloneGrad.apply(hidden_states)
         return _clone_outputs(

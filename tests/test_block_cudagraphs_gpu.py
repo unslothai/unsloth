@@ -4,8 +4,10 @@
 """Block CUDA graphs (UNSLOTH_BLOCK_CUDAGRAPHS=1) on a real GPU with real cudagraph trees.
 
 Fixed shape without checkpointing: replays, no copies out of the pool, weights match eager over
-gradient accumulation. Reentrant checkpointing: still copies, still matches. Variable lengths: graphs
-go off past the cap and the graph pool is released (it stayed reserved: +3 to 4.75 GB on a T4)."""
+gradient accumulation. Reentrant checkpointing: still copies, still matches. Checkpointed layers
+between layers that keep their activations: the recompute in backward leaves the kept layers' saved
+tensors alive. Variable lengths: graphs go off past the cap and the graph pool is released (it stayed
+reserved: +3 to 4.75 GB on a T4)."""
 
 import importlib.util
 import os
@@ -114,11 +116,15 @@ def _models(n = 3):
 def _step(layers, xs, opt, checkpoint):
     from torch.utils.checkpoint import checkpoint as ckpt
 
+    # checkpoint: one flag for every layer, or one per layer.
+    flags = (
+        tuple(checkpoint) if isinstance(checkpoint, (tuple, list)) else (checkpoint,) * len(layers)
+    )
     losses = []
     for x in xs:  # gradient accumulation: the first .grad of a micro step lives across generations
         y = x
-        for layer in layers:
-            y = ckpt(layer, y, use_reentrant = True) if checkpoint else layer(y)
+        for layer, flag in zip(layers, flags):
+            y = ckpt(layer, y, use_reentrant = True) if flag else layer(y)
         loss = y.float().square().mean()
         loss.backward()
         losses.append(loss.item())
@@ -133,18 +139,24 @@ def _train(
     micro = 2,
     steps = None,
 ):
-    graphed, eager = _models()
+    graphed, eager = _models(len(checkpoint) if isinstance(checkpoint, (tuple, list)) else 3)
     opts = [torch.optim.SGD(m.parameters(), lr = 0.1) for m in (graphed, eager)]
     out = {"graphed": [], "eager": []}
+    any_checkpoint = any(checkpoint) if isinstance(checkpoint, (tuple, list)) else checkpoint
     for step, L in enumerate(lengths):
         g = torch.Generator(device = "cuda").manual_seed(step)
         xs = [
-            torch.randn(2, L, H, device = "cuda", generator = g).requires_grad_(checkpoint)
+            torch.randn(2, L, H, device = "cuda", generator = g).requires_grad_(any_checkpoint)
             for _ in range(micro)
         ]
         out["graphed"].append(_step(graphed, xs, opts[0], checkpoint))
         out["eager"].append(
-            _step(eager, [x.detach().requires_grad_(checkpoint) for x in xs], opts[1], checkpoint)
+            _step(
+                eager,
+                [x.detach().requires_grad_(any_checkpoint) for x in xs],
+                opts[1],
+                checkpoint,
+            )
         )
         if steps is not None:
             steps(step)
@@ -174,6 +186,17 @@ def test_reentrant_checkpoint_still_copies_and_matches(monkeypatch):
     graphed, eager, out = _train([64] * 5, checkpoint = True)
     _assert_same(graphed, eager, out)
     assert c.replay > 0 and c.clones > 0
+
+
+def test_checkpointed_layers_between_kept_layers_keep_saved_tensors(monkeypatch):
+    # Backward runs kept 3, recompute 2, kept 1, recompute 0: the recompute of layer 2 must not
+    # start a new tree generation while layer 1 still waits for its backward (its saved tensors
+    # would be freed: "accessing tensor output of CUDAGraphs that has been overwritten").
+    c = Counters(monkeypatch)
+    graphed, eager, out = _train([64] * 6, checkpoint = (True, False, True, False))
+    _assert_same(graphed, eager, out)
+    assert c.record > 0 and c.replay > 0
+    assert not bc._CUDAGRAPH_STATE.get("kept")  # every kept layer ran its backward
 
 
 def test_variable_lengths_turn_graphs_off_and_release_the_pool(monkeypatch):

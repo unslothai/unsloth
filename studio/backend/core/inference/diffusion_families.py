@@ -205,7 +205,7 @@ class DiffusionFamily:
     fp16_guard: Optional[str] = None
     # false only for a family whose denoiser block does not compile cleanly with regional torch.compile
     supports_torch_compile: bool = True
-    # True: list calls batch rows in ONE forward, each row independent (neighbour-invariance gates); None = default.
+    # True: list call batches rows in one forward (neighbour-invariance proven); False: never; None: default rules.
     batched_forward: Optional[bool] = None
     # False keeps cudnn.benchmark off (as VideoFamily.cudnn_benchmark): its per-process conv pick changes pixels.
     cudnn_benchmark: bool = True
@@ -766,6 +766,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_quant_auto = "int8",
         base_repo = "black-forest-labs/flux-3-image-klein-base",
         aliases = ("flux-3-image-klein-base", "flux3-image-klein-base", "flux3-klein-base"),
+        # One batched modular call per text window (diffusion_flux3 _row_groups).
+        batched_forward = True,
         reference = True,
         reference_edit = True,
         max_condition_images = 10,
@@ -838,6 +840,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         te_quant_auto = "int8",
         base_repo = "black-forest-labs/flux-3-image-klein",
         aliases = ("flux-3-image-klein", "flux3-image-klein", "flux3-klein"),
+        # One batched modular call per text window (diffusion_flux3 _row_groups).
+        batched_forward = True,
         reference = True,
         reference_edit = True,
         max_condition_images = 10,
@@ -1408,6 +1412,9 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "CosmosTransformer3DModel",
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
+        # Serial until a like-for-like G2c passes: on an RTX PRO 6000 (int8, streamed) batched rows drifted ~0.13
+        # LPIPS from their solo renders. The facade can still batch rows (diffusion_anima _row_groups) when asked.
+        batched_forward = False,
         profile = FamilyProfile(auto_bf16_when_resident = ANIMA_BF16_WHEN_RESIDENT),
         gguf_loadable = False,
         fp16_incompatible = True,

@@ -213,7 +213,10 @@ export function ProfilePersonalizationPanel() {
             type="button"
             onClick={() => fileInputRef.current?.click()}
             aria-label={t("settings.profile.changePicture")}
-            className="group relative block rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className={cn(
+              "group relative grid overflow-hidden focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+              avatarShape === "rounded" ? "rounded-[22%]" : "rounded-full",
+            )}
           >
             <UserAvatar
               name={previewName}
@@ -221,7 +224,7 @@ export function ProfilePersonalizationPanel() {
               size="lg"
               className="size-[calc(128px*var(--ui-space-scale,1))] text-[calc(3.2rem*var(--ui-font-scale,1))]"
             />
-            <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
+            <span className="absolute inset-0 flex items-center justify-center rounded-[inherit] bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
                 icon={ImageIcon}
                 className="size-8 text-white"

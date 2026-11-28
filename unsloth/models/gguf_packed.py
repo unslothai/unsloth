@@ -1234,13 +1234,13 @@ def write_gguf_dense_base(
         os.replace(old, os.path.join(directory, new))
         renamed[f"model-{index:05d}.safetensors"] = new
     weight_map = {name: renamed[file] for name, file in weight_map.items()}
-    with open(os.path.join(directory, "model.safetensors.index.json"), "w") as f:
+    with open(os.path.join(directory, "model.safetensors.index.json"), "w", encoding = "utf-8") as f:
         json.dump({"metadata": {"total_size": total}, "weight_map": weight_map}, f, indent = 2)
     config = base.config.to_dict()
     config.pop("quantization_config", None)
     config.pop("unsloth_gguf_packed", None)
     config["torch_dtype"] = config["dtype"] = str(dtype).replace("torch.", "")
-    with open(os.path.join(directory, "config.json"), "w") as f:
+    with open(os.path.join(directory, "config.json"), "w", encoding = "utf-8") as f:
         json.dump(config, f, indent = 2, default = str)
     return directory
 
