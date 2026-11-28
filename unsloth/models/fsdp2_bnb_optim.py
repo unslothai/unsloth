@@ -446,8 +446,7 @@ class _LocalShardMixin:
 
 
 def _gather_to_cpu(entry, writer_rank = 0):
-    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on `writer_rank` (global rank 0,
-    or a sub-mesh's first rank), None elsewhere."""
+    """Mirrors torch _gather_state_dict + cpu_offload for one parameter: CPU on `writer_rank`, None elsewhere."""
     DTensor = _dtensor_class()
     dist = torch.distributed
     keep = not (dist.is_available() and dist.is_initialized()) or dist.get_rank() == writer_rank
@@ -476,9 +475,8 @@ def _gather_to_cpu(entry, writer_rank = 0):
 
 @contextlib.contextmanager
 def full_cpu_state_export(optimizer, writer_rank = 0):
-    """Gather + offload each parameter's dequantized state as it is exported, to `writer_rank` (the rank
-    that writes: global rank 0, or a sub-mesh's first rank), instead of holding all float32 moments on the
-    device until torch gathers. Every rank must enter it (collectives)."""
+    """Gather + offload each parameter's dequantized state to `writer_rank` as it is exported, instead of
+    holding all float32 moments on the device. Every rank must enter it (collectives)."""
     if not is_local_shard_bnb_optimizer(optimizer):
         yield
         return

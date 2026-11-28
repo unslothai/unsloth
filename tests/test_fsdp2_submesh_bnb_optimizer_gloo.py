@@ -1,15 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""bitsandbytes under native FSDP2 on a sub-mesh without global rank 0 (gloo world of 4, two disjoint 2-rank
-meshes [0, 1] and [2, 3], each sharding the same 4-bit model and stepping the same bitsandbytes 8-bit AdamW
-on the same data). Pair [2, 3] writes from rank 2.
-
-* The full model state dict (packed 4-bit bytes and their QuantState entries) and the saved optimizer state
-  are the same, key for key and byte for byte, from both pairs' writers.
-* The 8-bit optimizer export is gathered to the writer one parameter at a time on both pairs: the writer gets
-  host tensors and its peer None, as on rank 0. Before, a sub-mesh writer skipped it, so every rank held all of
-  its dequantized float32 moments on the device at once (8 bytes per local parameter) until torch gathered."""
+"""A sub-mesh writer (rank 2 of meshes [0, 1] / [2, 3]) saves the same bnb 4-bit model and 8-bit
+optimizer state as rank 0, and gathers the optimizer export per parameter to its host."""
 
 import multiprocessing
 import os
@@ -200,14 +193,12 @@ def test_sub_mesh_writer_saves_bnb_state_like_rank0_and_exports_per_parameter():
     results = _run()
     assert [results[r]["writer"] for r in range(WORLD)] == [0, 0, 2, 2], results
     assert all(results[r]["localized"] for r in range(WORLD))
-    # The writers' saves agree byte for byte (the non-writers' are empty).
     assert results[0]["model"] and not results[1]["model"] and not results[3]["model"]
     assert any(k.endswith("weight.absmax") for k in results[2]["model"])
     _same(results[0]["model"], results[2]["model"])
     assert results[0]["optimizer"] and any(k.endswith("/state1") for k in results[0]["optimizer"])
     for rank in (1, 2, 3):
         _same(results[0]["optimizer"], results[rank]["optimizer"])
-    # Each parameter's dequantized moments reach the writer's host as they are exported, on both pairs.
     assert results[0]["exported"] == ["cpu"] and results[1]["exported"] == ["none"], results
     assert results[2]["exported"] == ["cpu"], results[2]["exported"]
     assert results[3]["exported"] == ["none"], results[3]["exported"]
