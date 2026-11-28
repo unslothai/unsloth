@@ -251,8 +251,41 @@ def _count_csv_rows(path: Path) -> Optional[int]:
     return rows
 
 
+# Check-format recounts the same file on every request; answers (None too) are kept per file version.
+_LOCAL_ROWS_CACHE_MAX = 32
+_local_rows_cache: "OrderedDict[tuple, Optional[int]]" = OrderedDict()
+_local_rows_lock = threading.Lock()
+
+
+def _local_rows_key(path: Path) -> Optional[tuple]:
+    try:
+        stat = path.stat()
+        resolved = str(path.resolve())
+    except Exception:
+        return None
+    caps = (LINE_SCAN_MAX_BYTES, CSV_PARSE_MAX_BYTES, JSON_ARRAY_MAX_BYTES, FIRST_LINE_MAX_BYTES)
+    return (resolved, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, caps)
+
+
 def count_local_file_rows(path: Path) -> Optional[int]:
     """Exact row count of one uploaded JSON / JSONL / CSV file when it is cheap; None otherwise."""
+    key = _local_rows_key(path)
+    if key is not None:
+        with _local_rows_lock:
+            if key in _local_rows_cache:
+                _local_rows_cache.move_to_end(key)
+                return _local_rows_cache[key]
+    rows = _count_local_file_rows(path)
+    if key is not None:
+        with _local_rows_lock:
+            _local_rows_cache[key] = rows
+            _local_rows_cache.move_to_end(key)
+            while len(_local_rows_cache) > _LOCAL_ROWS_CACHE_MAX:
+                _local_rows_cache.popitem(last = False)
+    return rows
+
+
+def _count_local_file_rows(path: Path) -> Optional[int]:
     try:
         suffix = path.suffix.lower()
         if suffix == ".jsonl":
