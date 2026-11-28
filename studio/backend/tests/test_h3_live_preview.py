@@ -85,18 +85,15 @@ class _Recorder:
         self.seen.append((latents.clone(), scheduler))
 
 
-def _h3_pipe():
+def _h3_pipe(sampler = "res_multistep"):
     sched_mod = pytest.importorskip("diffusers.schedulers.scheduling_minimax_h3")
-    from core.inference.video_minimax_h3_sampling import (
-        H3_SAMPLER_RES_MULTISTEP,
-        install_h3_schedulers,
-    )
+    from core.inference.video_minimax_h3_sampling import install_h3_schedulers
 
     pipe = types.SimpleNamespace(
         scheduler = sched_mod.MiniMaxH3Scheduler(shift = 12.0),
         audio_scheduler = sched_mod.MiniMaxH3Scheduler(shift = 3.0),
     )
-    assert install_h3_schedulers(pipe, H3_SAMPLER_RES_MULTISTEP)
+    assert install_h3_schedulers(pipe, sampler)
     return pipe
 
 
@@ -130,8 +127,10 @@ def _run_h3_update_blocks(
     return state
 
 
-def test_h3_video_steps_feed_the_previewer_and_audio_never():
-    pipe = _h3_pipe()
+# res_multistep is the default; euler is the PDD heads' sampler and UNSLOTH_H3_SAMPLER=euler.
+@pytest.mark.parametrize("sampler", ["res_multistep", "euler"])
+def test_h3_video_steps_feed_the_previewer_and_audio_never(sampler):
+    pipe = _h3_pipe(sampler)
     rec = _Recorder()
     gh, gw, frames, cond = 3, 4, 2, 12
     with DP.scheduler_step_preview(pipe, rec):
