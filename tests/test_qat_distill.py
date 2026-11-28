@@ -109,16 +109,16 @@ def test_teacher_is_the_exact_16bit_base_and_restores(scheme):
         before = student(input_ids = x).logits
         base_logits = reference.lm_head(reference.model(input_ids = x).last_hidden_state)
         ptrs = {p.data_ptr() for p in student.parameters()}
-        enabled = [q.enabled for q in _quantizers(student)]
+        enabled = [getattr(q, "enabled", True) for q in _quantizers(student)]
         with qd.qat_teacher(student):
             teacher = student(input_ids = x).logits
-            assert all(not q.enabled for q in _quantizers(student))
+            assert all(not getattr(q, "enabled", True) for q in _quantizers(student))
         after = student(input_ids = x).logits
     # Adapters and every fake quantizer off: bitwise the 16-bit base model.
     assert torch.equal(teacher, base_logits)
     assert not torch.equal(before, base_logits)
     assert torch.equal(after, before)
-    assert [q.enabled for q in _quantizers(student)] == enabled
+    assert [getattr(q, "enabled", True) for q in _quantizers(student)] == enabled
     # No weight copied or rewritten by the teacher pass.
     assert {p.data_ptr() for p in student.parameters()} == ptrs
 
@@ -269,6 +269,8 @@ def test_identity_gives_zero_kd():
             torch.nn.init.zeros_(p)
     x = _ids(2, 12, seed = 3)
     labels = x.clone()
+    if not all("enabled" in vars(q) for q in _quantizers(student)):
+        pytest.skip("this torchao's quantizers have no enabled flag")
     for q in _quantizers(student):
         q.enabled = False
     try:
