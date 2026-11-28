@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import { TrashIcon } from "@/lib/hugeicons-derived";
@@ -149,7 +150,11 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onOpenFineTune: () => void;
   npuAvailable?: boolean;
 }) {
+  const mobile = useIsMobile();
   const viewPillId = useId();
+  const tabClass = mobile
+    ? "min-h-11 border-b-2 border-transparent px-1 text-sm font-semibold aria-checked:border-current"
+    : "h-9 flex-1 rounded-full px-3 text-ui-12p5";
   // Recent searches surface while the empty search field is focused, only on
   // Discover (on-device search is a local filter and isn't recorded).
   const recentSearches = useRecentSearches();
@@ -299,12 +304,13 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   return (
     <div
       ref={toolbarRef}
-      className="flex min-w-0 flex-col gap-2 lg:flex-row lg:flex-wrap lg:items-center"
+      className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2 md:flex md:flex-col lg:flex-row lg:flex-wrap lg:items-center"
     >
       <div
         data-tour="hub-tabs"
         className={cn(
-          "hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full shrink-0 items-center rounded-full lg:w-[calc(280px*var(--ui-space-scale,1))]",
+          "hub-menu-trigger relative col-span-full inline-flex w-full shrink-0 items-center lg:w-[calc(280px*var(--ui-space-scale,1))]",
+          mobile ? "gap-4 border-b border-border" : "hub-tab-toggle h-9 rounded-full",
         )}
         role="radiogroup"
         aria-label="View"
@@ -315,13 +321,14 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "discover"}
           onClick={() => onTabChange("discover")}
           className={cn(
-            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex items-center justify-center transition-colors",
+            tabClass,
             tab === "discover"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {tab === "discover" && <SegmentedPill group={viewPillId} />}
+          {!mobile && tab === "discover" && <SegmentedPill group={viewPillId} />}
           Discover
         </button>
         <button
@@ -330,13 +337,14 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           aria-checked={tab === "downloaded"}
           onClick={() => onTabChange("downloaded")}
           className={cn(
-            "relative inline-flex h-9 flex-1 items-center justify-center rounded-full px-3 text-ui-12p5 transition-colors",
+            "relative inline-flex items-center justify-center transition-colors",
+            tabClass,
             tab === "downloaded"
               ? "text-foreground"
               : "text-muted-foreground hover:text-foreground",
           )}
         >
-          {tab === "downloaded" && <SegmentedPill group={viewPillId} />}
+          {!mobile && tab === "downloaded" && <SegmentedPill group={viewPillId} />}
           On Device
         </button>
       </div>
@@ -387,7 +395,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 : "Search all models"
           }
           className={cn(
-            "field-soft h-9 rounded-full !border-0 pl-10 text-ui-13 placeholder:text-muted-foreground/80 focus-visible:!ring-0",
+            "field-soft h-9 rounded-full !border-0 pl-10 text-ui-13 max-md:h-11 max-md:rounded-xl max-md:text-base placeholder:text-muted-foreground/80 focus-visible:!ring-0",
             hasTrailing ? "pr-10" : "pr-4",
           )}
         />
@@ -423,7 +431,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
         )}
       </div>
 
-      <div className="flex min-w-0 flex-wrap items-center gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
+      <div className="contents md:flex md:min-w-0 md:flex-wrap md:items-center md:gap-2 lg:flex-[0_0_auto] lg:flex-nowrap lg:justify-end">
         <ModelSearchFiltersControl
           value={searchFilters}
           onChange={onSearchFiltersChange}
@@ -446,158 +454,160 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           onDevice={onDeviceFilters}
           className={cn(
             triggerBase,
-            "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
+            "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0 max-md:size-11 max-md:rounded-xl",
           )}
         />
-        {tab === "downloaded" && !isDataset && (
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                onClick={onManageLocalFolders}
-                aria-label="Model folders"
-                className={cn(
-                  triggerBase,
-                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={FolderSearchIcon}
-                  strokeWidth={1.75}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Model folders
-            </TooltipContent>
-          </Tooltip>
-        )}
+        <div className="col-span-full flex min-w-0 items-center gap-2 md:contents">
+          {tab === "downloaded" && !isDataset && (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={onManageLocalFolders}
+                  aria-label="Model folders"
+                  className={cn(
+                    triggerBase,
+                    "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0 max-md:size-11 max-md:rounded-xl",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={FolderSearchIcon}
+                    strokeWidth={1.75}
+                    className="size-[calc(18px*var(--ui-space-scale,1))]"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Model folders
+              </TooltipContent>
+            </Tooltip>
+          )}
 
-        {tab === "downloaded" && !isDataset && (
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                onClick={onFreeUpSpace}
-                data-testid="free-up-space-trigger"
-                aria-label="Free up space"
-                className={cn(
-                  triggerBase,
-                  "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={TrashIcon}
-                  strokeWidth={1.75}
-                  className="size-[calc(18px*var(--ui-space-scale,1))]"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Free up space: remove shared assets no installed model needs
-            </TooltipContent>
-          </Tooltip>
-        )}
+          {tab === "downloaded" && !isDataset && (
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <button
+                  type="button"
+                  onClick={onFreeUpSpace}
+                  data-testid="free-up-space-trigger"
+                  aria-label="Free up space"
+                  className={cn(
+                    triggerBase,
+                    "field-filter relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0 max-md:size-11 max-md:rounded-xl",
+                  )}
+                >
+                  <HugeiconsIcon
+                    icon={TrashIcon}
+                    strokeWidth={1.75}
+                    className="size-[calc(18px*var(--ui-space-scale,1))]"
+                  />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" sideOffset={6}>
+                Free up space: remove shared assets no installed model needs
+              </TooltipContent>
+            </Tooltip>
+          )}
 
-        {!isDataset && (
-          <HubOptionMenu<FormatMenuValue>
-            value={formatFilter}
-            options={formatOptions}
-            onValueChange={(value) => {
-              if (value === "finetune") {
-                onOpenFineTune();
-              } else {
-                onFormatFilterChange(value);
+          {!isDataset && (
+            <HubOptionMenu<FormatMenuValue>
+              value={formatFilter}
+              options={formatOptions}
+              onValueChange={(value) => {
+                if (value === "finetune") {
+                  onOpenFineTune();
+                } else {
+                  onFormatFilterChange(value);
+                }
+              }}
+              ariaLabel="Format filter"
+              className={cn(
+                triggerBase,
+                "w-[calc(160px*var(--ui-space-scale,1))] max-md:h-11 max-md:min-w-0 max-md:flex-1 max-md:gap-1 max-md:px-2.5",
+              )}
+            />
+          )}
+
+          {tab === "downloaded" && (
+            <HubOptionMenu<InventorySort>
+              value={inventorySort}
+              options={INVENTORY_SORT_OPTIONS}
+              onValueChange={onInventorySortChange}
+              ariaLabel="Sort on-device models"
+              className={cn(
+                triggerBase,
+                "w-[calc(160px*var(--ui-space-scale,1))] max-md:h-11 max-md:min-w-0 max-md:flex-1 max-md:gap-1 max-md:px-2.5",
+              )}
+              triggerContent={
+                <span className="flex items-center gap-1">
+                  <HugeiconsIcon
+                    icon={SortIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5 shrink-0"
+                  />
+                  <span className="truncate">
+                    {INVENTORY_SORT_OPTIONS.find(
+                      (option) => option.value === inventorySort,
+                    )?.label ?? inventorySort}
+                  </span>
+                </span>
               }
-            }}
-            ariaLabel="Format filter"
-            className={cn(
-              triggerBase,
-              "w-[calc(160px*var(--ui-space-scale,1))]",
-            )}
-          />
-        )}
+            />
+          )}
 
-        {tab === "downloaded" && (
-          <HubOptionMenu<InventorySort>
-            value={inventorySort}
-            options={INVENTORY_SORT_OPTIONS}
-            onValueChange={onInventorySortChange}
-            ariaLabel="Sort on-device models"
-            className={cn(
-              triggerBase,
-              "w-[calc(160px*var(--ui-space-scale,1))]",
-            )}
-            triggerContent={
-              <span className="flex items-center gap-1">
-                <HugeiconsIcon
-                  icon={SortIcon}
-                  strokeWidth={1.75}
-                  className="size-3.5 shrink-0"
-                />
-                <span className="truncate">
-                  {INVENTORY_SORT_OPTIONS.find(
-                    (option) => option.value === inventorySort,
-                  )?.label ?? inventorySort}
+          {tab === "discover" && !npuList && (
+            <HubOptionMenu
+              value={sortBy}
+              options={sortOptions}
+              onValueChange={onSortChange}
+              ariaLabel="Sort models"
+              className={cn(
+                triggerBase,
+                "w-[calc(160px*var(--ui-space-scale,1))] max-md:h-11 max-md:min-w-0 max-md:flex-1 max-md:gap-1 max-md:px-2.5",
+              )}
+              triggerContent={
+                <span className="flex items-center gap-1">
+                  <HugeiconsIcon
+                    icon={SortIcon}
+                    strokeWidth={1.75}
+                    className="size-3.5 shrink-0"
+                  />
+                  <span className="truncate">
+                    {SORT_OPTIONS.find((option) => option.value === sortBy)
+                      ?.label ?? sortBy}
+                  </span>
                 </span>
-              </span>
-            }
-          />
-        )}
-
-        {tab === "discover" && !npuList && (
-          <HubOptionMenu
-            value={sortBy}
-            options={sortOptions}
-            onValueChange={onSortChange}
-            ariaLabel="Sort models"
-            className={cn(
-              triggerBase,
-              "w-[calc(160px*var(--ui-space-scale,1))]",
-            )}
-            triggerContent={
-              <span className="flex items-center gap-1">
-                <HugeiconsIcon
-                  icon={SortIcon}
-                  strokeWidth={1.75}
-                  className="size-3.5 shrink-0"
-                />
-                <span className="truncate">
-                  {SORT_OPTIONS.find((option) => option.value === sortBy)
-                    ?.label ?? sortBy}
-                </span>
-              </span>
-            }
-            footer={
-              isDataset ? undefined : (
-                <Tooltip>
-                  <TooltipTrigger asChild={true}>
-                    <button
-                      type="button"
-                      role="checkbox"
-                      aria-checked={fitOnDeviceOnly}
-                      onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
-                      className="hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-2.5 py-2 pr-3 pl-3 text-left text-sm"
-                    >
-                      <Checkbox
-                        checked={fitOnDeviceOnly}
-                        tabIndex={-1}
-                        aria-hidden={true}
-                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
-                      />
-                      Only show models that fit
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">
-                    Hides models larger than this device's memory budget.
-                    Downloaded models stay visible.
-                  </TooltipContent>
-                </Tooltip>
-              )
-            }
-          />
-        )}
+              }
+              footer={
+                isDataset ? undefined : (
+                  <Tooltip>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        role="checkbox"
+                        aria-checked={fitOnDeviceOnly}
+                        onClick={() => onFitOnDeviceOnlyChange(!fitOnDeviceOnly)}
+                        className="hub-menu-row relative flex w-full cursor-pointer select-none items-center gap-2.5 py-2 pr-3 pl-3 text-left text-sm"
+                      >
+                        <Checkbox
+                          checked={fitOnDeviceOnly}
+                          tabIndex={-1}
+                          aria-hidden={true}
+                          className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                        />
+                        Only show models that fit
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      Hides models larger than this device's memory budget.
+                      Downloaded models stay visible.
+                    </TooltipContent>
+                  </Tooltip>
+                )
+              }
+            />
+          )}
+        </div>
 
       </div>
     </div>

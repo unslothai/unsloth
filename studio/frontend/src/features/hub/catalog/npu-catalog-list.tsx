@@ -19,10 +19,11 @@ import {
   npuSizeLabel,
 } from "@/features/npu";
 import { toast } from "@/lib/toast";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { DeleteConfirmDialog } from "./download-card";
 
 export function NpuCatalogList({
+  scrollHeader,
   catalog,
   query,
   onDevice,
@@ -30,6 +31,7 @@ export function NpuCatalogList({
   onSelect,
   onRun,
 }: {
+  scrollHeader?: ReactNode;
   catalog: NpuCatalog | null;
   query: string;
   onDevice: boolean;
@@ -37,9 +39,8 @@ export function NpuCatalogList({
   onSelect: (model: NpuModel) => void;
   onRun: (model: NpuModel) => void;
 }) {
-  if (!catalog) return null;
-
   const body = () => {
+    if (!catalog) return null;
     if (!catalog.ready) return <NpuSetupNotice catalog={catalog} />;
     if (catalog.listError) {
       return (
@@ -73,9 +74,10 @@ export function NpuCatalogList({
   return (
     <div
       data-testid="hub-npu-catalog"
-      className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
+      className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col overflow-y-auto"
     >
-      {body()}
+      {scrollHeader}
+      <div className="flex flex-col gap-0.5 px-3 py-3">{body()}</div>
     </div>
   );
 }
