@@ -29461,7 +29461,6 @@ def _prepared_audio_key(clips: list[str]) -> tuple:
         data = clip.encode("utf-8", "surrogatepass")
         digest.update(len(data).to_bytes(8, "little"))
         digest.update(data)
-    # Every limit the transcode reads, so a changed limit misses.
     limits = (
         _MAX_AUDIO_RAW_BYTES,
         _MAX_AUDIO_SECONDS,
@@ -29484,7 +29483,7 @@ def _prepare_audio_clips_for_llama(clips: list[str]) -> list[tuple[str, str]]:
     if entry is not None and entry[0] == key:
         return list(entry[1])
     prepared, transcoded = _prepare_audio_clips_for_llama_uncached(clips)
-    # Only successes are stored (errors re-run), and only when something was transcoded.
+    # Errors are not cached, so they re-run.
     if transcoded and sum(len(clip) for clip, _ in prepared) <= _PREPARED_AUDIO_CACHE_MAX_CHARS:
         key = key or _prepared_audio_key(clips)
         with _PREPARED_AUDIO_CACHE_LOCK:

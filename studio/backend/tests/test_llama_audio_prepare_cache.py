@@ -61,7 +61,6 @@ def test_a_caller_mutating_the_result_does_not_change_the_cache(monkeypatch):
 def test_a_different_clip_or_limit_misses(monkeypatch):
     calls = _counting_decoder(monkeypatch)
     inference_route._prepare_audio_clips_for_llama([_clip(b"aaaa")])
-    # Same length, different bytes.
     inference_route._prepare_audio_clips_for_llama([_clip(b"aaab")])
     assert len(calls) == 2
     monkeypatch.setattr(inference_route, "_MAX_AUDIO_RAW_BYTES", 20_000)
