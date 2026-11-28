@@ -11,7 +11,9 @@ runs in a child process: the GQA shapes Unsloth's attention sends (per-segment s
 views, expanded K/V, a boolean block mask), forward and backward, against an fp32 reference.
 A backend that errors, faults, hangs or disagrees is not used by Unsloth's attention on that GPU;
 one whose check ran out of memory (the model is often resident already) is kept, with a warning.
-CDNA (gfx9xx) is AOTriton's release target and is trusted. UNSLOTH_ROCM_SDPA_CHECK=0 skips the check.
+CDNA (gfx9xx) is AOTriton's release target and is trusted. gfx1200 is refused without a check: on
+torch 2.14 + ROCm 7.2 both kernels pass it, yet padding-free training still faults on them (#18403).
+UNSLOTH_ROCM_SDPA_CHECK=0 skips the check (and the gfx1200 refusal).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ __all__ = ["rocm_sdpa_verdict", "ROCM_SDPA_CHECK_ENV"]
 ROCM_SDPA_CHECK_ENV = "UNSLOTH_ROCM_SDPA_CHECK"
 _CHECK_TIMEOUT_S = 240
 _VERDICTS = {}
+_REFUSED_ARCHS = ("gfx1200",)
 
 # Runs in a fresh interpreter: argv = device index, backend ("flash" | "efficient").
 _CHILD = r"""
@@ -270,7 +273,8 @@ def _child_result(returncode, stdout, stderr):
 
 def rocm_sdpa_verdict(device_index = 0) -> dict:
     """{"flash", "efficient": usable, "arch", "source", "detail"} for this device, computed once.
-    source: "not_rocm" (both usable), "env" (check skipped), "cdna" (trusted), "check" (child result)."""
+    source: "not_rocm" (both usable), "env" (check skipped), "cdna" (trusted), "arch" (both refused),
+    "check" (child result)."""
     index = 0 if device_index is None else int(device_index)
     verdict = _VERDICTS.get(index)
     if verdict is not None:
@@ -282,6 +286,13 @@ def rocm_sdpa_verdict(device_index = 0) -> dict:
             verdict["source"] = "env"
         elif arch.startswith("gfx9"):
             verdict["source"] = "cdna"
+        elif arch in _REFUSED_ARCHS:
+            verdict.update(flash = False, efficient = False, source = "arch", detail = "arch refused")
+            print(
+                f"Unsloth: ROCm {arch} {index}: AOTriton flash and efficient attention fault in "
+                f"training on this GPU even when they pass a self-check, so Unsloth's attention will "
+                f"not use them. {ROCM_SDPA_CHECK_ENV}=0 uses them anyway."
+            )
         else:
             verdict["source"] = "check"
             results = _run_children(index)
