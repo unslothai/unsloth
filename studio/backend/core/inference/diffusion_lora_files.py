@@ -41,7 +41,9 @@ QWEN21_FAMILY = "qwen-image-2.1"
 # ai-toolkit keeps Qwen-Image-2.1's SwiGLU input as one ``img_mlp.gate_up`` ([gate; up] rows); diffusers has
 # ``gate_layer`` and ``proj``, so PEFT would drop both halves with only a log line.
 _QWEN21_GATE_UP_KEY = re.compile(r"\.img_mlp\.gate_up\.(?:lora_(?:A|B|down|up)\.|alpha$)")
-_QWEN21_GATE_UP = re.compile(r"^(.*\.img_mlp\.)gate_up\.(lora_[AB])\.(weight|bias)$")
+_QWEN21_GATE_UP = re.compile(
+    r"^(.*\.img_mlp\.)gate_up\.(lora_[AB]\.(?:weight|bias)|lora_magnitude_vector(?:\.weight)?|dora_scale)$"
+)
 IDEOGRAM4_FAMILY = "ideogram-4"
 # Ideogram 4's checkpoint module names, which diffusers' converter reads under ``diffusion_model.`` only. The fused
 # ``attention.qkv`` / ``attention.o`` mark the layout: diffusers' own names share ``feed_forward`` / ``adaln_modulation``.
@@ -464,26 +466,32 @@ def krea2_fused_qkv(root: Any, state: dict) -> dict:
 
 
 def _qwen21_split_gate_up(state: dict) -> dict:
-    """The fused ``img_mlp.gate_up`` as ``gate_layer`` / ``proj``: ``A`` is shared, ``B``'s rows split gate first."""
+    """Split fused gate/up rows, including DoRA magnitudes; the input factor A is shared."""
     out: dict = {}
     for key, value in state.items():
         match = _QWEN21_GATE_UP.match(key)
         if match is None:
             out[key] = value
             continue
-        stem, part, kind = match.groups()
-        if part == "lora_A":
+        stem, suffix = match.groups()
+        if suffix == "dora_scale":
+            raise ValueError(
+                f"{key}: a fused gate_up DoRA saved as dora_scale is not supported (the magnitudes would be dropped)"
+            )
+        if suffix.startswith("lora_A."):
             for name in ("gate_layer", "proj"):
-                out[f"{stem}{name}.lora_A.{kind}"] = value
+                out[f"{stem}{name}.{suffix}"] = value
             continue
+        if value.dim() == 0:
+            raise ValueError(f"{key}: a fused gate_up tensor must have an output-row dimension")
         rows = int(value.shape[0])
         if rows % 2:
             raise ValueError(
                 f"{key}: a fused gate_up LoRA with an odd row count ({rows}) cannot be split into gate_layer and proj"
             )
         half = rows // 2
-        out[f"{stem}gate_layer.lora_B.{kind}"] = value[:half].contiguous()
-        out[f"{stem}proj.lora_B.{kind}"] = value[half:].contiguous()
+        out[f"{stem}gate_layer.{suffix}"] = value[:half].contiguous()
+        out[f"{stem}proj.{suffix}"] = value[half:].contiguous()
     return out
 
 
