@@ -262,7 +262,7 @@ def _local_rows_key(path: Path) -> Optional[tuple]:
     except Exception:
         return None
     caps = (LINE_SCAN_MAX_BYTES, CSV_PARSE_MAX_BYTES, JSON_ARRAY_MAX_BYTES, FIRST_LINE_MAX_BYTES)
-    # ctime_ns too: a same-size rewrite whose mtime is set back still moves it.
+    # ctime_ns too (POSIX): a same-size rewrite whose mtime is set back still moves it.
     return (
         resolved,
         stat.st_dev,

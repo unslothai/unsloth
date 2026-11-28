@@ -7,9 +7,11 @@ CSV file (bounded scan): exact or None, never an error and never a long wait."""
 from __future__ import annotations
 
 import json
+import sys
 import time
 
 import httpx
+
 import pytest
 from datasets import Dataset
 
@@ -389,6 +391,7 @@ def test_local_count_memo_retries_after_a_read_error(tmp_path, parse_calls, monk
     assert row_counts.count_local_file_rows(path) == 7
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "st_ctime is the creation time on Windows")
 def test_local_count_memo_recounts_when_mtime_is_set_back(tmp_path, parse_calls):
     import os
 
