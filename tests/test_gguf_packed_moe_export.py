@@ -303,7 +303,8 @@ def test_merged_16bit_save_of_packed_moe_lora(moe_case, tmp_path, cpu_merge):
     for layer in range(_C["layers"]):
         for stack in _EXPERT_STACKS:
             assert f"model.layers.{layer}.{stack}" in changed, (layer, stack)
-    assert not list(out.glob(".unsloth_gguf_dense_base_*"))
+    # The temporary dense base is created beside the save directory.
+    assert not list(tmp_path.glob(".unsloth_gguf_dense_base_*"))
     # The save leaves the live model as it was: packed base, same adapter.
     _assert_packed_model_untouched(moe_case)
 
@@ -351,4 +352,5 @@ def test_gguf_export_of_packed_moe_lora_hands_the_converter_the_merge(
     assert seen
     changed = _assert_is_the_oracle_merge(seen, moe_case["base"], moe_case["merged"])
     assert sum(k.endswith(_EXPERT_STACKS) for k in changed) == 2 * _C["layers"]
+    assert not list(tmp_path.glob(".unsloth_gguf_dense_base_*"))
     _assert_packed_model_untouched(moe_case)
