@@ -23,4 +23,6 @@ def q4nx_export_allowed() -> bool:
         status = get_npu_backend().status()
     except Exception:
         return False
+    if (status.get("hardware") or {}).get("vendor") == "qualcomm":
+        return False
     return bool(status.get("supported")) and bool(status.get("ready"))

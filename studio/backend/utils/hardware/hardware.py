@@ -4108,10 +4108,86 @@ def npu_load_percent() -> Optional[float]:
             try:
                 # Once a minute, not per sample, when the NPU reports no LUID.
                 if _npu_luid is None and now - _npu_luid_at >= _NPU_LUID_TTL_S:
-                    raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
-                    _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
+                    if _npu_hardware.get("vendor") == "qualcomm":
+                        try:
+                            import ctypes
+                            import winreg
+                            from ctypes import wintypes
+
+                            with winreg.OpenKey(
+                                winreg.HKEY_LOCAL_MACHINE,
+                                r"SYSTEM\CurrentControlSet\Enum\ACPI\QCOM0D0A",
+                            ) as _qk:
+                                _qinst = f"ACPI\\QCOM0D0A\\{winreg.EnumKey(_qk, 0)}"
+
+                            class _Guid(ctypes.Structure):
+                                _fields_ = [
+                                    ("Data1", wintypes.DWORD),
+                                    ("Data2", wintypes.WORD),
+                                    ("Data3", wintypes.WORD),
+                                    ("Data4", ctypes.c_ubyte * 8),
+                                ]
+
+                            class _DevPropKey(ctypes.Structure):
+                                _fields_ = [("fmtid", _Guid), ("pid", wintypes.ULONG)]
+
+                            _pkey = _DevPropKey(
+                                _Guid(
+                                    0x60B193CB,
+                                    0x5276,
+                                    0x4D0F,
+                                    (ctypes.c_ubyte * 8)(
+                                        0x96, 0xFC, 0xF1, 0x73, 0xAB, 0xAD, 0x3E, 0xC6
+                                    ),
+                                ),
+                                2,
+                            )
+                            _cfg = ctypes.WinDLL("cfgmgr32")
+                            _devinst = wintypes.DWORD()
+                            if (
+                                _cfg.CM_Locate_DevNodeW(
+                                    ctypes.byref(_devinst), ctypes.c_wchar_p(_qinst), 0
+                                )
+                                == 0
+                            ):
+                                _ptype = wintypes.ULONG()
+                                _qluid = ctypes.c_uint64()
+                                _qsize = wintypes.ULONG(ctypes.sizeof(_qluid))
+                                if (
+                                    _cfg.CM_Get_DevNode_PropertyW(
+                                        _devinst,
+                                        ctypes.byref(_pkey),
+                                        ctypes.byref(_ptype),
+                                        ctypes.byref(_qluid),
+                                        ctypes.byref(_qsize),
+                                        0,
+                                    )
+                                    == 0
+                                    and _qluid.value > 0
+                                ):
+                                    _npu_luid = int(_qluid.value)
+                        except Exception:
+                            _npu_luid = None
+                    else:
+                        raw = (_rocm_windows_counter_stdout_uncached(_NPU_LUID_PS) or "").strip()
+                        _npu_luid = int(raw) if raw.isdigit() and int(raw) else None
                     _npu_luid_at = now
-                load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
+                if _npu_luid is not None and _npu_hardware.get("vendor") == "qualcomm":
+                    _samples = _rocm_windows_adapter_engine_samples(_npu_luid)
+                    if _samples:
+                        _by_eng: dict[str, float] = {}
+                        for _inst, _val in _samples:
+                            if _engine_instance_luid(_inst) == _npu_luid and _val >= 0:
+                                _m = re.search(r"_eng_(\d+)", _inst)
+                                if _m:
+                                    _by_eng[_m.group(1)] = _by_eng.get(_m.group(1), 0.0) + float(
+                                        _val
+                                    )
+                        load = round(min(max(_by_eng.values()), 100.0), 1) if _by_eng else 0.0
+                    else:
+                        load = 0.0
+                else:
+                    load = _npu_engine_load(_npu_luid) if _npu_luid is not None else None
             except Exception:  # a hung PowerShell is cached as unknown, not retried every poll
                 # Windows reassigns LUIDs on a driver restart: look it up again next time.
                 load = _npu_luid = None

@@ -138,8 +138,40 @@ def installed_flm_host(root: Path, pins: Optional[dict] = None) -> Optional[Path
     )
 
 
+def _qualcomm_geniex_host() -> Optional[Path]:
+    try:
+        from backend.utils.hardware.npu import detect_amd_npu
+        if detect_amd_npu().get("vendor") != "qualcomm":
+            return None
+    except Exception:
+        return None
+    bundled = Path(_STUDIO_DIR) / "backend" / "core" / "inference" / "geniex_host.py"
+    override = Path.home() / ".unsloth" / "qualcomm-npu-bridge" / "geniex_host.py"
+    host = override if override.is_file() else bundled
+    if not host.is_file():
+        return None
+    local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+    candidates = [
+        Path(os.environ.get("UNSLOTH_GENIEX_BIN", ""))
+        if os.environ.get("UNSLOTH_GENIEX_BIN")
+        else None,
+        Path(shutil.which("geniex")) if shutil.which("geniex") else None,
+        local_app_data / "GenieX" / "geniex.exe",
+        local_app_data / "Programs" / "GenieX" / "geniex.exe",
+        local_app_data / "GenieX CLI" / "geniex.exe",
+        local_app_data / "Programs" / "GenieX CLI" / "geniex.exe",
+        local_app_data / "Microsoft" / "WinGet" / "Links" / "geniex.exe",
+    ]
+    if any(c is not None and c.is_file() for c in candidates):
+        return host
+    return None
+
+
 def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
     """The lemond binary of a complete install matching the pin, else None."""
+    qcom_host = _qualcomm_geniex_host()
+    if qcom_host is not None:
+        return qcom_host
     pins = pins or load_pins()
     if direct_flm():
         return installed_flm_host(root, pins)
@@ -167,6 +199,8 @@ def installed_lemond(root: Path, pins: Optional[dict] = None) -> Optional[Path]:
 
 def installed_version(lemond: Path) -> Optional[str]:
     """The Lemonade version recorded beside an installed lemond, or None."""
+    if lemond.name == "geniex_host.py":
+        return "geniex-bridge"
     marker = _read_marker(lemond.parent)
     version = marker.get("version") if marker else None
     return str(version) if version else None
@@ -231,6 +265,9 @@ def install(
 
     Verify and extract in a temporary directory before replacing the installation.
     """
+    qcom_host = _qualcomm_geniex_host()
+    if qcom_host is not None:
+        return qcom_host
     pins = load_pins(pins_path)
     key = host_asset_key()
     if key is None:

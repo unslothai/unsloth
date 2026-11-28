@@ -120,19 +120,61 @@ def _reg_value(key, name: str) -> Optional[str]:
     return str(value) if value is not None else None
 
 
+def _windows_qualcomm_probe() -> dict[str, Any]:
+    import winreg
+
+    base = r"SYSTEM\CurrentControlSet\Enum\ACPI\QCOM0D0A"
+    try:
+        qcom = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base)
+    except OSError:
+        return {"present": False}
+    driver_version = None
+    name = None
+    with qcom:
+        try:
+            instance = winreg.EnumKey(qcom, 0)
+            with winreg.OpenKey(qcom, instance) as device:
+                name = _reg_value(device, "FriendlyName") or _reg_value(device, "DeviceDesc")
+                driver_key = _reg_value(device, "Driver")
+            if driver_key:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE,
+                    rf"SYSTEM\CurrentControlSet\Control\Class\{driver_key}",
+                ) as driver:
+                    driver_version = _reg_value(driver, "DriverVersion")
+        except OSError:
+            return {"present": False}
+    if name and ";" in name:
+        name = name.rsplit(";", 1)[1]
+    return {
+        "present": True,
+        "vendor": "qualcomm",
+        "family": "Hexagon",
+        "name": name or "Qualcomm Hexagon NPU",
+        "driver": "installed" if driver_version else None,
+        "driver_version": driver_version,
+        "firmware_version": None,
+        "device_node": None,
+    }
+
+
 def detect_amd_npu() -> dict[str, Any]:
-    """Return NPU hardware details and whether FastFlowLM supports this platform."""
+    """Return NPU hardware details and whether the configured NPU runtime supports this platform."""
     try:
         if sys.platform.startswith("linux"):
             info = _linux_probe()
         elif sys.platform == "win32":
             info = _windows_probe()
+            if not info.get("present"):
+                info = _windows_qualcomm_probe()
         else:
             info = {"present": False}
     except Exception as exc:  # noqa: BLE001 -- detection must never break startup or /status
         info = {"present": False, "error": str(exc)}
+    if info.get("present") and "vendor" not in info:
+        info["vendor"] = "amd"
     info["enabled"] = npu_enabled()
-    known_npu = bool(info.get("present")) and info.get("family") == "XDNA2"
+    known_npu = bool(info.get("present")) and info.get("family") in ("XDNA2", "Hexagon")
     runtime_probe = (sys.platform.startswith("linux") or sys.platform == "win32") and (
         custom_runtime_configured()
     )
