@@ -278,12 +278,14 @@ jobs:
         # Outer `timeout` catches a wedged xdist controller that per-test --timeout cannot; SIGINT dumps the stuck frame.
         # --timeout-method=thread: the default SIGALRM handler never runs while a test is blocked in C code (a lock,
         # a collective, a native wait), so the shard sat at 99% until the outer timeout and named nothing. The thread
-        # method dumps every stack and ends the worker, and xdist reports the test it was running.
+        # method ends the worker, but under xdist its stack dump is lost, so faulthandler_timeout (fd 2, which reaches
+        # the log) dumps the stacks 30 s earlier. --max-worker-restart=0: a loadgroup/loadfile replacement worker is
+        # handed one work unit and never runs it (xdist 3.8), so a crash wedged the shard; now it fails, naming the test.
         #
         # Shared selection lives here so every shard inherits one list; shards differ only in matrix.selection.
         run: |
           timeout --signal=INT --kill-after=60 1500 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --timeout=330 --timeout-method=thread \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n 4 --dist loadgroup --max-worker-restart=0 --timeout=330 --timeout-method=thread -o faulthandler_timeout=300 \
             --ignore=tests/test_studio_api.py \
             --ignore=tests/test_streaming_stripper.py \
             --ignore=tests/test_llama_cpp_wait_for_vram_settle.py \
@@ -505,7 +507,7 @@ jobs:
         # globals. The outer timeout must fire before the job cap. --timeout-method=thread: see the backend shards.
         run: |
           timeout --signal=INT --kill-after=60 2100 \
-          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --timeout=330 --timeout-method=thread \
+          python -m pytest ${{ matrix.selection }} -q -rs --tb=short -n ${{ matrix.workers || 4 }} --dist loadgroup --max-worker-restart=0 --timeout=330 --timeout-method=thread -o faulthandler_timeout=300 \
             -m 'not server and not e2e'
 
       - name: Hardware-spoof tests (state-sensitive, run in isolation)
