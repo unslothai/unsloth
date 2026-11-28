@@ -73,7 +73,7 @@ jobs:
     steps:
       # Per-job egress allowlist. Audit mode for now: logs dialed hosts, does not block them.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c  # v2.23.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -633,7 +633,7 @@ jobs:
     steps:
       # Egress block: this job only fetches PyPI archives.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c  # v2.23.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -797,7 +797,7 @@ jobs:
     steps:
       # Egress: registry.npmjs.org plus GitHub for checkout/setup machinery.
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c  # v2.23.0
         with:
           egress-policy: block
           disable-sudo: true
@@ -862,7 +862,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Harden runner (egress block)
-        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
+        uses: step-security/harden-runner@aebdcf6156ab6691adf63218240e476564a1ed4c  # v2.23.0
         with:
           egress-policy: audit
           disable-sudo: true
