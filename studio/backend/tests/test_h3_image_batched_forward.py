@@ -126,9 +126,10 @@ def test_unset_or_off_keeps_one_call_per_image(h3i, pipe, resident, monkeypatch)
 
     steps, blocks = h3i.H3_IMAGE_STEPS, len(pipe.transformer.transformer_blocks)
     monkeypatch.setenv(h3i.h3_batch.BATCHED_ENV, "0")
-    assert pipe._together_refusal(2) == f"{h3i.h3_batch.BATCHED_ENV} is not 1"
+    assert "batched forward is off" in pipe._together_refusal(2, (256, 256, 6))
     monkeypatch.delenv(h3i.h3_batch.BATCHED_ENV)
-    assert pipe._together_refusal(2) == f"{h3i.h3_batch.BATCHED_ENV} is not 1"  # opt-in
+    # Auto without a race verdict on this card: one after another
+    assert "no race" in pipe._together_refusal(2, (256, 256, 6))
     alone = [_render(pipe, "a cat", [s])[0] for s in (1, 2)]
     resident.clear()
     again = _render(pipe, "a cat", [1, 2])
