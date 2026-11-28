@@ -1440,15 +1440,30 @@ def _layer_call_format(decoder, layers_name):
 # ----------------------------------------------------------------------------------------- the split
 
 
-def _weight_elements(p):
+def _weight_elements(p, owner = None):
+    # Logical elements, not storage: bitsandbytes 4-bit, packed expert stacks and GGUF blocks hold fewer.
     shape = getattr(getattr(p, "quant_state", None), "shape", None)
+    if shape is None:
+        shape = getattr(p, "_original_shape", None)
+    if (
+        shape is None
+        and getattr(type(owner), "_unsloth_gguf_packed_linear", False)
+        and owner._parameters.get("weight_packed") is p
+    ):
+        shape = owner.shape
     if shape is not None:
         return int(math.prod(shape))
     return p.numel()
 
 
 def _layer_cost(layer):
-    total = sum(_weight_elements(p) for name, p in layer.named_parameters() if "lora_" not in name)
+    total, seen = 0, set()
+    for module_name, module in layer.named_modules():
+        for name, p in module._parameters.items():
+            if p is None or id(p) in seen or "lora_" in f"{module_name}.{name}":
+                continue
+            seen.add(id(p))
+            total += _weight_elements(p, module)
     return max(total, 1)
 
 
