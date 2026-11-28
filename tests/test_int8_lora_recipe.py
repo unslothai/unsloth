@@ -170,14 +170,12 @@ def test_weight_quantization_round_trip_cpu():
 
 def _tiny_lora_model(hidden):
     from peft import LoraConfig, get_peft_model
-
-    class Cfg:
-        hidden_size = hidden
+    from transformers import PretrainedConfig
 
     class Tiny(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.config = Cfg()
+            self.config = PretrainedConfig(hidden_size = hidden)  # newer peft reads config.get(...)
             self.q_proj = torch.nn.Linear(hidden, hidden, bias = False, dtype = torch.bfloat16)
 
         def forward(self, x):

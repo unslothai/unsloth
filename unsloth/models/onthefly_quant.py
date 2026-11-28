@@ -63,6 +63,8 @@ _ASYNC_ENV = "HF_DEACTIVATE_ASYNC_LOAD"  # transformers 5: load parameters on th
 _QUANT_DEVICES = ("cuda", "xpu")
 
 _ACTIVE = contextvars.ContextVar("unsloth_onthefly_fp4", default = None)
+# Set while a load that settled on bitsandbytes 8-bit runs, so nested from_pretrained calls do not re-decide.
+_BNB8_KEPT = contextvars.ContextVar("unsloth_bnb8_kept", default = False)
 _STATS = {"linear": 0, "experts": 0, "skipped": 0, "late": 0}
 
 
@@ -226,10 +228,14 @@ def _int8_auto_reason(arguments, extra):
     return _int8_auto_device_reason() or _int8_auto_config_reason(arguments, extra)
 
 
-def resolve_int8_8bit(arguments, var_keyword = "kwargs"):
+def resolve_int8_8bit(
+    arguments,
+    var_keyword = "kwargs",
+    auto = True,
+):
     """load_in_8bit = 'int8' (and True where the rotated int8 base is the measured pick) -> a 16-bit load with
     float8_training = 'int8_lora'. Edits `arguments` (BoundArguments.arguments) in place; returns 'int8' when it
-    did, 'bnb' when load_in_8bit = True stays bitsandbytes, else None."""
+    did, 'bnb' when load_in_8bit = True stays bitsandbytes, else None. auto = False keeps True as bitsandbytes."""
     l8 = arguments.get("load_in_8bit", None)
     if isinstance(l8, str) and _norm(l8) in _INT8_NAMES:
         explicit = True
@@ -263,8 +269,7 @@ def resolve_int8_8bit(arguments, var_keyword = "kwargs"):
                 f"Unsloth: load_in_8bit = 'int8' conflicts with float8_training = {f8!r}."
             )
     else:
-        why = _int8_auto_reason(arguments, extra)
-        if why is not None:
+        if not auto or _int8_auto_reason(arguments, extra) is not None:
             return "bnb"
     arguments["load_in_8bit"] = False
     arguments["load_in_4bit"] = False
@@ -301,8 +306,23 @@ def onthefly_lowbit_load(fn):
         except TypeError:
             return fn(*args, **kwargs)
         arguments = bound.arguments
-        if var_keyword is not None and resolve_int8_8bit(arguments, var_keyword) == "int8":
-            args, kwargs = bound.args, bound.kwargs
+        l8 = arguments.get("load_in_8bit", None)
+        keep_bnb = isinstance(l8, str) and _norm(l8) in _BNB8_NAMES
+        decision = None
+        if var_keyword is not None:
+            # A nested load (FastLanguageModel delegating to FastModel) keeps the outer call's bitsandbytes pick.
+            decision = resolve_int8_8bit(arguments, var_keyword, auto = not _BNB8_KEPT.get())
+            if decision == "int8":
+                args, kwargs = bound.args, bound.kwargs
+        if not (keep_bnb or decision == "bnb"):
+            return _load(args, kwargs, bound, arguments)
+        token = _BNB8_KEPT.set(True)
+        try:
+            return _load(args, kwargs, bound, arguments)
+        finally:
+            _BNB8_KEPT.reset(token)
+
+    def _load(args, kwargs, bound, arguments):
         l4 = arguments.get("load_in_4bit", None)
         l8 = arguments.get("load_in_8bit", None)
         if not isinstance(l4, str) and not isinstance(l8, str):

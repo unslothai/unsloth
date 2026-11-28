@@ -81,6 +81,25 @@ def test_bnb_string_is_bitsandbytes_even_where_auto_picks_int8(wrapped, int8_gpu
     assert oq.normalize_lowbit_flags(False, name) == (False, True, False, None)
 
 
+def test_explicit_bnb_survives_a_nested_load(int8_gpu):
+    # FastLanguageModel delegates load_in_8bit loads to FastModel, which is wrapped too: the inner call must not
+    # re-run the True -> int8 pick on the boolean the outer call normalized 'bnb' to.
+    inner = oq.onthefly_lowbit_load(_from_pretrained)
+
+    def outer_from_pretrained(
+        model_name = "m",
+        load_in_4bit = True,
+        load_in_8bit = False,
+        **kwargs,
+    ):
+        return inner(model_name, load_in_4bit = load_in_4bit, load_in_8bit = load_in_8bit, **kwargs)
+
+    outer = oq.onthefly_lowbit_load(outer_from_pretrained)
+    assert outer("m", load_in_4bit = False, load_in_8bit = "bnb") == (False, True, False, None)
+    assert outer("m", load_in_4bit = False, load_in_8bit = True) == (False, False, False, "int8_lora")
+    assert inner("m", load_in_4bit = False, load_in_8bit = True) == (False, False, False, "int8_lora")
+
+
 def test_true_stays_bitsandbytes_off_the_measured_gpus(wrapped, monkeypatch):
     monkeypatch.setattr(oq, "_int8_auto_device_reason", lambda: "compute capability 9.0 is not one")
     assert wrapped("m", load_in_8bit = True) == (True, True, False, None)
@@ -185,7 +204,9 @@ class _Block(torch.nn.Module):
 class _VLM(torch.nn.Module):
     def __init__(self):
         super().__init__()
-        self.config = type("C", (), {"model_type": "qwen3_5", "hidden_size": 256})()
+        from transformers import PretrainedConfig
+
+        self.config = PretrainedConfig(hidden_size = 256)  # peft reads config.get(...)
         self.visual = torch.nn.ModuleDict({"blocks": torch.nn.ModuleList([_Block(256, 256)])})
         self.language_model = torch.nn.ModuleDict(
             {"layers": torch.nn.ModuleList([_Block(256, 256)])}
