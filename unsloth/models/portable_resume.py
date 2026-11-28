@@ -699,11 +699,8 @@ def _bnb_import(inner, state_dict):
 
 
 def _host_dtensor(value, p, local):
-    """`value` (a host tensor of `local`'s shape) as the local shard of a DTensor laid out like `p`, under a
-    wrapper on p's device: the form UNSLOTH_OFFLOAD_OPTIMIZER_STATE keeps an offloaded DTensor state in. Built
-    on a one-element device stub, since DTensor.from_local would copy the whole moment to the mesh's device
-    first (8 bytes per parameter on the device at once over a resume). Cast to the parameter's dtype here, as
-    the optimizer load would: a cast there would rewrap it on the host's device."""
+    """Wrap host `value` as `p`-shaped DTensor without copying it to the device (from_local would).
+    Cast here: a cast in the optimizer load would rewrap it on the host device."""
     from .tp_native import _dtensor_api
 
     if local.is_floating_point() and value.is_floating_point():
@@ -789,7 +786,6 @@ def _load_named(
                         value = _to_local(f"{n} ({key})", value, smap, local)
                         wrap = _is_dtensor(p) and not bnb
                         if wrap and host:
-                            # An offloaded optimizer: the moment stays on the host as the DTensor's local shard.
                             value = _host_dtensor(value, p, local)
                         elif not host:
                             value = value.to(local.device)

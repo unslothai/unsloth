@@ -141,9 +141,7 @@ def _fsdp2_world1(model, tmp_path):
 
 
 def test_portable_resume_keeps_offloaded_dtensor_moments_on_the_host(tmp_path):
-    """FSDP2 / tensor parallel parameters are DTensors: each loaded moment stays on the host as its DTensor's local
-    shard (under a device wrapper, as the offloader keeps it), instead of DTensor.from_local copying all of them to
-    the device first (32 MiB here)."""
+    """Offloaded DTensor moments load onto the host, not all onto the device at once."""
     import torch.distributed as dist
     from torch.distributed.tensor import DTensor
 
@@ -155,7 +153,6 @@ def test_portable_resume_keeps_offloaded_dtensor_moments_on_the_host(tmp_path):
         model = _fsdp2_world1(model, tmp_path)
         optimizer = torch.optim.AdamW(model.parameters(), lr = 1e-3)
         assert offload.offload_optimizer_state(optimizer, chunk_bytes = 9 << 20) is not None
-        # The load first maps each parameter's slices (one parameter's float64 ids at a time, 16 MiB here).
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
         base = torch.cuda.memory_allocated()
@@ -164,17 +161,16 @@ def test_portable_resume_keeps_offloaded_dtensor_moments_on_the_host(tmp_path):
         peak, held = _load(portable, model, optimizer, saved)
         states = [s[k] for s in optimizer.state.values() for k in ("exp_avg", "exp_avg_sq")]
         assert len(states) == 8 and all(isinstance(v, DTensor) for v in states)
-        assert {v.device.type for v in states} == {"cuda"}  # the wrapper: DCP sees the stock layout
+        assert {v.device.type for v in states} == {"cuda"}
         assert {v._local_tensor.device.type for v in states} == {"cpu"}
-        # Nothing above the slice maps: every moment moved to the device first would be 32 MiB at once.
+        # Peak stays at the 16 MiB slice map; device-first moments would be 32 MiB.
         assert peak <= maps + (1 << 20) and held < 1 << 20, (peak, maps, held)
         name = next(iter(saved["state"]))
         p = dict(model.named_parameters())[name]
         assert torch.equal(
             optimizer.state[p]["exp_avg"]._local_tensor, saved["state"][name]["exp_avg"]
         )
-        # The resumed step matches a one-GPU AdamW resumed from the same state (on the same starting weights:
-        # _saved_state stepped `plain`).
+        # Matches one-GPU AdamW resumed from the same state.
         plain = _model()
         reference = torch.optim.AdamW(plain.parameters(), lr = 1e-3)
         reference.load_state_dict(
