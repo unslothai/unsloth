@@ -7,7 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+import threading
 import uuid
+from collections import OrderedDict
 
 from markdown_it import MarkdownIt
 from markdown_it.rules_inline.backticks import backtick
@@ -109,6 +111,28 @@ def mentioned_skill_names(text: str) -> list[str]:
     return list(dict.fromkeys(match[1] for match in _TOKEN.finditer(text)))
 
 
+# Every request rescans earlier user turns; a pasted 50 KB turn costs ~13 ms per parse.
+_NAMES_CACHE: OrderedDict[bytes, tuple[str, ...]] = OrderedDict()
+_NAMES_CACHE_MAX = 256
+_NAMES_LOCK = threading.Lock()
+
+
+def _cached_mentioned_skill_names(text: str) -> list[str]:
+    # Keyed on a digest so the cache never holds whole pasted messages.
+    key = hashlib.sha256(text.encode("utf-8", "surrogatepass")).digest()
+    with _NAMES_LOCK:
+        names = _NAMES_CACHE.get(key)
+        if names is not None:
+            _NAMES_CACHE.move_to_end(key)
+            return list(names)
+    names = tuple(mentioned_skill_names(text))
+    with _NAMES_LOCK:
+        _NAMES_CACHE[key] = names
+        while len(_NAMES_CACHE) > _NAMES_CACHE_MAX:
+            _NAMES_CACHE.popitem(last = False)
+    return list(names)
+
+
 def _text(message: dict) -> str:
     content = message.get("content")
     if isinstance(content, str):
@@ -158,7 +182,7 @@ def load_mentioned_skills(
     mention_turns = []
     for index, message in enumerate(messages):
         text = _text(message) if message.get("role") == "user" else ""
-        names = mentioned_skill_names(text) if "@" in text else []
+        names = _cached_mentioned_skill_names(text) if "@" in text else []
         if names:
             mention_turns.append((index, names))
     if not mention_turns:

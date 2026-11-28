@@ -666,3 +666,51 @@ def test_local_withdrawn_tools_skip_preload(mention_client, extra):
     assert backend.requests, response.text
     assert manifest.read_text() not in json.dumps(backend.requests[0]["messages"])
     assert '"type": "skill_load"' not in response.text
+
+
+def test_mention_name_memo_matches_uncached_and_is_bounded(monkeypatch):
+    monkeypatch.setattr(mentions, "_NAMES_CACHE", type(mentions._NAMES_CACHE)())
+    monkeypatch.setattr(mentions, "_NAMES_CACHE_MAX", 3)
+    texts = [
+        "@skill-creator and `@hidden` then @another",
+        "```python\n@skill-creator\n```\n@another",
+        '"@quoted" @plain',
+        "no mention @ here",
+    ]
+    for text in texts * 2:
+        assert mentions._cached_mentioned_skill_names(text) == mentions.mentioned_skill_names(text)
+    assert len(mentions._NAMES_CACHE) == 3
+    first = mentions._cached_mentioned_skill_names(texts[0])
+    first.append("leaked")
+    assert mentions._cached_mentioned_skill_names(texts[0]) == ["skill-creator", "another"]
+
+
+def test_mention_name_memo_skips_reparse_on_later_turns(monkeypatch):
+    monkeypatch.setattr(mentions, "_NAMES_CACHE", type(mentions._NAMES_CACHE)())
+    calls = []
+    real = mentions.mentioned_skill_names
+    monkeypatch.setattr(
+        mentions, "mentioned_skill_names", lambda text: calls.append(text) or real(text)
+    )
+    text = "Pasted code\n" + "x = 1  # ping @someone\n" * 2000
+    assert mentions._cached_mentioned_skill_names(text) == ["someone"]
+    assert mentions._cached_mentioned_skill_names(text) == ["someone"]
+    assert mentions._cached_mentioned_skill_names(text + " @other") == ["someone", "other"]
+    assert len(calls) == 2
+
+
+def test_load_mentioned_skills_scans_each_history_text_once(mention_client, monkeypatch):
+    monkeypatch.setattr(mentions, "_NAMES_CACHE", type(mentions._NAMES_CACHE)())
+    calls = []
+    real = mentions.mentioned_skill_names
+    monkeypatch.setattr(
+        mentions, "mentioned_skill_names", lambda text: calls.append(text) or real(text)
+    )
+    history = [
+        {"role": "user", "content": "@skill-creator sum"},
+        {"role": "assistant", "content": "ok"},
+        {"role": "user", "content": "thanks @nobody"},
+    ]
+    _load(messages = [dict(m) for m in history])
+    _load(messages = [dict(m) for m in history])
+    assert sorted(calls) == ["@skill-creator sum", "thanks @nobody"]

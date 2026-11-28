@@ -1644,3 +1644,62 @@ def test_bulk_enabled_route(isolated_skills, monkeypatch):
     assert client.put("/api/skills", json = {}).status_code == 422
     assert client.put("/api/skills", json = {"enabled": "false"}).status_code == 422
     assert client.put("/api/skills/api-skill/enabled", json = {"enabled": False}).status_code == 200
+
+
+def test_parse_memo_matches_uncached_copies_and_bounds(monkeypatch):
+    monkeypatch.setattr(skills, "_PARSE_CACHE", type(skills._PARSE_CACHE)())
+    monkeypatch.setattr(skills, "_PARSE_CACHE_MAX", 2)
+    raw = b"---\nname: memo\ndescription: Memo test.\nmetadata:\n  a: b\n---\nBody\n"
+    first = skills._parse_skill_markdown_cached(raw, "memo")
+    assert first == skills._parse_skill_markdown(raw, "memo")
+    first["metadata"]["a"] = "leaked"
+    first["description"] = "leaked"
+    assert skills._parse_skill_markdown_cached(raw, "memo") == skills._parse_skill_markdown(
+        raw, "memo"
+    )
+    # The parent name is part of the key: the same bytes under another folder still fail.
+    with pytest.raises(skills.SkillError, match = "must match its parent directory"):
+        skills._parse_skill_markdown_cached(raw, "other")
+    for index in range(3):
+        skills._parse_skill_markdown_cached(raw.replace(b"Body", b"Body %d" % index), "memo")
+    assert len(skills._PARSE_CACHE) == 2
+
+
+def test_parse_memo_never_caches_failures(monkeypatch):
+    monkeypatch.setattr(skills, "_PARSE_CACHE", type(skills._PARSE_CACHE)())
+    broken = b"---\nname: memo\ndescription: [unclosed\n---\nBody\n"
+    errors = []
+    for _ in range(2):
+        with pytest.raises(skills.SkillError) as caught:
+            skills._parse_skill_markdown_cached(broken, "memo")
+        errors.append(str(caught.value))
+    assert errors[0] == errors[1]
+    assert len(skills._PARSE_CACHE) == 0
+
+
+def test_parse_memo_rereads_edits_and_keeps_permission_checks(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "_PARSE_CACHE", type(skills._PARSE_CACHE)())
+    monkeypatch.setattr(skills, "_skill_roots", lambda home = None: (("agents", home_root),))
+    home_root = home / ".agents" / "skills"
+    root = _write_skill(home, "agents", "memo", description = "First.")
+    assert skills.read_skill_instructions("memo").endswith("Instructions")
+    assert skills.list_skills()[0]["description"] == "First."
+    assert len(skills._PARSE_CACHE) == 1
+    (root / "SKILL.md").write_text(
+        "---\nname: memo\ndescription: Second.\n---\nNew", encoding = "utf-8"
+    )
+    assert skills.list_skills()[0]["description"] == "Second."
+    assert skills.read_skill_instructions("memo").endswith("New")
+    (root / "SKILL.md").write_text("---\nname: memo\n---\nNew", encoding = "utf-8")
+    assert skills.list_skills()[0]["valid"] is False
+    with pytest.raises(skills.SkillNotFoundError):
+        skills.read_skill_instructions("memo")
+    # A warm memo never bypasses the enabled check.
+    (root / "SKILL.md").write_text(
+        "---\nname: memo\ndescription: Second.\n---\nNew", encoding = "utf-8"
+    )
+    assert skills.read_skill_instructions("memo").endswith("New")
+    skills.set_skill_enabled("memo", False)
+    with pytest.raises(skills.SkillError, match = "disabled"):
+        skills.read_skill_instructions("memo")

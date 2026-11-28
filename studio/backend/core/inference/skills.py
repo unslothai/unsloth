@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import copy
 import errno
+import hashlib
 import io
 import itertools
 import json
@@ -16,6 +18,7 @@ import tempfile
 import threading
 import unicodedata
 import zipfile
+from collections import OrderedDict
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
@@ -472,6 +475,28 @@ def _parse_skill_markdown(raw: bytes, parent_name: Optional[str] = None) -> dict
     return parsed
 
 
+# Each request rediscovers every root 1+K times; only the pure parse of identical bytes is reused.
+_PARSE_CACHE: OrderedDict[tuple[bytes, Optional[str]], dict] = OrderedDict()
+_PARSE_CACHE_MAX = 1024
+_PARSE_LOCK = threading.Lock()
+
+
+def _parse_skill_markdown_cached(raw: bytes, parent_name: Optional[str]) -> dict:
+    key = (hashlib.sha256(raw).digest(), parent_name)
+    with _PARSE_LOCK:
+        parsed = _PARSE_CACHE.get(key)
+        if parsed is not None:
+            _PARSE_CACHE.move_to_end(key)
+            return copy.deepcopy(parsed)
+    # Failures raise before caching, so a broken manifest is re-parsed and re-reported each time.
+    parsed = _parse_skill_markdown(raw, parent_name)
+    with _PARSE_LOCK:
+        _PARSE_CACHE[key] = copy.deepcopy(parsed)
+        while len(_PARSE_CACHE) > _PARSE_CACHE_MAX:
+            _PARSE_CACHE.popitem(last = False)
+    return parsed
+
+
 def _validate_skill_dir(skill_dir: Path) -> tuple[dict, Path]:
     """Metadata plus the real directory. A linked entry (npx skills, Zed, dotfiles) is
     followed once here; every later read is pinned to the resolved directory, not the link."""
@@ -486,7 +511,7 @@ def _validate_skill_dir(skill_dir: Path) -> tuple[dict, Path]:
     manifest = target / "SKILL.md"
     if _is_linked_path(manifest) or not manifest.is_file():
         raise SkillError("Skill directory must contain a regular SKILL.md file.")
-    metadata = _parse_skill_markdown(
+    metadata = _parse_skill_markdown_cached(
         _read_limited(manifest, MAX_SKILL_MD_BYTES, contained_in = target),
         skill_dir.name,
     )
