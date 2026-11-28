@@ -7922,16 +7922,16 @@ def _offset_audio_reference_video_data_url():
     buf = io.BytesIO()
     with av.open(buf, mode = "w", format = "matroska") as out:
         video = out.add_stream("ffv1", rate = 24)
-        video.width, video.height = (64, 64)
+        video.width, video.height = (128, 64)
         video.pix_fmt = "yuv444p"
         video.time_base = Fraction(1, 1000)
-        audio = out.add_stream("pcm_s16le", rate = 44_100)
+        audio = out.add_stream("pcm_f32le", rate = 44_100)
         audio.layout = "stereo"
         audio.time_base = Fraction(1, 44_100)
         for index in range(4 * 24):
-            frame = av.VideoFrame.from_ndarray(
-                np.zeros((64, 64, 3), dtype = np.uint8), format = "rgb24"
-            )
+            plane = np.zeros((64, 128, 3), dtype = np.uint8)
+            plane[:, index : index + 4] = 255
+            frame = av.VideoFrame.from_ndarray(plane, format = "rgb24")
             frame.pts = 5_000 + round(index * 1_000 / 24)
             frame.time_base = Fraction(1, 1000)
             for packet in video.encode(frame):
@@ -7939,8 +7939,8 @@ def _offset_audio_reference_video_data_url():
         written = 0
         while written < 3 * 44_100:
             count = min(1024, 3 * 44_100 - written)
-            samples = np.full((1, count * 2), 10_000, dtype = np.int16)
-            frame = av.AudioFrame.from_ndarray(samples, format = "s16", layout = "stereo")
+            samples = np.full((1, count * 2), 0.3, dtype = np.float32)
+            frame = av.AudioFrame.from_ndarray(samples, format = "flt", layout = "stereo")
             frame.sample_rate = 44_100
             frame.pts = 6 * 44_100 + written
             frame.time_base = Fraction(1, 44_100)
@@ -8022,6 +8022,10 @@ def test_h3_reference_video_trim_uses_vfr_pts_relative_to_a_nonzero_stream_start
     assert float(np.asarray(frames[0]).mean()) == pytest.approx(25, abs = 8)
     assert float(np.asarray(frames[-1]).mean()) > 110
 
+    whole_frames, _, _ = decode_h3_reference_video(blob)
+    assert float(np.asarray(whole_frames[48]).mean()) == pytest.approx(100, abs = 8)
+    assert np.array_equal(np.asarray(whole_frames[48]), np.asarray(frames[36]))
+
 
 def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     pytest.importorskip("av")
@@ -8042,6 +8046,13 @@ def test_h3_reference_video_trim_preserves_an_embedded_audio_timeline_offset():
     assert waveform is not None and waveform.shape == (2 * sample_rate, 2)
     assert np.max(np.abs(waveform[: sample_rate // 2])) == 0
     assert np.mean(np.abs(waveform[sample_rate // 2 :])) > 0.25
+
+    whole_frames, whole_audio, whole_rate = decode_h3_reference_video(blob)
+    assert [_decoded_frame_index(frame, width = 128) for frame in whole_frames] == list(range(96))
+    assert whole_rate == 44_100
+    assert whole_audio.shape == (4 * whole_rate, 2)
+    assert np.max(np.abs(whole_audio[:whole_rate])) == 0
+    np.testing.assert_allclose(whole_audio[whole_rate:], 0.3)
 
 
 @pytest.mark.parametrize("duration", [2.0, 15.0])
@@ -8292,14 +8303,14 @@ def test_h3_reference_video_ordinal_fallback_selects_the_same_frames_as_timestam
 
     from core.inference.video_minimax_h3 import (
         _decode_h3_video_trim_by_ordinal,
-        _decode_h3_video_trim_by_timestamp,
+        _decode_h3_video_by_timestamp,
     )
 
     blob = _frame_index_video()
 
     for start, end in ((2.0, 8.0), (2.02, 8.02)):
         ordinal, _ = _decode_h3_video_trim_by_ordinal(blob, av, (start, end))
-        timestamp, _ = _decode_h3_video_trim_by_timestamp(blob, av, (start, end))
+        timestamp, _, _ = _decode_h3_video_by_timestamp(blob, av, (start, end))
         assert len(ordinal) == len(timestamp) == round((end - start) * 24)
         assert _decoded_frame_index(ordinal[0]) == _decoded_frame_index(timestamp[0])
 
