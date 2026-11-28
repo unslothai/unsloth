@@ -11,6 +11,8 @@ import pytest
 import torch
 from torch import nn
 
+from real_accelerator import has_real_cuda  # tests/_shared, on sys.path via tests/conftest.py
+
 from unsloth.kernels import gguf_reference as ref
 from unsloth.models import gguf_packed as gp
 
@@ -182,7 +184,7 @@ def test_zoo_shim_keeps_cpu_blocks_on_the_traceable_reference(monkeypatch):
     assert calls == ["linear"]
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "the zoo kernels run CUDA blocks only")
+@pytest.mark.skipif(not has_real_cuda(), reason = "the zoo kernels run CUDA blocks only")
 def test_zoo_linear_takes_a_bias_of_another_dtype_like_the_reference():
     # PEFT's preparation can upcast a frozen bias to float32 while activations stay bf16: the reference casts it to
     # x's dtype, the zoo's dequantize + F.linear path (many rows) would reject it.
