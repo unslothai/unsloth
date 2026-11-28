@@ -1874,18 +1874,27 @@ def _generation_chunks(
     batch_size: int,
     *,
     layer_count: Any = None,
+    pipe: Any = None,
 ) -> list:
     """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 and Anima run one image
     per modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
     and the next image's encode would bring it back for the rest of the chunk)."""
-    from .diffusion_batch_adapters import BATCHED_FORWARD_ATTR
+    from .diffusion_batch_adapters import BATCHED_FORWARD_ATTR, batched_forward
 
-    # A family that says its call fuses the rows (``batched_forward``) chunks like any other.
+    # Anima fuses rows only on a card with a G2c verdict (diffusion_batch_adapters).
     if getattr(family, BATCHED_FORWARD_ATTR, None) is not True and (
-        layer_count or is_flux3_family(family) or is_anima_family(family)
+        layer_count
+        or is_flux3_family(family)
+        or (is_anima_family(family) and not (pipe is not None and batched_forward(family, pipe)))
     ):
         return [[job] for job in jobs]
+    if is_anima_family(family):
+        # Anima fuses only rows of one conditioned length; one chunk per such run keeps each call's phase hooks.
+        from .diffusion_anima import prompt_length_runs
+        return [
+            chunk for run in prompt_length_runs(pipe, jobs) for chunk in chunk_jobs(run, batch_size)
+        ]
     return chunk_jobs(jobs, batch_size)
 
 
@@ -5122,7 +5131,8 @@ def coalesce_prompt_key(family: Any, pipe: Any, prompt: str) -> Optional[tuple]:
     """What a prompt must share with batch neighbours to render as alone; None = never batch it.
 
     The family's batch adapter decides (diffusion_batch_adapters): a family whose call does not fuse the rows
-    (``batched_forward`` False: MiniMax-H3, Qwen-Image-2.1, FLUX.3, Anima, layered by default) never batches;
+    (``batched_forward`` False: MiniMax-H3, Qwen-Image-2.1, FLUX.3, layered by default) never batches; Anima batches
+    only on a card with a stored G2c verdict;
     MOSS batches only where its layer-major win was measured (diffusion_moss_image.coalesce_key); FLUX.1 pads T5 per
     call; SD / SDXL chunk per call."""
     from .diffusion_batch_adapters import adapter_for
@@ -17460,7 +17470,9 @@ class DiffusionBackend:
 
                 # Chunks: all jobs in one forward unless batch_size caps it; OOM backoff halves a
                 # failed chunk; layered: one input per forward, as its layer stride fits one.
-                chunks = _generation_chunks(state.family, jobs, batch_size, layer_count = layer_count)
+                chunks = _generation_chunks(
+                    state.family, jobs, batch_size, layer_count = layer_count, pipe = pipe
+                )
                 # Qwen-Image-2.1 lays out a batch from one row: prompts of different text lengths render apart.
                 from .diffusion_qwenimage21 import text_length_runs
 
@@ -18539,7 +18551,8 @@ class DiffusionBackend:
         layout: Any = None,
     ) -> bool:
         """Whether an explicitly seeded request may share a call: the measured path at this shape is neighbour-exact
-        and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join. A load that
+        and replays a member bit for bit (diffusion_batch_race.seeded_join_ok) at every size it could join, or is
+        neighbour-exact on a card and path whose stored G2c verdict admits seeded rows (``seeded``). A load that
         still admits unmeasured sizes (policy ``any``) can fire at one of them, so every admitted size needs a verdict."""
         state = self._state
         if state is None:
@@ -18553,7 +18566,20 @@ class DiffusionBackend:
         if not sizes:
             return False
         measured = _measured_sizes(state, width, height, guidance, steps, layout)
-        return all(diffusion_batch_race.seeded_join_ok(measured.get(k)) for k in sizes)
+        from .diffusion_batch_quality import path_of, seeded_quality_ok
+
+        def ok(verdict: Optional[dict]) -> bool:
+            if diffusion_batch_race.seeded_join_ok(verdict):
+                return True
+            # Seeded rows may join a neighbour-exact win where this card's G2c verdict admits them.
+            return (
+                isinstance(verdict, dict)
+                and bool(verdict.get("promoted"))
+                and bool(verdict.get("neighbour_exact"))
+                and seeded_quality_ok(state, path_of(verdict))
+            )
+
+        return all(ok(measured.get(k)) for k in sizes)
 
     def batch_race(
         self,
